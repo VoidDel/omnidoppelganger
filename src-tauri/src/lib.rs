@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use std::collections::BTreeMap;
 
-use odg_core::agent::{Session, Status, Tuning, UiEvent};
+use odg_core::agent::{Services, Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
 use odg_core::events::{Decision, Envelope, Image, check_images};
 use odg_core::grants::{GrantStore, Grants};
@@ -66,6 +66,9 @@ struct SettingsView {
     home: String,
     /// The command approvals given for good, by workspace.
     grants: Grants,
+    /// The user's own skills, and the directory they are kept in.
+    skills: Vec<odg_core::events::SkillInfo>,
+    skills_directory: String,
     /// The text of `mcp.json`, and how each server it lists stands.
     mcp_config: String,
     mcp_servers: Vec<ServerStatus>,
@@ -79,8 +82,8 @@ impl App {
             let settings = settings.load();
             Tuning { context_limit: settings.context_limit_for(&provider, &model), context_window: context_window(&provider, &model), effort: settings.effort }
         };
-        let (llm, grants, mcp) = (self.llm.clone(), self.grants.clone(), Some(self.mcp.clone()));
-        Session::new(log, llm, Arc::new(tuning), grants, mcp, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
+        let services = Services { grants: self.grants.clone(), mcp: Some(self.mcp.clone()), skills: Some(settings::home().join("skills")) };
+        Session::new(log, self.llm.clone(), Arc::new(tuning), services, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
     }
 
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
@@ -110,6 +113,8 @@ impl App {
             efforts: EFFORTS,
             home: settings::home().display().to_string(),
             grants: self.grants.all(),
+            skills: odg_core::skills::listing(&odg_core::skills::discover(&[settings::home().join("skills")])),
+            skills_directory: settings::home().join("skills").display().to_string(),
             mcp_config: self.mcp.config_text(),
             mcp_servers: self.mcp.statuses(),
         }

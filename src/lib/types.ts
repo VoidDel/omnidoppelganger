@@ -28,6 +28,7 @@ export type SessionEvent =
   | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number } }
   | { type: "session/renamed"; data: { title: string } }
   | { type: "instructions/loaded"; data: { path: string; content: string } }
+  | { type: "skills/listed"; data: { skills: Skill[] } }
   | { type: "turn/start"; data: { turn: number } }
   | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode; images?: Image[] } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }
@@ -67,6 +68,8 @@ export interface ToolMeta {
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
+  /** The skill `load_skill` read. */
+  skill?: string;
   /** The call went to a tool of an MCP server. */
   mcp?: boolean;
   /** The to-do list `update_todos` recorded. */
@@ -81,6 +84,12 @@ export interface ToolMeta {
   refused?: boolean;
   /** Set on an edit that can be undone: the fingerprint of what it wrote. */
   after?: string;
+}
+
+/** A skill as the 分身 is told of it: instructions it can load when a task calls for them. */
+export interface Skill {
+  name: string;
+  description: string;
 }
 
 /** One item of the 分身's to-do list. */
@@ -165,6 +174,9 @@ export interface SettingsView {
   home: string;
   /** Command approvals given for good, by workspace path. */
   grants: Record<string, string[]>;
+  /** The user's own skills, and the directory they are kept in. */
+  skills: Skill[];
+  skills_directory: string;
   /** The text of the MCP server list, and how each server it names stands. */
   mcp_config: string;
   mcp_servers: McpServer[];

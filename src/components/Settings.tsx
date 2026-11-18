@@ -314,6 +314,23 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
           ))}
         </section>
 
+        <section>
+          <h2>技能</h2>
+          <p className="muted">
+            技能是专项的做事说明，平时不占分身的心神，遇到对得上的事它才去研读。每门技能是一个文件夹，里面放一份 SKILL.md，开头用 --- 围起来写上 name 和 description。放在{" "}
+            <span className="mono">{view.skills_directory}</span> 里的对所有分身生效；放在某处洞府的 <span className="mono">.odg/skills</span> 里的只对那处洞府生效，重名时以洞府里的为准。新放进去的，下一轮生效。
+          </p>
+          {view.skills.length === 0 && <p className="muted">还没有装技能。</p>}
+          {view.skills.map((skill) => (
+            <div className="provider-card" key={skill.name}>
+              <div className="who">
+                <strong className="mono">{skill.name}</strong>
+                <span className="muted">{skill.description}</span>
+              </div>
+            </div>
+          ))}
+        </section>
+
         <McpSection config={view.mcp_config} servers={view.mcp_servers} onSave={onSaveMcp} onRefresh={onRefresh} />
 
         <section>

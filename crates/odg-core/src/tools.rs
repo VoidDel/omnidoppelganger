@@ -46,6 +46,8 @@ pub struct ToolContext {
     pub jobs: Option<Arc<Jobs>>,
     /// The MCP servers whose tools the model may call. `None` means there are none.
     pub mcp: Option<Arc<crate::mcp::McpHub>>,
+    /// The directories skills are looked for in, the workspace's last; see [`crate::skills`].
+    pub skills: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,6 +195,17 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "load_skill",
+            "description": "Read a skill's instructions. Skills are how-tos for particular kinds of work; the ones on offer are listed in your instructions by name and description. When a task matches one, load it before you start and follow it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "The skill's name, as listed." }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
             "name": "update_todos",
             "description": "Keep a to-do list for the task, which the user sees beside the conversation. Use it when the work has several steps: write the list before starting, then send it again whenever an item's state changes, marking the item you are on `in_progress` and finished ones `done`. Each call replaces the whole list. Skip it for a task of one or two steps.",
             "input_schema": {
@@ -322,6 +335,10 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "command_output" => command_output(input, context).await,
         "stop_command" => stop_command(input, context).await,
         "update_todos" => update_todos(input),
+        "load_skill" => string_arg(input, "name").and_then(|name| match crate::skills::load(&context.skills, name) {
+            Ok(instructions) => Ok(ToolOutput::ok(instructions, json!({ "skill": name }))),
+            Err(error) => Err(ToolOutput::error(error)),
+        }),
         // A tool of an MCP server: what it does and returns is the server's.
         other if crate::mcp::split_name(other).is_some() => match &context.mcp {
             Some(hub) => {
@@ -860,7 +877,7 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new() };
         (directory, context)
     }
 

@@ -18,6 +18,7 @@ pub mod providers;
 pub mod safety;
 pub mod session;
 pub mod settings;
+pub mod skills;
 pub mod sse;
 #[cfg(test)]
 mod testing;

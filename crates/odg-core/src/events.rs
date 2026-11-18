@@ -54,6 +54,13 @@ pub fn check_images(images: &[Image]) -> Result<(), String> {
     Ok(())
 }
 
+/// A skill as the model is told of it; see [`crate::skills`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+}
+
 /// The user's answer to an approval request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,6 +101,11 @@ pub enum Event {
         path: String,
         content: String,
     },
+    /// The skills on offer when a turn started, logged when they differ
+    /// from the last time. The latest list is part of the system prompt of
+    /// every request after it. Since format 6.
+    #[serde(rename = "skills/listed")]
+    SkillsListed { skills: Vec<SkillInfo> },
     /// The user named the session. Until then its title is the first message. Since format 3.
     #[serde(rename = "session/renamed")]
     SessionRenamed { title: String },

@@ -90,6 +90,8 @@ function sealOf(tool: ToolItem): string {
       return "止";
     case "update_todos":
       return "谋";
+    case "load_skill":
+      return "技";
     default:
       // A tool of an MCP server: an instrument borrowed from outside.
       return mcpTool(tool.name) ? "器" : "术";
@@ -140,6 +142,8 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         outcome: waiting || (meta?.command ? state : "没有这个后台命令"),
       };
     }
+    case "load_skill":
+      return { verb: "研读技能", target: text("name"), outcome: waiting || (result!.isError ? "没有这门技能" : "已读") };
     case "update_todos": {
       const list = meta?.todos ?? [];
       const current = list.find((todo) => todo.status === "in_progress")?.text ?? "";

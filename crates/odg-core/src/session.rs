@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::events::{Envelope, Event};
+use crate::events::{Envelope, Event, SkillInfo};
 use crate::policy::Mode;
 use crate::providers::DEFAULT_PROVIDER;
 
@@ -19,9 +19,10 @@ use crate::providers::DEFAULT_PROVIDER;
 /// the `provider` field to the header. Format 3 added the `context/compacted`,
 /// `files/restored`, and `session/renamed` events and the `tokens` field.
 /// Format 4 added the `instructions/loaded` event and the `allow_always`
-/// decision. Format 5 adds `images` on a user message. A build from before a
-/// format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 5;
+/// decision. Format 5 added `images` on a user message. Format 6 adds the
+/// `skills/listed` event. A build from before a format refuses its sessions
+/// rather than misread them.
+pub const FORMAT_VERSION: u32 = 6;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -399,6 +400,18 @@ pub fn instructions(events: &[Envelope]) -> Option<(&str, &str)> {
         _ => None,
     })
     .filter(|(_, content)| !content.is_empty())
+}
+
+/// The skills the model is told of: the last list logged.
+pub fn skills(events: &[Envelope]) -> &[SkillInfo] {
+    events
+        .iter()
+        .rev()
+        .find_map(|envelope| match &envelope.event {
+            Event::SkillsListed { skills } => Some(skills.as_slice()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// What opens a request after a compaction, ahead of the summary.

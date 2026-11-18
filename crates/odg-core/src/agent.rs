@@ -15,13 +15,13 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::events::{Decision, Envelope, Event, Image};
+use crate::events::{Decision, Envelope, Event, Image, SkillInfo};
 use crate::grants::GrantStore;
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::mcp::McpHub;
 use crate::policy::{self, Mode, Verdict};
 use crate::providers;
-use crate::session::{SessionLog, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, summarize, transcript, unanswered_tool_uses};
+use crate::session::{SessionLog, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, skills, summarize, transcript, unanswered_tool_uses};
 use crate::tools::{self, ToolContext};
 use crate::undo;
 
@@ -60,6 +60,17 @@ pub struct Tuning {
 
 pub type TuningSource = Arc<dyn Fn() -> Tuning + Send + Sync>;
 
+/// What a session shares with every other session of the app.
+#[derive(Clone)]
+pub struct Services {
+    /// Approvals given for good.
+    pub grants: Arc<GrantStore>,
+    /// The MCP servers whose tools join the built-in ones.
+    pub mcp: Option<Arc<McpHub>>,
+    /// The user's own skills directory; the workspace's `.odg/skills` is added to it.
+    pub skills: Option<PathBuf>,
+}
+
 /// What the model is asked when the conversation is compacted. It follows
 /// Anthropic's guidance for client-side compaction; the last sentence matters
 /// because the request still carries the tools.
@@ -88,6 +99,8 @@ struct Inner<L: Llm> {
     kept: Arc<GrantStore>,
     /// The MCP servers whose tools join the built-in ones; shared by every session.
     mcp: Option<Arc<McpHub>>,
+    /// Where skills are looked for: the user's directory, then the workspace's, which wins on a shared name.
+    skill_roots: Vec<PathBuf>,
     provider: String,
     model: String,
     llm: Arc<L>,
@@ -112,7 +125,7 @@ impl<L: Llm> Clone for Session<L> {
 /// The system prompt. It changes only when the project's instructions do,
 /// so the cached prefix stays valid from one request to the next.
 /// `instructions` is the project's own file for agents, as `(name, contents)`.
-pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>) -> String {
+pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo]) -> String {
     let (_, _, shell) = tools::shell();
     let project = match instructions {
         Some((name, content)) => format!(
@@ -137,7 +150,16 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
         workspace.display(),
         std::env::consts::OS,
     );
-    general + &project
+    let offered = if skills.is_empty() {
+        String::new()
+    } else {
+        let lines: Vec<String> = skills.iter().map(|skill| format!("- {}: {}", skill.name, skill.description)).collect();
+        format!(
+            "\n\nSkills are how-tos for particular kinds of work, kept out of this prompt until needed. When a task matches one below, read it with `load_skill` before you start, and follow it.\n\n<skills>\n{}\n</skills>",
+            lines.join("\n")
+        )
+    };
+    general + &project + &offered
 }
 
 impl<L: Llm> Session<L> {
@@ -147,8 +169,7 @@ impl<L: Llm> Session<L> {
         mut log: SessionLog,
         llm: Arc<L>,
         tuning: TuningSource,
-        kept: Arc<GrantStore>,
-        mcp: Option<Arc<McpHub>>,
+        services: Services,
         events: UnboundedSender<UiEvent>,
         runtime: tokio::runtime::Handle,
     ) -> std::io::Result<Self> {
@@ -156,6 +177,8 @@ impl<L: Llm> Session<L> {
         let (workspace, provider, model) = log.header();
         let mode = summarize(log.events()).mode;
         let snapshots = log.path().with_file_name("snapshots");
+        let Services { grants: kept, mcp, skills } = services;
+        let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
         Ok(Self {
             inner: Arc::new(Inner {
                 id: log.id().to_string(),
@@ -164,6 +187,7 @@ impl<L: Llm> Session<L> {
                 jobs: Arc::default(),
                 kept,
                 mcp,
+                skill_roots,
                 provider,
                 model,
                 llm,
@@ -312,7 +336,8 @@ impl<L: Llm> Inner<L> {
 
     /// The system prompt of the next request: the general part and the instructions the log holds.
     fn system(&self) -> String {
-        system_prompt(&self.workspace, instructions(self.log.lock().unwrap().events()))
+        let log = self.log.lock().unwrap();
+        system_prompt(&self.workspace, instructions(log.events()), skills(log.events()))
     }
 
     /// Log the project's instructions when they are new, changed, or gone
@@ -332,6 +357,13 @@ impl<L: Llm> Inner<L> {
         event.map_or(Ok(()), |event| self.append(event))
     }
 
+    /// Log the skills on offer when they differ from the list last logged, as a turn starts.
+    fn refresh_skills(&self) -> Result<(), String> {
+        let found = crate::skills::listing(&crate::skills::discover(&self.skill_roots));
+        let changed = skills(self.log.lock().unwrap().events()) != found.as_slice();
+        if changed { self.append(Event::SkillsListed { skills: found }) } else { Ok(()) }
+    }
+
     fn tool_context(&self, cancel: &CancellationToken) -> ToolContext {
         ToolContext {
             workspace: self.workspace.clone(),
@@ -339,6 +371,7 @@ impl<L: Llm> Inner<L> {
             snapshots: Some(self.snapshots.clone()),
             jobs: Some(self.jobs.clone()),
             mcp: self.mcp.clone(),
+            skills: self.skill_roots.clone(),
         }
     }
 
@@ -387,7 +420,8 @@ impl<L: Llm> Inner<L> {
         let opened = self
             .append(Event::TurnStart { turn })
             .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images }))
-            .and_then(|()| self.refresh_instructions());
+            .and_then(|()| self.refresh_instructions())
+            .and_then(|()| self.refresh_skills());
         let (reason, error) = match opened {
             Ok(()) => match self.run_steps(cancel).await {
                 Ok(reason) => (reason, None),
@@ -704,7 +738,8 @@ mod tests {
             Tuning { effort: "high".to_string(), context_limit, context_window }
         };
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let session = Session::new(log, llm.clone(), Arc::new(tuning), kept, None, sender, tokio::runtime::Handle::current()).unwrap();
+        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")) };
+        let session = Session::new(log, llm.clone(), Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, limits, workspace, session, llm, events }
     }
 
@@ -823,7 +858,8 @@ mod tests {
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
-        let later = Session::new(log, fixture.llm.clone(), tuning, Arc::new(GrantStore::new(home.join("grants.json"))), None, sender, tokio::runtime::Handle::current()).unwrap();
+        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None };
+        let later = Session::new(log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
         fixture.events = events;
         fixture.session.send("again".into());
@@ -998,6 +1034,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn lists_skills_in_the_prompt_and_loads_one_on_request() {
+        let load = calls(&[("t1", "load_skill", json!({ "name": "release" })), ("t2", "load_skill", json!({ "name": "missing" }))]);
+        let mut fixture = fixture(ScriptedLlm::new(vec![says("no skills yet"), load, says("released"), says("again")], None));
+        fixture.session.send("hello".into());
+        fixture.idle().await;
+        assert!(!fixture.llm.requests.lock().unwrap()[0].system.contains("<skills>"));
+
+        // One skill of the user's and one of the workspace's, found as the next turn starts.
+        let user = fixture._home.path().join("skills/release");
+        let project = fixture.workspace.path().join(".odg/skills/style");
+        for (directory, text) in [(&user, "---\nname: release\ndescription: How to cut a release.\n---\nTag, then build.\n"), (&project, "---\nname: style\ndescription: House style.\n---\nTabs.\n")] {
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::write(directory.join("SKILL.md"), text).unwrap();
+        }
+        fixture.session.send("cut a release".into());
+        fixture.idle().await;
+        fixture.session.send("and again".into());
+        fixture.idle().await;
+
+        let requests = fixture.llm.requests.lock().unwrap();
+        assert!(requests[1].system.ends_with("<skills>\n- release: How to cut a release.\n- style: House style.\n</skills>"), "{}", requests[1].system);
+        // The list is logged once while it stays the same, so the prompt and its cache hold.
+        assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "skills/listed").count(), 1);
+        assert_eq!(requests[1].system, requests[3].system);
+        let results = fixture.results();
+        assert!(!results[0].1 && results[0].2.starts_with("Tag, then build.\n"), "{:?}", results[0]);
+        assert_eq!(results[1], ("t2".to_string(), true, "There is no skill `missing`. The skills are: release, style.".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn an_mcp_servers_tools_join_the_request_and_ask_before_each_call() {
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
@@ -1009,7 +1075,8 @@ mod tests {
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let session = Session::new(log, llm.clone(), tuning, kept.clone(), Some(hub), sender, tokio::runtime::Handle::current()).unwrap();
+        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None };
+        let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         // Auto mode lets safe commands through, but never a server's tool.
         session.set_mode(Mode::Auto);
         let mut fixture = Fixture { _home: home, limits: Arc::default(), workspace, session, llm, events };
