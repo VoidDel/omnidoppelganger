@@ -2,7 +2,10 @@
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
+
+use regex::Regex;
 
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
@@ -414,6 +417,14 @@ async fn capture(mut pipe: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
     kept
 }
 
+/// Remove terminal escape sequences: colors and cursor moves (CSI), links and
+/// titles (OSC), and the two-character escapes. They mean nothing to the
+/// model, cost tokens in every later request, and clutter the transcript.
+fn strip_ansi(text: &str) -> String {
+    static ESCAPES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[0-~])").expect("valid pattern"));
+    if text.contains('\u{1b}') { ESCAPES.replace_all(text, "").into_owned() } else { text.to_string() }
+}
+
 /// Stop a command and the processes it started.
 async fn kill_tree(child: &mut tokio::process::Child) {
     #[cfg(windows)]
@@ -437,11 +448,16 @@ async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput,
     let mut command = tokio::process::Command::new(program);
     command.args(arguments);
     if cfg!(windows) {
-        // PowerShell writes pipes in the console code page unless told otherwise.
-        command.arg(format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {command_line}"));
+        // PowerShell writes pipes in the console code page unless told otherwise,
+        // and PowerShell 7 colors tables and redirected stderr even into a pipe.
+        command.arg(format!(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; if ($PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}; {command_line}"
+        ));
     } else {
         command.arg(&command_line);
     }
+    // Ask the programs the command runs not to color either; whatever still does is stripped below.
+    command.env("NO_COLOR", "1");
     command.current_dir(&context.workspace).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
@@ -463,8 +479,8 @@ async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput,
     let read = |task| async { tokio::time::timeout(Duration::from_secs(2), task).await.ok().and_then(Result::ok).unwrap_or_default() };
     let (stdout, stderr): (Vec<u8>, Vec<u8>) = (read(stdout).await, read(stderr).await);
 
-    let mut output = String::from_utf8_lossy(&stdout).replace("\r\n", "\n").trim_end().to_string();
-    let stderr = String::from_utf8_lossy(&stderr).replace("\r\n", "\n");
+    let mut output = strip_ansi(&String::from_utf8_lossy(&stdout).replace("\r\n", "\n")).trim_end().to_string();
+    let stderr = strip_ansi(&String::from_utf8_lossy(&stderr).replace("\r\n", "\n"));
     if !stderr.trim().is_empty() {
         if !output.is_empty() {
             output.push('\n');
@@ -625,6 +641,39 @@ mod tests {
         });
         let cancelled = execute("run_command", &json!({ "command": sleep }), &context).await;
         assert!(cancelled.content.contains("[stopped: cancelled]"));
+    }
+
+    #[tokio::test]
+    async fn command_output_reaches_the_model_without_terminal_colors() {
+        let (directory, context) = context();
+        std::fs::write(directory.path().join("marker.txt"), "x").unwrap();
+        let commands: &[&str] = if cfg!(windows) {
+            &[
+                // PowerShell 7 colors a table's header.
+                "Get-ChildItem | Select-Object Name, Length",
+                // ...and a native program's stderr redirected into the pipeline.
+                "cmd /c \"echo oops 1>&2\" 2>&1",
+                // A program that colors its output regardless.
+                "Write-Output \"$([char]27)[31mred$([char]27)[0m $([char]27)]8;;https://example.com$([char]7)link$([char]27)]8;;$([char]7)\"",
+            ]
+        } else {
+            &["printf '\\033[31mred\\033[0m \\033]8;;https://example.com\\007link\\033]8;;\\007\\n'"]
+        };
+        for command in commands {
+            let output = execute("run_command", &json!({ "command": command }), &context).await;
+            assert!(!output.content.contains('\u{1b}'), "{command}: {:?}", output.content);
+            assert!(!output.meta["output"].as_str().unwrap().contains('\u{1b}'), "{command}");
+        }
+        let colored = execute("run_command", &json!({ "command": commands.last().unwrap() }), &context).await;
+        assert_eq!(colored.content.trim(), "red link");
+    }
+
+    #[test]
+    fn strips_terminal_escape_sequences() {
+        assert_eq!(strip_ansi("\u{1b}[32;1mMode\u{1b}[0m plain"), "Mode plain");
+        assert_eq!(strip_ansi("\u{1b}]8;;https://x\u{1b}\\link\u{1b}]8;;\u{1b}\\"), "link");
+        assert_eq!(strip_ansi("a\u{1b}(Bb\u{1b}[?25lc"), "abc");
+        assert_eq!(strip_ansi("no escapes, 分身"), "no escapes, 分身");
     }
 
     #[test]
