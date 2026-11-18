@@ -12,6 +12,7 @@ pub mod openai_chat;
 pub mod openai_responses;
 pub mod policy;
 pub mod providers;
+pub mod safety;
 pub mod session;
 pub mod settings;
 pub mod sse;
