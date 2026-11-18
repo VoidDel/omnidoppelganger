@@ -695,7 +695,23 @@ pre,
   gap: 8px;
 }
 
+.main-header .spacer {
+  flex: 1;
+}
+
+.main-header .title-input {
+  min-height: 36px;
+  max-width: 320px;
+  font-weight: 700;
+}
+
+.sidebar input[type="search"] {
+  min-height: 36px;
+  font-size: 14px;
+}
+
 .composer-status .button.small,
+.main-header .button.small,
 .turn-said .button.small {
   min-height: 32px;
   padding: 0 12px;

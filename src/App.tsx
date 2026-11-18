@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer } from "react";
-import { Composer, Logo, Mountains, SidePanel, Sidebar } from "./components/Chrome";
+import { Composer, Logo, Mountains, SessionHeader, SidePanel, Sidebar } from "./components/Chrome";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
@@ -28,6 +28,7 @@ type Action =
   | { type: "opening"; id: string }
   | { type: "opened"; view: SessionView }
   | { type: "session"; item: SessionItem }
+  | { type: "deleted"; id: string }
   | { type: "event"; event: UiEvent }
   | { type: "queued"; text: string }
   | { type: "page"; page: State["page"] }
@@ -85,6 +86,10 @@ function reduce(state: State, action: Action): State {
           : [item, ...state.sessions],
       };
       return state.buffer.reduce(appendLog, opened);
+    }
+    case "deleted": {
+      const sessions = state.sessions.filter((session) => session.id !== action.id);
+      return state.activeId === action.id ? { ...state, sessions, activeId: null, events: [], stream: [], queued: [], status: "idle" } : { ...state, sessions };
     }
     case "session":
       return { ...state, sessions: state.sessions.map((session) => (session.id === action.item.id ? { ...action.item, status: session.status } : session)) };
@@ -204,6 +209,7 @@ export default function App() {
         onOpen={open}
         onNew={create}
         onSettings={() => dispatch({ type: "page", page: "settings" })}
+        onSearch={api.searchSessions}
       />
       <main className="main">
         {state.error && (
@@ -223,12 +229,11 @@ export default function App() {
           />
         ) : active ? (
           <>
-            <header className="main-header">
-              <h1>{active.title || "新分身"}</h1>
-              <span className="path" title={active.workspace}>
-                {active.workspace}
-              </span>
-            </header>
+            <SessionHeader
+              session={active}
+              onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
+              onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
+            />
             {rows.length === 0 && state.queued.length === 0 ? (
               <div className="empty">
                 <h1>分身已入驻这处洞府</h1>

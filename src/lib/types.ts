@@ -20,6 +20,7 @@ export type ContentBlock =
 
 export type SessionEvent =
   | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number } }
+  | { type: "session/renamed"; data: { title: string } }
   | { type: "turn/start"; data: { turn: number } }
   | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }

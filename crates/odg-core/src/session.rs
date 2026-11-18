@@ -16,8 +16,8 @@ use crate::policy::Mode;
 use crate::providers::DEFAULT_PROVIDER;
 
 /// The newest format this build reads, and the one it writes. Format 2 added
-/// the `provider` field to the header. Format 3 adds the `context/compacted`
-/// and `files/restored` events and the `tokens` field; a build from before
+/// the `provider` field to the header. Format 3 adds the `context/compacted`,
+/// `files/restored`, and `session/renamed` events and the `tokens` field; a build from before
 /// it refuses a format 3 session rather than misread it.
 pub const FORMAT_VERSION: u32 = 3;
 const FILE_NAME: &str = "session.v1.jsonl";
@@ -82,8 +82,23 @@ impl SessionStore {
     }
 
     fn path(&self, id: &str) -> Result<PathBuf, SessionError> {
+        // An id is one directory name; anything else could point outside the store.
+        let plain = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
         let path = self.root.join(id).join(FILE_NAME);
-        if path.is_file() { Ok(path) } else { Err(SessionError::NotFound(id.to_string())) }
+        if plain && path.is_file() { Ok(path) } else { Err(SessionError::NotFound(id.to_string())) }
+    }
+
+    /// Remove a session for good: its log and the file snapshots beside it.
+    /// The caller must have no open handle on it.
+    pub fn delete(&self, id: &str) -> Result<(), SessionError> {
+        let directory = self.path(id)?.parent().expect("the log sits in the session's directory").to_path_buf();
+        Ok(fs::remove_dir_all(directory)?)
+    }
+
+    /// Whether the session's title, workspace, or anything the user or the
+    /// agent said holds `query`; see [`matches`]. Reads only.
+    pub fn search(&self, id: &str, query: &str) -> bool {
+        self.path(id).ok().and_then(|path| parse(&path, &fs::read(&path).ok()?).ok()).is_some_and(|(events, _)| matches(&events, query))
     }
 
     /// Open a stored session for appending. A final line cut off by a crash is dropped.
@@ -403,7 +418,24 @@ pub fn transcript(events: &[Envelope], max_bytes: usize) -> String {
     format!("{}\n\n[... the middle of the conversation is omitted ...]\n\n{}", &whole[..head], &whole[tail..])
 }
 
-/// Fold a log into its list entry. The title is the first user message, cut to 40 characters.
+/// Whether the session's title, workspace, or anything the user or the agent
+/// said in it holds `query`, whatever the letter case. Tool calls and their
+/// results are not searched: they would match nearly any file name.
+pub fn matches(events: &[Envelope], query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    let holds = |text: &str| text.to_lowercase().contains(&query);
+    query.is_empty()
+        || events.iter().any(|envelope| match &envelope.event {
+            Event::SessionCreated { workspace, .. } => holds(workspace),
+            Event::SessionRenamed { title } => holds(title),
+            Event::UserMessage { text, .. } => holds(text),
+            Event::AssistantMessage { content, .. } => content.iter().any(|block| block["type"] == "text" && block["text"].as_str().is_some_and(holds)),
+            _ => false,
+        })
+}
+
+/// Fold a log into its list entry. The title is the name the user gave the
+/// session, or else its first message cut to 40 characters.
 pub fn summarize(events: &[Envelope]) -> SessionSummary {
     let (id, workspace, provider, model) = match &events[0].event {
         Event::SessionCreated { id, workspace, provider, model, .. } => {
@@ -411,20 +443,28 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         }
         _ => unreachable!("create and open both guarantee the header"),
     };
-    let title = events
-        .iter()
-        .find_map(|envelope| match &envelope.event {
-            Event::UserMessage { text, .. } => Some(text.split_whitespace().collect::<Vec<_>>().join(" ")),
-            _ => None,
-        })
-        .map(|text| {
-            let mut title: String = text.chars().take(40).collect();
-            if text.chars().count() > 40 {
-                title.push('…');
-            }
-            title
-        })
-        .unwrap_or_default();
+    let named = events.iter().rev().find_map(|envelope| match &envelope.event {
+        Event::SessionRenamed { title } => Some(title.clone()),
+        _ => None,
+    });
+    let first_message = || {
+        events
+            .iter()
+            .find_map(|envelope| match &envelope.event {
+                Event::UserMessage { text, .. } => Some(text.split_whitespace().collect::<Vec<_>>().join(" ")),
+                _ => None,
+            })
+            .map(|text| {
+                let mut title: String = text.chars().take(40).collect();
+                if text.chars().count() > 40 {
+                    title.push('…');
+                }
+                title
+            })
+            .unwrap_or_default()
+    };
+    // An empty name gives the session its first message back as title.
+    let title = named.filter(|title| !title.is_empty()).unwrap_or_else(first_message);
     let mut requested: HashSet<&str> = HashSet::new();
     for envelope in events {
         match &envelope.event {
@@ -588,6 +628,36 @@ mod tests {
                 { "type": "text", "text": "also b" },
             ] }),
         ]);
+    }
+
+    #[test]
+    fn renames_searches_and_deletes_a_session() {
+        let (directory, store) = store();
+        let mut log = store.create(Path::new("/work/Parser"), "anthropic", "m").unwrap();
+        let id = log.id().to_string();
+        log.append(Event::UserMessage { text: "fix the tokenizer".into(), steering: false, mode: Mode::Edit }).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "The lexer drops a byte." }), json!({ "type": "tool_use", "id": "t", "name": "read_file", "input": { "path": "secret.rs" } })])).unwrap();
+        assert_eq!(summarize(log.events()).title, "fix the tokenizer");
+        log.append(Event::SessionRenamed { title: "Lexer bug".into() }).unwrap();
+        assert_eq!(summarize(log.events()).title, "Lexer bug");
+
+        // The title, the workspace, and what was said match in any letter case; tool calls do not.
+        for (query, found) in [("lexer BUG", true), ("parser", true), ("TOKENIZER", true), ("drops a byte", true), ("  ", true), ("secret.rs", false), ("nothing", false)] {
+            assert_eq!(matches(log.events(), query), found, "{query}");
+            assert_eq!(store.search(&id, query), found, "{query}");
+        }
+        // Clearing the name gives the first message back.
+        log.append(Event::SessionRenamed { title: String::new() }).unwrap();
+        assert_eq!(summarize(log.events()).title, "fix the tokenizer");
+
+        drop(log);
+        // An id that is not a plain name never reaches the disk.
+        std::fs::write(directory.path().join("keep.txt"), "x").unwrap();
+        assert!(matches!(store.delete(".."), Err(SessionError::NotFound(_))));
+        assert!(matches!(store.delete(&format!("{id}/../{id}")), Err(SessionError::NotFound(_))));
+        store.delete(&id).unwrap();
+        assert!(store.ids().iter().all(|other| other != &id) && directory.path().join("keep.txt").exists());
+        assert!(matches!(store.open(&id), Err(SessionError::NotFound(_))));
     }
 
     #[test]

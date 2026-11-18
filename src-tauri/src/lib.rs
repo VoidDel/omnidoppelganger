@@ -155,6 +155,41 @@ async fn resolve_approval(app: State<'_, App>, id: String, tool_use_id: String, 
     Ok(app.live(&id)?.resolve_approval(&tool_use_id, decision))
 }
 
+#[tauri::command]
+async fn rename_session(app: State<'_, App>, id: String, title: String) -> Result<SessionItem, String> {
+    let session = app.live(&id)?;
+    session.rename(&title)?;
+    Ok(app.item(session.summary(), session.status()))
+}
+
+/// Remove a session and its file snapshots for good. Fails while its agent is working.
+#[tauri::command]
+async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
+    // The map stays locked so the session cannot be opened again halfway through.
+    let mut sessions = app.sessions.lock().unwrap();
+    if sessions.get(&id).is_some_and(|session| session.status() != Status::Idle) {
+        return Err("the agent of this session is working; stop it before deleting the session".to_string());
+    }
+    // Dropping the live session closes its handle on the log, which Windows needs before the file can go.
+    sessions.remove(&id);
+    app.store.delete(&id).map_err(|error| error.to_string())
+}
+
+/// Ids of the sessions whose title, workspace, or conversation holds `query`.
+#[tauri::command]
+async fn search_sessions(app: State<'_, App>, query: String) -> Result<Vec<String>, String> {
+    let live = app.sessions.lock().unwrap().clone();
+    Ok(app
+        .store
+        .ids()
+        .into_iter()
+        .filter(|id| match live.get(id) {
+            Some(session) => odg_core::session::matches(&session.snapshot(), &query),
+            None => app.store.search(id, &query),
+        })
+        .collect())
+}
+
 /// Switch what the session does without asking; the next tool call follows the new mode.
 #[tauri::command]
 async fn set_mode(app: State<'_, App>, id: String, mode: Mode) -> Result<SessionItem, String> {
@@ -236,6 +271,9 @@ pub fn run() {
             list_sessions,
             create_session,
             open_session,
+            rename_session,
+            delete_session,
+            search_sessions,
             send_message,
             resolve_approval,
             set_mode,

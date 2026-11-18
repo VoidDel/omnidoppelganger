@@ -183,6 +183,12 @@ impl<L: Llm> Session<L> {
         self.inner.mode()
     }
 
+    /// Name the session. An empty name gives it its first message back as title.
+    pub fn rename(&self, title: &str) -> Result<(), String> {
+        let title: String = title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+        self.inner.append(Event::SessionRenamed { title })
+    }
+
     /// Switch modes. The next tool call is decided by the new mode, and the
     /// next message records it, which is when the model learns of plan mode.
     pub fn set_mode(&self, mode: Mode) {

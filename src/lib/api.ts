@@ -8,6 +8,11 @@ export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
   createSession: (workspace: string) => invoke<SessionView>("create_session", { workspace }),
   openSession: (id: string) => invoke<SessionView>("open_session", { id }),
+  renameSession: (id: string, title: string) => invoke<SessionItem>("rename_session", { id, title }),
+  /** Remove the session and its file snapshots for good. Rejects while its agent is working. */
+  deleteSession: (id: string) => invoke<void>("delete_session", { id }),
+  /** Ids of the sessions whose title, folder, or conversation holds the text. */
+  searchSessions: (query: string) => invoke<string[]>("search_sessions", { query }),
   /** Resolves true when the message was queued behind a running turn. */
   sendMessage: (id: string, text: string) => invoke<boolean>("send_message", { id, text }),
   resolveApproval: (id: string, toolUseId: string, decision: Decision) =>

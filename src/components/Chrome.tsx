@@ -58,11 +58,31 @@ interface SidebarProps {
   onOpen: (id: string) => void;
   onNew: () => void;
   onSettings: () => void;
+  /** Ids of the sessions that hold the text, in their title, folder, or conversation. */
+  onSearch: (query: string) => Promise<string[]>;
 }
 
-export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSettings }: SidebarProps) {
+export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSettings, onSearch }: SidebarProps) {
+  const [query, setQuery] = useState("");
+  /** The sessions the search found; null while nothing is searched for. */
+  const [found, setFound] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (!query.trim()) {
+      setFound(null);
+      return;
+    }
+    // Wait for a pause in typing, and drop an answer that a later search has overtaken.
+    let current = true;
+    const timer = setTimeout(() => onSearch(query).then((ids) => current && setFound(new Set(ids)), () => current && setFound(new Set())), 200);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+    // A session that appears or is renamed while searching is searched too.
+  }, [query, sessions.length, onSearch]);
+  const shown = found ? sessions.filter((session) => found.has(session.id)) : sessions;
   const groups = new Map<string, SessionItem[]>();
-  for (const session of sessions) groups.set(session.workspace, [...(groups.get(session.workspace) ?? []), session]);
+  for (const session of shown) groups.set(session.workspace, [...(groups.get(session.workspace) ?? []), session]);
   return (
     <nav className="sidebar" aria-label="会话">
       <div className="brand">
@@ -75,7 +95,16 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSetti
         </svg>
         化出分身
       </button>
+      {sessions.length > 0 && (
+        <>
+          <label htmlFor="session-search" className="sr-only">
+            搜索会话
+          </label>
+          <input id="session-search" className="input" type="search" placeholder="搜标题、洞府、说过的话" value={query} onChange={(event) => setQuery(event.target.value)} />
+        </>
+      )}
       <div className="sidebar-scroll">
+        {found && shown.length === 0 && <p className="muted">没有哪个分身提过这个。</p>}
         {[...groups].map(([workspace, items]) => (
           <div className="group" key={workspace}>
             <div className="group-name" title={workspace}>
@@ -175,6 +204,75 @@ function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void
         </div>
       )}
     </div>
+  );
+}
+
+interface SessionHeaderProps {
+  session: SessionItem;
+  onRename: (title: string) => void;
+  onDelete: () => void;
+}
+
+/** The session's title and folder, with renaming and deleting. Deleting asks once more: it cannot be undone. */
+export function SessionHeader({ session, onRename, onDelete }: SessionHeaderProps) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  // Another session shown in the same header starts clean.
+  useEffect(() => {
+    setDraft(null);
+    setDeleting(false);
+  }, [session.id]);
+  const save = () => {
+    if (draft !== null && draft.trim() !== session.title) onRename(draft);
+    setDraft(null);
+  };
+  const busy = session.status !== "idle";
+  return (
+    <header className="main-header">
+      {draft === null ? (
+        <h1>{session.title || "新分身"}</h1>
+      ) : (
+        <input
+          className="input title-input"
+          aria-label="会话名"
+          autoFocus
+          value={draft}
+          placeholder="留空则用第一句话作名"
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={save}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing) save();
+            if (event.key === "Escape") setDraft(null);
+          }}
+        />
+      )}
+      <span className="path" title={session.workspace}>
+        {session.workspace}
+      </span>
+      <span className="spacer" />
+      {deleting ? (
+        <span className="undo-confirm">
+          这个分身的全部记录和改文件前存的原样都会删掉，找不回来。
+          <button type="button" className="button outline red small" onClick={onDelete}>
+            确认删除
+          </button>
+          <button type="button" className="button text small" onClick={() => setDeleting(false)}>
+            算了
+          </button>
+        </span>
+      ) : (
+        draft === null && (
+          <>
+            <button type="button" className="button text small" onClick={() => setDraft(session.title)}>
+              改名
+            </button>
+            <button type="button" className="button text small" disabled={busy} title={busy ? "分身还在运功，先收回它" : undefined} onClick={() => setDeleting(true)}>
+              删除
+            </button>
+          </>
+        )
+      )}
+    </header>
   );
 }
 

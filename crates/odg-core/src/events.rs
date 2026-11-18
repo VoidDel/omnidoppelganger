@@ -44,6 +44,9 @@ pub enum Event {
         model: String,
         format: u32,
     },
+    /// The user named the session. Until then its title is the first message. Since format 3.
+    #[serde(rename = "session/renamed")]
+    SessionRenamed { title: String },
     #[serde(rename = "turn/start")]
     TurnStart { turn: u64 },
     #[serde(rename = "user/message")]
