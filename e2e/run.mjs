@@ -65,7 +65,7 @@ const mock = await startMock([
     { tool: "mcp__notes__shout", input: { text: "hello from the server" } },
     { tool: "run_command", input: { command: "echo e2e-ok" } },
   ],
-  [{ text: "都办好了。\n\n```rust\nfn main() {}\n```\n\n```nosuchlanguage\nplain words\n```" }],
+  [{ text: "都办好了。\n\n| 指标 | 结果 |\n|---|---|\n| 通过 | 119 |\n\n```rust\nfn main() {}\n```\n\n```nosuchlanguage\nplain words\n```" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -164,6 +164,7 @@ try {
     plain: document.body.innerText.includes("plain words"),
   })`);
   check(code.keyword === "fn" && code.buttons === 2 && code.plain, "code blocks are highlighted and have copy buttons");
+  check((await page.evaluate(`[...document.querySelectorAll(".prose table th, .prose table td")].map((cell) => cell.textContent).join()`)) === "指标,结果,通过,119", "a table the model writes is shown as a table");
   await page.click("计划 0/2");
   await page.waitForText("分身的计划");
   check(await page.evaluate(`[...document.querySelectorAll(".todo")].map((item) => item.className).join()`) === "todo in_progress,todo pending", "the plan tab shows the to-do list");

@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { api } from "../lib/api";
+import remarkGfm from "remark-gfm";
 import { type Item, type Row, type StreamBlock, type ToolItem, mcpTool, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, Status } from "../lib/types";
 
@@ -51,7 +52,18 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
-const markdownParts = { a: Link, pre: CodeBlock };
+/** A table in its own box, so that a wide one scrolls sideways there instead of pushing the page out. */
+function Table({ children }: { children?: ReactNode }) {
+  return (
+    <div className="table-wrap">
+      <table>{children}</table>
+    </div>
+  );
+}
+
+const markdownParts = { a: Link, pre: CodeBlock, table: Table };
+// Tables, task lists, and struck-out words, as models write them.
+const markdownSyntax = [remarkGfm];
 // Colors code by its language; a block in a language it does not know stays plain.
 const markdownPlugins = [rehypeHighlight];
 
@@ -303,7 +315,7 @@ function ItemView({ item, mode, onDecide }: { item: Item; mode: Mode; onDecide: 
     case "text":
       return (
         <div className="prose">
-          <Markdown components={markdownParts} rehypePlugins={markdownPlugins}>
+          <Markdown components={markdownParts} remarkPlugins={markdownSyntax} rehypePlugins={markdownPlugins}>
             {item.text}
           </Markdown>
         </div>
@@ -358,7 +370,7 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
       {blocks.map((block) =>
         block.kind === "text" ? (
           <div key={block.index} className="prose">
-            <Markdown components={markdownParts} rehypePlugins={markdownPlugins}>
+            <Markdown components={markdownParts} remarkPlugins={markdownSyntax} rehypePlugins={markdownPlugins}>
               {block.text}
             </Markdown>
           </div>

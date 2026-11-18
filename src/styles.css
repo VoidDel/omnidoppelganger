@@ -652,6 +652,43 @@ pre,
   line-height: 22px;
   max-height: 320px;
   overflow: auto;
+.prose .table-wrap {
+  margin: 0 0 10px;
+  overflow-x: auto;
+}
+
+.prose table {
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.prose th,
+.prose td {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.prose th {
+  background: var(--removed);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.prose td {
+  background: var(--sheet);
+}
+
+/* A task list: the model's boxes, ticked or not, in place of bullets. */
+.prose li.task-list-item {
+  list-style: none;
+}
+
+.prose li.task-list-item input {
+  margin: 0 6px 0 -20px;
+}
+
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
