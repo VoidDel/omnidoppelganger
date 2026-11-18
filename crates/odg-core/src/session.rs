@@ -71,41 +71,19 @@ impl SessionStore {
         Ok(log)
     }
 
-    /// Open a stored session. A final line cut off by a crash is dropped.
-    pub fn open(&self, id: &str) -> Result<SessionLog, SessionError> {
+    fn path(&self, id: &str) -> Result<PathBuf, SessionError> {
         let path = self.root.join(id).join(FILE_NAME);
-        if !path.is_file() {
-            return Err(SessionError::NotFound(id.to_string()));
-        }
+        if path.is_file() { Ok(path) } else { Err(SessionError::NotFound(id.to_string())) }
+    }
+
+    /// Open a stored session for appending. A final line cut off by a crash is dropped.
+    ///
+    /// The caller must be the only writer: a log another handle is still
+    /// appending to can look cut off mid-line, and this truncates it.
+    pub fn open(&self, id: &str) -> Result<SessionLog, SessionError> {
+        let path = self.path(id)?;
         let bytes = fs::read(&path)?;
-        let mut events = Vec::new();
-        let mut good_bytes = 0usize;
-        let lines: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').collect();
-        for (index, line) in lines.iter().enumerate() {
-            let complete = line.ends_with(b"\n");
-            let parsed = std::str::from_utf8(line)
-                .map_err(|error| error.to_string())
-                .and_then(|text| serde_json::from_str::<Envelope>(text.trim_end()).map_err(|error| error.to_string()));
-            match parsed {
-                Ok(envelope) if complete => {
-                    events.push(envelope);
-                    good_bytes += line.len();
-                }
-                // Only the last line may be incomplete: the process died while writing it.
-                _ if index + 1 == lines.len() => break,
-                Ok(_) => unreachable!("only the last line can lack a newline"),
-                Err(message) => {
-                    return Err(SessionError::Damaged { path: path.display().to_string(), line: index + 1, message });
-                }
-            }
-        }
-        match events.first().map(|envelope| &envelope.event) {
-            Some(Event::SessionCreated { format, .. }) if *format > FORMAT_VERSION => {
-                return Err(SessionError::FutureFormat(*format));
-            }
-            Some(Event::SessionCreated { .. }) => {}
-            _ => return Err(SessionError::MissingHeader(path.display().to_string())),
-        }
+        let (events, good_bytes) = parse(&path, &bytes)?;
         if good_bytes < bytes.len() {
             // Windows refuses to truncate through an append-only handle.
             OpenOptions::new().write(true).open(&path)?.set_len(good_bytes as u64)?;
@@ -114,17 +92,56 @@ impl SessionStore {
         Ok(SessionLog { id: id.to_string(), path, events, file })
     }
 
-    /// Summaries of every readable session, most recently updated first.
-    pub fn list(&self) -> Vec<SessionSummary> {
+    /// Read a stored session's summary without changing its file, so it is
+    /// safe while another handle appends to the log.
+    pub fn peek(&self, id: &str) -> Result<SessionSummary, SessionError> {
+        let path = self.path(id)?;
+        let (events, _) = parse(&path, &fs::read(&path)?)?;
+        Ok(summarize(&events))
+    }
+
+    /// Ids of every stored session, in no particular order.
+    pub fn ids(&self) -> Vec<String> {
         let Ok(entries) = fs::read_dir(&self.root) else { return Vec::new() };
-        let mut summaries: Vec<SessionSummary> = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter_map(|id| self.open(&id).ok())
-            .map(|log| summarize(log.events()))
-            .collect();
+        entries.filter_map(Result::ok).filter_map(|entry| entry.file_name().into_string().ok()).collect()
+    }
+
+    /// Summaries of every readable session, most recently updated first. Reads only.
+    pub fn list(&self) -> Vec<SessionSummary> {
+        let mut summaries: Vec<SessionSummary> = self.ids().iter().filter_map(|id| self.peek(id).ok()).collect();
         summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         summaries
+    }
+}
+
+/// Parse a log's bytes into its events and the number of leading bytes that
+/// hold complete lines. Only the last line may be incomplete or unreadable:
+/// a writer was in the middle of it.
+fn parse(path: &Path, bytes: &[u8]) -> Result<(Vec<Envelope>, usize), SessionError> {
+    let mut events = Vec::new();
+    let mut good_bytes = 0usize;
+    let lines: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').collect();
+    for (index, line) in lines.iter().enumerate() {
+        let complete = line.ends_with(b"\n");
+        let parsed = std::str::from_utf8(line)
+            .map_err(|error| error.to_string())
+            .and_then(|text| serde_json::from_str::<Envelope>(text.trim_end()).map_err(|error| error.to_string()));
+        match parsed {
+            Ok(envelope) if complete => {
+                events.push(envelope);
+                good_bytes += line.len();
+            }
+            _ if index + 1 == lines.len() => break,
+            Ok(_) => unreachable!("only the last line can lack a newline"),
+            Err(message) => {
+                return Err(SessionError::Damaged { path: path.display().to_string(), line: index + 1, message });
+            }
+        }
+    }
+    match events.first().map(|envelope| &envelope.event) {
+        Some(Event::SessionCreated { format, .. }) if *format > FORMAT_VERSION => Err(SessionError::FutureFormat(*format)),
+        Some(Event::SessionCreated { .. }) => Ok((events, good_bytes)),
+        _ => Err(SessionError::MissingHeader(path.display().to_string())),
     }
 }
 
@@ -349,6 +366,26 @@ mod tests {
         reopened.append(Event::UserMessage { text: "again".into(), steering: false }).unwrap();
         drop(reopened);
         assert_eq!(store.open(&id).unwrap().events().len(), 3);
+    }
+
+    #[test]
+    fn listing_never_changes_a_log_that_is_being_written() {
+        let (_directory, store) = store();
+        let log = store.create(Path::new("/work"), "m").unwrap();
+        let (id, path) = (log.id().to_string(), log.path().to_path_buf());
+        // Another handle is halfway through appending a line.
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(br#"{"seq":2,"ts":"2026-01-01T00:00:00Z","type":"turn/st"#).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(store.peek(&id).unwrap().workspace, "/work");
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        // The writer finishes its line, and the log reads back whole.
+        file.write_all(b"art\",\"data\":{\"turn\":1}}\n").unwrap();
+        drop((file, log));
+        assert_eq!(store.open(&id).unwrap().events().len(), 2);
     }
 
     #[test]

@@ -58,24 +58,20 @@ struct SettingsView {
 impl App {
     fn wrap(&self, log: odg_core::session::SessionLog) -> Result<Session<AnthropicClient>, String> {
         let settings = self.settings.clone();
-        let session = Session::new(
-            log,
-            self.llm.clone(),
-            Arc::new(move || settings.load().effort),
-            self.events.clone(),
-            tokio::runtime::Handle::current(),
-        )
-        .map_err(|error| error.to_string())?;
-        self.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
-        Ok(session)
+        Session::new(log, self.llm.clone(), Arc::new(move || settings.load().effort), self.events.clone(), tokio::runtime::Handle::current())
+            .map_err(|error| error.to_string())
     }
 
-    /// The live session, opening it from disk on first use.
+    /// The live session, opening it from disk on first use. The map stays
+    /// locked while the log is opened, so a log never gets two writers.
     fn live(&self, id: &str) -> Result<Session<AnthropicClient>, String> {
-        if let Some(session) = self.sessions.lock().unwrap().get(id) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get(id) {
             return Ok(session.clone());
         }
-        self.wrap(self.store.open(id).map_err(|error| error.to_string())?)
+        let session = self.wrap(self.store.open(id).map_err(|error| error.to_string())?)?;
+        sessions.insert(id.to_string(), session.clone());
+        Ok(session)
     }
 
     fn settings_view(&self) -> SettingsView {
@@ -96,16 +92,22 @@ fn view(session: &Session<AnthropicClient>) -> SessionView {
 #[tauri::command]
 async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionItem>, String> {
     let live = app.sessions.lock().unwrap().clone();
-    Ok(app
+    // Live sessions are summarized from memory: their logs may be mid-append.
+    let mut items: Vec<SessionItem> = app
         .store
-        .list()
+        .ids()
         .into_iter()
-        .map(|summary| match live.get(&summary.id) {
-            Some(session) => SessionItem { summary: session.summary(), status: session.status() },
+        .filter_map(|id| match live.get(&id) {
+            Some(session) => Some(SessionItem { summary: session.summary(), status: session.status() }),
             // A stored session has no running turn: one left open by a crash is closed when it is opened.
-            None => SessionItem { summary: SessionSummary { turn_open: false, awaiting_approval: false, ..summary }, status: Status::Idle },
+            None => app.store.peek(&id).ok().map(|summary| SessionItem {
+                summary: SessionSummary { turn_open: false, awaiting_approval: false, ..summary },
+                status: Status::Idle,
+            }),
         })
-        .collect())
+        .collect();
+    items.sort_by(|a, b| b.summary.updated_at.cmp(&a.summary.updated_at));
+    Ok(items)
 }
 
 #[tauri::command]
@@ -115,7 +117,9 @@ async fn create_session(app: State<'_, App>, workspace: String) -> Result<Sessio
         return Err(format!("{} is not a directory", workspace.display()));
     }
     let log = app.store.create(&workspace, &app.settings.load().model).map_err(|error| error.to_string())?;
-    Ok(view(&app.wrap(log)?))
+    let session = app.wrap(log)?;
+    app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
+    Ok(view(&session))
 }
 
 #[tauri::command]
