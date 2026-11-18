@@ -167,6 +167,14 @@ export default function App() {
   };
   const saved = (request: Promise<SettingsView>) => request.then((settings) => dispatch({ type: "settings", settings }), fail);
 
+  const providers = state.settings?.providers ?? [];
+  const defaultProvider = providers.find((provider) => provider.id === state.settings?.settings.provider);
+  const missingKey = !!defaultProvider && state.settings?.keys[defaultProvider.id]?.source === "none";
+  /** What the composer shows for a session's model: the provider's name too, unless it is Anthropic. */
+  const modelLabel = (session: SessionItem) => {
+    const provider = providers.find((known) => known.id === session.provider);
+    return provider && provider.id !== "anthropic" ? `${provider.name} · ${session.model}` : session.model;
+  };
   const inSettings = state.page === "settings";
   const showPanel = !inSettings && !!active;
   return (
@@ -192,8 +200,8 @@ export default function App() {
           <SettingsPage
             view={state.settings}
             onSave={(settings) => saved(api.saveSettings(settings))}
-            onSaveKey={(key) => saved(api.saveApiKey(key))}
-            onDeleteKey={() => saved(api.deleteApiKey())}
+            onSaveKey={(provider, key) => saved(api.saveApiKey(provider, key))}
+            onDeleteKey={(provider) => saved(api.deleteApiKey(provider))}
           />
         ) : active ? (
           <>
@@ -211,7 +219,7 @@ export default function App() {
             ) : (
               <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} onDecide={decide} />
             )}
-            <Composer status={state.status} model={active.model} onSend={send} onStop={() => api.cancelTurn(active.id).catch(fail)} />
+            <Composer status={state.status} model={modelLabel(active)} onSend={send} onStop={() => api.cancelTurn(active.id).catch(fail)} />
           </>
         ) : (
           <>
@@ -220,12 +228,12 @@ export default function App() {
             <Logo size={64} />
             <h1>选一处洞府，化出分身来干活</h1>
             <p>白纸是本尊的法旨，黄符是分身的手笔，见朱砂处候本尊定夺。</p>
-            {state.settings?.key.source === "none" && <p className="muted">还没有 Anthropic 密钥，分身出不了关，先到设置里填上。</p>}
+            {missingKey && <p className="muted">还没有 {defaultProvider?.name} 的密钥，分身出不了关，先到设置里填上。</p>}
             <div className="actions">
               <button type="button" className="button primary" onClick={create}>
                 选文件夹作洞府，化出分身
               </button>
-              {state.settings?.key.source === "none" && (
+              {missingKey && (
                 <button type="button" className="button outline" onClick={() => dispatch({ type: "page", page: "settings" })}>
                   去填密钥
                 </button>

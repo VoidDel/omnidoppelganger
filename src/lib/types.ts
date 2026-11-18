@@ -10,7 +10,7 @@ export type ContentBlock =
   | { type: "fallback"; from: { model: string }; to: { model: string } };
 
 export type SessionEvent =
-  | { type: "session/created"; data: { id: string; workspace: string; model: string; format: number } }
+  | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number } }
   | { type: "turn/start"; data: { turn: number } }
   | { type: "user/message"; data: { text: string; steering: boolean } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string } }
@@ -51,6 +51,8 @@ export interface SessionItem {
   id: string;
   title: string;
   workspace: string;
+  /** Id of the model provider the session runs on. */
+  provider: string;
   model: string;
   created_at: string;
   updated_at: string;
@@ -75,15 +77,35 @@ export type UiEvent =
   | { kind: "status"; session_id: string; status: Status };
 
 export interface Settings {
+  /** Provider and model of sessions created from now on. */
+  provider: string;
   model: string;
   effort: string;
   theme: "system" | "light" | "dark";
+  /** Addresses that replace a provider's default, by provider id. */
+  base_urls: Record<string, string>;
+}
+
+export interface KeyStatus {
+  source: "saved" | "env" | "none";
+  preview: string | null;
+}
+
+/** A model provider as the core describes it. Pairs are `[id, display name]` and `[address, what it is]`. */
+export interface Provider {
+  id: string;
+  name: string;
+  protocol: "anthropic" | "responses" | { chat: string };
+  base_url: string;
+  other_urls: [string, string][];
+  key_env: string | null;
+  models: [string, string][];
 }
 
 export interface SettingsView {
   settings: Settings;
-  key: { source: "saved" | "env" | "none"; preview: string | null };
-  models: { id: string; name: string }[];
+  keys: Record<string, KeyStatus>;
+  providers: Provider[];
   efforts: string[];
   home: string;
 }

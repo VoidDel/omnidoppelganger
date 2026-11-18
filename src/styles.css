@@ -1018,6 +1018,42 @@ pre,
   font-size: 17px;
 }
 
+/* One provider in settings: its name and key state, then the key and address fields. */
+.provider-card {
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.provider-card .provider {
+  padding: 0;
+  border-top: 0;
+}
+
+.provider-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px 16px;
+}
+
+.provider-fields .input {
+  max-width: none;
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline .input {
+  flex: 1;
+  min-width: 0;
+}
+
 .papers {
   margin: 0;
   padding: 0;

@@ -15,8 +15,8 @@ export const api = {
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (settings: Settings) => invoke<SettingsView>("save_settings", { settings }),
-  saveApiKey: (key: string) => invoke<SettingsView>("save_api_key", { key }),
-  deleteApiKey: () => invoke<SettingsView>("delete_api_key"),
+  saveApiKey: (provider: string, key: string) => invoke<SettingsView>("save_api_key", { provider, key }),
+  deleteApiKey: (provider: string) => invoke<SettingsView>("delete_api_key", { provider }),
   /** Ask for a folder with the system dialog. Resolves null when the user closes it. */
   pickWorkspace: async (): Promise<string | null> => {
     const picked = await open({ directory: true, multiple: false, title: "选一个文件夹作洞府" });
@@ -24,5 +24,5 @@ export const api = {
   },
   /** Open an http(s) or mailto link in the system's default app, never in the app window. */
   openExternal: (url: string) => openUrl(url),
-  onSessionEvent:(handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),
+  onSessionEvent: (handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),
 };
