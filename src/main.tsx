@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "@fontsource-variable/noto-serif-sc/wght.css";
-import "@fontsource/ma-shan-zheng/400.css";
+import "lxgw-wenkai-lite-webfont/lxgwwenkailite-regular.css";
+import "lxgw-wenkai-lite-webfont/lxgwwenkailite-bold.css";
 import "@fontsource/atkinson-hyperlegible-mono/400.css";
 import "@fontsource/atkinson-hyperlegible-mono/700.css";
 import "./styles.css";

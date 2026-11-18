@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer } from "react";
-import { Composer, Mark, Mountains, SidePanel, Sidebar } from "./components/Chrome";
+import { Composer, Logo, Mountains, SidePanel, Sidebar } from "./components/Chrome";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
@@ -216,13 +216,13 @@ export default function App() {
           <>
             <Mountains />
             <div className="empty">
-            <Mark size={56} />
-            <h1>选一处洞府，召分身出来干活</h1>
+            <Logo size={64} />
+            <h1>选一处洞府，化出分身来干活</h1>
             <p>白纸是本尊的法旨，黄符是分身的手笔，见朱砂处候本尊定夺。</p>
             {state.settings?.key.source === "none" && <p className="muted">还没有 Anthropic 密钥，分身出不了关，先到设置里填上。</p>}
             <div className="actions">
               <button type="button" className="button primary" onClick={create}>
-                选文件夹作洞府，召出分身
+                选文件夹作洞府，化出分身
               </button>
               {state.settings?.key.source === "none" && (
                 <button type="button" className="button outline" onClick={() => dispatch({ type: "page", page: "settings" })}>

@@ -14,13 +14,36 @@ export function Mountains() {
   );
 }
 
-/** Two sheets: aligned when idle, sliding apart while the 分身 works, cinnabar underneath while it waits for a decision. */
+// One circle split along an S into two halves, drawn around the origin with radius 10.
+// SELF is 本尊's half, DOUBLE is the 分身's: together they close into the whole circle.
+const SELF = "M0-10A10 10 0 0 1 0 10A5 5 0 0 0 0 0A5 5 0 0 1 0-10Z";
+const DOUBLE = "M0-10A10 10 0 0 0 0 10A5 5 0 0 0 0 0A5 5 0 0 1 0-10Z";
+
+/**
+ * The 分身 mark as a status sign: the halves rest together when idle, the 分身's half
+ * drifts out and back while it works, and it turns cinnabar and holds apart while it
+ * waits for a decision.
+ */
 export function Mark({ state = "idle", size = 26 }: { state?: "idle" | "working" | "waiting"; size?: number }) {
-  const under = state === "waiting" ? { x: 8, y: 8, fill: "var(--cinnabar)" } : { x: 6, y: 6, fill: "var(--talisman-under)" };
   return (
     <svg className={`mark ${state}`} aria-hidden="true" width={size} height={size} viewBox="0 0 26 26">
-      <rect className="under" x={under.x} y={under.y} width="16" height="16" rx="2" fill={under.fill} />
-      <rect x="2.75" y="2.75" width="16" height="16" rx="2" fill="var(--mark-front)" stroke="var(--ink)" strokeWidth="1.5" />
+      <g transform="translate(13 13) rotate(30)">
+        <path className="self" d={SELF} />
+        <path className="double" d={DOUBLE} />
+      </g>
+    </svg>
+  );
+}
+
+/** The logo: the split circle stamped on a cinnabar seal. Used where the product names itself. */
+export function Logo({ size = 26 }: { size?: number }) {
+  return (
+    <svg className="logo" aria-hidden="true" width={size} height={size} viewBox="0 0 26 26">
+      <rect className="plate" x="1" y="1" width="24" height="24" rx="5.5" />
+      <g transform="translate(13 13) rotate(30) scale(0.74)">
+        <path className="self" d={SELF} transform="translate(0.7 0)" />
+        <path className="double" d={DOUBLE} transform="translate(-0.7 0)" />
+      </g>
     </svg>
   );
 }
@@ -42,14 +65,14 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSetti
   return (
     <nav className="sidebar" aria-label="会话">
       <div className="brand">
-        <Mark />
+        <Logo />
         <span>OmniDoppelganger</span>
       </div>
       <button type="button" className="button primary" onClick={onNew}>
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
           <path d="M8 3v10M3 8h10" />
         </svg>
-        召出分身
+        化出分身
       </button>
       <div className="sidebar-scroll">
         {[...groups].map(([workspace, items]) => (

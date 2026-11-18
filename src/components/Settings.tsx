@@ -39,7 +39,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
                 </option>
               ))}
             </select>
-            <p className="hint">已经召出的分身，继续修它当时的功法。</p>
+            <p className="hint">已经化出的分身，继续修它当时的功法。</p>
           </div>
           <fieldset className="field">
             <legend>分身境界</legend>
