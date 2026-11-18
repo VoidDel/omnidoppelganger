@@ -447,7 +447,8 @@ pre,
   min-height: 100%;
 }
 
-/* The token on its way from the send button to the message it turns into: see lib/flight.ts. */
+/* The order on its way from the send button to the message it turns into: the token melting
+   where it stood, then a point of light and the tail behind it. See lib/flight.ts. */
 .token-flight {
   position: fixed;
   z-index: 60;
@@ -457,8 +458,21 @@ pre,
 
 .token-flight,
 .token-flight > div,
-.token-flight .token {
+.token-flight .token,
+.mote {
   will-change: transform, opacity;
+}
+
+/* A point of light, centred on the corner of its box: bright at the heart, and around it the
+   colour of the token it came from, which the flight sets as --mote. */
+.mote {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fffdf2 0 24%, var(--mote, var(--jade)) 50%, transparent 72%);
+  box-shadow: 0 0 14px 5px color-mix(in srgb, var(--mote, var(--jade)) 60%, transparent);
 }
 
 /* 本尊's words stay at the top of the view while their turn scrolls beneath them, so it is
@@ -489,6 +503,19 @@ pre,
 
 .turn-said .shots {
   justify-content: flex-end;
+}
+
+/* A word on its way to a 分身 at work, under the message it is working on. */
+.said-queued {
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.turn-said .said-queued .original {
+  max-height: 18vh;
 }
 
 .said-foot {
@@ -1003,6 +1030,40 @@ pre,
   font-family: var(--text);
   font-size: 15px;
   font-weight: 700;
+}
+
+/* Three tokens, three colours: jade for an order, gold for a word sent after it, and cinnabar
+   for the one that stops the 分身, as every decision 本尊 stamps is. */
+.token.word .plate {
+  fill: var(--gold);
+}
+
+.token.halt .plate {
+  fill: var(--cinnabar);
+}
+
+.token.halt .rim {
+  stroke: var(--cinnabar-on);
+}
+
+.token.halt text {
+  fill: var(--cinnabar-on);
+}
+
+/* A token coming onto the row is set down there: the one that stops, after the one it replaces has melted away. */
+.token-button {
+  animation: set-down 220ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+
+.token-button.stop {
+  animation-delay: 140ms;
+}
+
+@keyframes set-down {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
 }
 
 .token-button:hover:not(:disabled) {
@@ -1781,6 +1842,7 @@ button.select-button svg {
   .original,
   .token-button {
     transition: none;
+    animation: none;
   }
 }
 

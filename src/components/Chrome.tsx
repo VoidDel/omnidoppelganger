@@ -673,23 +673,35 @@ export function Composer(props: ComposerProps) {
             <span className="sr-only">附图</span>
           </button>
           <span className="spacer" />
-          {busy && (
-            <button type="button" className="button outline" onClick={onStop}>
-              收回分身
+          {/* A 令牌, the tablet an order is sent with: 令 on jade for an order, 音 on gold for a word to a 分身 at work.
+              While the 分身 works the token is away with the order, and shows only when there is a word to send after it. */}
+          {(!busy || !empty) && (
+            <button type="button" key={busy ? "word" : "order"} ref={sender} className="token-button" disabled={empty} title={busy ? "传音：分身做完这一步就会听到" : "传令（回车）"} onClick={submit}>
+            <svg className={`token ${busy ? "word" : ""}`} aria-hidden="true" width="32" height="40" viewBox="0 0 32 40">
+                <path className="plate" d="M7 1.5h18l5.5 5.5v21L16 38.5 1.5 28V7Z" />
+                <path className="rim" d="M8.2 4.5h15.6l3.7 3.7v18.3L16 34.8 4.5 26.5V8.2Z" />
+                <circle className="hole" cx="16" cy="8.6" r="1.7" />
+                <text x="16" y="26" textAnchor="middle">
+                  {busy ? "音" : "令"}
+                </text>
+              </svg>
+              <span className="sr-only">{busy ? "传音" : "传令"}</span>
             </button>
           )}
-          {/* A 令牌, the tablet an order is sent with: 令 on it for an order, 音 for a word to a 分身 at work. */}
-          <button type="button" ref={sender} className="token-button" disabled={empty} title={busy ? "传音：分身做完这一步就会听到" : "传令（回车）"} onClick={submit}>
-            <svg className="token" aria-hidden="true" width="32" height="40" viewBox="0 0 32 40">
-              <path className="plate" d="M7 1.5h18l5.5 5.5v21L16 38.5 1.5 28V7Z" />
-              <path className="rim" d="M8.2 4.5h15.6l3.7 3.7v18.3L16 34.8 4.5 26.5V8.2Z" />
-              <circle className="hole" cx="16" cy="8.6" r="1.7" />
-              <text x="16" y="26" textAnchor="middle">
-                {busy ? "音" : "令"}
-              </text>
-            </svg>
-            <span className="sr-only">{busy ? "传音" : "传令"}</span>
-          </button>
+          {/* In the token's place while the 分身 works: a token of cinnabar, the order that calls it back. */}
+          {busy && (
+            <button type="button" className="token-button stop" title="收回分身：停下这一轮" onClick={onStop}>
+              <svg className="token halt" aria-hidden="true" width="32" height="40" viewBox="0 0 32 40">
+                <path className="plate" d="M7 1.5h18l5.5 5.5v21L16 38.5 1.5 28V7Z" />
+                <path className="rim" d="M8.2 4.5h15.6l3.7 3.7v18.3L16 34.8 4.5 26.5V8.2Z" />
+                <circle className="hole" cx="16" cy="8.6" r="1.7" />
+                <text x="16" y="26" textAnchor="middle">
+                  止
+                </text>
+              </svg>
+              <span className="sr-only">收回分身</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

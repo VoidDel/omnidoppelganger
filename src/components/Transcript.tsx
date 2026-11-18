@@ -430,6 +430,18 @@ function UndoButton({ turn, onUndo }: { turn: number; onUndo: (turn: number) => 
   );
 }
 
+/** A message sent while the 分身 works, which it has not heard yet. */
+function Queued({ text }: { text: string }) {
+  return (
+    <div className="said-queued">
+      <div className="original queued">{text || "（图）"}</div>
+      <div className="said-foot">
+        <span className="said-meta">传音在途，分身做完这一步就会听到</span>
+      </div>
+    </div>
+  );
+}
+
 export function Transcript({ rows, stream, queued, status, mode, onDecide, onUndo }: Props) {
   const undoable = undoableTurns(rows);
   const scroller = useRef<HTMLDivElement>(null);
@@ -488,6 +500,8 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
                   </span>
                 </span>
               </div>
+              {/* Words sent after the order while the 分身 works wait here, under what it is working on, until it hears them. */}
+              {last && queued.map((text, at) => <Queued key={at} text={text} />)}
             </div>
             <div className="turn-did">
               {row.items.map((item, at) => (
@@ -498,17 +512,16 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
           </section>
         );
       })}
-      {queued.map((text, index) => (
-        <section key={`queued-${index}`} className="turn">
+      {/* With no turn on the page yet to wait under, they stand by themselves. */}
+      {rows.length === 0 && queued.length > 0 && (
+        <section className="turn">
           <div className="turn-said">
-            <div className="original queued">{text || "（图）"}</div>
-            <div className="said-foot">
-              <span className="said-meta">传音在途，分身做完这一步就会听到</span>
-            </div>
+            {queued.map((text, at) => (
+              <Queued key={at} text={text} />
+            ))}
           </div>
-          <div className="turn-did" />
         </section>
-      ))}
+      )}
     </div>
   );
 }
