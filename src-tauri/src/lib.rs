@@ -40,6 +40,8 @@ struct SessionItem {
     status: Status,
     /// The number of tokens at which this session's conversation is compacted.
     context_limit: u64,
+    /// The Git branch checked out in the workspace, when it is a repository.
+    branch: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -74,7 +76,8 @@ impl App {
 
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
         let context_limit = self.settings.load().context_limit_for(&summary.provider, &summary.model);
-        SessionItem { summary, status, context_limit }
+        let branch = odg_core::tools::git_branch(std::path::Path::new(&summary.workspace));
+        SessionItem { summary, status, context_limit, branch }
     }
 
     /// The live session, opening it from disk on first use. The map stays

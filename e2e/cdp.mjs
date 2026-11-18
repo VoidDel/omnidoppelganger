@@ -60,8 +60,16 @@ export async function connect(port, timeoutMs = 60_000) {
     }
   };
 
-  /** A page expression finding the first button whose text contains `text`. */
-  const button = (text) => `[...document.querySelectorAll("button")].find((b) => b.textContent.includes(${JSON.stringify(text)}) && !b.disabled)`;
+  /**
+   * A page expression finding the enabled button with this text: one whose
+   * text is exactly `text` if there is one, else the first that contains it.
+   * Exact first, so "改动" finds the tab and not "撤回这一轮起的改动".
+   */
+  const button = (text) => {
+    const wanted = JSON.stringify(text);
+    const enabled = `[...document.querySelectorAll("button")].filter((b) => !b.disabled)`;
+    return `(${enabled}.find((b) => b.textContent.trim() === ${wanted}) ?? ${enabled}.find((b) => b.textContent.includes(${wanted})))`;
+  };
 
   return {
     evaluate,

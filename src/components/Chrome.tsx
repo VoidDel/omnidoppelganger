@@ -249,6 +249,17 @@ export function SessionHeader({ session, onRename, onDelete }: SessionHeaderProp
       <span className="path" title={session.workspace}>
         {session.workspace}
       </span>
+      {session.branch && (
+        <span className="branch" title="洞府里检出的 Git 分支">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <circle cx="4.5" cy="3.5" r="1.7" />
+            <circle cx="4.5" cy="12.5" r="1.7" />
+            <circle cx="11.5" cy="5.5" r="1.7" />
+            <path d="M4.5 5.2v5.6M11.5 7.2c0 2.6-7 1.6-7 3.6" />
+          </svg>
+          {session.branch}
+        </span>
+      )}
       <span className="spacer" />
       {deleting ? (
         <span className="undo-confirm">

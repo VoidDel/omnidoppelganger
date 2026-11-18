@@ -274,6 +274,24 @@ pub fn in_git_directory(workspace: &Path, path: &Path) -> bool {
     below.components().any(|component| component.as_os_str().to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git")))
 }
 
+/// The branch checked out in the workspace, read from Git's own files so no
+/// program has to run: a branch name, the first seven characters of the
+/// commit when no branch is checked out, or `None` outside a repository.
+pub fn git_branch(workspace: &Path) -> Option<String> {
+    let mut git = workspace.join(".git");
+    if git.is_file() {
+        // A linked worktree or a submodule: the file points at the real directory.
+        let pointer = std::fs::read_to_string(&git).ok()?;
+        git = workspace.join(pointer.trim().strip_prefix("gitdir:")?.trim());
+    }
+    let head = std::fs::read_to_string(git.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_string()),
+        None => (head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit())).then(|| head[..7].to_string()),
+    }
+}
+
 fn display(workspace: &Path, path: &Path) -> String {
     path.strip_prefix(workspace).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
@@ -1117,6 +1135,26 @@ mod tests {
             assert!(execute("update_todos", &bad, &context).await.is_error, "{bad}");
         }
         assert!(execute("update_todos", &json!({ "todos": [] }), &context).await.content.starts_with("The list has 0 items"));
+    }
+
+    #[test]
+    fn reads_the_checked_out_branch_from_gits_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("project");
+        std::fs::create_dir_all(workspace.join(".git")).unwrap();
+        assert_eq!(git_branch(directory.path()), None);
+        std::fs::write(workspace.join(".git/HEAD"), "ref: refs/heads/feat/providers\n").unwrap();
+        assert_eq!(git_branch(&workspace).as_deref(), Some("feat/providers"));
+        // No branch checked out: the commit, shortened.
+        std::fs::write(workspace.join(".git/HEAD"), "7cbbed4a96c5740b9387e85f1f58fabcdef01234\n").unwrap();
+        assert_eq!(git_branch(&workspace).as_deref(), Some("7cbbed4"));
+        // A linked worktree keeps a file that points at its real directory.
+        let worktree = directory.path().join("worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(workspace.join(".git/worktrees/w")).unwrap();
+        std::fs::write(workspace.join(".git/worktrees/w/HEAD"), "ref: refs/heads/side\n").unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", workspace.join(".git/worktrees/w").display())).unwrap();
+        assert_eq!(git_branch(&worktree).as_deref(), Some("side"));
     }
 
     #[test]

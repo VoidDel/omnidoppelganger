@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
 import { api } from "../lib/api";
 import { type Item, type Row, type StreamBlock, type ToolItem, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, Status } from "../lib/types";
@@ -27,7 +28,32 @@ function Link({ href, children }: { href?: string; children?: ReactNode }) {
   );
 }
 
-const markdownParts = { a: Link };
+/** A code block from the model's text, with a button that copies it. */
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const block = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(block.current?.textContent ?? "").then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      (error) => console.error(error),
+    );
+  };
+  return (
+    <div className="code-block">
+      <button type="button" className="button text small copy" onClick={copy}>
+        {copied ? "已复制" : "复制"}
+      </button>
+      <pre ref={block}>{children}</pre>
+    </div>
+  );
+}
+
+const markdownParts = { a: Link, pre: CodeBlock };
+// Colors code by its language; a block in a language it does not know stays plain.
+const markdownPlugins = [rehypeHighlight];
 
 const time =(ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -244,7 +270,9 @@ function ItemView({ item, mode, onDecide }: { item: Item; mode: Mode; onDecide: 
     case "text":
       return (
         <div className="prose">
-          <Markdown components={markdownParts}>{item.text}</Markdown>
+          <Markdown components={markdownParts} rehypePlugins={markdownPlugins}>
+            {item.text}
+          </Markdown>
         </div>
       );
     case "thinking":
@@ -297,7 +325,9 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
       {blocks.map((block) =>
         block.kind === "text" ? (
           <div key={block.index} className="prose">
-            <Markdown components={markdownParts}>{block.text}</Markdown>
+            <Markdown components={markdownParts} rehypePlugins={markdownPlugins}>
+              {block.text}
+            </Markdown>
           </div>
         ) : block.kind === "thinking" ? (
           <div key={block.index} className="thinking">

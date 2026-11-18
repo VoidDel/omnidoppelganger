@@ -460,6 +460,80 @@ pre,
   overflow-x: auto;
 }
 
+/* A code block and its copy button, which shows when the block is pointed at or focused. */
+.code-block {
+  position: relative;
+}
+
+.code-block .copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  background: var(--sheet);
+  opacity: 0;
+}
+
+.code-block:hover .copy,
+.code-block .copy:focus-visible {
+  opacity: 1;
+}
+
+/* Code colors from the palette's own inks, so they follow the theme: cinnabar
+   for keywords, jade for text, talisman gold for numbers and names. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-meta {
+  color: var(--cinnabar-ink);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--jade-tint-ink);
+}
+
+.hljs-number,
+.hljs-attr,
+.hljs-attribute,
+.hljs-symbol,
+.hljs-variable {
+  color: var(--talisman-ink);
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-type,
+.hljs-built_in {
+  font-weight: 700;
+}
+
+.hljs-deletion {
+  color: var(--cinnabar-ink);
+}
+
+.main-header .branch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
 .prose :not(pre) > code {
   padding: 1px 4px;
   border-radius: 3px;

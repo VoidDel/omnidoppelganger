@@ -55,10 +55,11 @@ const hello = join(workspace, "hello.txt");
 const mock = await startMock([
   [
     { text: "我先建文件，再跑命令。" },
+    { tool: "update_todos", input: { todos: [{ text: "建文件", status: "in_progress" }, { text: "跑命令", status: "pending" }] } },
     { tool: "edit_file", input: { path: "hello.txt", old_string: "", new_string: "你好，分身\n" } },
     { tool: "run_command", input: { command: "echo e2e-ok" } },
   ],
-  [{ text: "都办好了。" }],
+  [{ text: "都办好了。\n\n```rust\nfn main() {}\n```\n\n```nosuchlanguage\nplain words\n```" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -95,8 +96,20 @@ try {
   check(mock.requests.length === 2 && mock.requests[0].headers["x-api-key"] === "e2e-key", "the model was asked twice, with the key");
   check(first.messages[0].content.some((block) => block.text === "建一个 hello.txt，再跑个命令"), "the first request carries the user's message");
   const results = second.messages[second.messages.length - 1].content.filter((block) => block.type === "tool_result");
-  check(results.length === 2 && results.every((result) => !result.is_error), "the second request carries both tool results");
-  check(results[1].content.includes("e2e-ok") && !results[1].content.includes("\u001b"), "the command's output reached the model without color codes");
+  check(results.length === 3 && results.every((result) => !result.is_error), "the second request carries all three tool results");
+  check(results[2].content.includes("e2e-ok") && !results[2].content.includes("\u001b"), "the command's output reached the model without color codes");
+
+  // The model's code is colored by language, each block can be copied, and an unknown language stays plain.
+  const code = await page.evaluate(`({
+    keyword: document.querySelector(".prose .hljs-keyword")?.textContent,
+    buttons: document.querySelectorAll(".code-block .copy").length,
+    plain: document.body.innerText.includes("plain words"),
+  })`);
+  check(code.keyword === "fn" && code.buttons === 2 && code.plain, "code blocks are highlighted and have copy buttons");
+  await page.click("计划 0/2");
+  await page.waitForText("分身的计划");
+  check(await page.evaluate(`[...document.querySelectorAll(".todo")].map((item) => item.className).join()`) === "todo in_progress,todo pending", "the plan tab shows the to-do list");
+  await page.click("改动");
 
   await page.waitForText("hello.txt");
   await page.click("撤回这一轮起的改动");

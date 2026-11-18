@@ -91,6 +91,8 @@ export interface SessionItem {
   mode: Mode;
   /** The number of tokens at which the conversation is compacted into a summary. */
   context_limit: number;
+  /** The Git branch checked out in the workspace; null when it is not a repository. */
+  branch: string | null;
   created_at: string;
   updated_at: string;
   turn_open: boolean;
