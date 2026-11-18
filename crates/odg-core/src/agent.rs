@@ -333,7 +333,13 @@ impl<L: Llm> Inner<L> {
                 continue;
             }
 
-            for (id, name, input) in calls {
+            // Reads that ran while an earlier call of this message waited for approval.
+            let mut ran_early: HashSet<String> = HashSet::new();
+            for (index, (id, name, input)) in calls.iter().enumerate() {
+                let (id, name, input) = (id.clone(), name.clone(), input.clone());
+                if ran_early.contains(&id) {
+                    continue;
+                }
                 if cancel.is_cancelled() {
                     return Ok("cancelled");
                 }
@@ -359,6 +365,22 @@ impl<L: Llm> Inner<L> {
                         grant: grant.clone(),
                     })?;
                     self.set_status(Status::WaitingApproval);
+                    // The reads behind this call need no answer from the user, so they run
+                    // while the user decides. They stop at an edit: a read after one may
+                    // be there to read what the edit wrote.
+                    for (later_id, later_name, later_input) in &calls[index + 1..] {
+                        if later_name == "edit_file" {
+                            break;
+                        }
+                        let reads = matches!(later_name.as_str(), "read_file" | "search") && !message.invalid_tool_inputs.contains_key(later_id);
+                        if !reads || policy::check(self.mode(), later_name, later_input, &self.workspace) != Verdict::Allow {
+                            continue;
+                        }
+                        let context = ToolContext { workspace: self.workspace.clone(), cancel: cancel.clone() };
+                        let output = tools::execute(later_name, later_input, &context).await;
+                        self.tool_result(later_id, later_name, output.content, output.is_error, output.meta)?;
+                        ran_early.insert(later_id.clone());
+                    }
                     let decision = tokio::select! {
                         decision = receiver => decision.unwrap_or(Decision::Deny),
                         () = cancel.cancelled() => return Ok("cancelled"),
@@ -612,6 +634,46 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn reads_run_while_an_earlier_call_waits_for_approval_but_not_past_an_edit() {
+        let mut fixture = fixture(ScriptedLlm::new(
+            vec![
+                calls(&[
+                    ("t1", "run_command", json!({ "command": "echo one" })),
+                    ("t2", "read_file", json!({ "path": "a.txt" })),
+                    ("t3", "search", json!({ "pattern": "hello" })),
+                    ("t4", "edit_file", json!({ "path": "a.txt", "old_string": "hello", "new_string": "changed" })),
+                    ("t5", "read_file", json!({ "path": "a.txt" })),
+                ]),
+                says("done"),
+            ],
+            None,
+        ));
+        std::fs::write(fixture.workspace.path().join("a.txt"), "hello\n").unwrap();
+        fixture.session.send("go".into());
+        let asked = fixture.approval().await;
+
+        // The command still waits, and the two reads behind it have their results already.
+        fixture.until(|event| matches!(event, UiEvent::Log { envelope, .. } if matches!(&envelope.event, Event::ToolResult { tool_use_id, .. } if tool_use_id == "t3"))).await;
+        assert_eq!(fixture.session.status(), Status::WaitingApproval);
+        let early: Vec<String> = fixture.results().into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(early, ["t2", "t3"]);
+
+        assert!(fixture.session.resolve_approval(&asked, Decision::AllowOnce));
+        fixture.idle().await;
+        let results = fixture.results();
+        assert_eq!(results.iter().map(|(id, is_error, _)| (id.as_str(), *is_error)).collect::<Vec<_>>(), [
+            ("t2", false),
+            ("t3", false),
+            ("t1", false),
+            ("t4", false),
+            ("t5", false),
+        ]);
+        // The read behind the edit waited for it, and saw what it wrote.
+        assert!(results[0].2.contains("hello") && results[4].2.contains("changed"), "{results:?}");
+        assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn cancelling_during_an_approval_answers_every_tool_call() {
         let mut fixture = fixture(ScriptedLlm::new(
             vec![calls(&[("t1", "run_command", json!({ "command": "echo one" })), ("t2", "read_file", json!({ "path": "a.txt" }))])],
@@ -624,7 +686,8 @@ mod tests {
 
         assert_eq!(fixture.end().0, "cancelled");
         let results = fixture.results();
-        assert_eq!(results.iter().map(|(id, is_error, _)| (id.as_str(), *is_error)).collect::<Vec<_>>(), [("t1", true), ("t2", true)]);
+        // The read ran while the command waited (a.txt does not exist); the command never ran.
+        assert_eq!(results.iter().map(|(id, is_error, _)| (id.as_str(), *is_error)).collect::<Vec<_>>(), [("t2", true), ("t1", true)]);
         assert!(!fixture.session.summary().turn_open);
         // The log is a valid conversation again: the next turn can start.
         assert_eq!(derive_messages(&fixture.session.snapshot()).len(), 3);
