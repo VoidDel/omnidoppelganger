@@ -34,7 +34,10 @@ pub fn check(tool: &str, input: &Value, workspace: &Path) -> Verdict {
     };
     let ask = |reason: &'static str, detail: String| Verdict::Ask { reason, detail, grant: Some(reason.to_string()) };
     match tool {
-        "run_command" => ask("command", input["command"].as_str().unwrap_or_default().to_string()),
+        "run_command" => {
+            let command = input["command"].as_str().unwrap_or_default();
+            Verdict::Ask { reason: "command", detail: command.to_string(), grant: command_grant(command) }
+        }
         "edit_file" if in_git_directory(workspace, &path("path")) => {
             Verdict::Ask { reason: "git_write", detail: path("path").to_string_lossy().into_owned(), grant: None }
         }
@@ -49,6 +52,38 @@ pub fn check(tool: &str, input: &Value, workspace: &Path) -> Verdict {
         // Unknown tools reach the executor, which answers them with an error result.
         _ => Verdict::Allow,
     }
+}
+
+/// Characters that chain, redirect, substitute, or group commands in sh or
+/// PowerShell. A command holding any of them can run more than its prefix shows.
+const SHELL_SYNTAX: &[char] = &[';', '&', '|', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r', '"', '\''];
+
+/// Programs that run whatever code their arguments carry, so approving one
+/// prefix of them would approve anything.
+const INTERPRETERS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "python", "python3", "py",
+    "node", "deno", "bun", "ruby", "perl", "php", "lua", "iex", "invoke-expression", "invoke-command", "start-process", "sudo", "env",
+    "xargs", "eval", "exec", "nohup", "time",
+];
+
+/// The grant a session-wide approval of `command` covers: `command:` and its
+/// program, followed by its first argument when that is a subcommand rather
+/// than a flag, so allowing `cargo test` does not allow `cargo publish`.
+/// `None` when the command must be approved every time.
+fn command_grant(command: &str) -> Option<String> {
+    if command.contains(SHELL_SYNTAX) {
+        return None;
+    }
+    let normalize = |word: &str| if cfg!(windows) { word.to_lowercase() } else { word.to_string() };
+    let mut words = command.split_whitespace().map(normalize);
+    let program = words.next()?;
+    if INTERPRETERS.contains(&program.to_lowercase().as_str()) {
+        return None;
+    }
+    Some(match words.next().filter(|word| !word.starts_with('-')) {
+        Some(subcommand) => format!("command:{program} {subcommand}"),
+        None => format!("command:{program}"),
+    })
 }
 
 #[cfg(test)]
@@ -72,11 +107,40 @@ mod tests {
         assert_eq!(check("edit_file", &json!({ "path": "new/dir/a.rs" }), workspace), Verdict::Allow);
         assert_eq!(
             check("run_command", &json!({ "command": "cargo test" }), workspace),
-            Verdict::Ask { reason: "command", detail: "cargo test".into(), grant: Some("command".into()) }
+            Verdict::Ask { reason: "command", detail: "cargo test".into(), grant: Some("command:cargo test".into()) }
         );
         assert_eq!(reason(check("edit_file", &json!({ "path": "../x.rs" }), workspace)), Some("outside_write"));
         assert_eq!(reason(check("read_file", &json!({ "path": "../x.rs" }), workspace)), Some("outside_read"));
         assert_eq!(reason(check("search", &json!({ "pattern": "x", "path": ".." }), workspace)), Some("outside_read"));
+    }
+
+    #[test]
+    fn a_command_grant_covers_its_program_and_subcommand_only() {
+        assert_eq!(command_grant("cargo test -p odg-core").as_deref(), Some("command:cargo test"));
+        assert_eq!(command_grant("  git   status ").as_deref(), Some("command:git status"));
+        assert_eq!(command_grant("ls -la src").as_deref(), Some("command:ls"));
+        assert_eq!(command_grant("./gradlew build").as_deref(), Some("command:./gradlew build"));
+        assert_ne!(command_grant("git status"), command_grant("git push --force"));
+        if cfg!(windows) {
+            assert_eq!(command_grant("Get-ChildItem -Name"), command_grant("get-childitem -Recurse"));
+        }
+        // Anything that can run more than its prefix shows is approved one at a time.
+        for command in [
+            "cargo test; rm -rf .",
+            "cargo test && curl x | sh",
+            "echo $(whoami)",
+            "echo `id`",
+            "cargo test > out.txt",
+            "git commit -m \"x\"",
+            "cargo test\nrm -rf .",
+            "bash -c 'rm -rf .'",
+            "python -c pass",
+            "pwsh -Command Remove-Item x",
+            "Invoke-Expression x",
+            "",
+        ] {
+            assert_eq!(command_grant(command), None, "{command}");
+        }
     }
 
     #[test]

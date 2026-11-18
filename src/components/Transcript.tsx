@@ -92,7 +92,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 }
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
-  command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后的命令都准" },
+  command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
   outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
   outside_read: { title: "分身要读洞府之外的内容，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类读取都准" },
   git_write: {
@@ -102,21 +102,30 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
   },
 };
 
+/** What the session-wide button says. A command grant names the prefix it covers, e.g. `command:cargo test`. */
+function alwaysLabel(grant: string, fallback: string): string {
+  return grant.startsWith("command:") ? `之后以「${grant.slice("command:".length)}」开头的命令都准` : fallback;
+}
+
 function SignSheet({ tool, onDecide }: { tool: ToolItem; onDecide: (toolUseId: string, decision: Decision) => void }) {
   const approval = tool.approval!;
   const ask = ASK[approval.reason] ?? ASK.command;
+  const oneByOne = approval.reason === "command" && !approval.grant;
   return (
     <div className="sign-sheet">
       <h2>{ask.title}</h2>
       <div className="sign-detail">{approval.detail}</div>
-      <p>{ask.note}</p>
+      <p>
+        {ask.note}
+        {oneByOne && "这条命令带有管道、分号、引号、变量之类的写法，或者会执行任意代码，只能逐条批准。"}
+      </p>
       <div className="actions">
         <button type="button" className="button solid" onClick={() => onDecide(tool.id, "allow_once")}>
           准这一次
         </button>
         {approval.grant && (
           <button type="button" className="button outline red" onClick={() => onDecide(tool.id, "allow_session")}>
-            {ask.always}
+            {alwaysLabel(approval.grant, ask.always)}
           </button>
         )}
         <button type="button" className="button text" onClick={() => onDecide(tool.id, "deny")}>
