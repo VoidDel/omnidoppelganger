@@ -11,6 +11,7 @@ use odg_core::agent::{Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
 use odg_core::events::{Decision, Envelope, Image, check_images};
 use odg_core::grants::{GrantStore, Grants};
+use odg_core::mcp::{McpHub, ServerStatus};
 use odg_core::policy::Mode;
 use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider, vision};
 use odg_core::session::{SessionStore, SessionSummary};
@@ -27,6 +28,8 @@ struct App {
     settings: Arc<SettingsStore>,
     /// Command approvals given for good, by workspace.
     grants: Arc<GrantStore>,
+    /// The MCP servers the user configured, shared by every session.
+    mcp: Arc<McpHub>,
     llm: Arc<Router>,
     /// Sessions opened since the app started. A session stays here so its turn keeps running while another is shown.
     sessions: Mutex<HashMap<String, Session<Router>>>,
@@ -63,6 +66,9 @@ struct SettingsView {
     home: String,
     /// The command approvals given for good, by workspace.
     grants: Grants,
+    /// The text of `mcp.json`, and how each server it lists stands.
+    mcp_config: String,
+    mcp_servers: Vec<ServerStatus>,
 }
 
 impl App {
@@ -73,7 +79,8 @@ impl App {
             let settings = settings.load();
             Tuning { context_limit: settings.context_limit_for(&provider, &model), context_window: context_window(&provider, &model), effort: settings.effort }
         };
-        Session::new(log, self.llm.clone(), Arc::new(tuning), self.grants.clone(), self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
+        let (llm, grants, mcp) = (self.llm.clone(), self.grants.clone(), Some(self.mcp.clone()));
+        Session::new(log, llm, Arc::new(tuning), grants, mcp, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
     }
 
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
@@ -103,6 +110,8 @@ impl App {
             efforts: EFFORTS,
             home: settings::home().display().to_string(),
             grants: self.grants.all(),
+            mcp_config: self.mcp.config_text(),
+            mcp_servers: self.mcp.statuses(),
         }
     }
 }
@@ -257,6 +266,13 @@ fn save_settings(app: State<'_, App>, settings: Settings) -> Result<SettingsView
     Ok(app.settings_view())
 }
 
+/// Check and save the MCP server list, then connect to what it lists.
+#[tauri::command]
+fn save_mcp_config(app: State<'_, App>, config: String) -> Result<SettingsView, String> {
+    app.mcp.save_config(&config)?;
+    Ok(app.settings_view())
+}
+
 /// Take back a command approval that was given for good.
 #[tauri::command]
 fn revoke_grant(app: State<'_, App>, workspace: String, grant: String) -> Result<SettingsView, String> {
@@ -304,7 +320,10 @@ pub fn run() {
             });
 
             let grants = Arc::new(GrantStore::new(home.join("grants.json")));
-            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, llm, sessions: Mutex::new(HashMap::new()), events });
+            let mcp = Arc::new(McpHub::new(home.join("mcp.json"), tauri::async_runtime::handle().inner().clone()));
+            // Servers connect in the background; a session uses whichever are ready when it asks the model.
+            mcp.reload();
+            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, mcp, llm, sessions: Mutex::new(HashMap::new()), events });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -322,6 +341,7 @@ pub fn run() {
             cancel_turn,
             get_settings,
             save_settings,
+            save_mcp_config,
             revoke_grant,
             save_api_key,
             delete_api_key,
@@ -331,9 +351,12 @@ pub fn run() {
         .run(|handle, event| {
             // Commands left running in the background must not outlive the app.
             if let tauri::RunEvent::Exit = event {
-                for session in handle.state::<App>().sessions.lock().unwrap().values() {
+                let app = handle.state::<App>();
+                for session in app.sessions.lock().unwrap().values() {
                     session.kill_jobs();
                 }
+                // Ends the servers started as processes.
+                app.mcp.shutdown();
             }
         });
 }

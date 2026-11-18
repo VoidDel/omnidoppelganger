@@ -37,6 +37,12 @@ export interface Row {
   items: Item[];
 }
 
+/** The server and the tool a call to an MCP server's tool names, from `mcp__<server>__<tool>`; null for a built-in tool. */
+export function mcpTool(name: string): { server: string; tool: string } | null {
+  const match = /^mcp__(.+?)__(.+)$/.exec(name);
+  return match ? { server: match[1], tool: match[2] } : null;
+}
+
 /** Whether a tool changes files: its result carries a diff and can be undone. */
 export const editsFiles = (name: string) => name === "edit_file" || name === "write_file";
 

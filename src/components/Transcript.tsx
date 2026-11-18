@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { api } from "../lib/api";
-import { type Item, type Row, type StreamBlock, type ToolItem, shortCount, undoableTurns } from "../lib/fold";
+import { type Item, type Row, type StreamBlock, type ToolItem, mcpTool, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, Status } from "../lib/types";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
@@ -91,7 +91,8 @@ function sealOf(tool: ToolItem): string {
     case "update_todos":
       return "谋";
     default:
-      return "术";
+      // A tool of an MCP server: an instrument borrowed from outside.
+      return mcpTool(tool.name) ? "器" : "术";
   }
 }
 
@@ -144,8 +145,11 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       const current = list.find((todo) => todo.status === "in_progress")?.text ?? "";
       return { verb: "记计划", target: current, outcome: waiting || (result!.isError ? "没记成" : `${list.filter((todo) => todo.status === "done").length} / ${list.length} 已办`) };
     }
-    default:
+    default: {
+      const borrowed = mcpTool(tool.name);
+      if (borrowed) return { verb: `法器 ${borrowed.server}`, target: borrowed.tool, outcome: waiting || (result!.isError ? "失败" : "完成") };
       return { verb: tool.name, target: "", outcome: waiting || (result!.isError ? "失败" : "完成") };
+    }
   }
 }
 
@@ -155,8 +159,10 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const hunk = result && !result.isError ? result.meta?.hunk : undefined;
   const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "stop_command" ? result?.meta?.output : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
+  // What an MCP tool returned is its whole result, so it is kept one click away like a command's output.
+  const returned = result?.meta?.mcp && !result.isError ? result.content : undefined;
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
-  const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : failure ? <pre>{failure}</pre> : null;
+  const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
   const [open, setOpen] = useState(() => !!hunk || !!failure || (!!output && !!result?.isError));
   return (
     <div className="did">
@@ -177,6 +183,11 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
+  mcp: {
+    title: "分身要动用一件外来的法器（MCP 工具），请本尊定夺",
+    note: "这件法器来自你在设置里接入的 MCP 服务，它具体做什么由那个服务决定，所以无论哪种禁制都要先请示。",
+    always: "之后这件法器都准",
+  },
   edit: { title: "分身要改一个文件，请本尊定夺", note: "眼下的禁制是步步请示，每次改文件都先请示。整文件写入时，下面是它要写进去的全部内容。", always: "之后改文件都准" },
   outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
   outside_read: { title: "分身要读洞府之外的内容，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类读取都准" },
@@ -233,7 +244,7 @@ function SignSheet({ tool, mode, onDecide }: SignSheetProps) {
             {alwaysLabel(approval.grant, ask.always)}
           </button>
         )}
-        {approval.grant?.startsWith("command:") && (
+        {(approval.grant?.startsWith("command:") || approval.grant?.startsWith("mcp:")) && (
           <button type="button" className="button outline red" title="重启应用之后也算数，可以在设置里撤销" onClick={() => onDecide(tool.id, "allow_always")}>
             这处洞府里永远都准
           </button>

@@ -9,6 +9,9 @@
 //! - plan: edits are refused, so the model explores and proposes; every command asks.
 //! - auto: edits inside the workspace run, and so does a command that passes
 //!   [`crate::safety`]; any other command asks.
+//!
+//! A tool of an MCP server asks in every mode: what it does is the server's
+//! business, and nothing here can tell a harmless one from another.
 
 use std::path::Path;
 
@@ -46,7 +49,7 @@ pub enum Verdict {
     /// Not run and not asked about: the tool gets this message as an error result.
     Refuse(&'static str),
     Ask {
-        /// The rule that asked: `command`, `edit`, `outside_read`, `outside_write`, or `git_write`.
+        /// The rule that asked: `command`, `edit`, `mcp`, `outside_read`, `outside_write`, or `git_write`.
         reason: &'static str,
         /// The command or path shown to the user.
         detail: String,
@@ -85,6 +88,12 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             Some(path) => ask("outside_read", path),
             None => Verdict::Allow,
         },
+        tool if crate::mcp::split_name(tool).is_some() => {
+            let (server, name) = crate::mcp::split_name(tool).unwrap_or_default();
+            // What the user is shown: whose tool, which one, and with what, cut to a readable length.
+            let arguments: String = input.to_string().chars().take(600).collect();
+            Verdict::Ask { reason: "mcp", detail: format!("{server} · {name}  {arguments}"), grant: Some(format!("mcp:{tool}")) }
+        }
         // Unknown tools reach the executor, which answers them with an error result.
         _ => Verdict::Allow,
     }
@@ -165,6 +174,11 @@ mod tests {
             // Reading inside runs and reading outside asks, whatever the mode.
             assert_eq!(decide(mode, "read_file", &read), None, "{mode:?}");
             assert_eq!(decide(mode, "read_file", &json!({ "path": "../x" })), Some("outside_read"), "{mode:?}");
+        }
+        // A tool of an MCP server asks whatever the mode, and its grant names that one tool.
+        for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
+            let asked = super::check(mode, "mcp__files__read_file", &json!({ "path": "a" }), workspace);
+            assert_eq!(asked, Verdict::Ask { reason: "mcp", detail: "files · read_file  {\"path\":\"a\"}".into(), grant: Some("mcp:mcp__files__read_file".into()) });
         }
         // A session-wide approval of edits in manual mode covers every later edit.
         assert!(matches!(super::check(Mode::Manual, "edit_file", &edit, workspace), Verdict::Ask { grant: Some(grant), .. } if grant == "edit"));

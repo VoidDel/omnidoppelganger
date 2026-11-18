@@ -10,6 +10,7 @@ pub mod fsutil;
 pub mod grants;
 pub mod jobs;
 pub mod llm;
+pub mod mcp;
 pub mod openai_chat;
 pub mod openai_responses;
 pub mod policy;

@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::events::{Decision, Envelope, Event, Image};
 use crate::grants::GrantStore;
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
+use crate::mcp::McpHub;
 use crate::policy::{self, Mode, Verdict};
 use crate::providers;
 use crate::session::{SessionLog, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, summarize, transcript, unanswered_tool_uses};
@@ -85,6 +86,8 @@ struct Inner<L: Llm> {
     jobs: Arc<crate::jobs::Jobs>,
     /// Approvals given for good, shared by every session.
     kept: Arc<GrantStore>,
+    /// The MCP servers whose tools join the built-in ones; shared by every session.
+    mcp: Option<Arc<McpHub>>,
     provider: String,
     model: String,
     llm: Arc<L>,
@@ -145,6 +148,7 @@ impl<L: Llm> Session<L> {
         llm: Arc<L>,
         tuning: TuningSource,
         kept: Arc<GrantStore>,
+        mcp: Option<Arc<McpHub>>,
         events: UnboundedSender<UiEvent>,
         runtime: tokio::runtime::Handle,
     ) -> std::io::Result<Self> {
@@ -159,6 +163,7 @@ impl<L: Llm> Session<L> {
                 snapshots,
                 jobs: Arc::default(),
                 kept,
+                mcp,
                 provider,
                 model,
                 llm,
@@ -328,7 +333,22 @@ impl<L: Llm> Inner<L> {
     }
 
     fn tool_context(&self, cancel: &CancellationToken) -> ToolContext {
-        ToolContext { workspace: self.workspace.clone(), cancel: cancel.clone(), snapshots: Some(self.snapshots.clone()), jobs: Some(self.jobs.clone()) }
+        ToolContext {
+            workspace: self.workspace.clone(),
+            cancel: cancel.clone(),
+            snapshots: Some(self.snapshots.clone()),
+            jobs: Some(self.jobs.clone()),
+            mcp: self.mcp.clone(),
+        }
+    }
+
+    /// The tools of the next request: the built-in ones, then those of the MCP servers connected right now.
+    fn tool_specs(&self) -> Vec<Value> {
+        let mut specs = tools::specs();
+        if let Some(hub) = &self.mcp {
+            specs.extend(hub.specs());
+        }
+        specs
     }
 
     fn tool_result(&self, tool_use_id: &str, tool: &str, content: String, is_error: bool, meta: Value) -> Result<(), String> {
@@ -414,7 +434,7 @@ impl<L: Llm> Inner<L> {
                 system: self.system(),
                 messages,
                 // The same tools keep the cached prefix valid; a transcript has no use for them.
-                tools: if from_transcript { Vec::new() } else { tools::specs() },
+                tools: if from_transcript { Vec::new() } else { self.tool_specs() },
                 effort: tuning.effort.clone(),
             };
             // The summary is not the agent speaking to the user, so its fragments are not shown.
@@ -480,7 +500,7 @@ impl<L: Llm> Inner<L> {
                 model: self.model.clone(),
                 system: self.system(),
                 messages: derive_messages(self.log.lock().unwrap().events()),
-                tools: tools::specs(),
+                tools: self.tool_specs(),
                 effort: tuning.effort.clone(),
             };
             let (sender, mut receiver) = unbounded_channel::<StreamDelta>();
@@ -684,7 +704,7 @@ mod tests {
             Tuning { effort: "high".to_string(), context_limit, context_window }
         };
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let session = Session::new(log, llm.clone(), Arc::new(tuning), kept, sender, tokio::runtime::Handle::current()).unwrap();
+        let session = Session::new(log, llm.clone(), Arc::new(tuning), kept, None, sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, limits, workspace, session, llm, events }
     }
 
@@ -803,7 +823,7 @@ mod tests {
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
-        let later = Session::new(log, fixture.llm.clone(), tuning, Arc::new(GrantStore::new(home.join("grants.json"))), sender, tokio::runtime::Handle::current()).unwrap();
+        let later = Session::new(log, fixture.llm.clone(), tuning, Arc::new(GrantStore::new(home.join("grants.json"))), None, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
         fixture.events = events;
         fixture.session.send("again".into());
@@ -975,6 +995,45 @@ mod tests {
         // The picture sent alone is a message of that one block.
         assert_eq!(requests[1].messages[2]["content"], json!([block("c2Vjb25k")]));
         assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_mcp_servers_tools_join_the_request_and_ask_before_each_call() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let hub = Arc::new(McpHub::new(home.path().join("mcp.json"), tokio::runtime::Handle::current()));
+        hub.insert("echo", crate::mcp::testing::echo_server().await);
+        let echo = |id: &str, text: &str| calls(&[(id, "mcp__echo__echo", json!({ "text": text }))]);
+        let llm = ScriptedLlm::new(vec![echo("t1", "one"), echo("t2", "two"), echo("t3", "three"), says("done")], None);
+        let log = SessionStore::new(home.path()).create(workspace.path(), "anthropic", "scripted").unwrap();
+        let (sender, events) = unbounded_channel();
+        let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
+        let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
+        let session = Session::new(log, llm.clone(), tuning, kept.clone(), Some(hub), sender, tokio::runtime::Handle::current()).unwrap();
+        // Auto mode lets safe commands through, but never a server's tool.
+        session.set_mode(Mode::Auto);
+        let mut fixture = Fixture { _home: home, limits: Arc::default(), workspace, session, llm, events };
+        fixture.session.send("use the echo tool".into());
+
+        // Declined: the server is never called. Then allowed for good, which covers the third call.
+        let first = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&first, Decision::Deny));
+        let second = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&second, Decision::AllowAlways));
+        fixture.idle().await;
+
+        let results = fixture.results();
+        assert_eq!(results[0], ("t1".to_string(), true, "The user declined this action.".to_string()));
+        assert!(!results[1].1 && results[1].2.starts_with("two\n"), "{:?}", results[1]);
+        assert!(!results[2].1 && results[2].2.starts_with("three\n"));
+        assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "approval/requested").count(), 2);
+        assert!(kept.allows(fixture.workspace.path(), "mcp:mcp__echo__echo"));
+
+        // The model was offered the server's tools after the built-in ones.
+        let requests = fixture.llm.requests.lock().unwrap();
+        let names: Vec<&str> = requests[0].tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
+        assert_eq!(names[names.len() - 2..], ["mcp__echo__echo", "mcp__echo__fail_now"]);
+        assert_eq!(names.len(), tools::specs().len() + 2);
     }
 
     /// The texts of a request's messages, one list per message.

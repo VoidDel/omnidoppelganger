@@ -189,6 +189,9 @@ export default function App() {
   // The last turn in plan mode ended with the 分身's answer, not a stop or an error.
   const lastItems = rows[rows.length - 1]?.items ?? [];
   const planReady = active?.mode === "plan" && lastItems[lastItems.length - 1]?.kind === "text";
+  const refreshSettings = useCallback(() => {
+    api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
+  }, [fail]);
   const saved = (request: Promise<SettingsView>) => request.then((settings) => dispatch({ type: "settings", settings }), fail);
 
   const providers = state.settings?.providers ?? [];
@@ -232,6 +235,16 @@ export default function App() {
             onSaveKey={(provider, key) => saved(api.saveApiKey(provider, key))}
             onDeleteKey={(provider) => saved(api.deleteApiKey(provider))}
             onRevoke={(workspace, grant) => saved(api.revokeGrant(workspace, grant))}
+            onRefresh={refreshSettings}
+            onSaveMcp={(config) =>
+              api.saveMcpConfig(config).then(
+                (settings) => {
+                  dispatch({ type: "settings", settings });
+                  return null;
+                },
+                (error) => String(error),
+              )
+            }
           />
         ) : active ? (
           <>

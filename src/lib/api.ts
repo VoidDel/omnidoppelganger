@@ -23,6 +23,8 @@ export const api = {
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (settings: Settings) => invoke<SettingsView>("save_settings", { settings }),
+  /** Check and save the MCP server list, then connect to what it names. Rejects when the text is not a valid list. */
+  saveMcpConfig: (config: string) => invoke<SettingsView>("save_mcp_config", { config }),
   /** Take back a command approval that was given for good. */
   revokeGrant: (workspace: string, grant: string) => invoke<SettingsView>("revoke_grant", { workspace, grant }),
   saveApiKey: (provider: string, key: string) => invoke<SettingsView>("save_api_key", { provider, key }),

@@ -941,6 +941,20 @@ button.select-button svg {
   color: var(--ink-2);
 }
 
+.input.config {
+  max-width: 100%;
+  min-height: 160px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  resize: vertical;
+  white-space: pre;
+}
+
+.hint.failed,
+.who .failed {
+  color: var(--cinnabar-ink);
+}
+
 /* ---------- side panel ---------- */
 
 .todos {

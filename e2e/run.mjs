@@ -10,7 +10,7 @@
 // already open.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,9 @@ const scratch = mkdtempSync(join(tmpdir(), "odg-e2e-"));
 const home = join(scratch, "home");
 const workspace = join(scratch, "workspace");
 mkdirSync(workspace);
+// An MCP server for the app to start as a process and speak to over its standard streams.
+mkdirSync(home);
+writeFileSync(join(home, "mcp.json"), JSON.stringify({ mcpServers: { notes: { command: "node", args: [join(root, "e2e", "mcp-server.mjs")] } } }));
 const hello = join(workspace, "hello.txt");
 
 // What the stand-in model says: create a file and run a command, then wrap up.
@@ -59,6 +62,7 @@ const mock = await startMock([
     { text: "我先建文件，再跑命令。" },
     { tool: "update_todos", input: { todos: [{ text: "建文件", status: "in_progress" }, { text: "跑命令", status: "pending" }] } },
     { tool: "edit_file", input: { path: "hello.txt", old_string: "", new_string: "你好，分身\n" } },
+    { tool: "mcp__notes__shout", input: { text: "hello from the server" } },
     { tool: "run_command", input: { command: "echo e2e-ok" } },
   ],
   [{ text: "都办好了。\n\n```rust\nfn main() {}\n```\n\n```nosuchlanguage\nplain words\n```" }],
@@ -81,6 +85,11 @@ let page;
 try {
   console.log("A turn with a file edit, a command that asks, and an undo");
   page = await connect(DEBUG_PORT);
+  // The app starts the MCP server in the background; its tool is offered to the model once it is connected.
+  // (Asked through the app's own bridge to its backend, which the page gets a moment after it opens.)
+  const connected = `window.__TAURI_INTERNALS__?.invoke("get_settings").then((view) => view.mcp_servers[0]?.state === "ready" && view.mcp_servers[0].tools[0] === "shout")`;
+  await page.waitFor("the MCP server to connect", connected);
+  step("the app started the MCP server from mcp.json and listed its tool");
   await page.click("选文件夹作洞府，化出分身");
   // Paste a screenshot the way the system clipboard delivers one: a file on a paste event.
   await page.waitFor("the message box", `!!document.querySelector("#composer-input")`);
@@ -96,7 +105,11 @@ try {
   step("a session opens in the workspace and takes a message with a pasted screenshot");
 
   // The edit runs on its own in the default mode; the command waits for the user.
-  await page.waitForText("准这一次");
+  // The server's tool asks first, whatever the mode; then the command does.
+  await page.waitForText("外来的法器");
+  await page.waitForText("notes · shout");
+  await page.click("准这一次");
+  await page.waitForText("分身要运行一条命令");
   check(readFileSync(hello, "utf8") === "你好，分身\n", "the edit wrote hello.txt while the command still waited for approval");
   await page.click("准这一次");
   await page.waitForText("都办好了。");
@@ -110,8 +123,9 @@ try {
   check(sent.type === "image" && sent.source.media_type === "image/png" && sent.source.data === PNG, "the pasted screenshot reached the model unchanged, ahead of the text");
   check((await page.evaluate(`document.querySelectorAll(".shots img").length`)) === 1, "the transcript shows the screenshot with the message");
   const results = second.messages[second.messages.length - 1].content.filter((block) => block.type === "tool_result");
-  check(results.length === 3 && results.every((result) => !result.is_error), "the second request carries all three tool results");
-  check(results[2].content.includes("e2e-ok") && !results[2].content.includes("\u001b"), "the command's output reached the model without color codes");
+  check(results.length === 4 && results.every((result) => !result.is_error), "the second request carries all four tool results");
+  check(first.tools.some((tool) => tool.name === "mcp__notes__shout") && results[2].content === "HELLO FROM THE SERVER", "the model was offered the server's tool, and its call went to the server and back");
+  check(results[3].content.includes("e2e-ok") && !results[3].content.includes("\u001b"), "the command's output reached the model without color codes");
 
   // The model's code is colored by language, each block can be copied, and an unknown language stays plain.
   const code = await page.evaluate(`({

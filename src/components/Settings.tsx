@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MODES } from "../lib/modes";
-import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
+import { mcpTool } from "../lib/fold";
+import type { KeyStatus, McpServer, Provider, Settings, SettingsView } from "../lib/types";
 
 // The agent's realm (境界): cultivation stages, lowest to highest, for the API's five effort levels.
 const EFFORT_NAMES: Record<string, string> = { low: "练气", medium: "筑基", high: "金丹", xhigh: "元婴", max: "化神" };
@@ -123,15 +124,82 @@ function ProviderRow({ provider, status, settings, onSave, onSaveKey, onDeleteKe
   );
 }
 
+const MCP_STATES: Record<McpServer["state"], string> = { connecting: "正在连接", ready: "已连上", failed: "没连上" };
+
+/** A kept grant as the user reads it: a command's opening words, or an MCP server's tool. */
+function grantLabel(grant: string): string {
+  const borrowed = grant.startsWith("mcp:") ? mcpTool(grant.slice("mcp:".length)) : null;
+  return borrowed ? `法器 ${borrowed.server} 的 ${borrowed.tool}` : grant.replace(/^command:/, "");
+}
+
+interface McpSectionProps {
+  config: string;
+  servers: McpServer[];
+  /** Resolves with what is wrong with the text, or null once it is saved. */
+  onSave: (config: string) => Promise<string | null>;
+  onRefresh: () => void;
+}
+
+/** The MCP server list as text to edit, and how each server stands. */
+function McpSection({ config, servers, onSave, onRefresh }: McpSectionProps) {
+  const [draft, setDraft] = useState(config);
+  const [problem, setProblem] = useState<string | null>(null);
+  useEffect(() => setDraft(config), [config]);
+  // Servers connect in the background: look again until none is still connecting.
+  const connecting = servers.some((server) => server.state === "connecting");
+  useEffect(() => {
+    if (!connecting) return;
+    const timer = setInterval(onRefresh, 1500);
+    return () => clearInterval(timer);
+  }, [connecting, onRefresh]);
+  return (
+    <section>
+      <h2>外来法器（MCP 服务）</h2>
+      <div className="field">
+        <label htmlFor="mcp-config">服务清单</label>
+        <textarea id="mcp-config" className="input mono config" rows={8} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <p className="hint">
+          用各家通用的 mcpServers 写法，MCP 服务说明里给的配置片段可以直接贴进来。本机程序写 command 和 args，远程服务写 url（需要的话加 headers）。保存后立即连接；连上的服务提供的工具，分身每次动用前都要请示。
+        </p>
+        {problem && (
+          <p className="hint failed" role="alert">
+            清单没有保存：{problem}
+          </p>
+        )}
+        <div className="actions">
+          <button type="button" className="button primary" disabled={draft === config} onClick={() => onSave(draft).then(setProblem)}>
+            保存并连接
+          </button>
+        </div>
+      </div>
+      {servers.map((server) => (
+        <div className="provider-card" key={server.name}>
+          <div className="who">
+            <strong className="mono">{server.name}</strong>
+            <span className={server.state === "failed" ? "failed" : "muted"}>
+              {MCP_STATES[server.state]}
+              {server.state === "ready" && `，${server.tools.length} 件法器`}
+            </span>
+          </div>
+          {server.error && <p className="hint failed">{server.error}</p>}
+          {server.tools.length > 0 && <p className="hint mono">{server.tools.join("、")}</p>}
+        </div>
+      ))}
+    </section>
+  );
+}
+
 interface Props {
   view: SettingsView;
+  onSaveMcp: (config: string) => Promise<string | null>;
+  onRefresh: () => void;
   onRevoke: (workspace: string, grant: string) => void;
   onSave: (settings: Settings) => void;
   onSaveKey: (provider: string, key: string) => void;
   onDeleteKey: (provider: string) => void;
 }
 
-export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke }: Props) {
+export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, onSaveMcp, onRefresh }: Props) {
   const grants = Object.entries(view.grants);
   const { settings } = view;
   const chosen = view.providers.find((provider) => provider.id === settings.provider);
@@ -232,11 +300,11 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke }:
             <div className="provider-card" key={workspace}>
               <div className="who">
                 <strong className="mono">{workspace}</strong>
-                <span className="muted">这处洞府里，以下面这些开头的命令不再请示</span>
+                <span className="muted">这处洞府里，以下面这些开头的命令、这些法器不再请示</span>
               </div>
               {kept.map((grant) => (
                 <div className="provider" key={grant}>
-                  <span className="mono">{grant.replace(/^command:/, "")}</span>
+                  <span className="mono">{grantLabel(grant)}</span>
                   <button type="button" className="button text" onClick={() => onRevoke(workspace, grant)}>
                     撤销
                   </button>
@@ -245,6 +313,8 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke }:
             </div>
           ))}
         </section>
+
+        <McpSection config={view.mcp_config} servers={view.mcp_servers} onSave={onSaveMcp} onRefresh={onRefresh} />
 
         <section>
           <h2>功法出处</h2>

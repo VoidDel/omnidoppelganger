@@ -67,6 +67,8 @@ export interface ToolMeta {
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
+  /** The call went to a tool of an MCP server. */
+  mcp?: boolean;
   /** The to-do list `update_todos` recorded. */
   todos?: Todo[];
   /** The id of a background command, like `b1`. */
@@ -163,4 +165,16 @@ export interface SettingsView {
   home: string;
   /** Command approvals given for good, by workspace path. */
   grants: Record<string, string[]>;
+  /** The text of the MCP server list, and how each server it names stands. */
+  mcp_config: string;
+  mcp_servers: McpServer[];
+}
+
+/** An MCP server from the user's list and whether it is connected. */
+export interface McpServer {
+  name: string;
+  state: "connecting" | "ready" | "failed";
+  error: string | null;
+  /** The names of the tools it offers. */
+  tools: string[];
 }

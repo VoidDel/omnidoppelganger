@@ -44,6 +44,8 @@ pub struct ToolContext {
     pub snapshots: Option<PathBuf>,
     /// The session's background commands. `None` means commands cannot be left running.
     pub jobs: Option<Arc<Jobs>>,
+    /// The MCP servers whose tools the model may call. `None` means there are none.
+    pub mcp: Option<Arc<crate::mcp::McpHub>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -320,6 +322,14 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "command_output" => command_output(input, context).await,
         "stop_command" => stop_command(input, context).await,
         "update_todos" => update_todos(input),
+        // A tool of an MCP server: what it does and returns is the server's.
+        other if crate::mcp::split_name(other).is_some() => match &context.mcp {
+            Some(hub) => {
+                let result = hub.call(other, input, &context.cancel).await;
+                Ok(ToolOutput { content: result.content, is_error: result.is_error, meta: json!({ "mcp": true }) })
+            }
+            None => Err(ToolOutput::error(format!("No MCP server is connected, so `{other}` cannot be called."))),
+        },
         other => Err(ToolOutput::error(format!("Unknown tool `{other}`."))),
     };
     result.unwrap_or_else(|error| error)
@@ -850,7 +860,7 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None };
         (directory, context)
     }
 
