@@ -197,15 +197,15 @@ export default function App() {
         ) : active ? (
           <>
             <header className="main-header">
-              <h1>{active.title || "新会话"}</h1>
+              <h1>{active.title || "新分身"}</h1>
               <span className="path" title={active.workspace}>
                 {active.workspace}
               </span>
             </header>
             {rows.length === 0 && state.queued.length === 0 ? (
               <div className="empty">
-                <h1>这个文件夹交给分身了</h1>
-                <p>说一件要做的事。分身读文件和改文件不用问你；每条命令、每次碰工作区外面的东西，都会先等你签字。</p>
+                <h1>分身已入驻这处洞府</h1>
+                <p>吩咐一件事吧。洞府之内，分身读文件、改文件自行其是；每条命令、每次碰这个文件夹之外的东西，都要先请本尊定夺。</p>
               </div>
             ) : (
               <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} onDecide={decide} />
@@ -215,12 +215,12 @@ export default function App() {
         ) : (
           <div className="empty">
             <Mark size={56} />
-            <h1>选一个文件夹，把活交给分身</h1>
-            <p>白纸是你说的，黄纸是分身做的，粉纸等你签字。</p>
-            {state.settings?.key.source === "none" && <p className="muted">还没有 Anthropic 密钥，先到设置里填上。</p>}
+            <h1>选一处洞府，召分身出来干活</h1>
+            <p>白纸是本尊的法旨，黄纸是分身的手笔，粉纸候本尊定夺。</p>
+            {state.settings?.key.source === "none" && <p className="muted">还没有 Anthropic 密钥，分身出不了关，先到设置里填上。</p>}
             <div className="actions">
               <button type="button" className="button primary" onClick={create}>
-                选文件夹，开始会话
+                选文件夹作洞府，召出分身
               </button>
               {state.settings?.key.source === "none" && (
                 <button type="button" className="button outline" onClick={() => dispatch({ type: "page", page: "settings" })}>

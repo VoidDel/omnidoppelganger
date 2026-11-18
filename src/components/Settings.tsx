@@ -1,13 +1,13 @@
 import { useState } from "react";
 import type { Settings, SettingsView } from "../lib/types";
 
-// The agent's rank: cultivation stages, lowest to highest, for the API's five effort levels.
+// The agent's realm (境界): cultivation stages, lowest to highest, for the API's five effort levels.
 const EFFORT_NAMES: Record<string, string> = { low: "练气", medium: "筑基", high: "金丹", xhigh: "元婴", max: "化神" };
 
 const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
-  { value: "light", name: "原纸", hint: "亮色，白天用", swatches: [["#FFFFFF", "#1C1842"], ["#FFF4BF", "#E3CB62"], ["#FFDDE4", "#B4234F"]] },
-  { value: "dark", name: "碳纸", hint: "暗色，夜里用", swatches: [["#23254C", "#E9E8F8"], ["#332E12", "#7A6A1C"], ["#3F1C2B", "#A8456A"]] },
-  { value: "system", name: "跟随系统", hint: "系统切换时一起换", swatches: [["#FFFFFF", "#1C1842"], ["#23254C", "#E9E8F8"]] },
+  { value: "light", name: "原纸", hint: "亮色，宜昼", swatches: [["#FFFFFF", "#1C1842"], ["#FFF4BF", "#E3CB62"], ["#FFDDE4", "#B4234F"]] },
+  { value: "dark", name: "碳纸", hint: "暗色，宜夜", swatches: [["#23254C", "#E9E8F8"], ["#332E12", "#7A6A1C"], ["#3F1C2B", "#A8456A"]] },
+  { value: "system", name: "跟随系统", hint: "随系统昼夜更替", swatches: [["#FFFFFF", "#1C1842"], ["#23254C", "#E9E8F8"]] },
 ];
 
 interface Props {
@@ -29,9 +29,9 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
     <div className="settings">
       <div className="settings-inner">
         <section>
-          <h1>模型</h1>
+          <h1>功法</h1>
           <div className="field">
-            <label htmlFor="default-model">新会话默认用哪个模型</label>
+            <label htmlFor="default-model">新分身默认修哪门功法（模型）</label>
             <select id="default-model" className="input" value={settings.model} onChange={(event) => onSave({ ...settings, model: event.target.value })}>
               {view.models.map((model) => (
                 <option key={model.id} value={model.id}>
@@ -39,10 +39,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
                 </option>
               ))}
             </select>
-            <p className="hint">已经开始的会话会继续用它当时的模型。</p>
+            <p className="hint">已经召出的分身，继续修它当时的功法。</p>
           </div>
           <div className="field">
-            <label htmlFor="effort">分身等级</label>
+            <label htmlFor="effort">分身境界</label>
             <select id="effort" className="input" value={settings.effort} onChange={(event) => onSave({ ...settings, effort: event.target.value })}>
               {view.efforts.map((effort) => (
                 <option key={effort} value={effort}>
@@ -50,18 +50,18 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
                 </option>
               ))}
             </select>
-            <p className="hint">等级越高，分身每一步想得越深，也越慢、越费额度。下一次请求起生效。</p>
+            <p className="hint">境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。下一次请求起生效。</p>
           </div>
         </section>
 
         <section>
-          <h2>供应商</h2>
+          <h2>功法出处</h2>
           <div className="provider">
             <div className="who">
               <strong>Anthropic</strong>
               {view.key.source === "saved" && <span className="muted">密钥已保存，只显示开头和结尾</span>}
               {view.key.source === "env" && <span className="muted">正在用环境变量 ANTHROPIC_API_KEY 里的密钥</span>}
-              {view.key.source === "none" && <span className="muted">还没有密钥，填上才能开始</span>}
+              {view.key.source === "none" && <span className="muted">还没有密钥，填上分身才能出关</span>}
               {view.key.preview && <span className="mono">{view.key.preview}</span>}
             </div>
             {view.key.source === "saved" && (

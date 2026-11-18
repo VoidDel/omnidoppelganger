@@ -18,7 +18,7 @@ export const api = {
   deleteApiKey: () => invoke<SettingsView>("delete_api_key"),
   /** Ask for a folder with the system dialog. Resolves null when the user closes it. */
   pickWorkspace: async (): Promise<string | null> => {
-    const picked = await open({ directory: true, multiple: false, title: "选一个工作区文件夹" });
+    const picked = await open({ directory: true, multiple: false, title: "选一个文件夹作洞府" });
     return typeof picked === "string" ? picked : null;
   },
   onSessionEvent: (handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),

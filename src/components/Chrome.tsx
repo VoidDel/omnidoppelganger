@@ -37,7 +37,7 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSetti
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
           <path d="M8 3v10M3 8h10" />
         </svg>
-        新建会话
+        召出分身
       </button>
       <div className="sidebar-scroll">
         {[...groups].map(([workspace, items]) => (
@@ -53,9 +53,9 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSetti
                 aria-current={!inSettings && session.id === activeId ? "true" : undefined}
                 onClick={() => onOpen(session.id)}
               >
-                <span className="row-title">{session.title || "新会话"}</span>
-                {session.status === "waiting_approval" && <span className="chip pink">待签</span>}
-                {session.status === "running" && <span className="chip canary">进行中</span>}
+                <span className="row-title">{session.title || "新分身"}</span>
+                {session.status === "waiting_approval" && <span className="chip pink">候旨</span>}
+                {session.status === "running" && <span className="chip canary">运功中</span>}
               </button>
             ))}
           </div>
@@ -93,25 +93,25 @@ export function Composer({ status, model, onSend, onStop }: ComposerProps) {
         {status === "running" && (
           <>
             <Mark state="working" size={18} />
-            <span>分身在干活。现在发消息会插进当前步骤，不会打断它。</span>
+            <span>分身正在运功。此刻传音，它做完这一步就会听到，不会打断它。</span>
           </>
         )}
         {status === "waiting_approval" && (
           <>
             <Mark state="waiting" size={18} />
-            <span>分身停在这里，等你签字后继续。</span>
+            <span>分身收功候旨，本尊定夺后继续。</span>
           </>
         )}
       </div>
       <div className="composer-box">
         <label htmlFor="composer-input" className="sr-only">
-          给分身的指令
+          给分身的法旨
         </label>
         <textarea
           id="composer-input"
           rows={2}
           value={text}
-          placeholder={busy ? "插一句话给分身" : "交代一件事，回车发送"}
+          placeholder={busy ? "给分身传一句音" : "吩咐一件事，回车传令"}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
             // Enter sends; Shift+Enter breaks the line. Enter that confirms an input-method candidate does neither.
@@ -123,21 +123,21 @@ export function Composer({ status, model, onSend, onStop }: ComposerProps) {
         />
         <div className="composer-row">
           <span className="select-button">
-            <span className="label">模型</span>
+            <span className="label">功法</span>
             <span className="value">{model}</span>
           </span>
           <span className="select-button">
-            <span className="label">权限</span>
-            <span className="value">只能改工作区</span>
+            <span className="label">禁制</span>
+            <span className="value">只动洞府之内</span>
           </span>
           <span className="spacer" />
           {busy && (
             <button type="button" className="button outline" onClick={onStop}>
-              停止分身
+              收回分身
             </button>
           )}
           <button type="button" className="button primary" disabled={!text.trim()} onClick={submit}>
-            {busy ? "插话" : "发送"}
+            {busy ? "传音" : "传令"}
           </button>
         </div>
       </div>
@@ -159,7 +159,7 @@ export function SidePanel({ files, runs }: { files: ChangedFile[]; runs: ToolIte
       </div>
       {tab === "files" ? (
         <div className="panel-body">
-          <h2>这次改过的文件</h2>
+          <h2>分身动过的文件</h2>
           {files.length === 0 && <p className="muted">分身还没有改过文件。</p>}
           {files.map((file) => (
             <div className="file-row" key={file.path}>

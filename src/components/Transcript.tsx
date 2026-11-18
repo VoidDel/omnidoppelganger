@@ -24,7 +24,7 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
   const { result } = tool;
   const meta = result?.meta;
   const declined = tool.approval?.decision === "deny";
-  const waiting = declined ? "你拒绝了" : result ? "" : "进行中";
+  const waiting = declined ? "本尊驳回了" : result ? "" : "运功中";
   switch (tool.name) {
     case "read_file":
       return { verb: "读取", target: text("path"), outcome: waiting || (result!.isError ? "没读到" : `${meta?.lines ?? 0} 行`) };
@@ -73,9 +73,9 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 }
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
-  command: { title: "要运行一条命令，等你签字", note: "命令会在工作区里执行。", always: "之后的命令都批准" },
-  outside_write: { title: "要改工作区外面的文件，等你签字", note: "这个路径不在当前工作区里。", always: "之后这类修改都批准" },
-  outside_read: { title: "要读工作区外面的内容，等你签字", note: "这个路径不在当前工作区里。", always: "之后这类读取都批准" },
+  command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后的命令都准" },
+  outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
+  outside_read: { title: "分身要读洞府之外的内容，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类读取都准" },
 };
 
 function SignSheet({ tool, onDecide }: { tool: ToolItem; onDecide: (toolUseId: string, decision: Decision) => void }) {
@@ -87,13 +87,13 @@ function SignSheet({ tool, onDecide }: { tool: ToolItem; onDecide: (toolUseId: s
       <p>{ask.note}</p>
       <div className="actions">
         <button type="button" className="button solid" onClick={() => onDecide(tool.id, "allow_once")}>
-          批准这一次
+          准这一次
         </button>
         <button type="button" className="button outline" onClick={() => onDecide(tool.id, "allow_session")}>
           {ask.always}
         </button>
         <button type="button" className="button text" onClick={() => onDecide(tool.id, "deny")}>
-          拒绝
+          驳回
         </button>
       </div>
     </div>
@@ -103,17 +103,17 @@ function SignSheet({ tool, onDecide }: { tool: ToolItem; onDecide: (toolUseId: s
 function notice(reason: string, error: string | null): string {
   switch (reason) {
     case "cancelled":
-      return "你停止了分身。";
+      return "本尊收回了分身。";
     case "refusal":
-      return "模型拒绝了这个请求。";
+      return "此事分身不肯接：模型拒绝了这个请求。";
     case "max_tokens":
-      return "回复太长被截断了，被截断的操作没有执行。可以让分身分几步来。";
+      return "分身一口气说得太长，被截断了，截断的操作没有执行。可以让它分几步来。";
     case "step_limit":
-      return "这一轮步骤太多，分身停下来了。";
+      return "这一轮步骤太多，分身自行收功了。";
     case "interrupted":
-      return "上次关闭应用时，这一轮还没做完。";
+      return "上次关闭应用时，分身这一轮还没收功。";
     default:
-      return error === "no API key is configured" ? "还没有 API 密钥。到设置里填上 Anthropic 密钥，再发一次。" : `这一轮出错停下了：${error ?? "原因不明"}`;
+      return error === "no API key is configured" ? "还没有 API 密钥，分身出不了关。到设置里填上 Anthropic 密钥，再传一次令。" : `这一轮走火了，已经停下：${error ?? "原因不明"}`;
   }
 }
 
@@ -128,7 +128,7 @@ function ItemView({ item, onDecide }: { item: Item; onDecide: (toolUseId: string
     case "thinking":
       return (
         <details className="thinking">
-          <summary>分身想了一下</summary>
+          <summary>分身推演了一番</summary>
           <p>{item.text}</p>
         </details>
       );
@@ -155,14 +155,14 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
           </div>
         ) : block.kind === "thinking" ? (
           <div key={block.index} className="thinking">
-            正在想：{block.text.slice(-160)}
+            推演中：{block.text.slice(-160)}
           </div>
         ) : (
           <div key={block.index} className="did">
             <div className="did-head">
-              <span className="verb">准备</span>
+              <span className="verb">起手</span>
               <span className="target">{block.name}</span>
-              <span className="outcome">正在写参数</span>
+              <span className="outcome">蓄势中</span>
             </div>
           </div>
         ),
@@ -203,8 +203,8 @@ export function Transcript({ rows, stream, queued, status, onDecide }: Props) {
             <div className="turn-said">
               <div className={`original ${last && status === "running" ? "working" : ""}`}>{row.prompt.text}</div>
               <span className="said-meta">
-                你，{time(row.prompt.ts)}
-                {row.prompt.steering ? "，中途插话" : ""}
+                本尊，{time(row.prompt.ts)}
+                {row.prompt.steering ? "，中途传音" : ""}
               </span>
             </div>
             <div className="turn-did">
@@ -220,7 +220,7 @@ export function Transcript({ rows, stream, queued, status, onDecide }: Props) {
         <section key={`queued-${index}`} className="turn">
           <div className="turn-said">
             <div className="original queued">{text}</div>
-            <span className="said-meta">排队中，分身做完这一步就会看到</span>
+            <span className="said-meta">传音在途，分身做完这一步就会听到</span>
           </div>
           <div className="turn-did" />
         </section>
