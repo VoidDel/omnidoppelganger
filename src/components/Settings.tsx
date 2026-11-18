@@ -43,7 +43,7 @@ function useDraft(value: string, save: (value: string) => void) {
 function KeyLine({ provider, status }: { provider: Provider; status: KeyStatus }) {
   return (
     <>
-      {status.source === "saved" && <span className="muted">密钥已保存，只显示开头和结尾</span>}
+      {status.source === "saved" && <span className="muted">{status.plaintext ? "密钥存在本机的明文文件里，只显示开头和结尾" : "密钥已存进系统凭据管理器，只显示开头和结尾"}</span>}
       {status.source === "env" && <span className="muted">正在用环境变量 {provider.key_env} 里的密钥</span>}
       {status.source === "none" && <span className="muted">还没有密钥{provider.key_env ? `，也可以在启动前设置环境变量 ${provider.key_env}` : ""}</span>}
       {status.preview && <span className="mono">{status.preview}</span>}
@@ -229,14 +229,17 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
             <ProviderRow
               key={provider.id}
               provider={provider}
-              status={view.keys[provider.id] ?? { source: "none", preview: null }}
+              status={view.keys[provider.id] ?? { source: "none", preview: null, plaintext: false }}
               settings={settings}
               onSave={onSave}
               onSaveKey={onSaveKey}
               onDeleteKey={onDeleteKey}
             />
           ))}
-          <p className="muted">密钥保存在本机的 {view.home} 目录里，不会显示完整内容。</p>
+          <p className="muted">
+            密钥存进系统的凭据管理器（Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service），不会显示完整内容。凭据管理器用不了时，才退回 {view.home}
+            目录里的明文文件。
+          </p>
         </section>
 
         <section>

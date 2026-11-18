@@ -111,9 +111,9 @@ app-icon.svg       应用图标的源文件
 |---|---|
 | `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`MOONSHOT_API_KEY`、`ZHIPUAI_API_KEY` | 对应供应商没有在设置里保存密钥时使用 |
 | `ANTHROPIC_BASE_URL` | 把 Anthropic 请求发到自己的网关；此时不发送只有官方接口支持的字段。其他供应商的地址在设置里改 |
-| `ODG_HOME` | 会话、设置和密钥的存放目录，默认 `~/.odg` |
+| `ODG_HOME` | 会话和设置的存放目录，默认 `~/.odg`。设了它，密钥就存在这个目录自己的 `credentials.json` 里，不碰系统凭据管理器 |
 
-设置里保存的密钥目前是 `ODG_HOME` 下的明文文件，改存系统凭据管理器排在路线图的第一阶段。
+设置里保存的密钥存进系统的凭据管理器：Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service，条目归在 `OmniDoppelganger` 名下。早先存在 `~/.odg/credentials.json` 里的密钥，启动时会自动搬过去并从文件里删掉。凭据管理器用不了时（比如 Linux 上没有运行 Secret Service），密钥才留在这个明文文件里，设置页会注明。
 
 ## 测试
 

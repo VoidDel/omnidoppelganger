@@ -1,7 +1,14 @@
-//! User settings and the stored API keys, both under the home directory.
+//! User settings and the stored API keys.
+//!
+//! Settings are a file under the home directory. Keys go to the system's
+//! credential manager when the store was given one ([`SystemVault`]): the
+//! Windows Credential Manager, the macOS Keychain, or the Secret Service on
+//! Linux. Without one, or when it does not work, they are kept in
+//! `credentials.json` beside the settings, in plain text.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -130,15 +137,80 @@ pub struct KeyStatus {
     /// `saved`, `env`, or `none`.
     pub source: String,
     pub preview: Option<String>,
+    /// The saved key sits in `credentials.json` in plain text, not in the system's credential manager.
+    pub plaintext: bool,
+}
+
+/// A place that keeps secrets by name.
+pub trait Vault: Send + Sync {
+    /// The secret, or `None` when there is none by that name.
+    fn get(&self, name: &str) -> Result<Option<String>, String>;
+    fn set(&self, name: &str, secret: &str) -> Result<(), String>;
+    /// Removing a secret that is not there succeeds.
+    fn delete(&self, name: &str) -> Result<(), String>;
+}
+
+/// The system's credential manager, through the `keyring` crate.
+pub struct SystemVault;
+
+impl SystemVault {
+    /// The name every entry is filed under in the credential manager.
+    const SERVICE: &'static str = "OmniDoppelganger";
+
+    fn entry(name: &str) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(Self::SERVICE, name).map_err(|error| error.to_string())
+    }
+}
+
+impl Vault for SystemVault {
+    fn get(&self, name: &str) -> Result<Option<String>, String> {
+        match Self::entry(name)?.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn set(&self, name: &str, secret: &str) -> Result<(), String> {
+        Self::entry(name)?.set_password(secret).map_err(|error| error.to_string())
+    }
+
+    fn delete(&self, name: &str) -> Result<(), String> {
+        match Self::entry(name)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
 }
 
 pub struct SettingsStore {
     directory: PathBuf,
+    vault: Option<Arc<dyn Vault>>,
 }
 
 impl SettingsStore {
+    /// A store that keeps keys in `credentials.json` under `directory`.
     pub fn new(directory: impl Into<PathBuf>) -> Self {
-        Self { directory: directory.into() }
+        Self { directory: directory.into(), vault: None }
+    }
+
+    /// A store that keeps keys in `vault`, and in `credentials.json` only when the vault fails.
+    pub fn with_vault(directory: impl Into<PathBuf>, vault: Arc<dyn Vault>) -> Self {
+        Self { directory: directory.into(), vault: Some(vault) }
+    }
+
+    /// Move the keys `credentials.json` holds into the vault, and take each
+    /// one that arrived out of the file. Run at start, so keys saved before
+    /// the vault was used leave the plain-text file. A key the vault does
+    /// not take stays where it is.
+    pub fn migrate_keys(&self) {
+        let Some(vault) = &self.vault else { return };
+        let mut credentials = self.credentials();
+        let before = credentials.len();
+        credentials.retain(|name, value| !value.as_str().is_some_and(|key| vault.set(name, key).is_ok()));
+        if credentials.len() < before {
+            let _ = self.write_credentials(credentials);
+        }
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -175,27 +247,34 @@ impl SettingsStore {
             .unwrap_or_default()
     }
 
-    fn saved_key(&self, provider: &str) -> Option<String> {
-        self.credentials().get(&format!("{provider}_api_key"))?.as_str().map(str::trim).filter(|key| !key.is_empty()).map(str::to_string)
+    /// The saved key and whether it came from the plain-text file. The vault
+    /// is asked first; a vault that fails reads as holding nothing.
+    fn saved_key(&self, provider: &str) -> Option<(String, bool)> {
+        let name = format!("{provider}_api_key");
+        let usable = |key: String| Some(key.trim().to_string()).filter(|key| !key.is_empty());
+        let vaulted = self.vault.as_ref().and_then(|vault| vault.get(&name).ok().flatten()).and_then(usable);
+        vaulted.map(|key| (key, false)).or_else(|| self.credentials().get(&name)?.as_str().map(str::to_string).and_then(usable).map(|key| (key, true)))
     }
 
     /// The key a provider's requests use: the saved one, else the provider's environment variable.
     pub fn api_key(&self, provider_id: &str) -> Option<String> {
-        self.saved_key(provider_id).or_else(|| {
+        self.saved_key(provider_id).map(|(key, _)| key).or_else(|| {
             let variable = provider(provider_id)?.key_env?;
             std::env::var(variable).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
         })
     }
 
     pub fn key_status(&self, provider: &str) -> KeyStatus {
-        let source = if self.saved_key(provider).is_some() {
+        let saved = self.saved_key(provider);
+        let key = self.api_key(provider);
+        let source = if saved.is_some() {
             "saved"
-        } else if self.api_key(provider).is_some() {
+        } else if key.is_some() {
             "env"
         } else {
             "none"
         };
-        KeyStatus { source: source.to_string(), preview: self.api_key(provider).as_deref().map(mask) }
+        KeyStatus { source: source.to_string(), preview: key.as_deref().map(mask), plaintext: saved.is_some_and(|(_, plaintext)| plaintext) }
     }
 
     /// Every provider's key status, by provider id.
@@ -209,34 +288,46 @@ impl SettingsStore {
         Endpoint { base_url, key: self.api_key(provider_id) }
     }
 
-    /// Store a provider's key in a file only the current user can read (enforced on Unix).
+    /// Store a provider's key: in the vault, or, when there is none or it
+    /// fails, in a file only the current user can read (enforced on Unix).
     pub fn save_api_key(&self, provider_id: &str, key: &str) -> std::io::Result<()> {
         let key = key.trim();
         if key.is_empty() {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the key is empty"));
         }
         known(provider_id)?;
+        let name = format!("{provider_id}_api_key");
         let mut credentials = self.credentials();
-        credentials.insert(format!("{provider_id}_api_key"), Value::String(key.to_string()));
+        if self.vault.as_ref().is_some_and(|vault| vault.set(&name, key).is_ok()) {
+            // An older copy in the file would otherwise outlive the key it was replaced by.
+            return if credentials.remove(&name).is_some() { self.write_credentials(credentials) } else { Ok(()) };
+        }
+        credentials.insert(name, Value::String(key.to_string()));
         self.write_credentials(credentials)
     }
 
+    /// Remove a provider's saved key from the vault and from the file.
     pub fn delete_api_key(&self, provider_id: &str) -> std::io::Result<()> {
         known(provider_id)?;
+        let name = format!("{provider_id}_api_key");
+        if let Some(vault) = &self.vault {
+            vault.delete(&name).map_err(std::io::Error::other)?;
+        }
         let mut credentials = self.credentials();
-        if credentials.remove(&format!("{provider_id}_api_key")).is_none() {
+        if credentials.remove(&name).is_none() {
             return Ok(());
         }
+        self.write_credentials(credentials)
+    }
+
+    /// Write the key file, or remove it once it holds nothing.
+    fn write_credentials(&self, credentials: Map<String, Value>) -> std::io::Result<()> {
         if credentials.is_empty() {
             return match std::fs::remove_file(self.credentials_path()) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
                 _ => Ok(()),
             };
         }
-        self.write_credentials(credentials)
-    }
-
-    fn write_credentials(&self, credentials: Map<String, Value>) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.directory)?;
         let path = self.credentials_path();
         write_atomically(&path, &serde_json::to_vec_pretty(&credentials).map_err(std::io::Error::other)?)?;
@@ -341,6 +432,77 @@ mod tests {
         assert_eq!(store.key_status("deepseek").source, "saved");
         store.delete_api_key("deepseek").unwrap();
         assert!(!directory.path().join("credentials.json").exists());
+    }
+
+    /// A vault in memory that can be told to fail.
+    #[derive(Default)]
+    struct MemoryVault {
+        secrets: std::sync::Mutex<BTreeMap<String, String>>,
+        broken: std::sync::atomic::AtomicBool,
+    }
+
+    impl MemoryVault {
+        fn check(&self) -> Result<(), String> {
+            if self.broken.load(std::sync::atomic::Ordering::SeqCst) { Err("the vault is locked".to_string()) } else { Ok(()) }
+        }
+    }
+
+    impl Vault for MemoryVault {
+        fn get(&self, name: &str) -> Result<Option<String>, String> {
+            self.check().map(|()| self.secrets.lock().unwrap().get(name).cloned())
+        }
+
+        fn set(&self, name: &str, secret: &str) -> Result<(), String> {
+            self.check().map(|()| drop(self.secrets.lock().unwrap().insert(name.to_string(), secret.to_string())))
+        }
+
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.check().map(|()| drop(self.secrets.lock().unwrap().remove(name)))
+        }
+    }
+
+    #[test]
+    fn keeps_keys_in_the_vault_and_moves_the_ones_a_file_still_holds() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("credentials.json");
+        // Two keys saved by a build from before the vault.
+        SettingsStore::new(directory.path()).save_api_key("anthropic", "sk-ant-old-key-0000000000").unwrap();
+        SettingsStore::new(directory.path()).save_api_key("zhipu", "glm-old-key-000000000000").unwrap();
+        let vault = Arc::new(MemoryVault::default());
+        let store = SettingsStore::with_vault(directory.path(), vault.clone());
+        // Until moved they still work, and are reported as plain text.
+        assert_eq!(store.key_status("zhipu"), KeyStatus { source: "saved".into(), preview: Some(mask("glm-old-key-000000000000")), plaintext: true });
+
+        store.migrate_keys();
+        assert!(!file.exists());
+        assert_eq!(vault.secrets.lock().unwrap().len(), 2);
+        assert_eq!(store.api_key("anthropic").as_deref(), Some("sk-ant-old-key-0000000000"));
+        assert!(!store.key_status("zhipu").plaintext);
+
+        // A new key goes to the vault and leaves no file; deleting takes it out.
+        store.save_api_key("deepseek", " sk-deepseek-key-00000000 ").unwrap();
+        assert!(!file.exists());
+        assert_eq!(vault.secrets.lock().unwrap().get("deepseek_api_key").map(String::as_str), Some("sk-deepseek-key-00000000"));
+        store.delete_api_key("deepseek").unwrap();
+        assert_eq!(store.key_status("deepseek").source, "none");
+    }
+
+    #[test]
+    fn falls_back_to_the_file_while_the_vault_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = Arc::new(MemoryVault::default());
+        let store = SettingsStore::with_vault(directory.path(), vault.clone());
+        vault.broken.store(true, std::sync::atomic::Ordering::SeqCst);
+        store.save_api_key("zhipu", "glm-key-0000000000000000").unwrap();
+        assert_eq!(store.key_status("zhipu"), KeyStatus { source: "saved".into(), preview: Some(mask("glm-key-0000000000000000")), plaintext: true });
+        // Moving fails too, and loses nothing.
+        store.migrate_keys();
+        assert_eq!(store.api_key("zhipu").as_deref(), Some("glm-key-0000000000000000"));
+
+        // Once the vault works again the key moves, and a newer key replaces the file's copy.
+        vault.broken.store(false, std::sync::atomic::Ordering::SeqCst);
+        store.migrate_keys();
+        assert!(!directory.path().join("credentials.json").exists() && !store.key_status("zhipu").plaintext);
     }
 
     #[test]

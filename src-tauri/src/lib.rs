@@ -13,7 +13,7 @@ use odg_core::events::{Decision, Envelope};
 use odg_core::policy::Mode;
 use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider};
 use odg_core::session::{SessionStore, SessionSummary};
-use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore};
+use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore, SystemVault};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc::UnboundedSender;
@@ -248,7 +248,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let home = settings::home();
-            let settings = Arc::new(SettingsStore::new(&home));
+            // A home named by ODG_HOME (a test's, a portable one) keeps its keys in its own
+            // file, so it never reads or changes the keys of the user's everyday home.
+            let custom_home = std::env::var_os("ODG_HOME").is_some_and(|value| !value.is_empty());
+            let settings = Arc::new(if custom_home { SettingsStore::new(&home) } else { SettingsStore::with_vault(&home, Arc::new(SystemVault)) });
+            settings.migrate_keys();
             let key_source = settings.clone();
             let base_url = std::env::var("ANTHROPIC_BASE_URL").ok().filter(|url| !url.trim().is_empty()).unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
             let anthropic = AnthropicClient::new(base_url, Arc::new(move || key_source.api_key("anthropic")))?;

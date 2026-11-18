@@ -112,6 +112,8 @@ export interface Settings {
 export interface KeyStatus {
   source: "saved" | "env" | "none";
   preview: string | null;
+  /** The saved key is in a plain-text file, not in the system's credential manager. */
+  plaintext: boolean;
 }
 
 /** A model provider as the core describes it. Pairs are `[id, display name]` and `[address, what it is]`. */
