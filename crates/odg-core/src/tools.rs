@@ -139,25 +139,36 @@ pub fn resolve(workspace: &Path, path: &str) -> PathBuf {
     resolved
 }
 
-/// Whether `path` is the workspace or below it, following links in the part of the path that exists.
-pub fn inside_workspace(workspace: &Path, path: &Path) -> bool {
-    let Ok(root) = workspace.canonicalize() else { return false };
+/// Where `path` really points: links are followed in the part of the path
+/// that exists, and the missing rest is appended unchanged.
+fn real_path(path: &Path) -> Option<PathBuf> {
     let mut existing = path.to_path_buf();
     let mut missing: Vec<std::ffi::OsString> = Vec::new();
     let canonical = loop {
         if let Ok(canonical) = existing.canonicalize() {
             break canonical;
         }
-        match (existing.file_name().map(|name| name.to_os_string()), existing.parent().map(Path::to_path_buf)) {
-            (Some(name), Some(parent)) => {
-                missing.push(name);
-                existing = parent;
-            }
-            _ => return false,
-        }
+        missing.push(existing.file_name()?.to_os_string());
+        existing = existing.parent()?.to_path_buf();
     };
-    let full = missing.iter().rev().fold(canonical, |path, name| path.join(name));
-    full.starts_with(&root)
+    Some(missing.iter().rev().fold(canonical, |path, name| path.join(name)))
+}
+
+/// Whether `path` is the workspace or below it, following links in the part of the path that exists.
+pub fn inside_workspace(workspace: &Path, path: &Path) -> bool {
+    match (workspace.canonicalize(), real_path(path)) {
+        (Ok(root), Some(full)) => full.starts_with(root),
+        _ => false,
+    }
+}
+
+/// Whether `path`, links followed, lies in a `.git` directory below the
+/// workspace (or anywhere, when it is outside the workspace). Git runs hooks
+/// and reads configuration from there, so writing to it can run code later.
+pub fn in_git_directory(workspace: &Path, path: &Path) -> bool {
+    let Some(full) = real_path(path) else { return true };
+    let below = workspace.canonicalize().ok().and_then(|root| full.strip_prefix(root).ok().map(Path::to_path_buf)).unwrap_or(full);
+    below.components().any(|component| component.as_os_str().to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git")))
 }
 
 fn display(workspace: &Path, path: &Path) -> String {
@@ -588,5 +599,11 @@ mod tests {
         assert!(inside_workspace(workspace, workspace));
         assert!(!inside_workspace(workspace, &resolve(workspace, "../elsewhere.txt")));
         assert!(!inside_workspace(workspace, &std::env::temp_dir()));
+
+        std::fs::create_dir_all(directory.path().join(".git/hooks")).unwrap();
+        assert!(in_git_directory(workspace, &resolve(workspace, ".git/hooks/pre-commit")));
+        assert!(in_git_directory(workspace, &resolve(workspace, "vendor/lib/.GIT/config")));
+        assert!(!in_git_directory(workspace, &resolve(workspace, "src/.gitignore")));
+        assert!(!in_git_directory(workspace, &resolve(workspace, "src/new/file.rs")));
     }
 }

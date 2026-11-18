@@ -51,7 +51,7 @@ struct State {
     /// Messages sent while a turn runs; they join the conversation at the next step.
     inbox: VecDeque<String>,
     approvals: HashMap<String, oneshot::Sender<Decision>>,
-    /// Approval reasons the user allowed for the rest of this run of the app.
+    /// Grants the user allowed for the rest of this run of the app.
     grants: HashSet<String>,
 }
 
@@ -316,12 +316,18 @@ impl<L: Llm> Inner<L> {
                     self.tool_result(&id, &name, json!({ "INVALID_JSON": raw }).to_string(), true, Value::Null)?;
                     continue;
                 }
-                if let Verdict::Ask { reason, detail } = policy::check(&name, &input, &self.workspace)
-                    && !self.state.lock().unwrap().grants.contains(reason)
+                if let Verdict::Ask { reason, detail, grant } = policy::check(&name, &input, &self.workspace)
+                    && !grant.as_ref().is_some_and(|grant| self.state.lock().unwrap().grants.contains(grant))
                 {
                     let (sender, receiver) = oneshot::channel();
                     self.state.lock().unwrap().approvals.insert(id.clone(), sender);
-                    self.append(Event::ApprovalRequested { tool_use_id: id.clone(), tool: name.clone(), reason: reason.to_string(), detail })?;
+                    self.append(Event::ApprovalRequested {
+                        tool_use_id: id.clone(),
+                        tool: name.clone(),
+                        reason: reason.to_string(),
+                        detail,
+                        grant: grant.clone(),
+                    })?;
                     self.set_status(Status::WaitingApproval);
                     let decision = tokio::select! {
                         decision = receiver => decision.unwrap_or(Decision::Deny),
@@ -335,7 +341,9 @@ impl<L: Llm> Inner<L> {
                             continue;
                         }
                         Decision::AllowSession => {
-                            self.state.lock().unwrap().grants.insert(reason.to_string());
+                            if let Some(grant) = grant {
+                                self.state.lock().unwrap().grants.insert(grant);
+                            }
                         }
                         Decision::AllowOnce => {}
                     }
@@ -510,6 +518,24 @@ mod tests {
         assert!(!results[2].1 && results[2].2.trim() == "ok");
         assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "approval/requested").count(), 2);
         assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn allowing_a_write_into_git_for_the_session_still_asks_next_time() {
+        let hook = |id: &str| calls(&[(id, "edit_file", json!({ "path": ".git/hooks/pre-commit", "old_string": "", "new_string": "echo hi\n" }))]);
+        let mut fixture = fixture(ScriptedLlm::new(vec![hook("t1"), hook("t2"), says("done")], None));
+        fixture.session.send("add a hook".into());
+
+        let first = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&first, Decision::AllowSession));
+        // The second write asks again: a session-wide approval does not cover `.git`.
+        let second = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&second, Decision::Deny));
+        fixture.idle().await;
+
+        let results = fixture.results();
+        assert!(!results[0].1, "{}", results[0].2);
+        assert_eq!(results[1], ("t2".to_string(), true, "The user declined this action.".to_string()));
     }
 
     #[tokio::test(flavor = "multi_thread")]

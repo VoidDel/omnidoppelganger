@@ -206,7 +206,7 @@ export default function App() {
             {rows.length === 0 && state.queued.length === 0 ? (
               <div className="empty">
                 <h1>分身已入驻这处洞府</h1>
-                <p>吩咐一件事吧。洞府之内，分身读文件、改文件自行其是；每条命令、每次碰这个文件夹之外的东西，都要先请本尊定夺。</p>
+                <p>吩咐一件事吧。洞府之内，分身读文件、改文件自行其是；每条命令、每次碰这个文件夹之外的东西、每次改 .git 里的文件，都要先请本尊定夺。</p>
               </div>
             ) : (
               <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} onDecide={decide} />

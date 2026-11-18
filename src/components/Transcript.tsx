@@ -95,22 +95,30 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后的命令都准" },
   outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
   outside_read: { title: "分身要读洞府之外的内容，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类读取都准" },
+  git_write: {
+    title: "分身要改 .git 里的文件，请本尊定夺",
+    note: "这里放着 Git 的钩子和配置，改动后你自己运行 git 时可能执行其中的代码，所以每次都要请示。",
+    always: "",
+  },
 };
 
 function SignSheet({ tool, onDecide }: { tool: ToolItem; onDecide: (toolUseId: string, decision: Decision) => void }) {
-  const ask = ASK[tool.approval!.reason] ?? ASK.command;
+  const approval = tool.approval!;
+  const ask = ASK[approval.reason] ?? ASK.command;
   return (
     <div className="sign-sheet">
       <h2>{ask.title}</h2>
-      <div className="sign-detail">{tool.approval!.detail}</div>
+      <div className="sign-detail">{approval.detail}</div>
       <p>{ask.note}</p>
       <div className="actions">
         <button type="button" className="button solid" onClick={() => onDecide(tool.id, "allow_once")}>
           准这一次
         </button>
-        <button type="button" className="button outline red" onClick={() => onDecide(tool.id, "allow_session")}>
-          {ask.always}
-        </button>
+        {approval.grant && (
+          <button type="button" className="button outline red" onClick={() => onDecide(tool.id, "allow_session")}>
+            {ask.always}
+          </button>
+        )}
         <button type="button" className="button text" onClick={() => onDecide(tool.id, "deny")}>
           驳回
         </button>

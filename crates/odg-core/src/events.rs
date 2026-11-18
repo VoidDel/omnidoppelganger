@@ -20,7 +20,8 @@ pub struct Envelope {
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     AllowOnce,
-    /// Allow this and later requests of the same kind until the app restarts.
+    /// Allow this and later requests with the same grant until the app
+    /// restarts. For a request without a grant it allows this one only.
     AllowSession,
     Deny,
 }
@@ -57,10 +58,15 @@ pub enum Event {
     ApprovalRequested {
         tool_use_id: String,
         tool: String,
-        /// Which rule asked: `command`, `outside_read`, or `outside_write`.
+        /// Which rule asked: `command`, `outside_read`, `outside_write`, or `git_write`.
         reason: String,
         /// The command or path the user is asked about.
         detail: String,
+        /// What allowing for the session covers; absent when the request
+        /// must be approved every time. Logs written before this field
+        /// existed read it as absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grant: Option<String>,
     },
     #[serde(rename = "approval/resolved")]
     ApprovalResolved {

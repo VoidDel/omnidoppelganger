@@ -14,7 +14,7 @@ export type SessionEvent =
   | { type: "turn/start"; data: { turn: number } }
   | { type: "user/message"; data: { text: string; steering: boolean } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string } }
-  | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string } }
+  | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string } }
   | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision } }
   | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
   | { type: "turn/end"; data: { turn: number; reason: string; error: string | null } };

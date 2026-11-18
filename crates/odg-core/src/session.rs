@@ -389,6 +389,15 @@ mod tests {
     }
 
     #[test]
+    fn reads_an_approval_logged_before_grants_existed() {
+        let line = r#"{"seq":4,"ts":"2026-01-01T00:00:00Z","type":"approval/requested","data":{"tool_use_id":"t1","tool":"run_command","reason":"command","detail":"ls"}}"#;
+        let envelope: Envelope = serde_json::from_str(line).unwrap();
+        assert!(matches!(envelope.event, Event::ApprovalRequested { grant: None, .. }));
+        // An absent grant is also written as absent, so the line reads back the same.
+        assert_eq!(serde_json::to_string(&envelope).unwrap(), line);
+    }
+
+    #[test]
     fn reports_damage_in_the_middle_of_a_log() {
         let (_directory, store) = store();
         let log = store.create(Path::new("/work"), "m").unwrap();
@@ -434,7 +443,14 @@ mod tests {
             json!({ "type": "tool_use", "id": "t2", "name": "run_command", "input": {} }),
         ])).unwrap();
         log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "x".into(), is_error: false, meta: Value::Null }).unwrap();
-        log.append(Event::ApprovalRequested { tool_use_id: "t2".into(), tool: "run_command".into(), reason: "command".into(), detail: "ls".into() }).unwrap();
+        log.append(Event::ApprovalRequested {
+            tool_use_id: "t2".into(),
+            tool: "run_command".into(),
+            reason: "command".into(),
+            detail: "ls".into(),
+            grant: Some("command".into()),
+        })
+        .unwrap();
         assert!(summarize(log.events()).awaiting_approval);
 
         let appended = log.repair_tail().unwrap();

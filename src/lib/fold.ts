@@ -9,7 +9,8 @@ export interface ToolItem {
   name: string;
   input: Record<string, unknown>;
   result?: { content: string; isError: boolean; meta: ToolMeta | null };
-  approval?: { reason: string; detail: string; decision?: Decision };
+  /** `grant` is what allowing for the session covers; without one, the request is approved each time. */
+  approval?: { reason: string; detail: string; grant?: string; decision?: Decision };
 }
 
 export type Item =
@@ -61,7 +62,7 @@ export function fold(events: Envelope[]): Row[] {
         break;
       case "approval/requested": {
         const tool = tools.get(event.data.tool_use_id);
-        if (tool) tool.approval = { reason: event.data.reason, detail: event.data.detail };
+        if (tool) tool.approval = { reason: event.data.reason, detail: event.data.detail, grant: event.data.grant };
         break;
       }
       case "approval/resolved": {
