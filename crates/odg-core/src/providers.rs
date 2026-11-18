@@ -99,7 +99,7 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://open.bigmodel.cn/api/paas/v4",
         other_urls: &[("https://api.z.ai/api/paas/v4", "国际站 Z.ai")],
         key_env: Some("ZHIPUAI_API_KEY"),
-        models: &[("glm-5.3", "GLM-5.3"), ("glm-5.2", "GLM-5.2"), ("glm-4.7", "GLM-4.7")],
+        models: &[("glm-5.3", "GLM-5.3"), ("glm-5.3-flash", "GLM-5.3 Flash（能看图）"), ("glm-5.2", "GLM-5.2"), ("glm-4.7", "GLM-4.7")],
     },
     Provider {
         id: "custom",
@@ -132,6 +132,23 @@ pub fn context_window(provider: &str, model: &str) -> u64 {
         ("zhipu", "glm-5.3" | "glm-5.2") => 1_000_000,
         ("zhipu", "glm-4.7") => 200_000,
         _ => UNKNOWN_CONTEXT_WINDOW,
+    }
+}
+
+/// Whether a model takes pictures, from each provider's documentation as of
+/// November 2026: `Some(false)` where it says the model is text-only,
+/// `None` where it does not say (a model typed in by hand, a custom service),
+/// in which case a picture is sent and the provider decides.
+pub fn vision(provider: &str, model: &str) -> Option<bool> {
+    match (provider, model) {
+        ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => Some(true),
+        ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(true),
+        ("deepseek", "deepseek-flash") => Some(true),
+        ("deepseek", "deepseek-v4-pro") => Some(false),
+        ("moonshot", "kimi-k3.1-pro" | "kimi-k3") => Some(true),
+        ("zhipu", "glm-5.3-flash") => Some(true),
+        ("zhipu", "glm-5.3") => Some(false),
+        _ => None,
     }
 }
 
@@ -234,6 +251,8 @@ mod tests {
         assert_eq!(tokens("openai", &responses), Some(Tokens { input: 1000, cached: 900, output: 40 }));
         assert_eq!(tokens("zhipu", &json!({})), None);
 
+        assert_eq!((vision("zhipu", "glm-5.3"), vision("zhipu", "glm-5.3-flash"), vision("zhipu", "glm-5.2")), (Some(false), Some(true), None));
+        assert_eq!((vision("anthropic", "claude-opus-5-5"), vision("deepseek", "deepseek-v4-pro"), vision("custom", "x")), (Some(true), Some(false), None));
         assert_eq!(context_window("zhipu", "glm-4.7"), 200_000);
         assert_eq!(context_window("anthropic", "claude-opus-5-5"), 1_000_000);
         assert_eq!(context_window("zhipu", "glm-9"), UNKNOWN_CONTEXT_WINDOW);

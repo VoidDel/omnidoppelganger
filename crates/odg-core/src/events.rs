@@ -18,6 +18,42 @@ pub struct Envelope {
     pub event: Event,
 }
 
+/// A picture the user attached to a message: a pasted screenshot, a photo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    /// One of [`IMAGE_TYPES`].
+    pub media_type: String,
+    /// The file's bytes in base64.
+    pub data: String,
+}
+
+/// The formats every provider here that takes images accepts.
+pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+/// The most pictures one message may carry.
+pub const IMAGES_PER_MESSAGE: usize = 8;
+/// The longest base64 text of one picture: 5 MB, the tightest limit among the providers.
+pub const IMAGE_BASE64_BYTES: usize = 5_000_000;
+
+/// Whether a message's pictures can be sent: few enough, of a known format, small enough, and base64.
+pub fn check_images(images: &[Image]) -> Result<(), String> {
+    if images.len() > IMAGES_PER_MESSAGE {
+        return Err(format!("a message takes at most {IMAGES_PER_MESSAGE} images, not {}", images.len()));
+    }
+    for (index, image) in images.iter().enumerate() {
+        let name = format!("image {}", index + 1);
+        if !IMAGE_TYPES.contains(&image.media_type.as_str()) {
+            return Err(format!("{name} is {}; only PNG, JPEG, GIF, and WebP images can be sent", image.media_type));
+        }
+        if image.data.is_empty() || !image.data.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')) {
+            return Err(format!("{name} is not base64 data"));
+        }
+        if image.data.len() > IMAGE_BASE64_BYTES {
+            return Err(format!("{name} is larger than the 3.7 MB an image may be"));
+        }
+    }
+    Ok(())
+}
+
 /// The user's answer to an approval request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +109,10 @@ pub enum Event {
         /// for edit mode, so logs from before modes read unchanged.
         #[serde(default, skip_serializing_if = "Mode::is_edit")]
         mode: Mode,
+        /// Pictures sent with the message, shown to the model ahead of the
+        /// text. Since format 5.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
     },
     /// A complete assistant message. `content` holds the API content blocks
     /// exactly as received: thinking blocks must be replayed unchanged.

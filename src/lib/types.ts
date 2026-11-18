@@ -5,6 +5,12 @@ export type Status = "idle" | "running" | "waiting_approval";
 /** What runs without asking: every edit asks, edits run, nothing is edited, or safe commands run too. */
 export type Mode = "manual" | "edit" | "plan" | "auto";
 
+/** A picture attached to a message: its format and its bytes in base64. */
+export interface Image {
+  media_type: string;
+  data: string;
+}
+
 /** What one request cost. `input` is the whole prompt, the cached part included. */
 export interface Tokens {
   input: number;
@@ -23,7 +29,7 @@ export type SessionEvent =
   | { type: "session/renamed"; data: { title: string } }
   | { type: "instructions/loaded"; data: { path: string; content: string } }
   | { type: "turn/start"; data: { turn: number } }
-  | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode } }
+  | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode; images?: Image[] } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }
   | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
   | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string } }
@@ -93,6 +99,8 @@ export interface SessionItem {
   context_limit: number;
   /** The Git branch checked out in the workspace; null when it is not a repository. */
   branch: string | null;
+  /** Whether the model takes pictures; null when its provider's documentation does not say. */
+  vision: boolean | null;
   created_at: string;
   updated_at: string;
   turn_open: boolean;

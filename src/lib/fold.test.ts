@@ -22,6 +22,14 @@ const edit = (id: string, path: string, added: number, removed: number) => [
   result(id, "edit_file", { path, added, removed }),
 ];
 
+describe("images", () => {
+  it("keeps the pictures a message came with, and none for a message without", () => {
+    const image = { media_type: "image/png", data: "aGk=" };
+    const rows = fold(log({ type: "user/message", data: { text: "", steering: false, images: [image] } }, said({ type: "text", text: "a form" }), user("thanks")));
+    expect(rows.map((row) => row.prompt.images)).toEqual([[image], []]);
+  });
+});
+
 describe("todos", () => {
   it("shows the list as the agent last wrote it, skipping a list the tool refused", () => {
     const listed = (id: string, list: object[], isError = false): SessionEvent[] => [said(call(id, "update_todos", { todos: list })), result(id, "update_todos", isError ? null : { todos: list }, isError)];

@@ -769,6 +769,59 @@ pre,
   gap: 8px;
 }
 
+/* Pictures waiting to be sent, each with a button to take it off again. */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.attachment {
+  position: relative;
+  display: inline-flex;
+}
+
+.attachment img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
+.attachment button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--sheet);
+  line-height: 1;
+  padding: 0;
+}
+
+.attachments .refused {
+  font-size: 13px;
+  color: var(--cinnabar-ink);
+}
+
+/* Pictures the user sent, above the words that came with them. */
+.shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shots img {
+  max-width: 100%;
+  max-height: 180px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+}
+
 .main-header .spacer {
   flex: 1;
 }

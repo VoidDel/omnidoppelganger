@@ -47,6 +47,12 @@ pub fn input_items(messages: &[Value]) -> Vec<Value> {
                 match block["type"].as_str() {
                     Some("tool_result") => items.push(json!({ "type": "function_call_output", "call_id": block["tool_use_id"], "output": block["content"] })),
                     Some("text") => items.push(json!({ "role": "user", "content": block["text"] })),
+                    // A picture is a message of its own, a list of one part; the text about it follows as the next.
+                    Some("image") => {
+                        let source = &block["source"];
+                        let url = format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default());
+                        items.push(json!({ "role": "user", "content": [{ "type": "input_image", "image_url": url }] }));
+                    }
                     _ => {}
                 }
             }
@@ -408,5 +414,15 @@ mod tests {
         assert_eq!(body["reasoning"], json!({ "effort": "xhigh" }));
         assert_eq!(body["tools"][0], json!({ "type": "function", "name": "read_file", "description": "d", "parameters": { "type": "object" }, "strict": false }));
         assert_eq!(body["input"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn sends_an_image_as_an_input_image_ahead_of_the_text() {
+        let image = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/jpeg", "data": "aGk=" } });
+        let items = input_items(&[json!({ "role": "user", "content": [image, { "type": "text", "text": "what is this?" }] })]);
+        assert_eq!(items, [
+            json!({ "role": "user", "content": [{ "type": "input_image", "image_url": "data:image/jpeg;base64,aGk=" }] }),
+            json!({ "role": "user", "content": "what is this?" }),
+        ]);
     }
 }

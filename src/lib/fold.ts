@@ -1,7 +1,7 @@
 // Folds the session log into what the window draws. The log is the only input,
 // so reopening a session shows exactly what was on screen before.
 
-import type { ContentBlock, Decision, Envelope, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
+import type { ContentBlock, Decision, Envelope, Image, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
 
 export interface ToolItem {
   kind: "tool";
@@ -33,7 +33,7 @@ export interface Row {
   key: string;
   /** The turn the message opened or, for a steering message, joined. */
   turn: number;
-  prompt: { text: string; ts: string; steering: boolean };
+  prompt: { text: string; ts: string; steering: boolean; images: Image[] };
   items: Item[];
 }
 
@@ -67,7 +67,7 @@ export function fold(events: Envelope[]): Row[] {
         turn = event.data.turn;
         break;
       case "user/message":
-        rows.push({ key: `row-${event.seq}`, turn, prompt: { text: event.data.text, ts: event.ts, steering: event.data.steering }, items: [] });
+        rows.push({ key: `row-${event.seq}`, turn, prompt: { text: event.data.text, ts: event.ts, steering: event.data.steering, images: event.data.images ?? [] }, items: [] });
         break;
       case "files/restored":
         for (const tool of tools.values()) {

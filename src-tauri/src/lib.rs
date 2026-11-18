@@ -9,10 +9,10 @@ use std::collections::BTreeMap;
 
 use odg_core::agent::{Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
-use odg_core::events::{Decision, Envelope};
+use odg_core::events::{Decision, Envelope, Image, check_images};
 use odg_core::grants::{GrantStore, Grants};
 use odg_core::policy::Mode;
-use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider};
+use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider, vision};
 use odg_core::session::{SessionStore, SessionSummary};
 use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore, SystemVault};
 use serde::Serialize;
@@ -42,6 +42,8 @@ struct SessionItem {
     context_limit: u64,
     /// The Git branch checked out in the workspace, when it is a repository.
     branch: Option<String>,
+    /// Whether the session's model takes pictures; `None` when its provider's documentation does not say.
+    vision: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -77,7 +79,8 @@ impl App {
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
         let context_limit = self.settings.load().context_limit_for(&summary.provider, &summary.model);
         let branch = odg_core::tools::git_branch(std::path::Path::new(&summary.workspace));
-        SessionItem { summary, status, context_limit, branch }
+        let vision = vision(&summary.provider, &summary.model);
+        SessionItem { summary, status, context_limit, branch, vision }
     }
 
     /// The live session, opening it from disk on first use. The map stays
@@ -159,12 +162,18 @@ async fn open_session(app: State<'_, App>, id: String) -> Result<SessionView, St
 
 /// Returns true when the message was queued behind a running turn.
 #[tauri::command]
-async fn send_message(app: State<'_, App>, id: String, text: String) -> Result<bool, String> {
+async fn send_message(app: State<'_, App>, id: String, text: String, images: Vec<Image>) -> Result<bool, String> {
     let text = text.trim().to_string();
-    if text.is_empty() {
+    if text.is_empty() && images.is_empty() {
         return Err("the message is empty".to_string());
     }
-    Ok(app.live(&id)?.send(text))
+    check_images(&images)?;
+    let session = app.live(&id)?;
+    let summary = session.summary();
+    if !images.is_empty() && vision(&summary.provider, &summary.model) == Some(false) {
+        return Err(format!("{} takes text only: remove the images, or start a session on a model that takes them", summary.model));
+    }
+    Ok(session.send_with(text, images))
 }
 
 #[tauri::command]

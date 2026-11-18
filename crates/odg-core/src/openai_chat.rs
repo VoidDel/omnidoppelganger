@@ -66,7 +66,18 @@ pub fn chat_messages(system: &str, messages: &[Value]) -> Vec<Value> {
                 out.push(json!({ "role": "tool", "tool_call_id": block["tool_use_id"], "content": block["content"] }));
             }
             let text: Vec<&str> = of("text").filter_map(|block| block["text"].as_str()).collect();
-            if !text.is_empty() {
+            let images: Vec<Value> = of("image")
+                .map(|block| {
+                    let source = &block["source"];
+                    let url = format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default());
+                    json!({ "type": "image_url", "image_url": { "url": url } })
+                })
+                .collect();
+            if !images.is_empty() {
+                // With pictures the content is a list of parts; a plain string cannot carry them.
+                let words = (!text.is_empty()).then(|| json!({ "type": "text", "text": text.join("\n\n") }));
+                out.push(json!({ "role": "user", "content": images.into_iter().chain(words).collect::<Vec<_>>() }));
+            } else if !text.is_empty() {
                 out.push(json!({ "role": "user", "content": text.join("\n\n") }));
             }
         }
@@ -517,5 +528,21 @@ mod tests {
 
         let generic = request_body(Flavor::Generic, &request(vec![]));
         assert!(generic.get("reasoning_effort").is_none() && generic.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn sends_images_as_parts_of_the_users_content() {
+        let image = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
+        let part = json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,aGk=" } });
+        let messages = chat_messages("sys", &[json!({ "role": "user", "content": [image.clone(), { "type": "text", "text": "what is this?" }] })]);
+        assert_eq!(messages[1], json!({ "role": "user", "content": [part.clone(), { "type": "text", "text": "what is this?" }] }));
+        // A picture alone, sent while tools ran: the tool results first, then the picture.
+        let result = json!({ "type": "tool_result", "tool_use_id": "c1", "content": "ok", "is_error": false });
+        let messages = chat_messages("sys", &[json!({ "role": "user", "content": [result, image] })]);
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[2], json!({ "role": "user", "content": [part] }));
+        // Without pictures the content stays a plain string.
+        let plain = chat_messages("sys", &[json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })]);
+        assert_eq!(plain[1], json!({ "role": "user", "content": "hi" }));
     }
 }

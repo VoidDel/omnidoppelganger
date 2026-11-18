@@ -15,7 +15,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::events::{Decision, Envelope, Event};
+use crate::events::{Decision, Envelope, Event, Image};
 use crate::grants::GrantStore;
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::policy::{self, Mode, Verdict};
@@ -67,8 +67,8 @@ pub const SUMMARIZE: &str = "The conversation has grown too long to continue as 
 struct State {
     status: Status,
     cancel: CancellationToken,
-    /// Messages sent while a turn runs; they join the conversation at the next step.
-    inbox: VecDeque<String>,
+    /// Messages sent while a turn runs, each with its pictures; they join the conversation at the next step.
+    inbox: VecDeque<(String, Vec<Image>)>,
     approvals: HashMap<String, oneshot::Sender<Decision>>,
     /// Grants the user allowed for the rest of this run of the app.
     grants: HashSet<String>,
@@ -217,9 +217,15 @@ impl<L: Llm> Session<L> {
     /// message is queued and joins at the next step without interrupting the
     /// current one. Returns true when it was queued.
     pub fn send(&self, text: String) -> bool {
+        self.send_with(text, Vec::new())
+    }
+
+    /// [`Session::send`] with pictures attached to the message. The caller
+    /// has checked them with [`crate::events::check_images`].
+    pub fn send_with(&self, text: String, images: Vec<Image>) -> bool {
         let mut state = self.inner.state.lock().unwrap();
         if state.status != Status::Idle {
-            state.inbox.push_back(text);
+            state.inbox.push_back((text, images));
             return true;
         }
         state.status = Status::Running;
@@ -228,7 +234,7 @@ impl<L: Llm> Session<L> {
         drop(state);
         self.inner.emit_status(Status::Running);
         let inner = self.inner.clone();
-        self.inner.runtime.spawn(async move { inner.run_turns(text, cancel).await });
+        self.inner.runtime.spawn(async move { inner.run_turns((text, images), cancel).await });
         false
     }
 
@@ -333,9 +339,9 @@ impl<L: Llm> Inner<L> {
     /// last step of a turn, or while a turn is being stopped, opens the next
     /// turn instead of being dropped. The inbox is checked and the status set
     /// under the same lock `send` takes, so no message falls between the two.
-    async fn run_turns(self: Arc<Self>, mut text: String, mut cancel: CancellationToken) {
+    async fn run_turns(self: Arc<Self>, mut message: (String, Vec<Image>), mut cancel: CancellationToken) {
         loop {
-            self.run_turn(text, &cancel).await;
+            self.run_turn(message, &cancel).await;
             let mut state = self.state.lock().unwrap();
             state.approvals.clear();
             let Some(next) = state.inbox.pop_front() else {
@@ -344,7 +350,7 @@ impl<L: Llm> Inner<L> {
                 self.emit_status(Status::Idle);
                 return;
             };
-            text = next;
+            message = next;
             state.cancel = CancellationToken::new();
             cancel = state.cancel.clone();
             let resumed = state.status != Status::Running;
@@ -356,11 +362,11 @@ impl<L: Llm> Inner<L> {
         }
     }
 
-    async fn run_turn(&self, text: String, cancel: &CancellationToken) {
+    async fn run_turn(&self, (text, images): (String, Vec<Image>), cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
         let opened = self
             .append(Event::TurnStart { turn })
-            .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode() }))
+            .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images }))
             .and_then(|()| self.refresh_instructions());
         let (reason, error) = match opened {
             Ok(()) => match self.run_steps(cancel).await {
@@ -449,9 +455,9 @@ impl<L: Llm> Inner<L> {
         // The provider refused the last request as too long, and the conversation was compacted for it.
         let mut overflowed = false;
         for _ in 0..MAX_STEPS {
-            let queued: Vec<String> = self.state.lock().unwrap().inbox.drain(..).collect();
-            for text in queued {
-                self.append(Event::UserMessage { text, steering: true, mode: self.mode() })?;
+            let queued: Vec<(String, Vec<Image>)> = self.state.lock().unwrap().inbox.drain(..).collect();
+            for (text, images) in queued {
+                self.append(Event::UserMessage { text, steering: true, mode: self.mode(), images })?;
             }
             if cancel.is_cancelled() {
                 return Ok("cancelled");
@@ -947,6 +953,28 @@ mod tests {
         fixture.idle().await;
         assert_eq!(loaded(&fixture).last(), Some(&("AGENTS.md".to_string(), String::new())));
         assert!(!fixture.llm.requests.lock().unwrap()[3].system.contains("project-instructions"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_message_carries_its_images_to_the_model_whether_it_opens_a_turn_or_joins_one() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut fixture = fixture(ScriptedLlm::new(vec![says("I see a login form."), says("And a chart.")], Some(gate.clone())));
+        let image = |data: &str| Image { media_type: "image/png".into(), data: data.into() };
+        assert!(!fixture.session.send_with("what is this?".into(), vec![image("Zmlyc3Q=")]));
+        while fixture.llm.requests.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // A second picture sent while the first request is in flight joins at the next step.
+        assert!(fixture.session.send_with(String::new(), vec![image("c2Vjb25k")]));
+        gate.add_permits(2);
+        fixture.idle().await;
+
+        let requests = fixture.llm.requests.lock().unwrap();
+        let block = |data: &str| json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": data } });
+        assert_eq!(requests[0].messages[0]["content"], json!([block("Zmlyc3Q="), { "type": "text", "text": "what is this?" }]));
+        // The picture sent alone is a message of that one block.
+        assert_eq!(requests[1].messages[2]["content"], json!([block("c2Vjb25k")]));
+        assert_eq!(fixture.end().0, "completed");
     }
 
     /// The texts of a request's messages, one list per message.

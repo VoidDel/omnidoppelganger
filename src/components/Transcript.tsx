@@ -407,7 +407,15 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
         return (
           <section key={row.key} className="turn">
             <div className="turn-said">
-              <div className={`original ${last && status === "running" ? "working" : ""}`}>{row.prompt.text}</div>
+              {row.prompt.images.length > 0 && (
+                <div className="shots">
+                  {row.prompt.images.map((image, at) => (
+                    <img key={at} src={`data:${image.media_type};base64,${image.data}`} alt={`本尊附的第 ${at + 1} 张图`} />
+                  ))}
+                </div>
+              )}
+              {/* A message of pictures alone has no words to show. */}
+              {(row.prompt.text || row.prompt.images.length === 0) && <div className={`original ${last && status === "running" ? "working" : ""}`}>{row.prompt.text}</div>}
               <span className="said-meta">
                 <span className="seal small" aria-hidden="true">
                   {row.prompt.steering ? "音" : "令"}
@@ -431,7 +439,7 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
       {queued.map((text, index) => (
         <section key={`queued-${index}`} className="turn">
           <div className="turn-said">
-            <div className="original queued">{text}</div>
+            <div className="original queued">{text || "（图）"}</div>
             <span className="said-meta">传音在途，分身做完这一步就会听到</span>
           </div>
           <div className="turn-did" />

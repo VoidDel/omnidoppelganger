@@ -22,6 +22,8 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const target = join(root, "target", "e2e");
 const executable = join(target, "debug", "omnidoppelganger.exe");
 const DEBUG_PORT = 9333;
+/** A one-pixel PNG, standing in for a pasted screenshot. */
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
 if (process.platform !== "win32") {
   console.error("The end-to-end test drives WebView2 and runs on Windows only.");
@@ -80,9 +82,18 @@ try {
   console.log("A turn with a file edit, a command that asks, and an undo");
   page = await connect(DEBUG_PORT);
   await page.click("选文件夹作洞府，化出分身");
+  // Paste a screenshot the way the system clipboard delivers one: a file on a paste event.
+  await page.waitFor("the message box", `!!document.querySelector("#composer-input")`);
+  await page.evaluate(`(() => {
+    const bytes = Uint8Array.from(atob(${JSON.stringify(PNG)}), (c) => c.charCodeAt(0));
+    const data = new DataTransfer();
+    data.items.add(new File([bytes], "shot.png", { type: "image/png" }));
+    document.querySelector("#composer-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  })()`);
+  await page.waitFor("the pasted image's thumbnail", `document.querySelectorAll(".attachment img").length === 1`);
   await page.type("#composer-input", "建一个 hello.txt，再跑个命令");
   await page.enter();
-  step("a session opens in the workspace and takes a message");
+  step("a session opens in the workspace and takes a message with a pasted screenshot");
 
   // The edit runs on its own in the default mode; the command waits for the user.
   await page.waitForText("准这一次");
@@ -95,6 +106,9 @@ try {
   const [first, second] = mock.requests.map((request) => request.body);
   check(mock.requests.length === 2 && mock.requests[0].headers["x-api-key"] === "e2e-key", "the model was asked twice, with the key");
   check(first.messages[0].content.some((block) => block.text === "建一个 hello.txt，再跑个命令"), "the first request carries the user's message");
+  const sent = first.messages[0].content[0];
+  check(sent.type === "image" && sent.source.media_type === "image/png" && sent.source.data === PNG, "the pasted screenshot reached the model unchanged, ahead of the text");
+  check((await page.evaluate(`document.querySelectorAll(".shots img").length`)) === 1, "the transcript shows the screenshot with the message");
   const results = second.messages[second.messages.length - 1].content.filter((block) => block.type === "tool_result");
   check(results.length === 3 && results.every((result) => !result.is_error), "the second request carries all three tool results");
   check(results[2].content.includes("e2e-ok") && !results[2].content.includes("\u001b"), "the command's output reached the model without color codes");

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
 import { MODES, modeOf, nextMode } from "../lib/modes";
-import type { Mode, SessionItem, Status, Todo } from "../lib/types";
+import type { Image, Mode, SessionItem, Status, Todo } from "../lib/types";
 
 /** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
 export function Mountains() {
@@ -287,9 +287,26 @@ export function SessionHeader({ session, onRename, onDelete }: SessionHeaderProp
   );
 }
 
+// What a message may carry, as the core checks it: these formats, this many, this large.
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const IMAGES_PER_MESSAGE = 8;
+// 5 MB of base64 is 3.75 MB of file.
+const IMAGE_BYTES = 3_700_000;
+
+/** A file's bytes in base64, without the `data:` prefix a reader puts in front. */
+const readBase64 = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
 interface ComposerProps {
   status: Status;
   model: string;
+  /** Whether the model takes pictures; null when that is not known, in which case they are sent. */
+  vision: boolean | null;
   mode: Mode;
   usage: Usage;
   /** The number of tokens at which the conversation is compacted. */
@@ -299,17 +316,37 @@ interface ComposerProps {
   onMode: (mode: Mode) => void;
   /** Switch to `mode`, then tell the 分身 to carry out its plan. */
   onCarryOut: (mode: Mode) => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, images: Image[]) => void;
   onStop: () => void;
 }
 
-export function Composer({ status, model, mode, usage, contextLimit, planReady, onMode, onCarryOut, onSend, onStop }: ComposerProps) {
+export function Composer({ status, model, vision, mode, usage, contextLimit, planReady, onMode, onCarryOut, onSend, onStop }: ComposerProps) {
   const [text, setText] = useState("");
+  const [images, setImages] = useState<Image[]>([]);
+  /** Why a picture was not taken, until the next attempt. */
+  const [refused, setRefused] = useState<string | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
   const busy = status !== "idle";
+  const empty = !text.trim() && images.length === 0;
   const submit = () => {
-    if (!text.trim()) return;
-    onSend(text);
+    if (empty) return;
+    onSend(text, images);
     setText("");
+    setImages([]);
+    setRefused(null);
+  };
+  /** Attach the pictures among `files`, saying why when one cannot be sent. */
+  const attach = async (files: File[]) => {
+    setRefused(null);
+    if (vision === false) return setRefused(`${model} 这门功法只认字，看不了图。换一门能看图的功法另化一个分身。`);
+    const taken: Image[] = [];
+    for (const file of files) {
+      if (!IMAGE_TYPES.includes(file.type)) setRefused("只能附 PNG、JPEG、GIF、WebP 格式的图。");
+      else if (file.size > IMAGE_BYTES) setRefused("这张图超过 3.7 MB，太大了，缩小或截小一点再附。");
+      else if (images.length + taken.length >= IMAGES_PER_MESSAGE) setRefused(`一次最多附 ${IMAGES_PER_MESSAGE} 张图。`);
+      else taken.push({ media_type: file.type, data: await readBase64(file) });
+    }
+    if (taken.length) setImages((current) => [...current, ...taken].slice(0, IMAGES_PER_MESSAGE));
   };
   return (
     <div className="composer">
@@ -338,6 +375,23 @@ export function Composer({ status, model, mode, usage, contextLimit, planReady, 
         )}
       </div>
       <div className="composer-box">
+        {(images.length > 0 || refused) && (
+          <div className="attachments">
+            {images.map((image, index) => (
+              <span className="attachment" key={index}>
+                <img src={`data:${image.media_type};base64,${image.data}`} alt={`要附的第 ${index + 1} 张图`} />
+                <button type="button" aria-label={`去掉第 ${index + 1} 张图`} onClick={() => setImages(images.filter((_, at) => at !== index))}>
+                  ×
+                </button>
+              </span>
+            ))}
+            {refused && (
+              <span className="refused" role="alert">
+                {refused}
+              </span>
+            )}
+          </div>
+        )}
         <label htmlFor="composer-input" className="sr-only">
           给分身的法旨
         </label>
@@ -347,6 +401,13 @@ export function Composer({ status, model, mode, usage, contextLimit, planReady, 
           value={text}
           placeholder={busy ? "给分身传一句音" : "吩咐一件事，回车传令"}
           onChange={(event) => setText(event.target.value)}
+          onPaste={(event) => {
+            // A pasted screenshot is attached; pasted text goes into the box as usual.
+            const files = [...event.clipboardData.items].filter((item) => item.kind === "file" && item.type.startsWith("image/")).flatMap((item) => item.getAsFile() ?? []);
+            if (files.length === 0) return;
+            event.preventDefault();
+            void attach(files);
+          }}
           onKeyDown={(event) => {
             // Enter sends; Shift+Enter breaks the line. Enter that confirms an input-method candidate does neither.
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -375,13 +436,39 @@ export function Composer({ status, model, mode, usage, contextLimit, planReady, 
               {shortCount(usage.context)} / {shortCount(contextLimit)}
             </span>
           </span>
+          <input
+            ref={picker}
+            type="file"
+            accept={IMAGE_TYPES.join(",")}
+            multiple
+            hidden
+            onChange={(event) => {
+              void attach([...(event.target.files ?? [])]);
+              // The same file can be picked again after being removed.
+              event.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="select-button"
+            disabled={vision === false}
+            title={vision === false ? `${model} 只认字，看不了图` : "附图给分身看，也可以直接把截图粘贴进输入框"}
+            onClick={() => picker.current?.click()}
+          >
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3" width="12" height="10" rx="1.5" />
+              <circle cx="5.7" cy="6.5" r="1.1" />
+              <path d="m2.5 11.5 3.2-3 2.3 2 2.5-2.7 3 3.2" />
+            </svg>
+            <span className="value">附图</span>
+          </button>
           <span className="spacer" />
           {busy && (
             <button type="button" className="button outline" onClick={onStop}>
               收回分身
             </button>
           )}
-          <button type="button" className="button primary" disabled={!text.trim()} onClick={submit}>
+          <button type="button" className="button primary" disabled={empty} onClick={submit}>
             {busy ? "传音" : "传令"}
           </button>
         </div>

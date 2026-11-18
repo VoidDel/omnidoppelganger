@@ -5,7 +5,7 @@ import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
 import { applyDelta, changedFiles, commandRuns, fold, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
-import type { Decision, Envelope, Mode, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
+import type { Decision, Envelope, Image, Mode, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
 interface State {
   sessions: SessionItem[];
@@ -169,9 +169,9 @@ export default function App() {
       fail(error);
     }
   };
-  const send = (text: string) => {
+  const send = (text: string, images: Image[] = []) => {
     if (!state.activeId) return;
-    api.sendMessage(state.activeId, text).then((queued) => queued && dispatch({ type: "queued", text: text.trim() }), fail);
+    api.sendMessage(state.activeId, text, images).then((queued) => queued && dispatch({ type: "queued", text: text.trim() }), fail);
   };
   const decide = (toolUseId: string, decision: Decision) => {
     if (state.activeId) api.resolveApproval(state.activeId, toolUseId, decision).catch(fail);
@@ -254,6 +254,7 @@ export default function App() {
             <Composer
               status={state.status}
               model={modelLabel(active)}
+              vision={active.vision}
               mode={active.mode}
               usage={spent}
               contextLimit={active.context_limit}
