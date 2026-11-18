@@ -1,13 +1,13 @@
 //! Undoing the agent's file edits.
 //!
-//! Before `edit_file` writes, it saves what the file held into the session's
+//! Before `edit_file` or `write_file` writes, it saves what the file held into the session's
 //! snapshot directory and records the snapshot's name in its result, with a
 //! fingerprint of what it wrote. Undoing from a turn on puts every file those
 //! edits touched back to what it held before the first of them. A file that
 //! no longer holds what the last edit wrote was changed by someone else
 //! since, and is left alone.
 //!
-//! Only `edit_file` is covered: what a command changed is not known here.
+//! Only those two tools are covered: what a command changed is not known here.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -70,7 +70,7 @@ pub fn plan(events: &[Envelope], turn: u64) -> Vec<FileUndo> {
         match &envelope.event {
             Event::TurnStart { turn } => current = *turn,
             Event::FilesRestored { turn: from, restored, .. } => edits.retain(|(turn, edit)| !(turn >= from && restored.contains(&edit.shown))),
-            Event::ToolResult { tool, is_error: false, meta, .. } if tool == "edit_file" => {
+            Event::ToolResult { tool, is_error: false, meta, .. } if crate::tools::edits_files(tool) => {
                 // An edit logged before snapshots existed has none, and cannot be undone.
                 if let (Some(file), Some(shown), Some(after)) = (meta["file"].as_str(), meta["path"].as_str(), meta["after"].as_str()) {
                     let before = meta["before"].as_str().map(str::to_string);

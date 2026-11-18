@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::safety::{self, Dialect};
-use crate::tools::{in_git_directory, inside_workspace, resolve};
+use crate::tools::{edits_files, in_git_directory, inside_workspace, resolve};
 
 /// How much the agent does without asking. A session starts in the mode
 /// chosen in settings, and the user can switch it at any time.
@@ -72,16 +72,16 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             }
             Verdict::Ask { reason: "command", detail: command.to_string(), grant: command_grant(command) }
         }
-        "edit_file" if mode == Mode::Plan => Verdict::Refuse(PLAN_REFUSAL),
-        "edit_file" if in_git_directory(workspace, &path("path")) => {
+        tool if edits_files(tool) && mode == Mode::Plan => Verdict::Refuse(PLAN_REFUSAL),
+        tool if edits_files(tool) && in_git_directory(workspace, &path("path")) => {
             Verdict::Ask { reason: "git_write", detail: path("path").to_string_lossy().into_owned(), grant: None }
         }
-        "edit_file" => match outside("path") {
+        tool if edits_files(tool) => match outside("path") {
             Some(path) => ask("outside_write", path),
             None if mode == Mode::Manual => ask("edit", path("path").to_string_lossy().into_owned()),
             None => Verdict::Allow,
         },
-        "read_file" | "search" => match outside("path") {
+        "read_file" | "search" | "find_files" => match outside("path") {
             Some(path) => ask("outside_read", path),
             None => Verdict::Allow,
         },
@@ -156,6 +156,10 @@ mod tests {
             (Mode::Auto, None, None, Some("command")),
         ] {
             assert_eq!(decide(mode, "edit_file", &edit), edits, "{mode:?}");
+            // Writing a whole file is decided like an edit; finding files like a read.
+            assert_eq!(decide(mode, "write_file", &json!({ "path": "src/a.rs", "content": "x" })), edits, "{mode:?}");
+            assert_eq!(decide(mode, "find_files", &json!({ "glob": "**/*.rs" })), None, "{mode:?}");
+            assert_eq!(decide(mode, "find_files", &json!({ "path": ".." })), Some("outside_read"), "{mode:?}");
             assert_eq!(decide(mode, "run_command", &safe), safe_command, "{mode:?}");
             assert_eq!(decide(mode, "run_command", &risky), risky_command, "{mode:?}");
             // Reading inside runs and reading outside asks, whatever the mode.

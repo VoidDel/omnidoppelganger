@@ -41,6 +41,13 @@ describe("undo", () => {
     expect(undone[2].items[undone[2].items.length - 1]).toEqual({ kind: "restored", turn: 2, restored: ["b.rs"], skipped: [] });
   });
 
+  it("treats a whole-file write like an edit", () => {
+    const written: SessionEvent[] = [said(call("w1", "write_file", { path: "c.rs", content: "x" })), result("w1", "write_file", { path: "c.rs", added: 1, removed: 0, after: "f" })];
+    const rows = fold(log(turn(1), user("one"), ...written));
+    expect(changedFiles(rows).map((file) => file.path)).toEqual(["c.rs"]);
+    expect([...undoableTurns(rows)]).toEqual([1]);
+  });
+
   it("offers nothing for edits logged before snapshots existed", () => {
     expect(undoableTurns(fold(log(turn(1), user("one"), ...edit("t1", "a.rs", 1, 0)))).size).toBe(0);
   });

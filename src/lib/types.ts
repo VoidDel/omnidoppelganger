@@ -45,6 +45,9 @@ export interface ToolMeta {
   lines?: number;
   shown?: number;
   pattern?: string;
+  glob?: string;
+  /** How many files or directory entries `find_files` returned. */
+  entries?: number;
   matches?: number;
   files?: number;
   truncated?: boolean;

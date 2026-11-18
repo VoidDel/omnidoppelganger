@@ -35,6 +35,9 @@ export interface Row {
   items: Item[];
 }
 
+/** Whether a tool changes files: its result carries a diff and can be undone. */
+export const editsFiles = (name: string) => name === "edit_file" || name === "write_file";
+
 function blockItem(block: ContentBlock, turn: number): Item | null {
   switch (block.type) {
     case "text":
@@ -66,7 +69,7 @@ export function fold(events: Envelope[]): Row[] {
         break;
       case "files/restored":
         for (const tool of tools.values()) {
-          if (tool.turn >= event.data.turn && tool.name === "edit_file" && event.data.restored.includes(tool.result?.meta?.path ?? "")) tool.undone = true;
+          if (tool.turn >= event.data.turn && editsFiles(tool.name) && event.data.restored.includes(tool.result?.meta?.path ?? "")) tool.undone = true;
         }
         current()?.items.push({ kind: "restored", turn: event.data.turn, restored: event.data.restored, skipped: event.data.skipped });
         break;
@@ -186,7 +189,7 @@ export interface ChangedFile {
 export function changedFiles(rows: Row[]): ChangedFile[] {
   const files = new Map<string, ChangedFile>();
   for (const item of rows.flatMap((row) => row.items)) {
-    if (item.kind !== "tool" || item.name !== "edit_file" || !item.result || item.result.isError || item.undone) continue;
+    if (item.kind !== "tool" || !editsFiles(item.name) || !item.result || item.result.isError || item.undone) continue;
     const meta = item.result.meta;
     if (!meta?.path) continue;
     const file = files.get(meta.path) ?? { path: meta.path, added: 0, removed: 0 };
@@ -198,7 +201,7 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
 }
 
 /** An edit the user can still undo: it succeeded, has a snapshot, and was not undone. */
-const undoable = (item: Item) => item.kind === "tool" && item.name === "edit_file" && !!item.result && !item.result.isError && !!item.result.meta?.after && !item.undone;
+const undoable = (item: Item) => item.kind === "tool" && editsFiles(item.name) && !!item.result && !item.result.isError && !!item.result.meta?.after && !item.undone;
 
 /**
  * The turns from which undoing would restore something: each turn that has

@@ -511,10 +511,10 @@ impl<L: Llm> Inner<L> {
                     // while the user decides. They stop at an edit: a read after one may
                     // be there to read what the edit wrote.
                     for (later_id, later_name, later_input) in &calls[index + 1..] {
-                        if later_name == "edit_file" {
+                        if tools::edits_files(later_name) {
                             break;
                         }
-                        let reads = matches!(later_name.as_str(), "read_file" | "search") && !message.invalid_tool_inputs.contains_key(later_id);
+                        let reads = matches!(later_name.as_str(), "read_file" | "search" | "find_files") && !message.invalid_tool_inputs.contains_key(later_id);
                         if !reads || policy::check(self.mode(), later_name, later_input, &self.workspace) != Verdict::Allow {
                             continue;
                         }
@@ -684,7 +684,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].effort, "high");
         assert_eq!((requests[0].provider.as_str(), requests[0].session.as_str()), ("anthropic", fixture.session.id()));
-        assert_eq!(requests[0].tools.len(), 4);
+        assert_eq!(requests[0].tools.len(), tools::specs().len());
         assert!(requests[0].system.contains(&fixture.workspace.path().display().to_string()));
         // The second request carries the whole conversation: user, assistant tool call, tool result.
         assert_eq!(requests[1].messages.len(), 3);
@@ -845,7 +845,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         // The summary is asked for at the end of the conversation as it was, tools included.
         assert_eq!(texts(&requests[1]), [vec!["one".to_string()], vec!["first answer".into()], vec!["two".into(), SUMMARIZE.into()]]);
-        assert_eq!(requests[1].tools.len(), 4);
+        assert_eq!(requests[1].tools.len(), tools::specs().len());
         // The step then starts over from the summary and the message not yet answered.
         let summary = format!("{}\n\nThe user said one; I answered.", crate::session::COMPACTED);
         assert_eq!(texts(&requests[2]), [vec![summary, "two".to_string()]]);

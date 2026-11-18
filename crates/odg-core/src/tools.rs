@@ -1,4 +1,5 @@
-//! The four tools of the first version: read a file, search, edit a file, run a command.
+//! The tools: read a file, search file contents, find files by name, edit a
+//! file, write a whole file, run a command.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -18,6 +19,7 @@ const LINE_CHARS: usize = 2000;
 /// read must stay far below the context window.
 const READ_OUTPUT_CHARS: usize = 100_000;
 const SEARCH_RESULTS: usize = 200;
+const FIND_RESULTS: usize = 500;
 const SEARCH_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const COMMAND_OUTPUT_CHARS: usize = 30_000;
 const COMMAND_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -104,17 +106,53 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "find_files",
+            "description": "List a directory, or find files by name. Without `glob`, lists what `path` holds, one level deep, with a trailing `/` on directories. With `glob`, returns every file below `path` whose path matches, for example `**/*.rs` or `**/test_*.py`, skipping what .gitignore excludes. Use it to learn a project's layout or to locate a file whose name you know; use `search` to look inside files.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to list or search below. Default: the workspace." },
+                    "glob": { "type": "string", "description": "Glob the file's path, relative to the workspace, must match." }
+                }
+            }
+        }),
+        json!({
             "name": "edit_file",
-            "description": "Replace an exact piece of text in a file, or create a file. `old_string` must match the file exactly and occur once unless `replace_all` is true. To create a new file, pass an empty `old_string` and the full contents as `new_string`.",
+            "description": "Replace an exact piece of text in a file, or create a file. `old_string` must match the file exactly and occur once unless `replace_all` is true. To create a new file, pass an empty `old_string` and the full contents as `new_string`. To make several changes to one file in one call, pass `edits` instead of `old_string` and `new_string`: they apply in order, each to the result of the one before, and nothing is written unless all of them apply.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path, absolute or relative to the workspace." },
                     "old_string": { "type": "string", "description": "Exact text to replace. Empty to create a new file." },
                     "new_string": { "type": "string", "description": "Replacement text." },
-                    "replace_all": { "type": "boolean", "description": "Replace every occurrence. Default false." }
+                    "replace_all": { "type": "boolean", "description": "Replace every occurrence. Default false." },
+                    "edits": {
+                        "type": "array",
+                        "description": "Several replacements for this file, instead of `old_string` and `new_string`.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": { "type": "string", "description": "Exact text to replace." },
+                                "new_string": { "type": "string", "description": "Replacement text." },
+                                "replace_all": { "type": "boolean", "description": "Replace every occurrence. Default false." }
+                            },
+                            "required": ["old_string", "new_string"]
+                        }
+                    }
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "write_file",
+            "description": "Write a whole file: create it, or replace everything it holds with `content`. Use it for a new file or for rewriting most of one. To change part of a file use `edit_file`, which sends less and leaves a smaller diff to review.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path, absolute or relative to the workspace." },
+                    "content": { "type": "string", "description": "The file's full new contents." }
+                },
+                "required": ["path", "content"]
             }
         }),
         json!({
@@ -201,7 +239,9 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
     let result = match name {
         "read_file" => read_file(input, context),
         "edit_file" => edit_file(input, context),
+        "write_file" => write_file(input, context),
         "search" => search(input, context).await,
+        "find_files" => find_files(input, context).await,
         "run_command" => run_command(input, context).await,
         other => Err(ToolOutput::error(format!("Unknown tool `{other}`."))),
     };
@@ -213,7 +253,7 @@ fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
     let shown = display(&context.workspace, &path);
     let metadata = std::fs::metadata(&path).map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?;
     if metadata.is_dir() {
-        return Err(ToolOutput::error(format!("{shown} is a directory. Use `search` or `run_command` to list it.")));
+        return Err(ToolOutput::error(format!("{shown} is a directory. Use `find_files` to list it.")));
     }
     if metadata.len() > READ_FILE_BYTES {
         return Err(ToolOutput::error(format!("{shown} is {} bytes, over the {READ_FILE_BYTES}-byte limit.", metadata.len())));
@@ -256,62 +296,48 @@ fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
     Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines.len(), "shown": selected.len() })))
 }
 
-fn edit_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
-    let path = resolve(&context.workspace, string_arg(input, "path")?);
-    let shown = display(&context.workspace, &path);
-    let old = string_arg(input, "old_string")?.replace("\r\n", "\n");
-    let new = string_arg(input, "new_string")?.replace("\r\n", "\n");
-    let replace_all = input["replace_all"].as_bool().unwrap_or(false);
+/// Whether a tool changes files, and so is decided, snapshotted, and undone like an edit.
+pub fn edits_files(tool: &str) -> bool {
+    matches!(tool, "edit_file" | "write_file")
+}
 
-    let existing = match std::fs::read(&path) {
-        Ok(bytes) => Some(String::from_utf8(bytes).map_err(|_| ToolOutput::error(format!("{shown} is not UTF-8 text.")))?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
-    };
-    // Matching happens on LF text; a file that used CRLF gets CRLF back.
-    let crlf = existing.as_deref().is_some_and(|text| text.contains("\r\n"));
-    let before = existing.as_deref().map(|text| text.replace("\r\n", "\n"));
-
-    let after = match (&before, old.is_empty()) {
-        (None, true) => new.clone(),
-        (None, false) => return Err(ToolOutput::error(format!("{shown} does not exist. To create it, pass an empty `old_string`."))),
-        (Some(text), true) if text.is_empty() => new.clone(),
-        (Some(_), true) => return Err(ToolOutput::error(format!("{shown} already exists. Pass the text to replace as `old_string`."))),
-        (Some(text), false) => match text.matches(old.as_str()).count() {
-            0 => return Err(ToolOutput::error(format!("`old_string` was not found in {shown}. Read the file again and copy the text exactly."))),
-            1 => text.replacen(old.as_str(), &new, 1),
-            _ if replace_all => text.replace(old.as_str(), &new),
-            count => {
-                return Err(ToolOutput::error(format!(
-                    "`old_string` occurs {count} times in {shown}. Include more surrounding text to make it unique, or set `replace_all`."
-                )));
-            }
-        },
-    };
-    if before.as_deref() == Some(after.as_str()) {
-        return Err(ToolOutput::error(format!("The edit leaves {shown} unchanged.")));
+/// A text file as it is on disk: `None` when it does not exist.
+fn read_existing(path: &Path, shown: &str) -> Result<Option<String>, ToolOutput> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(String::from_utf8(bytes).map_err(|_| ToolOutput::error(format!("{shown} is not UTF-8 text.")))?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
     }
+}
 
+/// Write `after` (LF text) over what the file held, after saving that for
+/// undo, and describe the change. A file that used CRLF gets CRLF back.
+fn write_change(context: &ToolContext, path: &Path, shown: &str, existing: Option<&str>, after: &str) -> Result<ToolOutput, ToolOutput> {
+    let crlf = existing.is_some_and(|text| text.contains("\r\n"));
+    let before = existing.map(|text| text.replace("\r\n", "\n"));
+    if before.as_deref() == Some(after) {
+        return Err(ToolOutput::error(format!("The change leaves {shown} as it is.")));
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot create {}: {error}", parent.display())))?;
     }
-    let written = if crlf { after.replace('\n', "\r\n") } else { after.clone() };
-    // The snapshot comes first: an edit that could not be undone is not made.
-    let snapshot = match (&context.snapshots, &existing) {
+    let written = if crlf { after.replace('\n', "\r\n") } else { after.to_string() };
+    // The snapshot comes first: a change that could not be undone is not made.
+    let snapshot = match (&context.snapshots, existing) {
         (Some(directory), Some(original)) => {
             Some(crate::undo::save(directory, original.as_bytes()).map_err(|error| ToolOutput::error(format!("Cannot save {shown} before changing it: {error}")))?)
         }
         _ => None,
     };
-    crate::fsutil::write_atomically(&path, written.as_bytes()).map_err(|error| ToolOutput::error(format!("Cannot write {shown}: {error}")))?;
+    crate::fsutil::write_atomically(path, written.as_bytes()).map_err(|error| ToolOutput::error(format!("Cannot write {shown}: {error}")))?;
 
     let created = before.is_none();
-    let diff = line_diff(before.as_deref().unwrap_or(""), &after);
+    let diff = line_diff(before.as_deref().unwrap_or(""), after);
     let (added, removed) = (diff.added, diff.removed);
     let summary = if created {
         format!("Created {shown} ({added} lines).")
     } else {
-        format!("Edited {shown}: {added} lines added, {removed} lines removed.")
+        format!("Changed {shown}: {added} lines added, {removed} lines removed.")
     };
     let mut meta = json!({ "path": shown, "created": created, "added": added, "removed": removed, "hunk": diff.hunk });
     if context.snapshots.is_some() {
@@ -321,6 +347,117 @@ fn edit_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
         meta["after"] = json!(crate::undo::fingerprint(written.as_bytes()));
     }
     Ok(ToolOutput::ok(summary, meta))
+}
+
+fn edit_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let path = resolve(&context.workspace, string_arg(input, "path")?);
+    let shown = display(&context.workspace, &path);
+    // One edit in the call's own fields, or several in `edits`.
+    let single = [input.clone()];
+    let edits: &[Value] = match input["edits"].as_array() {
+        Some(edits) if edits.is_empty() => return Err(ToolOutput::error("`edits` is empty.")),
+        Some(edits) => edits,
+        None => &single,
+    };
+    let existing = read_existing(&path, &shown)?;
+    // Matching happens on LF text.
+    let mut text = existing.as_deref().map(|text| text.replace("\r\n", "\n"));
+    for (index, edit) in edits.iter().enumerate() {
+        // Which edit failed matters only when there are several.
+        let failed = |message: String| ToolOutput::error(if edits.len() > 1 { format!("Edit {} of {}: {message} Nothing was written.", index + 1, edits.len()) } else { message });
+        let old = string_arg(edit, "old_string")?.replace("\r\n", "\n");
+        let new = string_arg(edit, "new_string")?.replace("\r\n", "\n");
+        let replace_all = edit["replace_all"].as_bool().unwrap_or(false);
+        text = Some(match (&text, old.is_empty()) {
+            (None, true) => new,
+            (None, false) => return Err(failed(format!("{shown} does not exist. To create it, pass an empty `old_string`."))),
+            (Some(current), true) if current.is_empty() => new,
+            (Some(_), true) => return Err(failed(format!("{shown} already exists. Pass the text to replace as `old_string`."))),
+            (Some(current), false) => match current.matches(old.as_str()).count() {
+                0 => return Err(failed(format!("`old_string` was not found in {shown}. Read the file again and copy the text exactly."))),
+                1 => current.replacen(old.as_str(), &new, 1),
+                _ if replace_all => current.replace(old.as_str(), &new),
+                count => return Err(failed(format!("`old_string` occurs {count} times in {shown}. Include more surrounding text to make it unique, or set `replace_all`."))),
+            },
+        });
+    }
+    write_change(context, &path, &shown, existing.as_deref(), &text.unwrap_or_default())
+}
+
+fn write_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let path = resolve(&context.workspace, string_arg(input, "path")?);
+    let shown = display(&context.workspace, &path);
+    let content = string_arg(input, "content")?.replace("\r\n", "\n");
+    if path.is_dir() {
+        return Err(ToolOutput::error(format!("{shown} is a directory.")));
+    }
+    let existing = read_existing(&path, &shown)?;
+    write_change(context, &path, &shown, existing.as_deref(), &content)
+}
+
+async fn find_files(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let root = match input["path"].as_str() {
+        Some(path) => resolve(&context.workspace, path),
+        None => context.workspace.clone(),
+    };
+    let shown = display(&context.workspace, &root);
+    let shown = if shown.is_empty() { ".".to_string() } else { shown };
+    if !root.is_dir() {
+        return Err(ToolOutput::error(format!("{shown} is not a directory.")));
+    }
+    let Some(glob) = input["glob"].as_str() else {
+        // One level, as it is on disk: what .gitignore excludes is listed too.
+        let entries = std::fs::read_dir(&root).map_err(|error| ToolOutput::error(format!("Cannot list {shown}: {error}")))?;
+        let mut names: Vec<String> = entries
+            .filter_map(Result::ok)
+            .map(|entry| format!("{}{}", entry.file_name().to_string_lossy(), if entry.file_type().is_ok_and(|kind| kind.is_dir()) { "/" } else { "" }))
+            .collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        let total = names.len();
+        names.truncate(FIND_RESULTS);
+        let mut content = if names.is_empty() { format!("{shown} is empty.") } else { names.join("\n") };
+        if total > FIND_RESULTS {
+            content.push_str(&format!("\n[showing {FIND_RESULTS} of {total} entries]"));
+        }
+        return Ok(ToolOutput::ok(content, json!({ "path": shown, "entries": names.len(), "truncated": total > FIND_RESULTS })));
+    };
+    let matcher = globset::GlobBuilder::new(glob)
+        .literal_separator(false)
+        .build()
+        .map_err(|error| ToolOutput::error(format!("Invalid glob: {error}")))?
+        .compile_matcher();
+    let workspace = context.workspace.clone();
+    let cancel = context.cancel.clone();
+    let task = tokio::task::spawn_blocking(move || {
+        let mut found: Vec<String> = Vec::new();
+        let mut truncated = false;
+        // Dot files count (`.github/workflows/ci.yml` is a file one looks for); Git's own directory does not.
+        let walk = ignore::WalkBuilder::new(&root).hidden(false).filter_entry(|entry| entry.file_name() != ".git").build();
+        for entry in walk.filter_map(Result::ok) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let path = display(&workspace, entry.path());
+            if matcher.is_match(&path) {
+                if found.len() == FIND_RESULTS {
+                    truncated = true;
+                    break;
+                }
+                found.push(path);
+            }
+        }
+        found.sort_by_key(|path| path.to_lowercase());
+        (found, truncated)
+    });
+    let (found, truncated) = task.await.map_err(|error| ToolOutput::error(format!("Finding files failed: {error}")))?;
+    let mut content = if found.is_empty() { format!("No file below {shown} matches `{glob}`.") } else { found.join("\n") };
+    if truncated {
+        content.push_str(&format!("\n[stopped at {FIND_RESULTS} files; narrow the glob or the path]"));
+    }
+    Ok(ToolOutput::ok(content, json!({ "path": shown, "glob": glob, "entries": found.len(), "truncated": truncated })))
 }
 
 struct LineDiff {
@@ -691,6 +828,70 @@ mod tests {
         assert_eq!(strip_ansi("\u{1b}]8;;https://x\u{1b}\\link\u{1b}]8;;\u{1b}\\"), "link");
         assert_eq!(strip_ansi("a\u{1b}(Bb\u{1b}[?25lc"), "abc");
         assert_eq!(strip_ansi("no escapes, 分身"), "no escapes, 分身");
+    }
+
+    #[tokio::test]
+    async fn finds_files_by_listing_a_directory_or_by_glob() {
+        let (directory, context) = context();
+        let root = directory.path();
+        for file in ["src/main.rs", "src/lexer/mod.rs", "src/lexer/notes.txt", ".github/workflows/ci.yml", ".git/config", "target/debug/app.rs", "README.md"] {
+            std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+
+        // A listing is one level, as it is on disk, directories marked.
+        let listed = execute("find_files", &json!({}), &context).await;
+        assert_eq!(listed.content, ".git/\n.github/\n.gitignore\nREADME.md\nsrc/\ntarget/");
+        assert_eq!(execute("find_files", &json!({ "path": "src/lexer" }), &context).await.content, "mod.rs\nnotes.txt");
+
+        // A glob walks below, skipping what Git ignores and Git's own directory, but not other dot directories.
+        let rust = execute("find_files", &json!({ "glob": "**/*.rs" }), &context).await;
+        assert_eq!(rust.content, "src/lexer/mod.rs\nsrc/main.rs");
+        assert_eq!(rust.meta["entries"], 2);
+        assert_eq!(execute("find_files", &json!({ "glob": "**/*.yml" }), &context).await.content, ".github/workflows/ci.yml");
+        assert_eq!(execute("find_files", &json!({ "glob": "*config*" }), &context).await.content, "No file below . matches `*config*`.");
+        assert_eq!(execute("find_files", &json!({ "path": "src", "glob": "**/mod.rs" }), &context).await.content, "src/lexer/mod.rs");
+
+        assert!(execute("find_files", &json!({ "path": "README.md" }), &context).await.is_error);
+        assert!(execute("find_files", &json!({ "glob": "[" }), &context).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn writes_a_whole_file_and_applies_several_edits_or_none() {
+        let (directory, mut context) = context();
+        let snapshots = directory.path().join("snapshots");
+        context.snapshots = Some(snapshots.clone());
+        let file = directory.path().join("notes/a.txt");
+
+        let created = execute("write_file", &json!({ "path": "notes/a.txt", "content": "one\ntwo\nthree\n" }), &context).await;
+        assert!(!created.is_error && created.meta["created"] == true && created.meta["before"].is_null(), "{}", created.content);
+        // Overwriting saves what was there, like an edit does.
+        let rewritten = execute("write_file", &json!({ "path": "notes/a.txt", "content": "alpha\ntwo\nomega\n" }), &context).await;
+        assert_eq!((rewritten.meta["added"].as_u64(), rewritten.meta["removed"].as_u64()), (Some(3), Some(3)));
+        let saved = snapshots.join(rewritten.meta["before"].as_str().unwrap());
+        assert_eq!(std::fs::read_to_string(saved).unwrap(), "one\ntwo\nthree\n");
+        assert!(execute("write_file", &json!({ "path": "notes/a.txt", "content": "alpha\ntwo\nomega\n" }), &context).await.is_error);
+        assert!(execute("write_file", &json!({ "path": "notes", "content": "x" }), &context).await.is_error);
+
+        // Several edits apply in order, each to the result of the one before.
+        let edits = json!({ "path": "notes/a.txt", "edits": [
+            { "old_string": "alpha", "new_string": "first" },
+            { "old_string": "first\ntwo", "new_string": "first\nsecond" },
+        ] });
+        let edited = execute("edit_file", &edits, &context).await;
+        assert!(!edited.is_error, "{}", edited.content);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "first\nsecond\nomega\n");
+
+        // One that does not apply stops all of them: the file stays as it was.
+        let failing = json!({ "path": "notes/a.txt", "edits": [
+            { "old_string": "omega", "new_string": "last" },
+            { "old_string": "missing", "new_string": "x" },
+        ] });
+        let failed = execute("edit_file", &failing, &context).await;
+        assert!(failed.is_error && failed.content.starts_with("Edit 2 of 2: `old_string` was not found") && failed.content.ends_with("Nothing was written."), "{}", failed.content);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "first\nsecond\nomega\n");
+        assert!(execute("edit_file", &json!({ "path": "notes/a.txt", "edits": [] }), &context).await.is_error);
     }
 
     #[test]

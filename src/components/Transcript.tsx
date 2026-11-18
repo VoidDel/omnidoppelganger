@@ -51,7 +51,10 @@ function sealOf(tool: ToolItem): string {
       return "读";
     case "search":
       return "搜";
+    case "find_files":
+      return "寻";
     case "edit_file":
+    case "write_file":
       return tool.result?.meta?.created ? "建" : "改";
     case "run_command":
       return "行";
@@ -76,9 +79,16 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         target: text("pattern"),
         outcome: waiting || (result!.isError ? "搜索失败" : `${meta?.matches ?? 0} 处${meta?.truncated ? "以上" : ""}`),
       };
-    case "edit_file":
+    case "find_files":
       return {
-        verb: meta?.created ? "新建" : "修改",
+        verb: text("glob") ? "查找" : "列出",
+        target: text("glob") || text("path") || "洞府",
+        outcome: waiting || (result!.isError ? "没找成" : `${meta?.entries ?? 0} 项${meta?.truncated ? "以上" : ""}`),
+      };
+    case "edit_file":
+    case "write_file":
+      return {
+        verb: meta?.created ? "新建" : tool.name === "write_file" ? "重写" : "修改",
         target: text("path"),
         outcome: waiting || (result!.isError ? "没改成" : `加 ${meta?.added ?? 0} 行，删 ${meta?.removed ?? 0} 行`),
       };
@@ -119,7 +129,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
-  edit: { title: "分身要改一个文件，请本尊定夺", note: "眼下的禁制是步步请示，每次改文件都先请示。", always: "之后改文件都准" },
+  edit: { title: "分身要改一个文件，请本尊定夺", note: "眼下的禁制是步步请示，每次改文件都先请示。整文件写入时，下面是它要写进去的全部内容。", always: "之后改文件都准" },
   outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
   outside_read: { title: "分身要读洞府之外的内容，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类读取都准" },
   git_write: {
@@ -138,7 +148,10 @@ function alwaysLabel(grant: string, fallback: string): string {
 function proposed(tool: ToolItem): DiffHunk | null {
   const text = (name: string) => (typeof tool.input[name] === "string" ? (tool.input[name] as string) : "");
   const lines = (value: string, kind: "-" | "+") => (value ? value.replace(/\n$/, "").split("\n").map((line) => ({ kind, text: line })) : []);
-  const changed = [...lines(text("old_string"), "-"), ...lines(text("new_string"), "+")];
+  // One edit in the call's own fields, several in `edits`, or a whole file's new contents.
+  const edits = Array.isArray(tool.input.edits) ? (tool.input.edits as Record<string, unknown>[]) : [tool.input];
+  const of = (edit: Record<string, unknown>, name: string) => (typeof edit[name] === "string" ? (edit[name] as string) : "");
+  const changed = tool.name === "write_file" ? lines(text("content"), "+") : edits.flatMap((edit) => [...lines(of(edit, "old_string"), "-"), ...lines(of(edit, "new_string"), "+")]);
   return changed.length ? { old_start: 0, new_start: 0, lines: changed } : null;
 }
 
