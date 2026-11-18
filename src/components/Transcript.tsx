@@ -18,6 +18,22 @@ function Diff({ hunk }: { hunk: DiffHunk }) {
   );
 }
 
+/** The single character stamped on a tool card: read, search, edit, create, run. */
+function sealOf(tool: ToolItem): string {
+  switch (tool.name) {
+    case "read_file":
+      return "读";
+    case "search":
+      return "搜";
+    case "edit_file":
+      return tool.result?.meta?.created ? "建" : "改";
+    case "run_command":
+      return "行";
+    default:
+      return "术";
+  }
+}
+
 /** What a finished or running tool call says in its one-line header. */
 function describe(tool: ToolItem): { verb: string; target: string; outcome: string } {
   const text = (name: string) => (typeof tool.input[name] === "string" ? (tool.input[name] as string) : "");
@@ -61,6 +77,9 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   return (
     <div className="did">
       <button type="button" className="did-head" aria-expanded={body ? open : undefined} disabled={!body} onClick={() => setOpen(!open)}>
+        <span className="seal" aria-hidden="true">
+          {sealOf(tool)}
+        </span>
         <span className="verb">{verb}</span>
         <span className="target" title={target}>
           {target}
@@ -89,7 +108,7 @@ function SignSheet({ tool, onDecide }: { tool: ToolItem; onDecide: (toolUseId: s
         <button type="button" className="button solid" onClick={() => onDecide(tool.id, "allow_once")}>
           准这一次
         </button>
-        <button type="button" className="button outline" onClick={() => onDecide(tool.id, "allow_session")}>
+        <button type="button" className="button outline red" onClick={() => onDecide(tool.id, "allow_session")}>
           {ask.always}
         </button>
         <button type="button" className="button text" onClick={() => onDecide(tool.id, "deny")}>
@@ -160,6 +179,9 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
         ) : (
           <div key={block.index} className="did">
             <div className="did-head">
+              <span className="seal" aria-hidden="true">
+                起
+              </span>
               <span className="verb">起手</span>
               <span className="target">{block.name}</span>
               <span className="outcome">蓄势中</span>
@@ -203,8 +225,13 @@ export function Transcript({ rows, stream, queued, status, onDecide }: Props) {
             <div className="turn-said">
               <div className={`original ${last && status === "running" ? "working" : ""}`}>{row.prompt.text}</div>
               <span className="said-meta">
-                本尊，{time(row.prompt.ts)}
-                {row.prompt.steering ? "，中途传音" : ""}
+                <span className="seal small" aria-hidden="true">
+                  {row.prompt.steering ? "音" : "令"}
+                </span>
+                <span>
+                  本尊，{time(row.prompt.ts)}
+                  {row.prompt.steering ? "，中途传音" : ""}
+                </span>
               </span>
             </div>
             <div className="turn-did">

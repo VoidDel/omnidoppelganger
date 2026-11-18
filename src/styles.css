@@ -1,69 +1,73 @@
-/* The "复写" look: paper colour says who did what.
-   White sheet = what the user said, canary = what the agent did, pink = waiting for the user's signature. */
+/* The "符箓" look. Material says who did what:
+   moon-white paper = what 本尊 said, yellow talisman paper = what the 分身 did,
+   cinnabar = waiting for 本尊 to decide. Jade is the colour of sending an order. */
 
 :root {
-  --bg: #f3f4f9;
-  --bg-side: #e8eaf2;
-  --panel: #ffffff;
-  --sheet: #ffffff;
-  --sheet-line: #1c1842;
-  --ink: #1c1842;
-  --ink-2: #55527a;
-  --ink-3: #4a4770;
-  --line: #d5d8e6;
-  --line-strong: #8f93b3;
-  --control: #f3f4f9;
-  --violet: #5b3cc4;
-  --violet-ink: #ffffff;
-  --violet-tint: #ece8fb;
-  --violet-tint-ink: #3f2896;
-  --canary: #fff4bf;
-  --canary-line: #e3cb62;
-  --canary-under: #f2d34b;
-  --canary-ink: #5c4a00;
-  --pink: #ffdde4;
-  --pink-line: #b4234f;
-  --pink-soft: #e7a3b5;
-  --pink-ink: #8e1b3f;
-  --pink-under: #ffb8c6;
-  --removed: #edeef5;
-  --solid: #1c1842;
-  --solid-ink: #ffffff;
-  --mark-front: #ffffff;
-  --sans: "Atkinson Hyperlegible Next", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
-  --mono: "Atkinson Hyperlegible Mono", "PingFang SC", "Microsoft YaHei UI", ui-monospace, Consolas, monospace;
+  --bg: #eff3ef;
+  --bg-side: #e3eae5;
+  --panel: #f7f9f6;
+  --sheet: #fbfcfa;
+  --ink: #1b2a2b;
+  --ink-2: #4f6162;
+  --line: #cbd6cf;
+  --line-strong: #8fa39b;
+  --control: #eff3ef;
+  --jade: #1f6f64;
+  --jade-ink: #ffffff;
+  --jade-tint: #d8eae4;
+  --jade-tint-ink: #17564d;
+  --talisman: #f6e7a8;
+  --talisman-line: #d9bc55;
+  --talisman-under: #e8c84a;
+  --talisman-ink: #5a4500;
+  --cinnabar: #b8322a;
+  --cinnabar-on: #ffffff;
+  --cinnabar-ink: #8c2019;
+  --cinnabar-tint: #f9e2dc;
+  --cinnabar-soft: #e3a79f;
+  --gold: #b8892b;
+  --gold-soft: #e4d3a6;
+  --removed: #e4eae6;
+  --mark-front: #fbfcfa;
+  --mist-far: #dce6e0;
+  --mist-mid: #c9d8d0;
+  --mist-near: #b4c8bf;
+  --serif: "Noto Serif SC Variable", "Source Han Serif SC", "Songti SC", "STSong", serif;
+  --brush: "Ma Shan Zheng", "STKaiti", "KaiTi", "Noto Serif SC Variable", serif;
+  --mono: "Atkinson Hyperlegible Mono", "Noto Serif SC Variable", ui-monospace, Consolas, monospace;
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #14152e;
-  --bg-side: #0d0e21;
-  --panel: #0d0e21;
-  --sheet: #23254c;
-  --sheet-line: #e9e8f8;
-  --ink: #e9e8f8;
-  --ink-2: #a9a8cc;
-  --ink-3: #a9a8cc;
-  --line: #2c2e57;
-  --line-strong: #3b3e73;
-  --control: #14152e;
-  --violet: #b3a6ff;
-  --violet-ink: #14152e;
-  --violet-tint: #2a2659;
-  --violet-tint-ink: #d6cfff;
-  --canary: #332e12;
-  --canary-line: #7a6a1c;
-  --canary-under: #c7a52a;
-  --canary-ink: #f6e7a1;
-  --pink: #3f1c2b;
-  --pink-line: #a8456a;
-  --pink-soft: #7a3550;
-  --pink-ink: #ffc2d0;
-  --pink-under: #a8456a;
-  --removed: #1d1e3f;
-  --solid: #e9e8f8;
-  --solid-ink: #14152e;
-  --mark-front: #14152e;
+  --bg: #101b1d;
+  --bg-side: #0b1416;
+  --panel: #0b1416;
+  --sheet: #1a2a2c;
+  --ink: #e6eeea;
+  --ink-2: #9fb3ae;
+  --line: #243638;
+  --line-strong: #3c5557;
+  --control: #101b1d;
+  --jade: #6fd0be;
+  --jade-ink: #0b1416;
+  --jade-tint: #1b3f3b;
+  --jade-tint-ink: #bfede3;
+  --talisman: #3a3212;
+  --talisman-line: #7d6a1e;
+  --talisman-under: #c9a62c;
+  --talisman-ink: #f3e3a0;
+  --cinnabar: #e0584e;
+  --cinnabar-on: #1a0b09;
+  --cinnabar-ink: #ffb4ab;
+  --cinnabar-tint: #3d1c19;
+  --cinnabar-soft: #7a342e;
+  --gold: #e0b85a;
+  --gold-soft: #5c4a1c;
+  --removed: #17282a;
+  --mark-front: #101b1d;
+  --mist-far: #15262a;
+  --mist-mid: #1a2f33;
+  --mist-near: #20393d;
   color-scheme: dark;
 }
 
@@ -81,9 +85,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: var(--sans);
-  font-size: 14px;
-  line-height: 1.55;
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.7;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -105,7 +109,7 @@ button:disabled {
 }
 
 :focus-visible {
-  outline: 2px solid var(--violet);
+  outline: 2px solid var(--jade);
   outline-offset: 2px;
 }
 
@@ -123,6 +127,27 @@ pre,
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* A cinnabar seal: one character stamped in red. It marks what kind of act a card records. */
+.seal {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+  font-family: var(--brush);
+  font-size: 17px;
+  line-height: 24px;
+  text-align: center;
+}
+
+.seal.small {
+  width: 18px;
+  height: 18px;
+  font-size: 13px;
+  line-height: 18px;
 }
 
 /* ---------- shell ---------- */
@@ -154,7 +179,7 @@ pre,
   padding: 4px 6px;
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: 0.01em;
 }
 
 .sidebar-scroll {
@@ -199,14 +224,9 @@ pre,
 }
 
 .row-button[aria-current] {
-  border-color: var(--line);
+  border-color: var(--line-strong);
   background: var(--sheet);
   font-weight: 700;
-}
-
-:root[data-theme="dark"] .row-button[aria-current] {
-  background: #1f2148;
-  border-color: var(--line-strong);
 }
 
 .row-title {
@@ -219,29 +239,20 @@ pre,
 
 .chip {
   flex-shrink: 0;
-  padding: 1px 8px;
+  padding: 0 8px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 700;
 }
 
-.chip.pink {
-  background: var(--pink);
-  color: var(--pink-ink);
+.chip.await {
+  background: var(--cinnabar-tint);
+  color: var(--cinnabar-ink);
 }
 
-.chip.canary {
-  background: var(--canary);
-  color: var(--canary-ink);
-}
-
-.chip.branch {
-  padding: 2px 10px;
-  background: var(--violet-tint);
-  color: var(--violet-tint-ink);
-  font-family: var(--mono);
-  font-size: 12.5px;
-  font-weight: 400;
+.chip.busy {
+  background: var(--talisman);
+  color: var(--talisman-ink);
 }
 
 /* ---------- buttons ---------- */
@@ -250,7 +261,7 @@ pre,
   min-height: 44px;
   padding: 0 18px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   font-weight: 700;
   display: inline-flex;
@@ -259,35 +270,36 @@ pre,
   gap: 8px;
 }
 
-/* Violet hands words to the agent; ink is the user signing. The two never share a colour. */
+/* Jade sends an order to the 分身; cinnabar is 本尊 stamping a decision. The two never share a colour. */
 .button.primary {
-  background: var(--violet);
-  color: var(--violet-ink);
+  background: var(--jade);
+  color: var(--jade-ink);
 }
 
 .button.solid {
-  background: var(--solid);
-  border-color: var(--solid);
-  color: var(--solid-ink);
+  background: var(--cinnabar);
+  border-color: var(--cinnabar);
+  color: var(--cinnabar-on);
 }
 
 .button.outline {
-  border-color: var(--sheet-line);
+  border-color: var(--ink);
+}
+
+.button.outline.red {
+  border-color: var(--cinnabar);
+  color: var(--cinnabar-ink);
 }
 
 .button.text {
   text-decoration: underline;
 }
 
-.button.dashed {
-  border: 1px dashed var(--ink-2);
-}
-
 .select-button {
   min-height: 44px;
   padding: 0 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--control);
   display: flex;
   align-items: center;
@@ -306,6 +318,7 @@ pre,
 /* ---------- main column ---------- */
 
 .main {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -323,7 +336,7 @@ pre,
 
 .main-header h1 {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   flex: 0 1 auto;
   min-width: 0;
@@ -381,12 +394,12 @@ pre,
   gap: 10px;
 }
 
-/* The user's original, with the agent's copy showing underneath. */
+/* 本尊's order on moon-white paper, with the 分身's talisman paper showing underneath. */
 .original {
   background: var(--sheet);
-  border: 1px solid var(--sheet-line);
-  border-radius: 3px;
-  box-shadow: 6px 6px 0 var(--canary-under);
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  box-shadow: 6px 6px 0 var(--talisman-under);
   padding: 12px 14px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -394,7 +407,7 @@ pre,
 }
 
 .original.working {
-  box-shadow: 10px 10px 0 var(--canary-under);
+  box-shadow: 10px 10px 0 var(--talisman-under);
 }
 
 .original.queued {
@@ -404,6 +417,9 @@ pre,
 
 .said-meta {
   padding-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: var(--ink-2);
 }
@@ -432,13 +448,13 @@ pre,
 .prose h2,
 .prose h3 {
   margin: 14px 0 6px;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .prose pre {
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: 2px;
   background: var(--sheet);
   overflow-x: auto;
 }
@@ -464,24 +480,24 @@ pre,
   white-space: pre-wrap;
 }
 
-/* ---------- canary: what the agent did ---------- */
+/* ---------- talisman paper: what the 分身 did ---------- */
 
 .did {
-  background: var(--canary);
-  border: 1px solid var(--canary-line);
-  border-radius: 3px;
+  background: var(--talisman);
+  border: 1px solid var(--talisman-line);
+  border-radius: 2px;
   color: var(--ink);
   overflow: hidden;
 }
 
 :root[data-theme="dark"] .did {
-  color: var(--canary-ink);
+  color: var(--talisman-ink);
 }
 
 .did-head {
   width: 100%;
-  min-height: 38px;
-  padding: 8px 12px;
+  min-height: 40px;
+  padding: 7px 12px 7px 8px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -508,23 +524,17 @@ pre,
   white-space: nowrap;
   font-family: var(--mono);
   font-size: 13px;
-  color: var(--ink);
 }
 
 .did-head .outcome {
   flex-shrink: 0;
   font-size: 13px;
-  color: var(--ink-3);
-}
-
-:root[data-theme="dark"] .did-head .outcome {
-  color: var(--canary-ink);
 }
 
 .did-body {
   background: var(--sheet);
   color: var(--ink);
-  border-top: 1px solid var(--canary-line);
+  border-top: 1px solid var(--talisman-line);
   overflow-x: auto;
 }
 
@@ -561,9 +571,9 @@ pre,
   text-align: center;
 }
 
-/* New lines are highlighted the way a marker would; removed lines fade and are struck through. No red or green. */
+/* New lines carry the talisman's yellow; removed lines fade and are struck through. No red or green. */
 .diff-line.added {
-  background: var(--canary);
+  background: var(--talisman);
 }
 
 .diff-line.added .sign {
@@ -579,13 +589,17 @@ pre,
   text-decoration: line-through;
 }
 
-/* ---------- pink: waiting for the user's signature ---------- */
+/* ---------- a memorial awaiting the vermilion reply ---------- */
 
+/* Paper ruled with a double cinnabar line, the way a memorial to the throne is. */
 .sign-sheet {
-  background: var(--pink);
-  border: 1px solid var(--pink-line);
-  border-radius: 3px;
-  padding: 14px 16px;
+  background: var(--sheet);
+  border: 1px solid var(--cinnabar);
+  border-radius: 2px;
+  box-shadow:
+    inset 0 0 0 3px var(--sheet),
+    inset 0 0 0 4px var(--cinnabar-soft);
+  padding: 18px 20px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -593,8 +607,11 @@ pre,
 
 .sign-sheet h2 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 700;
+  font-family: var(--brush);
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--cinnabar-ink);
 }
 
 .sign-sheet p {
@@ -602,9 +619,9 @@ pre,
 }
 
 .sign-detail {
-  background: var(--sheet);
-  border: 1px solid var(--pink-soft);
-  border-radius: 3px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 2px;
   padding: 8px 12px;
   font-family: var(--mono);
   font-size: 13px;
@@ -612,10 +629,6 @@ pre,
   overflow-wrap: anywhere;
   max-height: 200px;
   overflow: auto;
-}
-
-:root[data-theme="dark"] .sign-detail {
-  background: var(--bg);
 }
 
 .actions {
@@ -627,7 +640,7 @@ pre,
 .notice {
   padding: 8px 12px;
   border: 1px dashed var(--line-strong);
-  border-radius: 3px;
+  border-radius: 2px;
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
@@ -645,7 +658,7 @@ pre,
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 22px;
+  min-height: 24px;
   font-size: 13px;
   color: var(--ink-2);
 }
@@ -653,19 +666,15 @@ pre,
 .composer-box {
   background: var(--sheet);
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-:root[data-theme="dark"] .composer-box {
-  background: #1d1e3f;
-}
-
 .composer-box:focus-within {
-  border-color: var(--violet);
+  border-color: var(--jade);
 }
 
 .composer textarea {
@@ -674,7 +683,7 @@ pre,
   outline: 0;
   resize: none;
   background: transparent;
-  line-height: 1.55;
+  line-height: 1.7;
   max-height: 200px;
 }
 
@@ -709,13 +718,13 @@ pre,
   min-height: 44px;
   padding: 0 14px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
 }
 
 .tab[aria-pressed="true"] {
-  background: var(--violet-tint);
-  color: var(--violet-tint-ink);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
   font-weight: 700;
 }
 
@@ -731,19 +740,23 @@ pre,
 
 .panel-body h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
 }
 
 .file-row {
   min-height: 44px;
   padding: 8px 12px;
-  border: 1px solid var(--canary-line);
-  border-radius: 3px;
-  background: var(--canary);
+  border: 1px solid var(--talisman-line);
+  border-radius: 2px;
+  background: var(--talisman);
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+:root[data-theme="dark"] .file-row {
+  color: var(--talisman-ink);
 }
 
 .file-row .target {
@@ -758,11 +771,6 @@ pre,
 
 .file-row .outcome {
   font-size: 13px;
-  color: var(--ink-3);
-}
-
-:root[data-theme="dark"] .file-row .outcome {
-  color: var(--canary-ink);
 }
 
 .terminal {
@@ -775,11 +783,11 @@ pre,
 }
 
 .terminal .prompt {
-  color: var(--violet);
+  color: var(--jade);
 }
 
 .terminal .failed {
-  color: var(--pink-ink);
+  color: var(--cinnabar-ink);
   font-weight: 700;
 }
 
@@ -787,9 +795,11 @@ pre,
   color: var(--ink-2);
 }
 
-/* ---------- empty state and settings ---------- */
+/* ---------- empty state ---------- */
 
 .empty {
+  position: relative;
+  z-index: 1;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -797,19 +807,64 @@ pre,
   justify-content: center;
   gap: 16px;
   padding: 24px 56px;
-  max-width: 640px;
+  max-width: 1000px;
 }
 
 .empty h1 {
   margin: 0;
-  font-size: 28px;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
+  font-family: var(--brush);
+  font-size: 48px;
+  font-weight: 400;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.empty p {
+  max-width: 40em;
 }
 
 .empty p {
   margin: 0;
 }
+
+/* Far mountains in three washes of ink, with the golden core rising behind them. Home screen only. */
+.mountains {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 46%;
+  pointer-events: none;
+}
+
+/* A stroke in the fill's own colour with round joins softens every peak, as a wet brush would. */
+.mountains path {
+  stroke-width: 26;
+  stroke-linejoin: round;
+}
+
+.mountains .far {
+  fill: var(--mist-far);
+  stroke: var(--mist-far);
+}
+
+.mountains .mid {
+  fill: var(--mist-mid);
+  stroke: var(--mist-mid);
+}
+
+.mountains .near {
+  fill: var(--mist-near);
+  stroke: var(--mist-near);
+}
+
+.mountains .core {
+  fill: var(--gold);
+  opacity: 0.55;
+}
+
+/* ---------- settings ---------- */
 
 .settings {
   flex: 1;
@@ -828,13 +883,18 @@ pre,
 
 .settings h1 {
   margin: 0;
-  font-size: 28px;
-  letter-spacing: -0.01em;
+  font-family: var(--brush);
+  font-size: 44px;
+  font-weight: 400;
+  line-height: 1.2;
 }
 
 .settings h2 {
   margin: 0 0 8px;
-  font-size: 20px;
+  font-family: var(--brush);
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1.2;
 }
 
 .settings section {
@@ -844,6 +904,9 @@ pre,
 }
 
 .field {
+  margin: 0;
+  padding: 0;
+  border: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -851,6 +914,7 @@ pre,
 
 .field label,
 .field legend {
+  padding: 0;
   font-weight: 700;
 }
 
@@ -866,8 +930,70 @@ pre,
   max-width: 360px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--sheet);
+}
+
+/* The five realms as a path to walk: every stage up to the chosen one is lit. */
+.realms {
+  position: relative;
+  max-width: 560px;
+  margin: 10px 0 2px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.realms::before {
+  content: "";
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 10px;
+  height: 2px;
+  background: var(--line-strong);
+}
+
+.realm {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  cursor: pointer;
+}
+
+.realm input {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.realm:has(~ .realm input:checked) input {
+  border-color: var(--gold);
+  background: var(--gold-soft);
+}
+
+.realm input:checked {
+  border-color: var(--gold);
+  background: var(--gold);
+  box-shadow: 0 0 0 4px var(--gold-soft);
+}
+
+.realm .name {
+  font-family: var(--brush);
+  font-size: 24px;
+  line-height: 1.2;
+  color: var(--ink-2);
+}
+
+.realm:has(input:checked) .name {
+  color: var(--ink);
 }
 
 .provider {
@@ -888,7 +1014,7 @@ pre,
 }
 
 .provider .who strong {
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .papers {
@@ -908,7 +1034,7 @@ pre,
 .paper {
   padding: 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--sheet);
   display: flex;
   flex-direction: column;
@@ -917,7 +1043,7 @@ pre,
 }
 
 .paper:has(input:checked) {
-  border: 2px solid var(--violet);
+  border: 2px solid var(--jade);
   padding: 11px;
 }
 
@@ -932,7 +1058,7 @@ pre,
   width: 18px;
   height: 18px;
   margin: 0;
-  accent-color: var(--violet);
+  accent-color: var(--jade);
 }
 
 .swatches {
@@ -944,21 +1070,23 @@ pre,
   flex: 1;
   height: 28px;
   border: 1px solid;
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 .error-banner {
+  position: relative;
+  z-index: 2;
   margin: 12px 24px 0;
   padding: 10px 12px;
-  border: 1px solid var(--pink-line);
-  border-radius: 3px;
-  background: var(--pink);
+  border: 1px solid var(--cinnabar);
+  border-radius: 2px;
+  background: var(--cinnabar-tint);
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-/* The mark is the only thing that moves on its own: the copy slides out while the agent works. */
+/* The mark is the only thing that moves on its own: the talisman slides out while the 分身 works. */
 .mark .under {
   transition: transform 320ms ease;
 }

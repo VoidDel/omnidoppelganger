@@ -5,9 +5,9 @@ import type { Settings, SettingsView } from "../lib/types";
 const EFFORT_NAMES: Record<string, string> = { low: "练气", medium: "筑基", high: "金丹", xhigh: "元婴", max: "化神" };
 
 const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
-  { value: "light", name: "原纸", hint: "亮色，宜昼", swatches: [["#FFFFFF", "#1C1842"], ["#FFF4BF", "#E3CB62"], ["#FFDDE4", "#B4234F"]] },
-  { value: "dark", name: "碳纸", hint: "暗色，宜夜", swatches: [["#23254C", "#E9E8F8"], ["#332E12", "#7A6A1C"], ["#3F1C2B", "#A8456A"]] },
-  { value: "system", name: "跟随系统", hint: "随系统昼夜更替", swatches: [["#FFFFFF", "#1C1842"], ["#23254C", "#E9E8F8"]] },
+  { value: "light", name: "白昼", hint: "月白底，宜昼", swatches: [["#FBFCFA", "#1B2A2B"], ["#F6E7A8", "#D9BC55"], ["#B8322A", "#B8322A"]] },
+  { value: "dark", name: "玄夜", hint: "玄青底，宜夜", swatches: [["#1A2A2C", "#E6EEEA"], ["#3A3212", "#7D6A1E"], ["#E0584E", "#E0584E"]] },
+  { value: "system", name: "跟随系统", hint: "随系统昼夜更替", swatches: [["#FBFCFA", "#1B2A2B"], ["#1A2A2C", "#E6EEEA"]] },
 ];
 
 interface Props {
@@ -41,17 +41,18 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
             </select>
             <p className="hint">已经召出的分身，继续修它当时的功法。</p>
           </div>
-          <div className="field">
-            <label htmlFor="effort">分身境界</label>
-            <select id="effort" className="input" value={settings.effort} onChange={(event) => onSave({ ...settings, effort: event.target.value })}>
+          <fieldset className="field">
+            <legend>分身境界</legend>
+            <div className="realms">
               {view.efforts.map((effort) => (
-                <option key={effort} value={effort}>
-                  {EFFORT_NAMES[effort] ?? effort}
-                </option>
+                <label className="realm" key={effort}>
+                  <input type="radio" name="realm" checked={settings.effort === effort} onChange={() => onSave({ ...settings, effort })} />
+                  <span className="name">{EFFORT_NAMES[effort] ?? effort}</span>
+                </label>
               ))}
-            </select>
+            </div>
             <p className="hint">境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。下一次请求起生效。</p>
-          </div>
+          </fieldset>
         </section>
 
         <section>
@@ -95,7 +96,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
         <section>
           <h2>外观</h2>
           <fieldset className="papers">
-            <legend>纸张</legend>
+            <legend>天色</legend>
             {PAPERS.map((paper) => (
               <label className="paper" key={paper.value}>
                 <span className="name">

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- The 分身 mark: the user's white sheet with the agent's canary copy showing underneath.
+  <!-- The 分身 mark: 本尊's moon-white sheet with the 分身's talisman paper showing underneath.
        Source for every app icon; regenerate them with `pnpm tauri icon app-icon.svg`. -->
-  <rect x="280" y="280" width="632" height="632" rx="84" fill="#F2D34B"/>
-  <rect x="144" y="144" width="632" height="632" rx="84" fill="#FFFFFF" stroke="#1C1842" stroke-width="64"/>
+  <rect x="280" y="280" width="632" height="632" rx="84" fill="#E8C84A"/>
+  <rect x="144" y="144" width="632" height="632" rx="84" fill="#FBFCFA" stroke="#1B2A2B" stroke-width="64"/>
 </svg>

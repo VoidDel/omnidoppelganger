@@ -2,9 +2,21 @@ import { useState } from "react";
 import type { ChangedFile, ToolItem } from "../lib/fold";
 import type { SessionItem, Status } from "../lib/types";
 
-/** Two sheets of paper: aligned when idle, sliding apart while the agent works, pink underneath while it waits. */
+/** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
+export function Mountains() {
+  return (
+    <svg className="mountains" aria-hidden="true" viewBox="0 0 1200 420" preserveAspectRatio="xMidYMax slice">
+      <circle className="core" cx="860" cy="150" r="46" />
+      <path className="far" d="M0 300 L120 210 L210 262 L330 150 L430 236 L520 190 L640 270 L760 170 L880 250 L980 205 L1090 262 L1200 215 L1200 420 L0 420 Z" />
+      <path className="mid" d="M0 350 L90 292 L190 330 L300 250 L390 312 L500 268 L610 330 L720 262 L830 318 L950 276 L1060 326 L1200 286 L1200 420 L0 420 Z" />
+      <path className="near" d="M0 392 L140 340 L260 378 L380 322 L500 372 L640 336 L770 384 L900 344 L1030 388 L1200 352 L1200 420 L0 420 Z" />
+    </svg>
+  );
+}
+
+/** Two sheets: aligned when idle, sliding apart while the 分身 works, cinnabar underneath while it waits for a decision. */
 export function Mark({ state = "idle", size = 26 }: { state?: "idle" | "working" | "waiting"; size?: number }) {
-  const under = state === "waiting" ? { x: 8, y: 8, fill: "var(--pink-under)" } : { x: 6, y: 6, fill: "var(--canary-under)" };
+  const under = state === "waiting" ? { x: 8, y: 8, fill: "var(--cinnabar)" } : { x: 6, y: 6, fill: "var(--talisman-under)" };
   return (
     <svg className={`mark ${state}`} aria-hidden="true" width={size} height={size} viewBox="0 0 26 26">
       <rect className="under" x={under.x} y={under.y} width="16" height="16" rx="2" fill={under.fill} />
@@ -54,8 +66,8 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSetti
                 onClick={() => onOpen(session.id)}
               >
                 <span className="row-title">{session.title || "新分身"}</span>
-                {session.status === "waiting_approval" && <span className="chip pink">候旨</span>}
-                {session.status === "running" && <span className="chip canary">运功中</span>}
+                {session.status === "waiting_approval" && <span className="chip await">候旨</span>}
+                {session.status === "running" && <span className="chip busy">运功中</span>}
               </button>
             ))}
           </div>

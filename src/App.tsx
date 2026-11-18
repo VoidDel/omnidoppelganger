@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer } from "react";
-import { Composer, Mark, SidePanel, Sidebar } from "./components/Chrome";
+import { Composer, Mark, Mountains, SidePanel, Sidebar } from "./components/Chrome";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
@@ -213,10 +213,12 @@ export default function App() {
             <Composer status={state.status} model={active.model} onSend={send} onStop={() => api.cancelTurn(active.id).catch(fail)} />
           </>
         ) : (
-          <div className="empty">
+          <>
+            <Mountains />
+            <div className="empty">
             <Mark size={56} />
             <h1>选一处洞府，召分身出来干活</h1>
-            <p>白纸是本尊的法旨，黄纸是分身的手笔，粉纸候本尊定夺。</p>
+            <p>白纸是本尊的法旨，黄符是分身的手笔，见朱砂处候本尊定夺。</p>
             {state.settings?.key.source === "none" && <p className="muted">还没有 Anthropic 密钥，分身出不了关，先到设置里填上。</p>}
             <div className="actions">
               <button type="button" className="button primary" onClick={create}>
@@ -228,7 +230,8 @@ export default function App() {
                 </button>
               )}
             </div>
-          </div>
+            </div>
+          </>
         )}
       </main>
       {showPanel && <SidePanel files={files} runs={runs} />}

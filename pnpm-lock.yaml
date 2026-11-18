@@ -8,12 +8,15 @@ importers:
 
   .:
     dependencies:
+      '@fontsource-variable/noto-serif-sc':
+        specifier: ^5.3.1
+        version: 5.3.1
       '@fontsource/atkinson-hyperlegible-mono':
         specifier: ^5.3.0
         version: 5.3.0
-      '@fontsource/atkinson-hyperlegible-next':
-        specifier: ^5.3.0
-        version: 5.3.0
+      '@fontsource/ma-shan-zheng':
+        specifier: ^5.3.1
+        version: 5.3.1
       '@tauri-apps/api':
         specifier: ^2
         version: 2.12.5
@@ -60,11 +63,14 @@ packages:
   '@emnapi/wasi-threads@2.2.0':
     resolution: {integrity: sha512-JP7OYH38Q7+pyTAe14raZHLQIK7BDKbdwji+Xi3pcd/6QkJYQH3SX4wu6EplGrGJWRepoNzedfm0G3B9Z4e9Rw==}
 
+  '@fontsource-variable/noto-serif-sc@5.3.1':
+    resolution: {integrity: sha512-aIHcBaL13QctVaJFeT6wqfgO9Rq/cNtD5g2ob4ze59fYPYwacGthnIrHBe83kDpMEB/k6VGtGc6fS99RImcoSQ==}
+
   '@fontsource/atkinson-hyperlegible-mono@5.3.0':
     resolution: {integrity: sha512-7Iha5azCRXJVk4NdxbVdKAE+4p/rMJoW6dslvhktugDFPSp7kxFRGAavBtwtSTrnyNhKXW8w1NHgMnrh/6OshA==}
 
-  '@fontsource/atkinson-hyperlegible-next@5.3.0':
-    resolution: {integrity: sha512-8p1tHVoPDo6oYwSO3sMw5snGwFwSf3TmeSF9Gcj792GXdsg6oqvhoItbj6Hj/XZIk0Xs+Cwu6pkLBAl3Q5HrwA==}
+  '@fontsource/ma-shan-zheng@5.3.1':
+    resolution: {integrity: sha512-cGGn7Yje2RSduXVxEk+rCfNZyD/T/7FMGj03LNPiK8TRL9Sing0tq1zJF3n+W29szPqgb2RNs5oIvmm+ikeI+Q==}
 
   '@napi-rs/wasm-runtime@1.2.6':
     resolution: {integrity: sha512-mRyDmEw9/fCDXCGfL1sbgIw/GUK0PVxRW4YwgPN61F3LQ+fSyoBFarJVzgGyhF6kRzEQZ0FejDqm4WLXSeqQmw==}
@@ -751,9 +757,11 @@ snapshots:
       tslib: 2.9.1
     optional: true
 
+  '@fontsource-variable/noto-serif-sc@5.3.1': {}
+
   '@fontsource/atkinson-hyperlegible-mono@5.3.0': {}
 
-  '@fontsource/atkinson-hyperlegible-next@5.3.0': {}
+  '@fontsource/ma-shan-zheng@5.3.1': {}
 
   '@napi-rs/wasm-runtime@1.2.6(@emnapi/core@2.0.0-beta.2)(@emnapi/runtime@2.0.0-beta.2)':
     dependencies:
