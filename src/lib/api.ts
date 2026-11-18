@@ -27,6 +27,9 @@ export const api = {
   deleteApiKey: (provider: string) => invoke<SettingsView>("delete_api_key", { provider }),
   /** Ask for a folder with the system dialog. Resolves null when the user closes it. */
   pickWorkspace: async (): Promise<string | null> => {
+    // The end-to-end test names the folder up front: it cannot drive the system dialog.
+    const preset = await invoke<string | null>("preset_workspace");
+    if (preset) return preset;
     const picked = await open({ directory: true, multiple: false, title: "选一个文件夹作洞府" });
     return typeof picked === "string" ? picked : null;
   },

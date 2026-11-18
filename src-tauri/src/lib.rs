@@ -135,6 +135,14 @@ async fn create_session(app: State<'_, App>, workspace: String) -> Result<Sessio
     Ok(view(&app, &session))
 }
 
+/// The folder a new session opens in without asking, when `ODG_E2E_WORKSPACE`
+/// names one. It is there for the end-to-end test, which can drive the
+/// window but not the system's folder dialog.
+#[tauri::command]
+fn preset_workspace() -> Option<String> {
+    std::env::var("ODG_E2E_WORKSPACE").ok().filter(|path| !path.trim().is_empty())
+}
+
 #[tauri::command]
 async fn open_session(app: State<'_, App>, id: String) -> Result<SessionView, String> {
     Ok(view(&app, &app.live(&id)?))
@@ -274,6 +282,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_sessions,
             create_session,
+            preset_workspace,
             open_session,
             rename_session,
             delete_session,

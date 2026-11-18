@@ -111,6 +111,7 @@ app-icon.svg       应用图标的源文件
 |---|---|
 | `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`MOONSHOT_API_KEY`、`ZHIPUAI_API_KEY` | 对应供应商没有在设置里保存密钥时使用 |
 | `ANTHROPIC_BASE_URL` | 把 Anthropic 请求发到自己的网关；此时不发送只有官方接口支持的字段。其他供应商的地址在设置里改 |
+| `ODG_E2E_WORKSPACE` | 端到端测试用：化出分身时直接用这个文件夹，不弹系统的选文件夹对话框 |
 | `ODG_HOME` | 会话和设置的存放目录，默认 `~/.odg`。设了它，密钥就存在这个目录自己的 `credentials.json` 里，不碰系统凭据管理器 |
 
 设置里保存的密钥存进系统的凭据管理器：Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service，条目归在 `OmniDoppelganger` 名下。早先存在 `~/.odg/credentials.json` 里的密钥，启动时会自动搬过去并从文件里删掉。凭据管理器用不了时（比如 Linux 上没有运行 Secret Service），密钥才留在这个明文文件里，设置页会注明。
@@ -123,6 +124,15 @@ pnpm test
 ```
 
 核心库的测试不需要 API 密钥：模型由脚本化的替身扮演，工具在临时目录里真实执行。界面的测试覆盖从会话日志折叠出界面的那部分（`src/lib/fold.ts`）。
+
+端到端测试驱动真实的应用窗口，模型由一个按脚本回放的本地服务扮演（只支持 Windows，靠 WebView2 的调试端口）：
+
+```sh
+pnpm e2e --build   # 先把应用构建到 target/e2e，再跑
+pnpm e2e           # 用上次的构建直接跑
+```
+
+它走一遍完整的一轮：化出分身、传令、分身建文件、命令等审批、批准、收尾，再撤回改动，然后核对界面、磁盘上的文件、发给模型的请求和会话日志。应用跑在临时目录里的家目录、工作文件夹和浏览器数据上，不碰你的会话和密钥，也不影响已经开着的应用。脚本在 `e2e/`：`mock-llm.mjs` 是模拟的模型服务，`cdp.mjs` 是调试端口的客户端，`run.mjs` 是测试本身。
 
 每次推送到 `main` 和每个合并请求都会自动跑一遍（`.github/workflows/ci.yml`）：核心库在 Windows、Linux、macOS 上各跑静态检查和测试，前端和桌面外壳在 Windows 上跑测试、构建和静态检查。只改文档不触发。
 
