@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { Settings, SettingsView } from "../lib/types";
 
-const EFFORT_NAMES: Record<string, string> = { low: "省力", medium: "适中", high: "认真", xhigh: "很认真", max: "不计成本" };
+// The agent's rank: cultivation stages, lowest to highest, for the API's five effort levels.
+const EFFORT_NAMES: Record<string, string> = { low: "练气", medium: "筑基", high: "金丹", xhigh: "元婴", max: "化神" };
 
 const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
   { value: "light", name: "原纸", hint: "亮色，白天用", swatches: [["#FFFFFF", "#1C1842"], ["#FFF4BF", "#E3CB62"], ["#FFDDE4", "#B4234F"]] },
@@ -41,7 +42,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
             <p className="hint">已经开始的会话会继续用它当时的模型。</p>
           </div>
           <div className="field">
-            <label htmlFor="effort">分身每一步想多深</label>
+            <label htmlFor="effort">分身等级</label>
             <select id="effort" className="input" value={settings.effort} onChange={(event) => onSave({ ...settings, effort: event.target.value })}>
               {view.efforts.map((effort) => (
                 <option key={effort} value={effort}>
@@ -49,7 +50,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
                 </option>
               ))}
             </select>
-            <p className="hint">越深越慢，也越费额度。下一次请求起生效。</p>
+            <p className="hint">等级越高，分身每一步想得越深，也越慢、越费额度。下一次请求起生效。</p>
           </div>
         </section>
 
