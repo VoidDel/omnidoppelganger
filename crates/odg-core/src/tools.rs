@@ -290,7 +290,7 @@ fn edit_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
         std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot create {}: {error}", parent.display())))?;
     }
     let written = if crlf { after.replace('\n', "\r\n") } else { after.clone() };
-    std::fs::write(&path, written).map_err(|error| ToolOutput::error(format!("Cannot write {shown}: {error}")))?;
+    crate::fsutil::write_atomically(&path, written.as_bytes()).map_err(|error| ToolOutput::error(format!("Cannot write {shown}: {error}")))?;
 
     let created = before.is_none();
     let diff = line_diff(before.as_deref().unwrap_or(""), &after);

@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod anthropic;
 pub mod events;
+pub mod fsutil;
 pub mod llm;
 pub mod policy;
 pub mod session;

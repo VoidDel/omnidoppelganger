@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::anthropic::{DEFAULT_MODEL, MODELS};
+use crate::fsutil::write_atomically;
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const THEMES: &[&str] = &["system", "light", "dark"];
@@ -90,7 +91,7 @@ impl SettingsStore {
     pub fn save(&self, settings: Settings) -> std::io::Result<Settings> {
         let settings = settings.valid();
         std::fs::create_dir_all(&self.directory)?;
-        std::fs::write(self.settings_path(), serde_json::to_vec_pretty(&settings).map_err(std::io::Error::other)?)?;
+        write_atomically(&self.settings_path(), &serde_json::to_vec_pretty(&settings).map_err(std::io::Error::other)?)?;
         Ok(settings)
     }
 
@@ -124,7 +125,7 @@ impl SettingsStore {
         }
         std::fs::create_dir_all(&self.directory)?;
         let path = self.credentials_path();
-        std::fs::write(&path, serde_json::to_vec_pretty(&json!({ "anthropic_api_key": key })).map_err(std::io::Error::other)?)?;
+        write_atomically(&path, &serde_json::to_vec_pretty(&json!({ "anthropic_api_key": key })).map_err(std::io::Error::other)?)?;
         restrict(&path)
     }
 
