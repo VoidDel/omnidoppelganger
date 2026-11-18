@@ -163,7 +163,7 @@ impl<L: Llm> Session<L> {
         drop(state);
         self.inner.emit_status(Status::Running);
         let inner = self.inner.clone();
-        self.inner.runtime.spawn(async move { inner.run_turn(text, cancel).await });
+        self.inner.runtime.spawn(async move { inner.run_turns(text, cancel).await });
         false
     }
 
@@ -205,11 +205,38 @@ impl<L: Llm> Inner<L> {
         self.append(Event::ToolResult { tool_use_id: tool_use_id.to_string(), tool: tool.to_string(), content, is_error, meta })
     }
 
-    async fn run_turn(self: Arc<Self>, text: String, cancel: CancellationToken) {
+    /// Run turns until no message is waiting. A message that arrives after the
+    /// last step of a turn, or while a turn is being stopped, opens the next
+    /// turn instead of being dropped. The inbox is checked and the status set
+    /// under the same lock `send` takes, so no message falls between the two.
+    async fn run_turns(self: Arc<Self>, mut text: String, mut cancel: CancellationToken) {
+        loop {
+            self.run_turn(text, &cancel).await;
+            let mut state = self.state.lock().unwrap();
+            state.approvals.clear();
+            let Some(next) = state.inbox.pop_front() else {
+                state.status = Status::Idle;
+                drop(state);
+                self.emit_status(Status::Idle);
+                return;
+            };
+            text = next;
+            state.cancel = CancellationToken::new();
+            cancel = state.cancel.clone();
+            let resumed = state.status != Status::Running;
+            state.status = Status::Running;
+            drop(state);
+            if resumed {
+                self.emit_status(Status::Running);
+            }
+        }
+    }
+
+    async fn run_turn(&self, text: String, cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
         let opened = self.append(Event::TurnStart { turn }).and_then(|()| self.append(Event::UserMessage { text, steering: false }));
         let (reason, error) = match opened {
-            Ok(()) => match self.run_steps(&cancel).await {
+            Ok(()) => match self.run_steps(cancel).await {
                 Ok(reason) => (reason, None),
                 Err(error) => ("error", Some(error)),
             },
@@ -221,13 +248,6 @@ impl<L: Llm> Inner<L> {
             let _ = self.tool_result(&tool_use_id, &tool, "The turn stopped before this tool ran.".to_string(), true, Value::Null);
         }
         let _ = self.append(Event::TurnEnd { turn, reason: reason.to_string(), error });
-        {
-            let mut state = self.state.lock().unwrap();
-            state.status = Status::Idle;
-            state.approvals.clear();
-            state.inbox.clear();
-        }
-        self.emit_status(Status::Idle);
     }
 
     /// Run steps until the turn is over. Returns the reason it ended, or what went wrong.
@@ -536,6 +556,39 @@ mod tests {
             .collect();
         assert_eq!(steering, [false, true]);
         assert_eq!(fixture.llm.requests.lock().unwrap()[1].messages.len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_message_queued_when_the_turn_stops_opens_the_next_turn() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut fixture = fixture(ScriptedLlm::new(vec![says("on it")], Some(gate.clone())));
+        fixture.session.send("start".into());
+        while fixture.llm.requests.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(fixture.session.send("do this instead".into()));
+        fixture.session.cancel();
+        while fixture.llm.requests.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        gate.add_permits(1);
+        fixture.idle().await;
+
+        assert_eq!(fixture.kinds(), [
+            "turn/start", "user/message", "turn/end", "turn/start", "user/message", "assistant/message", "turn/end"
+        ]);
+        let texts: Vec<String> = fixture
+            .session
+            .snapshot()
+            .into_iter()
+            .filter_map(|envelope| match envelope.event {
+                Event::UserMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["start", "do this instead"]);
+        assert_eq!(fixture.end().0, "completed");
+        assert_eq!(fixture.session.status(), Status::Idle);
     }
 
     #[tokio::test(flavor = "multi_thread")]

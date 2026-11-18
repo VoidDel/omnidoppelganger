@@ -52,7 +52,8 @@ function appendLog(state: State, envelope: Envelope): State {
   if (envelope.seq <= last) return state;
   let { stream, queued } = state;
   if (envelope.type === "assistant/message") stream = [];
-  if (envelope.type === "user/message" && envelope.data.steering) {
+  // A queued message joins as steering, or opens the next turn when it arrived as the last one ended.
+  if (envelope.type === "user/message") {
     const at = queued.indexOf(envelope.data.text);
     if (at >= 0) queued = queued.filter((_, index) => index !== at);
   }
