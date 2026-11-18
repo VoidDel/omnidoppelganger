@@ -59,6 +59,16 @@ cargo test -p odg-core
 
 核心库的测试不需要 API 密钥：模型由脚本化的替身扮演，工具在临时目录里真实执行。
 
+## 图标
+
+应用图标是"分身标记"，源文件是 `app-icon.svg`。改了它之后重新生成各个尺寸：
+
+```sh
+pnpm tauri icon app-icon.svg
+```
+
+这条命令还会生成 `src-tauri/icons/android` 和 `ios` 两个目录，桌面应用用不到，可以删掉。构建脚本只在 `src-tauri/tauri.conf.json` 变化时才重新嵌入图标，所以生成后要改动或 `touch` 一下这个文件再构建。
+
 ## 许可证
 
 [MIT](LICENSE)
