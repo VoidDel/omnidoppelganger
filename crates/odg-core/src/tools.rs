@@ -11,6 +11,9 @@ use tokio_util::sync::CancellationToken;
 const READ_LINE_LIMIT: usize = 2000;
 const READ_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const LINE_CHARS: usize = 2000;
+/// Every result is replayed in every later request of the session, so one
+/// read must stay far below the context window.
+const READ_OUTPUT_CHARS: usize = 100_000;
 const SEARCH_RESULTS: usize = 200;
 const SEARCH_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const COMMAND_OUTPUT_CHARS: usize = 30_000;
@@ -70,7 +73,7 @@ pub fn specs() -> Vec<Value> {
     vec![
         json!({
             "name": "read_file",
-            "description": "Read a text file. Returns numbered lines. Read a file before editing it. Use offset and limit for files longer than 2000 lines.",
+            "description": "Read a text file. Returns numbered lines. Read a file before editing it. One read returns at most 2000 lines and 100,000 characters; use offset and limit to read the rest.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -217,12 +220,30 @@ fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
     let lines: Vec<&str> = text.lines().collect();
     let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let limit = input["limit"].as_u64().map(|limit| limit as usize).unwrap_or(READ_LINE_LIMIT).clamp(1, READ_LINE_LIMIT);
-    let selected: Vec<String> =
-        lines.iter().enumerate().skip(offset - 1).take(limit).map(|(index, line)| format!("{:>6}\t{}", index + 1, clip(line))).collect();
+    let mut selected: Vec<String> = Vec::new();
+    let mut chars = 0usize;
+    let mut capped = false;
+    for (index, line) in lines.iter().enumerate().skip(offset - 1).take(limit) {
+        let numbered = format!("{:>6}\t{}", index + 1, clip(line));
+        let size = numbered.chars().count() + 1;
+        // The first line always fits: a line is clipped far below the cap.
+        if !selected.is_empty() && chars + size > READ_OUTPUT_CHARS {
+            capped = true;
+            break;
+        }
+        chars += size;
+        selected.push(numbered);
+    }
     let mut content = selected.join("\n");
     let last = offset - 1 + selected.len();
     if selected.is_empty() {
         content = format!("{shown} has {} lines; nothing at line {offset}.", lines.len());
+    } else if capped {
+        content.push_str(&format!(
+            "\n[showing lines {offset}-{last} of {}: output stops at {READ_OUTPUT_CHARS} characters; pass offset {} to read on]",
+            lines.len(),
+            last + 1
+        ));
     } else if last < lines.len() {
         content.push_str(&format!("\n[showing lines {offset}-{last} of {}; pass offset to read more]", lines.len()));
     }
@@ -505,6 +526,23 @@ mod tests {
         assert!(execute("read_file", &json!({}), &context).await.is_error);
         std::fs::write(directory.path().join("b.bin"), [1u8, 0, 2]).unwrap();
         assert!(execute("read_file", &json!({ "path": "b.bin" }), &context).await.content.contains("binary"));
+    }
+
+    #[tokio::test]
+    async fn stops_a_read_of_long_lines_at_the_output_limit() {
+        let (directory, context) = context();
+        // 2000 lines of 1500 characters: within the line and file limits, but 3 MB of text.
+        let line = "x".repeat(1500);
+        std::fs::write(directory.path().join("wide.txt"), format!("{line}\n").repeat(2000)).unwrap();
+        let read = execute("read_file", &json!({ "path": "wide.txt" }), &context).await;
+        assert!(!read.is_error);
+        assert!(read.content.chars().count() < READ_OUTPUT_CHARS + 200);
+        let shown = read.meta["shown"].as_u64().unwrap();
+        assert!(shown > 0 && shown < 2000);
+        assert!(read.content.ends_with(&format!("pass offset {} to read on]", shown + 1)), "{}", &read.content[read.content.len() - 200..]);
+
+        let next = execute("read_file", &json!({ "path": "wide.txt", "offset": shown + 1 }), &context).await;
+        assert!(next.content.starts_with(&format!("{:>6}\t", shown + 1)));
     }
 
     #[tokio::test]
