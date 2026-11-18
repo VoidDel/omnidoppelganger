@@ -25,7 +25,8 @@ export type ContentBlock =
   | { type: "fallback"; from: { model: string }; to: { model: string } };
 
 export type SessionEvent =
-  | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number } }
+  | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number; parent?: string } }
+  | { type: "subagent/started"; data: { tool_use_id: string; session: string; name: string } }
   | { type: "session/renamed"; data: { title: string } }
   | { type: "model/changed"; data: { model: string } }
   | { type: "instructions/loaded"; data: { path: string; content: string } }
@@ -92,6 +93,8 @@ export interface ToolMeta {
   refused?: boolean;
   /** Set on an edit that can be undone: the fingerprint of what it wrote. */
   after?: string;
+  /** The subagents a `delegate` call set off, and why each one's turn ended; `session` is null for one that could not start. */
+  agents?: { session: string | null; name: string; reason: string }[];
 }
 
 /** A skill as the 分身 is told of it: instructions it can load when a task calls for them. */
@@ -109,6 +112,8 @@ export interface Todo {
 export interface SessionItem {
   id: string;
   title: string;
+  /** Id of the session whose 分身 set this one off as a 子分身; null for one the user started. */
+  parent: string | null;
   workspace: string;
   /** Id of the model provider the session runs on. */
   provider: string;

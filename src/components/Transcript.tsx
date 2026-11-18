@@ -5,7 +5,7 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
 import { type Item, type Row, type StreamBlock, type ToolItem, mcpTool, shortCount, undoableTurns } from "../lib/fold";
-import type { Decision, DiffHunk, Mode, Status } from "../lib/types";
+import type { Decision, DiffHunk, Mode, SessionItem, Status } from "../lib/types";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
 
@@ -103,6 +103,8 @@ function sealOf(tool: ToolItem): string {
       return "止";
     case "update_todos":
       return "谋";
+    case "delegate":
+      return "遣";
     case "load_skill":
       return "技";
     case "fetch_url":
@@ -176,6 +178,67 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       return { verb: tool.name, target: "", outcome: waiting || (result!.isError ? "失败" : "完成") };
     }
   }
+}
+
+/** Where the 子分身 of the session on screen are looked up, and how one is opened. */
+interface Family {
+  sessions: SessionItem[];
+  onOpen: (id: string) => void;
+}
+
+/**
+ * A `delegate` call: the 子分身 it set off, each with how it stands and a way
+ * in. One that waits for 本尊 is marked in cinnabar, since its request is on
+ * its own page, not this one.
+ */
+function DelegateCard({ tool, family }: { tool: ToolItem; family: Family }) {
+  const tasks = Array.isArray(tool.input.tasks) ? (tool.input.tasks as Record<string, unknown>[]) : [];
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  const ended = tool.result?.meta?.agents ?? [];
+  // A task gets its 子分身 as each one starts; until then, and if it never does, the task stands alone.
+  const agents = tasks.map((task, at) => {
+    const started = tool.agents?.[at];
+    const live = started && family.sessions.find((session) => session.id === started.session);
+    const reason = ended[at]?.reason;
+    const state =
+      live?.status === "waiting_approval" ? "await" : live?.status === "running" || (started && !tool.result && !live) ? "busy" : reason === "completed" ? "done" : reason || !started ? (tool.result ? "failed" : "pending") : "done";
+    return { name: started?.name ?? (text(task.name) || `子分身 ${at + 1}`), task: text(task.task), session: started?.session, state };
+  });
+  const STATES: Record<string, string> = { await: "候旨", busy: "运功中", done: "已回报", failed: "没办成", pending: "待出发" };
+  const count = (state: string) => agents.filter((agent) => agent.state === state).length;
+  const outcome = tool.approval?.decision === "deny" ? "本尊驳回了" : !tool.result ? (count("await") ? `${count("await")} 个候旨` : "运功中") : `${count("done")} / ${agents.length} 已回报`;
+  // A call the model got wrong sets nobody off; what was wrong is all there is to show.
+  const failure = tool.result?.isError && agents.length === 0 ? tool.result.content : undefined;
+  return (
+    <div className="did delegate">
+      <div className="did-head">
+        <span className="seal" aria-hidden="true">
+          遣
+        </span>
+        <span className="verb">派出子分身</span>
+        <span className="target">{agents.length} 个，各办一件</span>
+        <span className="outcome">{outcome}</span>
+      </div>
+      {failure && (
+        <div className="did-body">
+          <pre>{failure}</pre>
+        </div>
+      )}
+      {agents.length > 0 && (
+        <ul className="agents">
+          {agents.map((agent, at) => (
+            <li key={at}>
+              <button type="button" className="agent" disabled={!agent.session} title={agent.session ? "去看这个子分身做了什么" : undefined} onClick={() => agent.session && family.onOpen(agent.session)}>
+                <span className={`chip ${agent.state}`}>{STATES[agent.state]}</span>
+                <span className="agent-name">{agent.name}</span>
+                <span className="agent-task">{agent.task}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function ToolCard({ tool }: { tool: ToolItem }) {
@@ -311,7 +374,7 @@ function notice(reason: string, error: string | null): string {
   }
 }
 
-function ItemView({ item, mode, onDecide }: { item: Item; mode: Mode; onDecide: (toolUseId: string, decision: Decision) => void }) {
+function ItemView({ item, mode, family, onDecide }: { item: Item; mode: Mode; family: Family; onDecide: (toolUseId: string, decision: Decision) => void }) {
   switch (item.kind) {
     case "text":
       return (
@@ -329,7 +392,8 @@ function ItemView({ item, mode, onDecide }: { item: Item; mode: Mode; onDecide: 
         </details>
       );
     case "tool":
-      return item.approval && !item.approval.decision && !item.result ? <SignSheet tool={item} mode={mode} onDecide={onDecide} /> : <ToolCard tool={item} />;
+      if (item.approval && !item.approval.decision && !item.result) return <SignSheet tool={item} mode={mode} onDecide={onDecide} />;
+      return item.name === "delegate" ? <DelegateCard tool={item} family={family} /> : <ToolCard tool={item} />;
     case "fallback":
       return (
         <div className="notice">
@@ -402,6 +466,11 @@ interface Props {
   queued: string[];
   status: Status;
   mode: Mode;
+  /** The session is a 子分身's: its first message is the task its 分身 gave it, not something 本尊 said. */
+  delegated: boolean;
+  /** Every session in the list, to tell how the 子分身 of this one stand, and the way to open one. */
+  sessions: SessionItem[];
+  onOpen: (id: string) => void;
   onDecide: (toolUseId: string, decision: Decision) => void;
   /** Undo the 分身's file edits from this turn on. */
   onUndo: (turn: number) => void;
@@ -442,7 +511,8 @@ function Queued({ text }: { text: string }) {
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, onDecide, onUndo }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, delegated, sessions, onOpen, onDecide, onUndo }: Props) {
+  const family = { sessions, onOpen };
   const undoable = undoableTurns(rows);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -475,6 +545,7 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
     >
       {rows.map((row, index) => {
         const last = index === rows.length - 1;
+        const task = delegated && index === 0;
         return (
           <section key={row.key} className={`turn ${last ? "latest" : ""}`}>
             <div className="turn-said">
@@ -492,10 +563,10 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
                 {status === "idle" && !row.prompt.steering && undoable.has(row.turn) && <UndoButton turn={row.turn} onUndo={onUndo} />}
                 <span className="said-meta">
                   <span className="seal small" aria-hidden="true">
-                    {row.prompt.steering ? "音" : "令"}
+                    {task ? "遣" : row.prompt.steering ? "音" : "令"}
                   </span>
                   <span>
-                    本尊，{time(row.prompt.ts)}
+                    {task ? "主分身交办" : "本尊"}，{time(row.prompt.ts)}
                     {row.prompt.steering ? "，中途传音" : ""}
                   </span>
                 </span>
@@ -505,7 +576,7 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
             </div>
             <div className="turn-did">
               {row.items.map((item, at) => (
-                <ItemView key={item.kind === "tool" ? item.id : at} item={item} mode={mode} onDecide={onDecide} />
+                <ItemView key={item.kind === "tool" ? item.id : at} item={item} mode={mode} family={family} onDecide={onDecide} />
               ))}
               {last && <Streaming blocks={stream} />}
             </div>

@@ -66,6 +66,10 @@ const mock = await startMock([
     { tool: "run_command", input: { command: "echo e2e-ok" } },
   ],
   [{ text: "都办好了。\n\n| 指标 | 结果 |\n|---|---|\n| 通过 | 119 |\n\n```rust\nfn main() {}\n```\n\n```nosuchlanguage\nplain words\n```" }],
+  // In a second session: the model hands a task to a 子分身, whose one request comes while it waits.
+  [{ text: "我派一个子分身去查。" }, { tool: "delegate", input: { tasks: [{ name: "查文件", task: "看看 hello.txt 还在不在" }] } }],
+  [{ text: "子分身查过了：不在了。" }],
+  [{ text: "都查完了。" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -186,6 +190,30 @@ try {
   await page.evaluate(`document.querySelector(".group-add").click()`);
   await page.waitFor("a second session in the same workspace", `document.querySelectorAll(".group .row-button").length === 2 && document.querySelectorAll(".group").length === 1`);
   check(readdirSync(join(home, "sessions")).length === 2 && (await page.evaluate(`document.querySelector(".main-header h1").textContent`)) === "新分身", "the + beside a workspace opened a new session in it");
+  // There the 分身 sets off a 子分身: a session of its own, listed under this one, with a way in and a way back.
+  await page.type("#composer-input", "分头去查");
+  await page.enter();
+  await page.waitForText("都查完了。");
+  await page.waitFor("the turn to end", `!document.body.innerText.includes("分身正在运功")`);
+  const card = await page.evaluate(`({
+    state: document.querySelector(".did.delegate .agent .chip")?.textContent,
+    name: document.querySelector(".did.delegate .agent-name")?.textContent,
+    listed: [...document.querySelectorAll(".sidebar .row-button.child")].map((row) => row.textContent),
+  })`);
+  check(card.state === "已回报" && card.name === "查文件" && card.listed.join() === "查文件", "the 子分身 is shown in the call that set it off, and under its 分身 in the list");
+  const [, , asked, sub, told] = mock.requests.map((request) => request.body);
+  const offered = (body) => body.tools.some((tool) => tool.name === "delegate");
+  check(offered(asked) && !offered(sub) && JSON.stringify(sub.system).includes("You are a subagent") && sub.messages[0].content[0].text === "看看 hello.txt 还在不在", "the 子分身 got the task and nothing else, and cannot set off its own");
+  const report = told.messages[told.messages.length - 1].content.find((block) => block.type === "tool_result");
+  check(report.content.includes("子分身查过了：不在了。") && !report.is_error && readdirSync(join(home, "sessions")).length === 3, "its report went back to the 分身, and its session is kept");
+  const title = `document.querySelector(".main-header h1")?.textContent`;
+  await page.evaluate(`document.querySelector(".did.delegate .agent").click()`);
+  await page.waitFor("the 子分身's own page", `${title} === "查文件" && !!document.querySelector(".kin-link")`);
+  await page.waitForText("看看 hello.txt 还在不在");
+  await page.waitForText("主分身交办");
+  await page.evaluate(`document.querySelector(".kin-link").click()`);
+  await page.waitFor("the way back to the 分身", `${title} === "分头去查"`);
+  step("the 子分身's page shows its task and work, and leads back to the 分身 that set it off");
   console.log("Passed.");
 } catch (error) {
   failed = true;

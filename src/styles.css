@@ -317,6 +317,44 @@ pre,
   color: var(--talisman-ink);
 }
 
+.chip.done {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.chip.failed,
+.chip.pending {
+  background: var(--removed);
+  color: var(--ink-2);
+}
+
+/* How many 子分身 a 分身 has, while they are folded away under it. */
+.chip.kin {
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+/* A 子分身 in the list, under the 分身 that set it off: set in, with a line down from it. */
+.row-button.child {
+  width: calc(100% - 18px);
+  min-height: 36px;
+  margin-left: 18px;
+  font-size: 14px;
+  position: relative;
+}
+
+.row-button.child::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: -4px;
+  bottom: 50%;
+  width: 8px;
+  border-left: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+}
+
 /* ---------- buttons ---------- */
 
 .button {
@@ -410,7 +448,8 @@ pre,
 .main-header .path {
   color: var(--ink-2);
   font-size: 13px;
-  flex: 0 2 auto;
+  /* The path gives way long before the title does. */
+  flex: 0 50 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -679,6 +718,29 @@ pre,
   color: var(--ink-2);
 }
 
+/* On a 子分身's page: where it came from, and the way back. */
+.main-header .kin-link {
+  flex: 0 4 auto;
+  min-width: 0;
+  max-width: 40%;
+  padding: 2px 10px;
+  border: 1px solid var(--talisman-line);
+  border-radius: 999px;
+  background: var(--talisman);
+  color: var(--talisman-ink);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main-header .kin-link svg {
+  flex: none;
+}
+
 .prose .table-wrap {
   margin: 0 0 10px;
   overflow-x: auto;
@@ -786,6 +848,60 @@ pre,
 .did-head .outcome {
   flex-shrink: 0;
   font-size: 13px;
+}
+
+/* The 子分身 a call set off, one to a line, each a way into its own page. */
+.did .agents {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--sheet);
+  border-top: 1px solid var(--talisman-line);
+}
+
+.did .agents li + li {
+  border-top: 1px solid var(--line);
+}
+
+.did .agent {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.did .agent:hover:not(:disabled) {
+  background: var(--jade-tint);
+}
+
+.did .agent:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.did .agent-name {
+  flex: none;
+  max-width: 40%;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.did .agent-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .did-body {

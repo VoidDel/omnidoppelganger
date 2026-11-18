@@ -113,9 +113,22 @@ impl App {
         if let Some(session) = sessions.get(id) {
             return Ok(session.clone());
         }
-        let session = self.wrap(self.store.open(id).map_err(|error| error.to_string())?)?;
+        // A subagent set off since the app started is live with the agent that set it off.
+        let session = match sessions.values().find_map(|session| session.child(id)) {
+            Some(child) => child,
+            None => self.wrap(self.store.open(id).map_err(|error| error.to_string())?)?,
+        };
         sessions.insert(id.to_string(), session.clone());
         Ok(session)
+    }
+
+    /// Every live session by id: those opened here, and the subagents their agents have set off.
+    fn all_live(&self) -> HashMap<String, Session<Router>> {
+        let mut live = self.sessions.lock().unwrap().clone();
+        for child in live.values().flat_map(Session::children).collect::<Vec<_>>() {
+            live.entry(child.id().to_string()).or_insert(child);
+        }
+        live
     }
 
     fn settings_view(&self) -> SettingsView {
@@ -142,7 +155,7 @@ fn view(app: &App, session: &Session<Router>) -> SessionView {
 
 #[tauri::command]
 async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionItem>, String> {
-    let live = app.sessions.lock().unwrap().clone();
+    let live = app.all_live();
     // Live sessions are summarized from memory: their logs may be mid-append.
     let mut items: Vec<SessionItem> = app
         .store
@@ -217,25 +230,42 @@ async fn rename_session(app: State<'_, App>, id: String, title: String) -> Resul
     Ok(app.item(session.summary(), session.status()))
 }
 
-/// Remove a session and its file snapshots for good. Fails while its agent is working.
+/// Remove a session and its file snapshots for good, and with it the sessions
+/// of the subagents its agent set off. Fails while any of their agents is working.
 #[tauri::command]
 async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
+    let live = app.all_live();
+    let subagents: Vec<String> = app
+        .store
+        .ids()
+        .into_iter()
+        .filter(|other| match live.get(other) {
+            Some(session) => session.parent() == Some(id.as_str()),
+            None => app.store.peek(other).is_ok_and(|summary| summary.parent.as_deref() == Some(id.as_str())),
+        })
+        .collect();
+    drop(live);
     // The map stays locked so the session cannot be opened again halfway through.
     let mut sessions = app.sessions.lock().unwrap();
-    if sessions.get(&id).is_some_and(|session| session.status() != Status::Idle) {
-        return Err("the agent of this session is working; stop it before deleting the session".to_string());
+    let busy = |session: &Session<Router>| session.status() != Status::Idle || session.children().iter().any(|child| child.status() != Status::Idle);
+    if std::iter::once(&id).chain(&subagents).filter_map(|id| sessions.get(id)).any(busy) {
+        return Err("the agent of this session, or one of its subagents, is working; stop it before deleting the session".to_string());
     }
-    // Dropping the live session closes its handle on the log, which Windows needs before the file can go.
-    if let Some(session) = sessions.remove(&id) {
-        session.kill_jobs();
+    // Dropping a live session closes its handle on the log, which Windows needs before the file can go.
+    // The session itself goes first: it holds its subagents' sessions open.
+    for id in std::iter::once(&id).chain(&subagents) {
+        if let Some(session) = sessions.remove(id) {
+            session.kill_jobs();
+        }
+        app.store.delete(id).map_err(|error| error.to_string())?;
     }
-    app.store.delete(&id).map_err(|error| error.to_string())
+    Ok(())
 }
 
 /// Ids of the sessions whose title, workspace, or conversation holds `query`.
 #[tauri::command]
 async fn search_sessions(app: State<'_, App>, query: String) -> Result<Vec<String>, String> {
-    let live = app.sessions.lock().unwrap().clone();
+    let live = app.all_live();
     Ok(app
         .store
         .ids()

@@ -84,8 +84,17 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn
     // A session that appears or is renamed while searching is searched too.
   }, [query, sessions.length, onSearch]);
   const shown = found ? sessions.filter((session) => found.has(session.id)) : sessions;
+  // A 子分身 is listed under the 分身 that set it off: while either is on screen or it is at work,
+  // and always when it is what a search found. One whose 分身 is not listed stands by itself.
+  const listed = new Set(shown.map((session) => session.id));
+  const childOf = (session: SessionItem) => (session.parent && listed.has(session.parent) ? session.parent : null);
+  const family = (id: string) => shown.filter((session) => childOf(session) === id);
+  const open = (parent: string) => !!found || parent === activeId || family(parent).some((child) => child.id === activeId || child.status !== "idle");
   const groups = new Map<string, SessionItem[]>();
-  for (const session of shown) groups.set(session.workspace, [...(groups.get(session.workspace) ?? []), session]);
+  for (const session of shown.filter((session) => !childOf(session))) {
+    const rows = [session, ...(open(session.id) ? family(session.id) : [])];
+    groups.set(session.workspace, [...(groups.get(session.workspace) ?? []), ...rows]);
+  }
   return (
     <nav className="sidebar" aria-label="会话">
       <div className="brand">
@@ -124,11 +133,12 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn
               <button
                 type="button"
                 key={session.id}
-                className="row-button"
+                className={`row-button ${childOf(session) ? "child" : ""}`}
                 aria-current={!inSettings && session.id === activeId ? "true" : undefined}
                 onClick={() => onOpen(session.id)}
               >
-                <span className="row-title">{session.title || "新分身"}</span>
+                <span className="row-title">{session.title || (childOf(session) ? "子分身" : "新分身")}</span>
+                {!childOf(session) && !open(session.id) && family(session.id).length > 0 && <span className="chip kin" title="它派出过的子分身，点开这个分身就能看到">{family(session.id).length} 子</span>}
                 {session.status === "waiting_approval" && <span className="chip await">候旨</span>}
                 {session.status === "running" && <span className="chip busy">运功中</span>}
               </button>
@@ -316,6 +326,9 @@ function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void
 
 interface SessionHeaderProps {
   session: SessionItem;
+  /** For a 子分身: the 分身 that set it off, and the way back to it. */
+  parent?: SessionItem;
+  onOpenParent: () => void;
   /** Whether the side panel is put away, and the way to bring it back or put it away. */
   panelHidden: boolean;
   onTogglePanel: () => void;
@@ -324,7 +337,7 @@ interface SessionHeaderProps {
 }
 
 /** The session's title and folder, with renaming and deleting. Deleting asks once more: it cannot be undone. */
-export function SessionHeader({ session, panelHidden, onTogglePanel, onRename, onDelete }: SessionHeaderProps) {
+export function SessionHeader({ session, parent, onOpenParent, panelHidden, onTogglePanel, onRename, onDelete }: SessionHeaderProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   // Another session shown in the same header starts clean.
@@ -355,6 +368,14 @@ export function SessionHeader({ session, panelHidden, onTogglePanel, onRename, o
             if (event.key === "Escape") setDraft(null);
           }}
         />
+      )}
+      {session.parent && (
+        <button type="button" className="kin-link" title="这是一个子分身，回到派它出来的分身" onClick={onOpenParent}>
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12.5 13V7.5a2 2 0 0 0-2-2h-7M6.5 2.5l-3 3 3 3" />
+          </svg>
+          子分身，出自「{parent?.title || "主分身"}」
+        </button>
       )}
       <span className="path" title={session.workspace}>
         {session.workspace}

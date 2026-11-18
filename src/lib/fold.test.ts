@@ -216,6 +216,17 @@ describe("side panel", () => {
     ]);
   });
 
+  it("gathers the 子分身 a delegate call set off, in the order they started", () => {
+    const started = (session: string, name: string): SessionEvent => ({ type: "subagent/started", data: { tool_use_id: "d1", session, name } });
+    const rows = fold(log(user("split it"), said(call("d1", "delegate", { tasks: [] }), call("t1", "read_file", { path: "a" })), started("s1", "parser"), started("s2", "lexer")));
+    const [delegate, read] = rows[0].items as ToolItem[];
+    expect(delegate.agents).toEqual([
+      { session: "s1", name: "parser" },
+      { session: "s2", name: "lexer" },
+    ]);
+    expect(read.agents).toBeUndefined();
+  });
+
   it("lists only commands that ran", () => {
     const rows = fold(
       log(

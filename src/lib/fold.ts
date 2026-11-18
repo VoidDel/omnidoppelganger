@@ -15,6 +15,8 @@ export interface ToolItem {
   turn: number;
   /** The user undid this edit. */
   undone?: boolean;
+  /** The 子分身 a `delegate` call has set off so far, each a session of its own. */
+  agents?: { session: string; name: string }[];
 }
 
 export type Item =
@@ -89,6 +91,11 @@ export function fold(events: Envelope[]): Row[] {
           if (item.kind === "tool") tools.set(item.id, item);
         }
         break;
+      case "subagent/started": {
+        const tool = tools.get(event.data.tool_use_id);
+        if (tool) tool.agents = [...(tool.agents ?? []), { session: event.data.session, name: event.data.name }];
+        break;
+      }
       case "approval/requested": {
         const tool = tools.get(event.data.tool_use_id);
         if (tool) tool.approval = { reason: event.data.reason, detail: event.data.detail, grant: event.data.grant };

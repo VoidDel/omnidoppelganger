@@ -270,6 +270,8 @@ export default function App() {
           <>
             <SessionHeader
               session={active}
+              parent={state.sessions.find((session) => session.id === active.parent)}
+              onOpenParent={() => active.parent && open(active.parent)}
               panelHidden={panel.hidden}
               onTogglePanel={() => setPanel({ ...panel, hidden: !panel.hidden })}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
@@ -284,7 +286,7 @@ export default function App() {
                 </p>
               </div>
             ) : (
-              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} mode={active.mode} onDecide={decide} onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)} />
+              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} mode={active.mode} delegated={!!active.parent} sessions={state.sessions} onOpen={open} onDecide={decide} onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)} />
             )}
             <Composer
               status={state.status}
