@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { launchFrom } from "../lib/flight";
 import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
 import { MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Provider, SessionItem, Status, Todo } from "../lib/types";
@@ -383,14 +384,28 @@ export function SessionHeader({ session, panelHidden, onTogglePanel, onRename, o
       ) : (
         draft === null && (
           <>
-            <button type="button" className="button text small" onClick={() => setDraft(session.title)}>
-              改名
+            {/* Pictures to look at, words for a screen reader and for the pointer that rests on one. */}
+            <button type="button" className="icon-button" title="改名" onClick={() => setDraft(session.title)}>
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10.6 2.9 13.1 5.4 5.6 12.9 2.6 13.4 3.1 10.4Z" />
+                <path d="m9.2 4.3 2.5 2.5" />
+              </svg>
+              <span className="sr-only">改名</span>
             </button>
-            <button type="button" className="button text small" disabled={busy} title={busy ? "分身还在运功，先收回它" : undefined} onClick={() => setDeleting(true)}>
-              删除
+            <button type="button" className="icon-button danger" disabled={busy} title={busy ? "分身还在运功，先收回它" : "删除这个分身"} onClick={() => setDeleting(true)}>
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
+              </svg>
+              <span className="sr-only">删除</span>
             </button>
-            <button type="button" className="button text small panel-toggle" aria-pressed={!panelHidden} title="右边的改动、终端、计划一栏" onClick={onTogglePanel}>
-              {panelHidden ? "展开侧栏" : "收起侧栏"}
+            <button type="button" className="icon-button panel-toggle" aria-pressed={!panelHidden} title={panelHidden ? "展开右边的改动、终端、计划一栏" : "收起右边的改动、终端、计划一栏"} onClick={onTogglePanel}>
+              {/* The window with its right-hand column: filled in while the column is showing. */}
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="12" height="10" rx="1.5" />
+                <path d="M10 3v10" />
+                {!panelHidden && <path d="M10 3h2.5A1.5 1.5 0 0 1 14 4.5v7a1.5 1.5 0 0 1-1.5 1.5H10Z" fill="currentColor" stroke="none" opacity="0.3" />}
+              </svg>
+              <span className="sr-only">{panelHidden ? "展开侧栏" : "收起侧栏"}</span>
             </button>
           </>
         )
@@ -454,8 +469,11 @@ export function Composer(props: ComposerProps) {
   const picker = useRef<HTMLInputElement>(null);
   const busy = status !== "idle";
   const empty = !text.trim() && images.length === 0;
+  const sender = useRef<HTMLButtonElement>(null);
   const submit = () => {
     if (empty) return;
+    // The token on the button flies to the message's place in the conversation.
+    launchFrom(sender.current);
     onSend(text, images);
     setText("");
     setImages([]);
@@ -660,8 +678,17 @@ export function Composer(props: ComposerProps) {
               收回分身
             </button>
           )}
-          <button type="button" className="button primary" disabled={empty} onClick={submit}>
-            {busy ? "传音" : "传令"}
+          {/* A 令牌, the tablet an order is sent with: 令 on it for an order, 音 for a word to a 分身 at work. */}
+          <button type="button" ref={sender} className="token-button" disabled={empty} title={busy ? "传音：分身做完这一步就会听到" : "传令（回车）"} onClick={submit}>
+            <svg className="token" aria-hidden="true" width="32" height="40" viewBox="0 0 32 40">
+              <path className="plate" d="M7 1.5h18l5.5 5.5v21L16 38.5 1.5 28V7Z" />
+              <path className="rim" d="M8.2 4.5h15.6l3.7 3.7v18.3L16 34.8 4.5 26.5V8.2Z" />
+              <circle className="hole" cx="16" cy="8.6" r="1.7" />
+              <text x="16" y="26" textAnchor="middle">
+                {busy ? "音" : "令"}
+              </text>
+            </svg>
+            <span className="sr-only">{busy ? "传音" : "传令"}</span>
           </button>
         </div>
       </div>

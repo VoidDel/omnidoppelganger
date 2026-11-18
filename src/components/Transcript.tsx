@@ -1,8 +1,9 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { inFlight, land } from "../lib/flight";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
-import { api } from "../lib/api";
 import remarkGfm from "remark-gfm";
+import { api } from "../lib/api";
 import { type Item, type Row, type StreamBlock, type ToolItem, mcpTool, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, Status } from "../lib/types";
 
@@ -433,10 +434,23 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
   const undoable = undoableTurns(rows);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
-  // Follow new content only while the reader is already at the bottom.
-  useEffect(() => {
+  /** How many messages of 本尊's were on the page at the last render. */
+  const said = useRef(rows.length + queued.length);
+  // Follow new content only while the reader is already at the bottom. Before the page is painted,
+  // so that a new message is never seen where it is not going to stay.
+  useLayoutEffect(() => {
     const element = scroller.current;
-    if (element && pinned.current) element.scrollTop = element.scrollHeight;
+    if (!element) return;
+    const count = rows.length + queued.length;
+    // A message 本尊 just sent has come onto the page: go to it wherever the reader was, and fly it in.
+    const arriving = count > said.current && inFlight();
+    said.current = count;
+    if (arriving) pinned.current = true;
+    if (pinned.current) element.scrollTop = element.scrollHeight;
+    if (arriving) {
+      const messages = element.querySelectorAll<HTMLElement>(".turn-said .original, .turn-said .shots");
+      land(messages[messages.length - 1] ?? null);
+    }
   });
   return (
     <div
@@ -450,7 +464,7 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
       {rows.map((row, index) => {
         const last = index === rows.length - 1;
         return (
-          <section key={row.key} className="turn">
+          <section key={row.key} className={`turn ${last ? "latest" : ""}`}>
             <div className="turn-said">
               {row.prompt.images.length > 0 && (
                 <div className="shots">
@@ -461,16 +475,19 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
               )}
               {/* A message of pictures alone has no words to show. */}
               {(row.prompt.text || row.prompt.images.length === 0) && <div className={`original ${last && status === "running" ? "working" : ""}`}>{row.prompt.text}</div>}
-              <span className="said-meta">
-                <span className="seal small" aria-hidden="true">
-                  {row.prompt.steering ? "音" : "令"}
+              {/* Under the message, at its right: who said it and when, last in the line so it keeps its place. */}
+              <div className="said-foot">
+                {status === "idle" && !row.prompt.steering && undoable.has(row.turn) && <UndoButton turn={row.turn} onUndo={onUndo} />}
+                <span className="said-meta">
+                  <span className="seal small" aria-hidden="true">
+                    {row.prompt.steering ? "音" : "令"}
+                  </span>
+                  <span>
+                    本尊，{time(row.prompt.ts)}
+                    {row.prompt.steering ? "，中途传音" : ""}
+                  </span>
                 </span>
-                <span>
-                  本尊，{time(row.prompt.ts)}
-                  {row.prompt.steering ? "，中途传音" : ""}
-                </span>
-              </span>
-              {status === "idle" && !row.prompt.steering && undoable.has(row.turn) && <UndoButton turn={row.turn} onUndo={onUndo} />}
+              </div>
             </div>
             <div className="turn-did">
               {row.items.map((item, at) => (
@@ -485,7 +502,9 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide, onUnd
         <section key={`queued-${index}`} className="turn">
           <div className="turn-said">
             <div className="original queued">{text || "（图）"}</div>
-            <span className="said-meta">传音在途，分身做完这一步就会听到</span>
+            <div className="said-foot">
+              <span className="said-meta">传音在途，分身做完这一步就会听到</span>
+            </div>
           </div>
           <div className="turn-did" />
         </section>
