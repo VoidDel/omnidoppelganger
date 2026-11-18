@@ -1,0 +1,998 @@
+/* The "复写" look: paper colour says who did what.
+   White sheet = what the user said, canary = what the agent did, pink = waiting for the user's signature. */
+
+:root {
+  --bg: #f3f4f9;
+  --bg-side: #e8eaf2;
+  --panel: #ffffff;
+  --sheet: #ffffff;
+  --sheet-line: #1c1842;
+  --ink: #1c1842;
+  --ink-2: #55527a;
+  --ink-3: #4a4770;
+  --line: #d5d8e6;
+  --line-strong: #8f93b3;
+  --control: #f3f4f9;
+  --violet: #5b3cc4;
+  --violet-ink: #ffffff;
+  --violet-tint: #ece8fb;
+  --violet-tint-ink: #3f2896;
+  --canary: #fff4bf;
+  --canary-line: #e3cb62;
+  --canary-under: #f2d34b;
+  --canary-ink: #5c4a00;
+  --pink: #ffdde4;
+  --pink-line: #b4234f;
+  --pink-soft: #e7a3b5;
+  --pink-ink: #8e1b3f;
+  --pink-under: #ffb8c6;
+  --removed: #edeef5;
+  --solid: #1c1842;
+  --solid-ink: #ffffff;
+  --mark-front: #ffffff;
+  --sans: "Atkinson Hyperlegible Next", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --mono: "Atkinson Hyperlegible Mono", "PingFang SC", "Microsoft YaHei UI", ui-monospace, Consolas, monospace;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #14152e;
+  --bg-side: #0d0e21;
+  --panel: #0d0e21;
+  --sheet: #23254c;
+  --sheet-line: #e9e8f8;
+  --ink: #e9e8f8;
+  --ink-2: #a9a8cc;
+  --ink-3: #a9a8cc;
+  --line: #2c2e57;
+  --line-strong: #3b3e73;
+  --control: #14152e;
+  --violet: #b3a6ff;
+  --violet-ink: #14152e;
+  --violet-tint: #2a2659;
+  --violet-tint-ink: #d6cfff;
+  --canary: #332e12;
+  --canary-line: #7a6a1c;
+  --canary-under: #c7a52a;
+  --canary-ink: #f6e7a1;
+  --pink: #3f1c2b;
+  --pink-line: #a8456a;
+  --pink-soft: #7a3550;
+  --pink-ink: #ffc2d0;
+  --pink-under: #a8456a;
+  --removed: #1d1e3f;
+  --solid: #e9e8f8;
+  --solid-ink: #14152e;
+  --mark-front: #14152e;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+textarea,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+:focus-visible {
+  outline: 2px solid var(--violet);
+  outline-offset: 2px;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- shell ---------- */
+
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+}
+
+.app.with-panel {
+  grid-template-columns: 248px minmax(0, 1fr) 360px;
+}
+
+.sidebar {
+  min-height: 0;
+  padding: 16px 12px;
+  background: var(--bg-side);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.group-name {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-button {
+  min-height: 44px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row-button:hover {
+  border-color: var(--line);
+}
+
+.row-button[aria-current] {
+  border-color: var(--line);
+  background: var(--sheet);
+  font-weight: 700;
+}
+
+:root[data-theme="dark"] .row-button[aria-current] {
+  background: #1f2148;
+  border-color: var(--line-strong);
+}
+
+.row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chip.pink {
+  background: var(--pink);
+  color: var(--pink-ink);
+}
+
+.chip.canary {
+  background: var(--canary);
+  color: var(--canary-ink);
+}
+
+.chip.branch {
+  padding: 2px 10px;
+  background: var(--violet-tint);
+  color: var(--violet-tint-ink);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+/* ---------- buttons ---------- */
+
+.button {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* Violet hands words to the agent; ink is the user signing. The two never share a colour. */
+.button.primary {
+  background: var(--violet);
+  color: var(--violet-ink);
+}
+
+.button.solid {
+  background: var(--solid);
+  border-color: var(--solid);
+  color: var(--solid-ink);
+}
+
+.button.outline {
+  border-color: var(--sheet-line);
+}
+
+.button.text {
+  text-decoration: underline;
+}
+
+.button.dashed {
+  border: 1px dashed var(--ink-2);
+}
+
+.select-button {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--control);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.select-button .label {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.select-button .value {
+  font-weight: 700;
+}
+
+/* ---------- main column ---------- */
+
+.main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-header {
+  min-height: 60px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.main-header h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main-header .path {
+  color: var(--ink-2);
+  font-size: 13px;
+  flex: 0 2 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 80px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.turn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.turn-said {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: sticky;
+  top: 0;
+}
+
+.turn-did {
+  flex: 4 1 420px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* The user's original, with the agent's copy showing underneath. */
+.original {
+  background: var(--sheet);
+  border: 1px solid var(--sheet-line);
+  border-radius: 3px;
+  box-shadow: 6px 6px 0 var(--canary-under);
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  transition: box-shadow 240ms ease;
+}
+
+.original.working {
+  box-shadow: 10px 10px 0 var(--canary-under);
+}
+
+.original.queued {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.said-meta {
+  padding-top: 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.prose {
+  max-width: 68ch;
+  overflow-wrap: anywhere;
+}
+
+.prose > :first-child {
+  margin-top: 0;
+}
+
+.prose > :last-child {
+  margin-bottom: 0;
+}
+
+.prose p,
+.prose ul,
+.prose ol,
+.prose pre {
+  margin: 0 0 10px;
+}
+
+.prose h1,
+.prose h2,
+.prose h3 {
+  margin: 14px 0 6px;
+  font-size: 15px;
+}
+
+.prose pre {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--sheet);
+  overflow-x: auto;
+}
+
+.prose :not(pre) > code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--removed);
+}
+
+.thinking {
+  max-width: 68ch;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.thinking summary {
+  cursor: pointer;
+}
+
+.thinking p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+/* ---------- canary: what the agent did ---------- */
+
+.did {
+  background: var(--canary);
+  border: 1px solid var(--canary-line);
+  border-radius: 3px;
+  color: var(--ink);
+  overflow: hidden;
+}
+
+:root[data-theme="dark"] .did {
+  color: var(--canary-ink);
+}
+
+.did-head {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A card with nothing to expand is not dimmed: it is a record, not an unavailable control. */
+.did-head:disabled {
+  opacity: 1;
+}
+
+.did-head .verb {
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.did-head .target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.did-head .outcome {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+:root[data-theme="dark"] .did-head .outcome {
+  color: var(--canary-ink);
+}
+
+.did-body {
+  background: var(--sheet);
+  color: var(--ink);
+  border-top: 1px solid var(--canary-line);
+  overflow-x: auto;
+}
+
+:root[data-theme="dark"] .did-body {
+  background: var(--bg);
+}
+
+.did-body pre {
+  margin: 0;
+  padding: 8px 12px;
+  line-height: 22px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff {
+  min-width: max-content;
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 22px;
+  white-space: pre;
+}
+
+.diff-line {
+  display: flex;
+  padding-right: 12px;
+}
+
+.diff-line .sign {
+  flex: 0 0 28px;
+  text-align: center;
+}
+
+/* New lines are highlighted the way a marker would; removed lines fade and are struck through. No red or green. */
+.diff-line.added {
+  background: var(--canary);
+}
+
+.diff-line.added .sign {
+  font-weight: 700;
+}
+
+.diff-line.removed {
+  background: var(--removed);
+  color: var(--ink-2);
+}
+
+.diff-line.removed .text {
+  text-decoration: line-through;
+}
+
+/* ---------- pink: waiting for the user's signature ---------- */
+
+.sign-sheet {
+  background: var(--pink);
+  border: 1px solid var(--pink-line);
+  border-radius: 3px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sign-sheet h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.sign-sheet p {
+  margin: 0;
+}
+
+.sign-detail {
+  background: var(--sheet);
+  border: 1px solid var(--pink-soft);
+  border-radius: 3px;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow: auto;
+}
+
+:root[data-theme="dark"] .sign-detail {
+  background: var(--bg);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.notice {
+  padding: 8px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 3px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- composer ---------- */
+
+.composer {
+  padding: 0 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.composer-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.composer-box {
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+:root[data-theme="dark"] .composer-box {
+  background: #1d1e3f;
+}
+
+.composer-box:focus-within {
+  border-color: var(--violet);
+}
+
+.composer textarea {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  line-height: 1.55;
+  max-height: 200px;
+}
+
+.composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- side panel ---------- */
+
+.panel {
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+
+.tabs {
+  min-height: 60px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tab {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+}
+
+.tab[aria-pressed="true"] {
+  background: var(--violet-tint);
+  color: var(--violet-tint-ink);
+  font-weight: 700;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.panel-body h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.file-row {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--canary-line);
+  border-radius: 3px;
+  background: var(--canary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.file-row .target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.file-row .outcome {
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+:root[data-theme="dark"] .file-row .outcome {
+  color: var(--canary-ink);
+}
+
+.terminal {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 22px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.terminal .prompt {
+  color: var(--violet);
+}
+
+.terminal .failed {
+  color: var(--pink-ink);
+  font-weight: 700;
+}
+
+.muted {
+  color: var(--ink-2);
+}
+
+/* ---------- empty state and settings ---------- */
+
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px 56px;
+  max-width: 640px;
+}
+
+.empty h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.empty p {
+  margin: 0;
+}
+
+.settings {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 40px 24px 56px;
+}
+
+.settings-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+.settings h1 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: -0.01em;
+}
+
+.settings h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.settings section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field label,
+.field legend {
+  font-weight: 700;
+}
+
+.field .hint {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.input {
+  min-height: 44px;
+  width: 100%;
+  max-width: 360px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--sheet);
+}
+
+.provider {
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 16px;
+}
+
+.provider .who {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider .who strong {
+  font-size: 16px;
+}
+
+.papers {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 12px;
+}
+
+.papers legend {
+  padding: 0 0 10px;
+  font-weight: 700;
+}
+
+.paper {
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--sheet);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.paper:has(input:checked) {
+  border: 2px solid var(--violet);
+  padding: 11px;
+}
+
+.paper .name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.paper input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--violet);
+}
+
+.swatches {
+  display: flex;
+  gap: 6px;
+}
+
+.swatches span {
+  flex: 1;
+  height: 28px;
+  border: 1px solid;
+  border-radius: 3px;
+}
+
+.error-banner {
+  margin: 12px 24px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pink-line);
+  border-radius: 3px;
+  background: var(--pink);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* The mark is the only thing that moves on its own: the copy slides out while the agent works. */
+.mark .under {
+  transition: transform 320ms ease;
+}
+
+.mark.working .under {
+  animation: slide 1.6s ease-in-out infinite alternate;
+}
+
+@keyframes slide {
+  from {
+    transform: translate(0, 0);
+  }
+  to {
+    transform: translate(3px, 3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark.working .under {
+    animation: none;
+    transform: translate(3px, 3px);
+  }
+
+  .original {
+    transition: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  .app.with-panel {
+    grid-template-columns: 248px minmax(0, 1fr);
+  }
+
+  .app.with-panel .panel {
+    display: none;
+  }
+}
