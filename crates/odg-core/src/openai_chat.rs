@@ -1,0 +1,517 @@
+//! OpenAI-style Chat Completions over raw HTTP with server-sent events, for
+//! DeepSeek, Kimi, GLM, and other compatible servers.
+//!
+//! The session log keeps Anthropic-shaped content blocks for every provider:
+//! the reasoning becomes a `thinking` block, the reply a `text` block, and
+//! each call a `tool_use` block that also keeps the raw `arguments` string.
+//! [`chat_messages`] turns those back into Chat Completions messages. All
+//! three named providers want the reasoning returned unchanged in
+//! `reasoning_content` on later requests (DeepSeek rejects a request with
+//! tools that leaves it out), so it is always sent back.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use serde_json::{Value, json};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::sync::CancellationToken;
+
+use crate::llm::{AssistantTurn, Attempt, EndpointSource, LlmError, LlmRequest, StreamDelta, http_failure, with_retries};
+use crate::providers::{Flavor, Protocol, effort_for};
+use crate::sse::SseParser;
+
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Stream fragment indices: the reasoning, the reply, then one per tool call.
+const THINKING: usize = 0;
+const TEXT: usize = 1;
+const TOOLS: usize = 2;
+
+/// Tool definitions as Chat Completions functions.
+fn chat_tools(tools: &[Value]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| json!({ "type": "function", "function": { "name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"] } }))
+        .collect()
+}
+
+/// The request's conversation as Chat Completions messages: the system
+/// prompt, then each message of the log. A user message's tool results come
+/// first, one `tool` message each, and its text after them.
+pub fn chat_messages(system: &str, messages: &[Value]) -> Vec<Value> {
+    let mut out = vec![json!({ "role": "system", "content": system })];
+    for message in messages {
+        let blocks = message["content"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let of = |kind: &'static str| blocks.iter().filter(move |block| block["type"] == kind);
+        if message["role"] == "assistant" {
+            let reasoning: String = of("thinking").filter_map(|block| block["thinking"].as_str()).collect();
+            let text: Vec<&str> = of("text").filter_map(|block| block["text"].as_str()).collect();
+            let calls: Vec<Value> = of("tool_use")
+                .map(|block| {
+                    let arguments = block["arguments"].as_str().map(str::to_string).unwrap_or_else(|| block["input"].to_string());
+                    json!({ "id": block["id"], "type": "function", "function": { "name": block["name"], "arguments": arguments } })
+                })
+                .collect();
+            let mut assistant = json!({ "role": "assistant", "content": text.join("\n\n") });
+            if !reasoning.is_empty() {
+                assistant["reasoning_content"] = json!(reasoning);
+            }
+            if !calls.is_empty() {
+                assistant["tool_calls"] = json!(calls);
+            }
+            out.push(assistant);
+        } else {
+            for block in of("tool_result") {
+                out.push(json!({ "role": "tool", "tool_call_id": block["tool_use_id"], "content": block["content"] }));
+            }
+            let text: Vec<&str> = of("text").filter_map(|block| block["text"].as_str()).collect();
+            if !text.is_empty() {
+                out.push(json!({ "role": "user", "content": text.join("\n\n") }));
+            }
+        }
+    }
+    out
+}
+
+/// The JSON body of a streaming Chat Completions request. No output limit is
+/// sent: each provider's default already leaves room for long reasoning.
+pub fn request_body(flavor: Flavor, request: &LlmRequest) -> Value {
+    let mut body = json!({
+        "model": request.model,
+        "stream": true,
+        "messages": chat_messages(&request.system, &request.messages),
+        "tools": chat_tools(&request.tools),
+    });
+    if let Some(effort) = effort_for(Protocol::Chat(flavor), &request.effort) {
+        body["reasoning_effort"] = json!(effort);
+    }
+    match flavor {
+        // Both document that usage arrives in the last chunk only when asked for.
+        Flavor::DeepSeek => body["stream_options"] = json!({ "include_usage": true }),
+        Flavor::Kimi => {
+            body["stream_options"] = json!({ "include_usage": true });
+            // Kimi recommends one cache key per session for coding agents.
+            body["prompt_cache_key"] = json!(request.session);
+        }
+        // GLM puts usage in the last chunk by default.
+        Flavor::Glm | Flavor::Generic => {}
+    }
+    body
+}
+
+#[derive(Default)]
+struct Call {
+    /// The `index` the provider gave the call, when it gives one.
+    index: Option<u64>,
+    id: String,
+    name: String,
+    arguments: String,
+    /// Arguments sent as a JSON object rather than a string (GLM may do this).
+    object: Option<Value>,
+    started: bool,
+}
+
+/// Rebuilds one assistant message from Chat Completions stream chunks.
+#[derive(Default)]
+pub struct ChatAccumulator {
+    reasoning: String,
+    text: String,
+    calls: Vec<Call>,
+    finish_reason: Option<String>,
+    model: String,
+    usage: Value,
+}
+
+impl ChatAccumulator {
+    /// Apply one chunk. Returns the fragments to show, or the error the stream reported.
+    pub fn apply(&mut self, chunk: &Value) -> Result<Vec<StreamDelta>, LlmError> {
+        if chunk["error"].is_object() {
+            let error = &chunk["error"];
+            let kind = error["type"].as_str().or_else(|| error["code"].as_str()).unwrap_or("stream_error").to_string();
+            let message = error["message"].as_str().unwrap_or("no message").to_string();
+            // An error in the middle of a stream is the server's trouble, not the request's.
+            return Err(LlmError::Api { status: None, kind, message, retryable: true });
+        }
+        if let Some(model) = chunk["model"].as_str().filter(|model| !model.is_empty()) {
+            self.model = model.to_string();
+        }
+        if chunk["usage"].is_object() {
+            self.usage = chunk["usage"].clone();
+        }
+        let mut deltas = Vec::new();
+        let Some(choice) = chunk["choices"].as_array().and_then(|choices| choices.first()) else { return Ok(deltas) };
+        let delta = &choice["delta"];
+        if let Some(text) = delta["reasoning_content"].as_str().filter(|text| !text.is_empty()) {
+            self.reasoning.push_str(text);
+            deltas.push(StreamDelta::ThinkingDelta { index: THINKING, text: text.to_string() });
+        }
+        if let Some(text) = delta["content"].as_str().filter(|text| !text.is_empty()) {
+            self.text.push_str(text);
+            deltas.push(StreamDelta::TextDelta { index: TEXT, text: text.to_string() });
+        }
+        for fragment in delta["tool_calls"].as_array().map(Vec::as_slice).unwrap_or_default() {
+            let position = self.call_for(fragment);
+            let call = &mut self.calls[position];
+            if let Some(id) = fragment["id"].as_str().filter(|id| !id.is_empty()) {
+                call.id = id.to_string();
+            }
+            if let Some(name) = fragment["function"]["name"].as_str().filter(|name| !name.is_empty()) {
+                call.name = name.to_string();
+            }
+            if !call.started && !call.name.is_empty() {
+                call.started = true;
+                deltas.push(StreamDelta::ToolUseStart { index: TOOLS + position, id: call.id.clone(), name: call.name.clone() });
+            }
+            match &fragment["function"]["arguments"] {
+                Value::String(partial) if !partial.is_empty() => {
+                    call.arguments.push_str(partial);
+                    deltas.push(StreamDelta::ToolInputDelta { index: TOOLS + position, partial: partial.clone() });
+                }
+                object @ Value::Object(_) => call.object = Some(object.clone()),
+                _ => {}
+            }
+        }
+        if let Some(reason) = choice["finish_reason"].as_str() {
+            self.finish_reason = Some(reason.to_string());
+        }
+        Ok(deltas)
+    }
+
+    /// The call a fragment continues, adding one when it starts a new call.
+    /// Fragments are matched by `index`; without one, a new `id` starts a call
+    /// and anything else continues the last.
+    fn call_for(&mut self, fragment: &Value) -> usize {
+        let index = fragment["index"].as_u64();
+        let found = match index {
+            Some(index) => self.calls.iter().position(|call| call.index == Some(index)),
+            None => {
+                let new_id = fragment["id"].as_str().filter(|id| !id.is_empty());
+                match (self.calls.last(), new_id) {
+                    (Some(last), Some(id)) if last.id != id => None,
+                    (Some(_), _) => Some(self.calls.len() - 1),
+                    (None, _) => None,
+                }
+            }
+        };
+        found.unwrap_or_else(|| {
+            self.calls.push(Call { index, ..Default::default() });
+            self.calls.len() - 1
+        })
+    }
+
+    /// Whether a chunk with a finish reason arrived: a stream that ends without one was cut off.
+    pub fn finished(&self) -> bool {
+        self.finish_reason.is_some()
+    }
+
+    /// The complete message, or an error when the provider ended the stream on one.
+    pub fn finish(self) -> Result<AssistantTurn, LlmError> {
+        let reason = self.finish_reason.unwrap_or_default();
+        let stop_reason = match reason.as_str() {
+            "stop" => "end_turn",
+            "tool_calls" | "function_call" => "tool_use",
+            "length" => "max_tokens",
+            "content_filter" | "sensitive" => "refusal",
+            // These end a stream that failed on the server's side: worth another try.
+            "network_error" | "insufficient_system_resource" | "aborted" => {
+                return Err(LlmError::Network(format!("the provider stopped the response: {reason}")));
+            }
+            "model_context_window_exceeded" => {
+                return Err(LlmError::Api {
+                    status: None,
+                    kind: reason.clone(),
+                    message: "the conversation is longer than the model's context window".to_string(),
+                    retryable: false,
+                });
+            }
+            other => other,
+        };
+        let mut turn = AssistantTurn {
+            stop_reason: Some(stop_reason.to_string()),
+            model: self.model,
+            usage: if self.usage.is_null() { json!({}) } else { self.usage },
+            ..Default::default()
+        };
+        if !self.reasoning.is_empty() {
+            turn.content.push(json!({ "type": "thinking", "thinking": self.reasoning }));
+        }
+        if !self.text.is_empty() {
+            turn.content.push(json!({ "type": "text", "text": self.text }));
+        }
+        let mut invalid = HashMap::new();
+        for (position, call) in self.calls.into_iter().enumerate() {
+            // Every call needs an id for its result to answer.
+            let id = if call.id.is_empty() { format!("call_{position}") } else { call.id };
+            let (input, arguments) = match call.object {
+                Some(object) => (object.clone(), object.to_string()),
+                None if call.arguments.trim().is_empty() => (json!({}), "{}".to_string()),
+                None => match serde_json::from_str::<Value>(&call.arguments) {
+                    Ok(input) if input.is_object() => (input, call.arguments),
+                    _ => {
+                        invalid.insert(id.clone(), call.arguments.clone());
+                        (json!({}), call.arguments)
+                    }
+                },
+            };
+            turn.content.push(json!({ "type": "tool_use", "id": id, "name": call.name, "input": input, "arguments": arguments }));
+        }
+        turn.invalid_tool_inputs = invalid;
+        Ok(turn)
+    }
+}
+
+pub struct ChatClient {
+    http: reqwest::Client,
+    endpoints: EndpointSource,
+}
+
+impl ChatClient {
+    pub fn new(endpoints: EndpointSource) -> Result<Self, LlmError> {
+        let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).build().map_err(|error| LlmError::Network(error.to_string()))?;
+        Ok(Self { http, endpoints })
+    }
+
+    pub async fn stream(&self, flavor: Flavor, request: LlmRequest, deltas: UnboundedSender<StreamDelta>, cancel: CancellationToken) -> Result<AssistantTurn, LlmError> {
+        with_retries(&deltas, &cancel, || {
+            let (request, deltas, cancel) = (&request, &deltas, &cancel);
+            async move {
+                let mut forwarded = false;
+                let outcome = self.attempt(flavor, request, deltas, cancel, &mut forwarded).await;
+                (outcome, forwarded)
+            }
+        })
+        .await
+    }
+
+    async fn attempt(&self, flavor: Flavor, request: &LlmRequest, deltas: &UnboundedSender<StreamDelta>, cancel: &CancellationToken, forwarded: &mut bool) -> Attempt {
+        let endpoint = (self.endpoints)(&request.provider);
+        if endpoint.base_url.trim().is_empty() {
+            return Err((LlmError::NotConfigured(format!("no address is set for provider `{}`", request.provider)), None));
+        }
+        let key = endpoint.key.filter(|key| !key.trim().is_empty()).ok_or((LlmError::MissingKey, None))?;
+        let send = self
+            .http
+            .post(format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/')))
+            .bearer_auth(key.trim())
+            .json(&request_body(flavor, request))
+            .send();
+        let response = tokio::select! {
+            response = send => response.map_err(|error| (LlmError::Network(error.to_string()), None))?,
+            () = cancel.cancelled() => return Err((LlmError::Cancelled, None)),
+        };
+        if !response.status().is_success() {
+            return Err(http_failure(response).await);
+        }
+
+        let mut parser = SseParser::default();
+        let mut accumulator = ChatAccumulator::default();
+        let mut stream = response.bytes_stream();
+        'read: loop {
+            let chunk = tokio::select! {
+                chunk = tokio::time::timeout(IDLE_TIMEOUT, stream.next()) => chunk,
+                () = cancel.cancelled() => return Err((LlmError::Cancelled, None)),
+            };
+            let chunk = match chunk {
+                Err(_) => return Err((LlmError::Network("the stream went silent".to_string()), None)),
+                Ok(None) => break,
+                Ok(Some(Err(error))) => return Err((LlmError::Network(error.to_string()), None)),
+                Ok(Some(Ok(chunk))) => chunk,
+            };
+            for event in parser.feed(&chunk) {
+                if event.data.trim() == "[DONE]" {
+                    break 'read;
+                }
+                let data: Value = serde_json::from_str(&event.data).map_err(|error| (LlmError::Protocol(format!("a chunk is not JSON: {error}")), None))?;
+                for delta in accumulator.apply(&data).map_err(|error| (error, None))? {
+                    *forwarded = true;
+                    let _ = deltas.send(delta);
+                }
+            }
+        }
+        if !accumulator.finished() {
+            return Err((LlmError::Network("the stream ended before the message was complete".to_string()), None));
+        }
+        accumulator.finish().map_err(|error| (error, None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn replay(chunks: &[Value]) -> (Result<AssistantTurn, LlmError>, Vec<StreamDelta>) {
+        let mut accumulator = ChatAccumulator::default();
+        let mut deltas = Vec::new();
+        for chunk in chunks {
+            deltas.extend(accumulator.apply(chunk).unwrap());
+        }
+        assert!(accumulator.finished());
+        (accumulator.finish(), deltas)
+    }
+
+    fn delta(delta: Value) -> Value {
+        json!({ "model": "deepseek-v4-pro", "choices": [{ "index": 0, "delta": delta, "finish_reason": null }] })
+    }
+
+    #[test]
+    fn rebuilds_reasoning_text_and_tool_calls_streamed_in_fragments() {
+        let (turn, deltas) = replay(&[
+            delta(json!({ "role": "assistant", "reasoning_content": "先看" })),
+            delta(json!({ "reasoning_content": "文件。" })),
+            delta(json!({ "content": "我读一下。" })),
+            delta(json!({ "tool_calls": [{ "index": 0, "id": "call_a", "type": "function", "function": { "name": "read_file", "arguments": "" } }] })),
+            delta(json!({ "tool_calls": [{ "index": 0, "function": { "arguments": "{\"path\": \"src/" } }] })),
+            delta(json!({ "tool_calls": [{ "index": 1, "id": "call_b", "type": "function", "function": { "name": "search", "arguments": "{\"pattern\":\"x\"}" } }] })),
+            delta(json!({ "tool_calls": [{ "index": 0, "function": { "arguments": "日志.rs\"}" } }] })),
+            json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }], "usage": { "prompt_tokens": 10, "completion_tokens": 5 } }),
+        ]);
+        let turn = turn.unwrap();
+        assert_eq!(turn.stop_reason.as_deref(), Some("tool_use"));
+        assert_eq!(turn.model, "deepseek-v4-pro");
+        assert_eq!(turn.usage["prompt_tokens"], 10);
+        assert_eq!(turn.content, vec![
+            json!({ "type": "thinking", "thinking": "先看文件。" }),
+            json!({ "type": "text", "text": "我读一下。" }),
+            json!({ "type": "tool_use", "id": "call_a", "name": "read_file", "input": { "path": "src/日志.rs" }, "arguments": "{\"path\": \"src/日志.rs\"}" }),
+            json!({ "type": "tool_use", "id": "call_b", "name": "search", "input": { "pattern": "x" }, "arguments": "{\"pattern\":\"x\"}" }),
+        ]);
+        assert!(turn.invalid_tool_inputs.is_empty());
+        assert_eq!(deltas.first(), Some(&StreamDelta::ThinkingDelta { index: THINKING, text: "先看".into() }));
+        assert!(deltas.contains(&StreamDelta::ToolUseStart { index: TOOLS + 1, id: "call_b".into(), name: "search".into() }));
+    }
+
+    #[test]
+    fn handles_calls_without_an_index_and_arguments_sent_as_an_object() {
+        // Kimi's schema has no `index`; GLM may send arguments whole, even as an object.
+        let (turn, _) = replay(&[
+            delta(json!({ "tool_calls": [{ "id": "a", "function": { "name": "read_file", "arguments": "{\"path\":" } }] })),
+            delta(json!({ "tool_calls": [{ "function": { "arguments": "\"a\"}" } }] })),
+            delta(json!({ "tool_calls": [{ "id": "b", "function": { "name": "search", "arguments": { "pattern": "y" } } }] })),
+            delta(json!({ "tool_calls": [{ "id": "c", "function": { "name": "edit_file", "arguments": "{\"path\": \"a" } }] })),
+            json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
+        ]);
+        let turn = turn.unwrap();
+        let inputs: Vec<&Value> = turn.content.iter().map(|block| &block["input"]).collect();
+        assert_eq!(inputs, [&json!({ "path": "a" }), &json!({ "pattern": "y" }), &json!({})]);
+        assert_eq!(turn.content[1]["arguments"], "{\"pattern\":\"y\"}");
+        assert_eq!(turn.invalid_tool_inputs.get("c").map(String::as_str), Some("{\"path\": \"a"));
+    }
+
+    #[test]
+    fn maps_finish_reasons_and_reports_failures() {
+        let finish = |reason: &str| replay(&[json!({ "choices": [{ "delta": { "content": "x" }, "finish_reason": reason }] })]).0;
+        assert_eq!(finish("stop").unwrap().stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(finish("length").unwrap().stop_reason.as_deref(), Some("max_tokens"));
+        assert_eq!(finish("sensitive").unwrap().stop_reason.as_deref(), Some("refusal"));
+        assert!(finish("network_error").unwrap_err().retryable());
+        assert!(!finish("model_context_window_exceeded").unwrap_err().retryable());
+
+        let mut accumulator = ChatAccumulator::default();
+        let error = accumulator.apply(&json!({ "error": { "message": "busy", "code": "1305" } })).unwrap_err();
+        assert!(matches!(error, LlmError::Api { ref kind, .. } if kind == "1305"));
+        assert!(!accumulator.finished());
+    }
+
+    fn request(messages: Vec<Value>) -> LlmRequest {
+        LlmRequest {
+            provider: "deepseek".into(),
+            session: "session-1".into(),
+            model: "deepseek-v4-pro".into(),
+            system: "sys".into(),
+            messages,
+            tools: vec![json!({ "name": "read_file", "description": "d", "input_schema": { "type": "object" } })],
+            effort: "xhigh".into(),
+        }
+    }
+
+    #[test]
+    fn sends_reasoning_back_and_puts_tool_results_before_text() {
+        let messages = vec![
+            json!({ "role": "user", "content": [{ "type": "text", "text": "read a" }] }),
+            json!({ "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "先读。" },
+                { "type": "tool_use", "id": "call_a", "name": "read_file", "input": { "path": "a" }, "arguments": "{\"path\": \"a\"}" },
+            ] }),
+            json!({ "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "call_a", "content": "1\thi", "is_error": false },
+                { "type": "text", "text": "also b" },
+            ] }),
+        ];
+        assert_eq!(chat_messages("sys", &messages), vec![
+            json!({ "role": "system", "content": "sys" }),
+            json!({ "role": "user", "content": "read a" }),
+            json!({
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "先读。",
+                "tool_calls": [{ "id": "call_a", "type": "function", "function": { "name": "read_file", "arguments": "{\"path\": \"a\"}" } }],
+            }),
+            json!({ "role": "tool", "tool_call_id": "call_a", "content": "1\thi" }),
+            json!({ "role": "user", "content": "also b" }),
+        ]);
+    }
+
+    #[tokio::test]
+    async fn streams_over_http_and_retries_an_overloaded_provider() {
+        use crate::testing::{error, event_stream, serve};
+        let (address, server) = serve(vec![
+            error(429, r#"{"error":{"code":"1305","message":"该模型当前访问量过大"}}"#),
+            event_stream(&[delta(json!({ "content": "你好" })), json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] })], true),
+        ])
+        .await;
+        let base_url = format!("{address}/v1/");
+        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: base_url.clone(), key: Some("sk-test".into()) })).unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let turn = client.stream(Flavor::Glm, request(vec![]), sender, CancellationToken::new()).await.unwrap();
+        assert_eq!(turn.content, vec![json!({ "type": "text", "text": "你好" })]);
+        assert_eq!(turn.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(receiver.recv().await, Some(StreamDelta::TextDelta { index: TEXT, text: "你好".into() }));
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].starts_with("POST /v1/chat/completions HTTP/1.1"), "{}", requests[1]);
+        assert!(requests[1].to_ascii_lowercase().contains("authorization: bearer sk-test"));
+        assert!(requests[1].contains("\"reasoning_effort\":\"max\""));
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_a_rejected_request_and_needs_an_address_and_key() {
+        use crate::testing::{error, serve};
+        let (address, server) = serve(vec![error(400, r#"{"error":{"message":"bad model","type":"invalid_request_error"}}"#)]).await;
+        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: address.clone(), key: Some("k".into()) })).unwrap();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let error = client.stream(Flavor::DeepSeek, request(vec![]), sender, CancellationToken::new()).await.unwrap_err();
+        assert_eq!(error.to_string(), "invalid_request_error: bad model");
+        assert_eq!(server.await.unwrap().len(), 1);
+
+        let unset = |endpoint: crate::llm::Endpoint| ChatClient::new(std::sync::Arc::new(move |_: &str| endpoint.clone())).unwrap();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let no_address = unset(crate::llm::Endpoint { base_url: String::new(), key: Some("k".into()) });
+        assert!(matches!(no_address.stream(Flavor::Generic, request(vec![]), sender.clone(), CancellationToken::new()).await, Err(LlmError::NotConfigured(_))));
+        let no_key = unset(crate::llm::Endpoint { base_url: "http://127.0.0.1:9".into(), key: None });
+        assert_eq!(no_key.stream(Flavor::Generic, request(vec![]), sender, CancellationToken::new()).await, Err(LlmError::MissingKey));
+    }
+
+    #[test]
+    fn builds_each_flavor_s_request() {
+        let deepseek = request_body(Flavor::DeepSeek, &request(vec![]));
+        assert_eq!(deepseek["reasoning_effort"], "high");
+        assert_eq!(deepseek["stream_options"], json!({ "include_usage": true }));
+        assert_eq!(deepseek["tools"][0], json!({ "type": "function", "function": { "name": "read_file", "description": "d", "parameters": { "type": "object" } } }));
+        assert!(deepseek.get("prompt_cache_key").is_none());
+        // Kimi and GLM fix their sampling parameters; none may be sent.
+        assert!(deepseek.get("temperature").is_none());
+
+        let kimi = request_body(Flavor::Kimi, &request(vec![]));
+        assert_eq!(kimi["reasoning_effort"], "max");
+        assert_eq!(kimi["prompt_cache_key"], "session-1");
+
+        let glm = request_body(Flavor::Glm, &request(vec![]));
+        assert_eq!(glm["reasoning_effort"], "max");
+        assert!(glm.get("stream_options").is_none());
+
+        let generic = request_body(Flavor::Generic, &request(vec![]));
+        assert!(generic.get("reasoning_effort").is_none() && generic.get("stream_options").is_none());
+    }
+}

@@ -34,6 +34,10 @@ pub enum Event {
         id: String,
         /// Absolute path of the directory the agent works in.
         workspace: String,
+        /// Id of the model provider; absent means Anthropic, the only provider
+        /// before format 2. See [`crate::providers`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
         model: String,
         format: u32,
     },

@@ -1,5 +1,6 @@
-//! Core of OmniDoppelganger: the append-only session log, the Anthropic
-//! streaming client, the tools, the approval policy, and the agent loop.
+//! Core of OmniDoppelganger: the append-only session log, the streaming
+//! clients for each model provider, the tools, the approval policy, and the
+//! agent loop.
 //! Nothing here depends on the desktop shell.
 
 pub mod agent;
@@ -7,8 +8,13 @@ pub mod anthropic;
 pub mod events;
 pub mod fsutil;
 pub mod llm;
+pub mod openai_chat;
+pub mod openai_responses;
 pub mod policy;
+pub mod providers;
 pub mod session;
 pub mod settings;
 pub mod sse;
+#[cfg(test)]
+mod testing;
 pub mod tools;

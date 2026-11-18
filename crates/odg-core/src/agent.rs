@@ -58,6 +58,7 @@ struct State {
 struct Inner<L: Llm> {
     id: String,
     workspace: PathBuf,
+    provider: String,
     model: String,
     llm: Arc<L>,
     effort: EffortSource,
@@ -109,11 +110,12 @@ impl<L: Llm> Session<L> {
         runtime: tokio::runtime::Handle,
     ) -> std::io::Result<Self> {
         log.repair_tail()?;
-        let (workspace, model) = log.header();
+        let (workspace, provider, model) = log.header();
         Ok(Self {
             inner: Arc::new(Inner {
                 id: log.id().to_string(),
                 workspace,
+                provider,
                 model,
                 llm,
                 effort,
@@ -262,6 +264,8 @@ impl<L: Llm> Inner<L> {
             }
 
             let request = LlmRequest {
+                provider: self.provider.clone(),
+                session: self.id.clone(),
                 model: self.model.clone(),
                 system: system_prompt(&self.workspace),
                 messages: derive_messages(self.log.lock().unwrap().events()),
@@ -417,7 +421,7 @@ mod tests {
     fn fixture(llm: Arc<ScriptedLlm>) -> Fixture {
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let log = SessionStore::new(home.path()).create(workspace.path(), "scripted").unwrap();
+        let log = SessionStore::new(home.path()).create(workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
         let session = Session::new(log, llm.clone(), Arc::new(|| "high".to_string()), sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, workspace, session, llm, events }
@@ -483,6 +487,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].effort, "high");
+        assert_eq!((requests[0].provider.as_str(), requests[0].session.as_str()), ("anthropic", fixture.session.id()));
         assert_eq!(requests[0].tools.len(), 4);
         assert!(requests[0].system.contains(&fixture.workspace.path().display().to_string()));
         // The second request carries the whole conversation: user, assistant tool call, tool result.

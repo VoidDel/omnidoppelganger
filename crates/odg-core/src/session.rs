@@ -12,8 +12,14 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::events::{Envelope, Event};
+use crate::providers::DEFAULT_PROVIDER;
 
-pub const FORMAT_VERSION: u32 = 1;
+/// The newest format this build reads and writes. Format 2 adds the
+/// `provider` field to the header; an Anthropic session leaves it out and is
+/// still written as format 1, so earlier builds keep reading it. A session
+/// on another provider is format 2, which earlier builds refuse to open
+/// rather than send its conversation to Anthropic.
+pub const FORMAT_VERSION: u32 = 2;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +42,7 @@ pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub workspace: String,
+    pub provider: String,
     pub model: String,
     pub created_at: String,
     pub updated_at: String,
@@ -54,8 +61,8 @@ impl SessionStore {
         Self { root: root.into() }
     }
 
-    /// Create a session whose agent works in `workspace`.
-    pub fn create(&self, workspace: &Path, model: &str) -> Result<SessionLog, SessionError> {
+    /// Create a session whose agent works in `workspace` with `model` from `provider`.
+    pub fn create(&self, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
         fs::create_dir_all(&directory)?;
@@ -65,8 +72,9 @@ impl SessionStore {
         log.append(Event::SessionCreated {
             id,
             workspace: workspace.to_string_lossy().into_owned(),
+            provider: (provider != DEFAULT_PROVIDER).then(|| provider.to_string()),
             model: model.to_string(),
-            format: FORMAT_VERSION,
+            format: if provider == DEFAULT_PROVIDER { 1 } else { FORMAT_VERSION },
         })?;
         Ok(log)
     }
@@ -165,10 +173,12 @@ impl SessionLog {
         &self.events
     }
 
-    /// Workspace and model recorded when the session was created.
-    pub fn header(&self) -> (PathBuf, String) {
+    /// Workspace, provider, and model recorded when the session was created.
+    pub fn header(&self) -> (PathBuf, String, String) {
         match &self.events[0].event {
-            Event::SessionCreated { workspace, model, .. } => (PathBuf::from(workspace), model.clone()),
+            Event::SessionCreated { workspace, provider, model, .. } => {
+                (PathBuf::from(workspace), provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()), model.clone())
+            }
             _ => unreachable!("create and open both guarantee the header"),
         }
     }
@@ -276,8 +286,10 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
 
 /// Fold a log into its list entry. The title is the first user message, cut to 40 characters.
 pub fn summarize(events: &[Envelope]) -> SessionSummary {
-    let (id, workspace, model) = match &events[0].event {
-        Event::SessionCreated { id, workspace, model, .. } => (id.clone(), workspace.clone(), model.clone()),
+    let (id, workspace, provider, model) = match &events[0].event {
+        Event::SessionCreated { id, workspace, provider, model, .. } => {
+            (id.clone(), workspace.clone(), provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()), model.clone())
+        }
         _ => unreachable!("create and open both guarantee the header"),
     };
     let title = events
@@ -311,6 +323,7 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         id,
         title,
         workspace,
+        provider,
         model,
         created_at: events[0].ts.clone(),
         updated_at: events[events.len() - 1].ts.clone(),
@@ -337,7 +350,7 @@ mod tests {
     #[test]
     fn reopens_what_it_appended() {
         let (_directory, store) = store();
-        let mut log = store.create(Path::new("/work"), "claude-opus-5-5").unwrap();
+        let mut log = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
         log.append(Event::UserMessage { text: "hello".into(), steering: false }).unwrap();
         let id = log.id().to_string();
@@ -347,13 +360,30 @@ mod tests {
         let reopened = store.open(&id).unwrap();
         assert_eq!(reopened.events(), written.as_slice());
         assert_eq!(reopened.events().iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2, 3]);
-        assert_eq!(reopened.header(), (PathBuf::from("/work"), "claude-opus-5-5".to_string()));
+        assert_eq!(reopened.header(), (PathBuf::from("/work"), "anthropic".to_string(), "claude-opus-5-5".to_string()));
+    }
+
+    #[test]
+    fn writes_format_1_for_anthropic_and_format_2_with_the_provider_otherwise() {
+        let (_directory, store) = store();
+        let header = |log: &SessionLog| serde_json::to_value(&log.events()[0]).unwrap()["data"].clone();
+        let anthropic = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
+        assert_eq!(header(&anthropic)["format"], 1);
+        assert!(header(&anthropic).get("provider").is_none());
+        let deepseek = store.create(Path::new("/work"), "deepseek", "deepseek-v4-pro").unwrap();
+        assert_eq!((header(&deepseek)["format"].as_u64(), header(&deepseek)["provider"].as_str()), (Some(2), Some("deepseek")));
+
+        let id = deepseek.id().to_string();
+        drop(deepseek);
+        let reopened = store.open(&id).unwrap();
+        assert_eq!(reopened.header(), (PathBuf::from("/work"), "deepseek".to_string(), "deepseek-v4-pro".to_string()));
+        assert_eq!(store.peek(&id).unwrap().provider, "deepseek");
     }
 
     #[test]
     fn drops_a_line_cut_off_by_a_crash_and_keeps_appending() {
         let (_directory, store) = store();
-        let mut log = store.create(Path::new("/work"), "m").unwrap();
+        let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
         let (id, path) = (log.id().to_string(), log.path().to_path_buf());
         drop(log);
@@ -371,7 +401,7 @@ mod tests {
     #[test]
     fn listing_never_changes_a_log_that_is_being_written() {
         let (_directory, store) = store();
-        let log = store.create(Path::new("/work"), "m").unwrap();
+        let log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let (id, path) = (log.id().to_string(), log.path().to_path_buf());
         // Another handle is halfway through appending a line.
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
@@ -400,7 +430,7 @@ mod tests {
     #[test]
     fn reports_damage_in_the_middle_of_a_log() {
         let (_directory, store) = store();
-        let log = store.create(Path::new("/work"), "m").unwrap();
+        let log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let (id, path) = (log.id().to_string(), log.path().to_path_buf());
         drop(log);
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
@@ -412,7 +442,7 @@ mod tests {
     #[test]
     fn derives_messages_with_results_before_steering_text() {
         let (_directory, store) = store();
-        let mut log = store.create(Path::new("/work"), "m").unwrap();
+        let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let thinking = json!({ "type": "thinking", "thinking": "", "signature": "sig" });
         let call = json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a" } });
         log.append(Event::TurnStart { turn: 1 }).unwrap();
@@ -435,7 +465,7 @@ mod tests {
     #[test]
     fn repairs_a_turn_left_open_by_a_crash() {
         let (_directory, store) = store();
-        let mut log = store.create(Path::new("/work"), "m").unwrap();
+        let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
         log.append(Event::UserMessage { text: "go".into(), steering: false }).unwrap();
         log.append(assistant(vec![
@@ -466,10 +496,10 @@ mod tests {
     #[test]
     fn summarizes_title_and_lists_newest_first() {
         let (_directory, store) = store();
-        let mut first = store.create(Path::new("/a"), "m").unwrap();
+        let mut first = store.create(Path::new("/a"), "anthropic", "m").unwrap();
         first.append(Event::UserMessage { text: "  fix   the\nparser ".into(), steering: false }).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let mut second = store.create(Path::new("/b"), "m").unwrap();
+        let mut second = store.create(Path::new("/b"), "anthropic", "m").unwrap();
         second.append(Event::UserMessage { text: "x".repeat(50), steering: false }).unwrap();
         second.append(Event::ApprovalResolved { tool_use_id: "none".into(), decision: Decision::Deny }).unwrap();
 

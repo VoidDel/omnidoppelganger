@@ -5,9 +5,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use std::collections::BTreeMap;
+
 use odg_core::agent::{Session, Status, UiEvent};
-use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL, MODELS};
+use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
 use odg_core::events::{Decision, Envelope};
+use odg_core::providers::{PROVIDERS, Provider, Router, provider};
 use odg_core::session::{SessionStore, SessionSummary};
 use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore};
 use serde::Serialize;
@@ -20,9 +23,9 @@ const SESSION_EVENT: &str = "session-event";
 struct App {
     store: SessionStore,
     settings: Arc<SettingsStore>,
-    llm: Arc<AnthropicClient>,
+    llm: Arc<Router>,
     /// Sessions opened since the app started. A session stays here so its turn keeps running while another is shown.
-    sessions: Mutex<HashMap<String, Session<AnthropicClient>>>,
+    sessions: Mutex<HashMap<String, Session<Router>>>,
     events: UnboundedSender<UiEvent>,
 }
 
@@ -41,22 +44,17 @@ struct SessionView {
 }
 
 #[derive(Serialize)]
-struct ModelOption {
-    id: &'static str,
-    name: &'static str,
-}
-
-#[derive(Serialize)]
 struct SettingsView {
     settings: Settings,
-    key: KeyStatus,
-    models: Vec<ModelOption>,
+    /// Each provider's key status, by provider id.
+    keys: BTreeMap<String, KeyStatus>,
+    providers: &'static [Provider],
     efforts: &'static [&'static str],
     home: String,
 }
 
 impl App {
-    fn wrap(&self, log: odg_core::session::SessionLog) -> Result<Session<AnthropicClient>, String> {
+    fn wrap(&self, log: odg_core::session::SessionLog) -> Result<Session<Router>, String> {
         let settings = self.settings.clone();
         Session::new(log, self.llm.clone(), Arc::new(move || settings.load().effort), self.events.clone(), tokio::runtime::Handle::current())
             .map_err(|error| error.to_string())
@@ -64,7 +62,7 @@ impl App {
 
     /// The live session, opening it from disk on first use. The map stays
     /// locked while the log is opened, so a log never gets two writers.
-    fn live(&self, id: &str) -> Result<Session<AnthropicClient>, String> {
+    fn live(&self, id: &str) -> Result<Session<Router>, String> {
         let mut sessions = self.sessions.lock().unwrap();
         if let Some(session) = sessions.get(id) {
             return Ok(session.clone());
@@ -77,15 +75,15 @@ impl App {
     fn settings_view(&self) -> SettingsView {
         SettingsView {
             settings: self.settings.load(),
-            key: self.settings.key_status(),
-            models: MODELS.iter().map(|(id, name)| ModelOption { id, name }).collect(),
+            keys: self.settings.key_statuses(),
+            providers: PROVIDERS,
             efforts: EFFORTS,
             home: settings::home().display().to_string(),
         }
     }
 }
 
-fn view(session: &Session<AnthropicClient>) -> SessionView {
+fn view(session: &Session<Router>) -> SessionView {
     SessionView { item: SessionItem { summary: session.summary(), status: session.status() }, events: session.snapshot() }
 }
 
@@ -116,7 +114,12 @@ async fn create_session(app: State<'_, App>, workspace: String) -> Result<Sessio
     if !workspace.is_dir() {
         return Err(format!("{} is not a directory", workspace.display()));
     }
-    let log = app.store.create(&workspace, &app.settings.load().model).map_err(|error| error.to_string())?;
+    let settings = app.settings.load();
+    if settings.model.is_empty() {
+        let name = provider(&settings.provider).map_or(settings.provider.as_str(), |known| known.name);
+        return Err(format!("{name} has no model chosen: enter a model id in settings"));
+    }
+    let log = app.store.create(&workspace, &settings.provider, &settings.model).map_err(|error| error.to_string())?;
     let session = app.wrap(log)?;
     app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
     Ok(view(&session))
@@ -160,14 +163,14 @@ fn save_settings(app: State<'_, App>, settings: Settings) -> Result<SettingsView
 }
 
 #[tauri::command]
-fn save_api_key(app: State<'_, App>, key: String) -> Result<SettingsView, String> {
-    app.settings.save_api_key(&key).map_err(|error| error.to_string())?;
+fn save_api_key(app: State<'_, App>, provider: String, key: String) -> Result<SettingsView, String> {
+    app.settings.save_api_key(&provider, &key).map_err(|error| error.to_string())?;
     Ok(app.settings_view())
 }
 
 #[tauri::command]
-fn delete_api_key(app: State<'_, App>) -> Result<SettingsView, String> {
-    app.settings.delete_api_key().map_err(|error| error.to_string())?;
+fn delete_api_key(app: State<'_, App>, provider: String) -> Result<SettingsView, String> {
+    app.settings.delete_api_key(&provider).map_err(|error| error.to_string())?;
     Ok(app.settings_view())
 }
 
@@ -181,7 +184,9 @@ pub fn run() {
             let settings = Arc::new(SettingsStore::new(&home));
             let key_source = settings.clone();
             let base_url = std::env::var("ANTHROPIC_BASE_URL").ok().filter(|url| !url.trim().is_empty()).unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-            let llm = Arc::new(AnthropicClient::new(base_url, Arc::new(move || key_source.api_key()))?);
+            let anthropic = AnthropicClient::new(base_url, Arc::new(move || key_source.api_key("anthropic")))?;
+            let endpoint_source = settings.clone();
+            let llm = Arc::new(Router::new(anthropic, Arc::new(move |provider: &str| endpoint_source.endpoint(provider)))?);
 
             let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
             let handle = app.handle().clone();

@@ -417,6 +417,8 @@ mod tests {
     #[test]
     fn builds_the_request_for_the_official_api_and_for_a_gateway() {
         let request = LlmRequest {
+            provider: "anthropic".into(),
+            session: "s".into(),
             model: "claude-opus-5-5".into(),
             system: "sys".into(),
             messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })],

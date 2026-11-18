@@ -12,6 +12,10 @@ use tokio_util::sync::CancellationToken;
 /// One model request. `messages` comes from [`crate::session::derive_messages`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct LlmRequest {
+    /// Id of the provider the session was created with; see [`crate::providers`].
+    pub provider: String,
+    /// The session's id, for providers that key their prompt cache on it.
+    pub session: String,
     pub model: String,
     pub system: String,
     pub messages: Vec<Value>,
@@ -51,6 +55,8 @@ pub struct AssistantTurn {
 pub enum LlmError {
     #[error("no API key is configured")]
     MissingKey,
+    #[error("{0}")]
+    NotConfigured(String),
     #[error("the request was cancelled")]
     Cancelled,
     #[error("{kind}: {message}")]
@@ -67,7 +73,7 @@ impl LlmError {
         match self {
             LlmError::Api { retryable, .. } => *retryable,
             LlmError::Network(_) => true,
-            LlmError::MissingKey | LlmError::Cancelled | LlmError::Protocol(_) => false,
+            LlmError::MissingKey | LlmError::NotConfigured(_) | LlmError::Cancelled | LlmError::Protocol(_) => false,
         }
     }
 }
@@ -133,6 +139,16 @@ pub async fn http_failure(response: reqwest::Response) -> (LlmError, Option<Dura
     };
     (LlmError::Api { status: Some(status), kind, message, retryable }, retry_after)
 }
+
+/// Where requests for one provider go, read fresh for every request so a
+/// key or address saved in settings applies to the next one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoint {
+    pub base_url: String,
+    pub key: Option<String>,
+}
+
+pub type EndpointSource = std::sync::Arc<dyn Fn(&str) -> Endpoint + Send + Sync>;
 
 pub trait Llm: Send + Sync + 'static {
     /// Generate one assistant message, sending fragments to `deltas` as they arrive.
