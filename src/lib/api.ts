@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Decision, SessionItem, SessionView, Settings, SettingsView, UiEvent } from "./types";
 
 export const api = {
@@ -21,5 +22,7 @@ export const api = {
     const picked = await open({ directory: true, multiple: false, title: "选一个文件夹作洞府" });
     return typeof picked === "string" ? picked : null;
   },
-  onSessionEvent: (handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),
+  /** Open an http(s) or mailto link in the system's default app, never in the app window. */
+  openExternal: (url: string) => openUrl(url),
+  onSessionEvent:(handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),
 };

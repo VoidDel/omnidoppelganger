@@ -1,9 +1,35 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import { api } from "../lib/api";
 import type { Item, Row, StreamBlock, ToolItem } from "../lib/fold";
 import type { Decision, DiffHunk, Status } from "../lib/types";
 
-const time = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const EXTERNAL = /^(https?:|mailto:)/i;
+
+/**
+ * A link in the model's text. Following it inside the window would replace the
+ * app with the page, so web links open in the system browser and anything
+ * else (relative paths, anchors, other schemes) stays plain text.
+ */
+function Link({ href, children }: { href?: string; children?: ReactNode }) {
+  if (!href || !EXTERNAL.test(href)) return <span title={href}>{children}</span>;
+  return (
+    <a
+      href={href}
+      title={href}
+      onClick={(event) => {
+        event.preventDefault();
+        api.openExternal(href).catch((error) => console.error(error));
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+const markdownParts = { a: Link };
+
+const time =(ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 function Diff({ hunk }: { hunk: DiffHunk }) {
   return (
@@ -158,7 +184,7 @@ function ItemView({ item, onDecide }: { item: Item; onDecide: (toolUseId: string
     case "text":
       return (
         <div className="prose">
-          <Markdown>{item.text}</Markdown>
+          <Markdown components={markdownParts}>{item.text}</Markdown>
         </div>
       );
     case "thinking":
@@ -187,7 +213,7 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
       {blocks.map((block) =>
         block.kind === "text" ? (
           <div key={block.index} className="prose">
-            <Markdown>{block.text}</Markdown>
+            <Markdown components={markdownParts}>{block.text}</Markdown>
           </div>
         ) : block.kind === "thinking" ? (
           <div key={block.index} className="thinking">

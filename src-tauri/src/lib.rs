@@ -175,6 +175,7 @@ fn delete_api_key(app: State<'_, App>) -> Result<SettingsView, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let home = settings::home();
             let settings = Arc::new(SettingsStore::new(&home));
