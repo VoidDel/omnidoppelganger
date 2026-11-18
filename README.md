@@ -12,11 +12,12 @@ OmniDoppelganger（`odg`）是一个跑在你自己电脑上的编码 agent 桌�
 
 - 在一个文件夹里开会话，流式对话，会话保存在本机，重开后原样恢复
 - 四个工具：读文件、搜索、改文件（带改动对比）、跑命令
+- 多家模型供应商：Anthropic、OpenAI、DeepSeek、Kimi（月之暗面）、GLM（智谱），以及任意 OpenAI 兼容服务。每个会话固定用化出时选的那一家
 - 审批：命令和文件夹之外的路径要先批准，可以只准一次，也可以之后都准。命令的"之后都准"只覆盖同一个前缀（如 `cargo test`），带管道、分号、引号、变量的命令和 `sh`、`python` 这类解释器每次都要批准；改 `.git` 里的文件每次都要批准，因为 Git 的钩子和配置会在你自己运行 git 时生效
 - 分身干活时可以中途传音，不打断它当前这一步；也可以随时收回
 - 亮暗两套主题
 
-还不能做的事，以及接下来的顺序，见[路线图](doc/ROADMAP.md)。其中最要紧的两条：真实的 Anthropic 接口还没有实测过（目前只用模拟的模型服务跑通），长会话还没有上下文压缩。
+还不能做的事，以及接下来的顺序，见[路线图](doc/ROADMAP.md)。其中最要紧的两条：各家的真实接口都还没有用密钥实测过（目前只用模拟的模型服务跑通），长会话还没有上下文压缩。
 
 ## 运行
 
@@ -33,7 +34,7 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
-启动后在**设置**里填 Anthropic API 密钥，或者启动前导出 `ANTHROPIC_API_KEY`。
+启动后在**设置**里选模型供应商和模型，填上那一家的 API 密钥；也可以在启动前导出对应的环境变量（见下文）。
 
 ## 界面里的说法
 
@@ -71,7 +72,11 @@ pnpm tauri build
 crates/odg-core/   核心库，不依赖桌面外壳
   events.rs        会话事件定义
   session.rs       追加式会话日志，以及从日志推导模型请求
-  anthropic.rs     Messages API 流式客户端（SSE 解析、重试）
+  providers.rs     模型供应商列表，按会话的供应商把请求分给对应客户端
+  anthropic.rs     Anthropic Messages API 流式客户端
+  openai_responses.rs  OpenAI Responses API 流式客户端
+  openai_chat.rs   Chat Completions 流式客户端：DeepSeek、Kimi、GLM 和其他兼容服务
+  llm.rs           客户端共用的请求、重试和报错处理
   tools.rs         四个工具：read_file、search、edit_file、run_command
   policy.rs        哪些操作要先批准
   agent.rs         agent 循环：回合、步骤、审批、传音、收回
@@ -85,7 +90,8 @@ app-icon.svg       应用图标的源文件
 ## 几条设计约定
 
 - **日志是唯一事实来源。** 每个会话是一个只追加的文件 `~/.odg/sessions/<id>/session.v1.jsonl`。发给模型的每个请求都只从日志推导，界面也只从日志折叠出来，所以重开会话看到的和之前完全一样。
-- **历史只追加，不改写。** 模型返回的内容块（包括思考块）原样保存、原样回放。
+- **历史只追加，不改写。** 模型返回的内容块（包括思考块）原样保存、原样回放。DeepSeek、Kimi、GLM 的 `reasoning_content` 和 OpenAI 的加密推理项也一样，后续请求原样带回。
+- **会话不换供应商。** 会话头记下化出时的供应商和模型，所以日志里只会有一家的内容块，不需要在各家格式之间转换。
 - **每个工具调用都有结果。** 无论一轮是正常结束、被收回、出错还是应用崩溃，日志里不会留下没有结果的工具调用。
 - **模型可见的新输入都对应一种会话事件。** 加工具时同时定好审批规则、界面卡片和测试。
 
@@ -93,8 +99,8 @@ app-icon.svg       应用图标的源文件
 
 | 变量 | 作用 |
 |---|---|
-| `ANTHROPIC_API_KEY` | 没有在设置里保存密钥时使用 |
-| `ANTHROPIC_BASE_URL` | 把请求发到自己的网关；此时不发送只有官方接口支持的字段 |
+| `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`MOONSHOT_API_KEY`、`ZHIPUAI_API_KEY` | 对应供应商没有在设置里保存密钥时使用 |
+| `ANTHROPIC_BASE_URL` | 把 Anthropic 请求发到自己的网关；此时不发送只有官方接口支持的字段。其他供应商的地址在设置里改 |
 | `ODG_HOME` | 会话、设置和密钥的存放目录，默认 `~/.odg` |
 
 设置里保存的密钥目前是 `ODG_HOME` 下的明文文件，改存系统凭据管理器排在路线图的第一阶段。
