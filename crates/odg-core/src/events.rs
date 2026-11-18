@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::policy::Mode;
+
 /// One line of a session log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
@@ -48,6 +50,11 @@ pub enum Event {
         text: String,
         /// True when the message arrived while a turn was already running.
         steering: bool,
+        /// The session's mode when the message joined the conversation. The
+        /// model is told when plan mode starts or ends from this. Left out
+        /// for edit mode, so logs from before modes read unchanged.
+        #[serde(default, skip_serializing_if = "Mode::is_edit")]
+        mode: Mode,
     },
     /// A complete assistant message. `content` holds the API content blocks
     /// exactly as received: thinking blocks must be replayed unchanged.
@@ -62,7 +69,7 @@ pub enum Event {
     ApprovalRequested {
         tool_use_id: String,
         tool: String,
-        /// Which rule asked: `command`, `outside_read`, `outside_write`, or `git_write`.
+        /// Which rule asked: `command`, `edit`, `outside_read`, `outside_write`, or `git_write`.
         reason: String,
         /// The command or path the user is asked about.
         detail: String,

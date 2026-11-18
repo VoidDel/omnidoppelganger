@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use odg_core::agent::{Session, Status, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
 use odg_core::events::{Decision, Envelope};
+use odg_core::policy::Mode;
 use odg_core::providers::{PROVIDERS, Provider, Router, provider};
 use odg_core::session::{SessionStore, SessionSummary};
 use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore};
@@ -121,6 +122,7 @@ async fn create_session(app: State<'_, App>, workspace: String) -> Result<Sessio
     }
     let log = app.store.create(&workspace, &settings.provider, &settings.model).map_err(|error| error.to_string())?;
     let session = app.wrap(log)?;
+    session.set_mode(settings.mode);
     app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
     Ok(view(&session))
 }
@@ -143,6 +145,14 @@ async fn send_message(app: State<'_, App>, id: String, text: String) -> Result<b
 #[tauri::command]
 async fn resolve_approval(app: State<'_, App>, id: String, tool_use_id: String, decision: Decision) -> Result<bool, String> {
     Ok(app.live(&id)?.resolve_approval(&tool_use_id, decision))
+}
+
+/// Switch what the session does without asking; the next tool call follows the new mode.
+#[tauri::command]
+async fn set_mode(app: State<'_, App>, id: String, mode: Mode) -> Result<SessionItem, String> {
+    let session = app.live(&id)?;
+    session.set_mode(mode);
+    Ok(SessionItem { summary: session.summary(), status: session.status() })
 }
 
 #[tauri::command]
@@ -206,6 +216,7 @@ pub fn run() {
             open_session,
             send_message,
             resolve_approval,
+            set_mode,
             cancel_turn,
             get_settings,
             save_settings,

@@ -9,6 +9,7 @@ use serde_json::{Map, Value};
 use crate::anthropic::DEFAULT_MODEL;
 use crate::fsutil::write_atomically;
 use crate::llm::Endpoint;
+use crate::policy::Mode;
 use crate::providers::{DEFAULT_PROVIDER, PROVIDERS, Protocol, Provider, provider};
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -38,6 +39,10 @@ pub struct Settings {
     pub model: String,
     /// How hard the model works on each request.
     pub effort: String,
+    /// The mode sessions created from now on start in. Settings saved before
+    /// there were modes have none, which reads as edit mode.
+    #[serde(default)]
+    pub mode: Mode,
     /// `system`, `light`, or `dark`.
     pub theme: String,
     /// Addresses that replace a provider's default, by provider id; for an
@@ -54,6 +59,7 @@ impl Default for Settings {
             provider: default_provider(),
             model: DEFAULT_MODEL.to_string(),
             effort: "high".to_string(),
+            mode: Mode::Edit,
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
         }

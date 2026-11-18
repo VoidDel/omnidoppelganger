@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::events::{Envelope, Event};
+use crate::policy::Mode;
 use crate::providers::DEFAULT_PROVIDER;
 
 /// The newest format this build reads and writes. Format 2 adds the
@@ -44,6 +45,8 @@ pub struct SessionSummary {
     pub workspace: String,
     pub provider: String,
     pub model: String,
+    /// The mode of the last message, which a reopened session resumes.
+    pub mode: Mode,
     pub created_at: String,
     pub updated_at: String,
     /// A turn has started and not ended.
@@ -252,17 +255,32 @@ pub fn unanswered_tool_uses(events: &[Envelope]) -> Vec<(String, String)> {
     calls.into_iter().filter(|(id, _)| !answered.contains(id.as_str())).collect()
 }
 
+/// What the model reads, ahead of the user's message, when plan mode starts.
+pub const PLAN_ON: &str = "[Plan mode is on] The user wants a plan before any change. Explore and think, but change nothing: do not edit files, and run only commands that change nothing. Once you understand the task, reply with a concrete plan (what you would change, where, and how you would verify it) and stop. The user switches modes when they want it carried out.";
+/// What the model reads, ahead of the user's message, when plan mode ends.
+pub const PLAN_OFF: &str = "[Plan mode is off] You may change files and run commands again. Carry out the plan you proposed unless the user says otherwise.";
+
 /// The `messages` array of a model request, derived from the log alone.
 ///
 /// Tool results and user text between two assistant messages form one user
 /// message; the log orders results before any steering text, which is the
-/// order the API requires.
+/// order the API requires. A message sent in a different mode than the one
+/// before is preceded by [`PLAN_ON`] or [`PLAN_OFF`] when plan mode starts or
+/// ends there; the other modes only change what asks, which the model sees
+/// in its tool results.
 pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     let mut messages = Vec::new();
     let mut pending: Vec<Value> = Vec::new();
+    let mut planning = false;
     for envelope in events {
         match &envelope.event {
-            Event::UserMessage { text, .. } => pending.push(json!({ "type": "text", "text": text })),
+            Event::UserMessage { text, mode, .. } => {
+                if (*mode == Mode::Plan) != planning {
+                    planning = !planning;
+                    pending.push(json!({ "type": "text", "text": if planning { PLAN_ON } else { PLAN_OFF } }));
+                }
+                pending.push(json!({ "type": "text", "text": text }));
+            }
             Event::ToolResult { tool_use_id, content, is_error, .. } => pending.push(json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -319,12 +337,21 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         }
     }
     let turn_open = open_turn(events).is_some();
+    let mode = events
+        .iter()
+        .rev()
+        .find_map(|envelope| match &envelope.event {
+            Event::UserMessage { mode, .. } => Some(*mode),
+            _ => None,
+        })
+        .unwrap_or_default();
     SessionSummary {
         id,
         title,
         workspace,
         provider,
         model,
+        mode,
         created_at: events[0].ts.clone(),
         updated_at: events[events.len() - 1].ts.clone(),
         turn_open,
@@ -352,7 +379,7 @@ mod tests {
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "hello".into(), steering: false }).unwrap();
+        log.append(Event::UserMessage { text: "hello".into(), steering: false, mode: Mode::Edit }).unwrap();
         let id = log.id().to_string();
         let written = log.events().to_vec();
         drop(log);
@@ -393,7 +420,7 @@ mod tests {
 
         let mut reopened = store.open(&id).unwrap();
         assert_eq!(reopened.events().len(), 2);
-        reopened.append(Event::UserMessage { text: "again".into(), steering: false }).unwrap();
+        reopened.append(Event::UserMessage { text: "again".into(), steering: false, mode: Mode::Edit }).unwrap();
         drop(reopened);
         assert_eq!(store.open(&id).unwrap().events().len(), 3);
     }
@@ -446,10 +473,10 @@ mod tests {
         let thinking = json!({ "type": "thinking", "thinking": "", "signature": "sig" });
         let call = json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a" } });
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "read a".into(), steering: false }).unwrap();
+        log.append(Event::UserMessage { text: "read a".into(), steering: false, mode: Mode::Edit }).unwrap();
         log.append(assistant(vec![thinking.clone(), call.clone()])).unwrap();
         log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: String::new(), is_error: false, meta: Value::Null }).unwrap();
-        log.append(Event::UserMessage { text: "also b".into(), steering: true }).unwrap();
+        log.append(Event::UserMessage { text: "also b".into(), steering: true, mode: Mode::Edit }).unwrap();
 
         let messages = derive_messages(log.events());
         assert_eq!(messages, vec![
@@ -463,11 +490,49 @@ mod tests {
     }
 
     #[test]
+    fn tells_the_model_when_plan_mode_starts_and_ends() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
+        let says = |text: &str| assistant(vec![json!({ "type": "text", "text": text })]);
+        let user = |text: &str, mode| Event::UserMessage { text: text.into(), steering: false, mode };
+        for event in [
+            user("look first", Mode::Plan),
+            says("plan"),
+            user("and the tests?", Mode::Plan),
+            says("plan 2"),
+            user("go", Mode::Auto),
+            says("done"),
+            user("thanks", Mode::Edit),
+        ] {
+            log.append(event).unwrap();
+        }
+        let texts: Vec<Vec<String>> = derive_messages(log.events())
+            .iter()
+            .filter(|message| message["role"] == "user")
+            .map(|message| message["content"].as_array().unwrap().iter().map(|block| block["text"].as_str().unwrap().to_string()).collect())
+            .collect();
+        assert_eq!(texts, [
+            vec![PLAN_ON.to_string(), "look first".into()],
+            vec!["and the tests?".into()],
+            vec![PLAN_OFF.to_string(), "go".into()],
+            vec!["thanks".into()],
+        ]);
+        assert_eq!(summarize(log.events()).mode, Mode::Edit);
+
+        // Edit mode is written as no mode at all, which is how logs from before modes read.
+        let line = |event: &Event| serde_json::to_value(event).unwrap()["data"].clone();
+        assert!(line(&user("x", Mode::Edit)).get("mode").is_none());
+        assert_eq!(line(&user("x", Mode::Plan))["mode"], "plan");
+        let old: Event = serde_json::from_value(json!({ "type": "user/message", "data": { "text": "x", "steering": false } })).unwrap();
+        assert_eq!(old, user("x", Mode::Edit));
+    }
+
+    #[test]
     fn repairs_a_turn_left_open_by_a_crash() {
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "go".into(), steering: false }).unwrap();
+        log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit }).unwrap();
         log.append(assistant(vec![
             json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": {} }),
             json!({ "type": "tool_use", "id": "t2", "name": "run_command", "input": {} }),
@@ -497,10 +562,10 @@ mod tests {
     fn summarizes_title_and_lists_newest_first() {
         let (_directory, store) = store();
         let mut first = store.create(Path::new("/a"), "anthropic", "m").unwrap();
-        first.append(Event::UserMessage { text: "  fix   the\nparser ".into(), steering: false }).unwrap();
+        first.append(Event::UserMessage { text: "  fix   the\nparser ".into(), steering: false, mode: Mode::Edit }).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let mut second = store.create(Path::new("/b"), "anthropic", "m").unwrap();
-        second.append(Event::UserMessage { text: "x".repeat(50), steering: false }).unwrap();
+        second.append(Event::UserMessage { text: "x".repeat(50), steering: false, mode: Mode::Edit }).unwrap();
         second.append(Event::ApprovalResolved { tool_use_id: "none".into(), decision: Decision::Deny }).unwrap();
 
         let list = store.list();

@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::events::{Decision, Envelope, Event};
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
-use crate::policy::{self, Verdict};
+use crate::policy::{self, Mode, Verdict};
 use crate::session::{SessionLog, SessionSummary, derive_messages, summarize, unanswered_tool_uses};
 use crate::tools::{self, ToolContext};
 
@@ -53,6 +53,8 @@ struct State {
     approvals: HashMap<String, oneshot::Sender<Decision>>,
     /// Grants the user allowed for the rest of this run of the app.
     grants: HashSet<String>,
+    /// What runs without asking; read at every tool call, so a switch applies to the next one.
+    mode: Mode,
 }
 
 struct Inner<L: Llm> {
@@ -91,7 +93,7 @@ pub fn system_prompt(workspace: &std::path::Path) -> String {
          \n\
          How you work:\n\
          - Read and search before you change code, and keep each change as small as the task allows.\n\
-         - The user sees every tool call and approves each command. Before a call that changes something, say in a sentence what you are about to do and why.\n\
+         - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
          - After changing code, verify it when the project gives you a way to: build it, run its tests.\n\
          - When something fails, or you could not verify a change, say so plainly.\n\
          - Reply in the language the user writes in.",
@@ -101,7 +103,8 @@ pub fn system_prompt(workspace: &std::path::Path) -> String {
 }
 
 impl<L: Llm> Session<L> {
-    /// Wrap a stored log. A turn that a crash left open is closed first.
+    /// Wrap a stored log. A turn that a crash left open is closed first. The
+    /// session resumes the mode of its last message.
     pub fn new(
         mut log: SessionLog,
         llm: Arc<L>,
@@ -111,6 +114,7 @@ impl<L: Llm> Session<L> {
     ) -> std::io::Result<Self> {
         log.repair_tail()?;
         let (workspace, provider, model) = log.header();
+        let mode = summarize(log.events()).mode;
         Ok(Self {
             inner: Arc::new(Inner {
                 id: log.id().to_string(),
@@ -126,6 +130,7 @@ impl<L: Llm> Session<L> {
                     inbox: VecDeque::new(),
                     approvals: HashMap::new(),
                     grants: HashSet::new(),
+                    mode,
                 }),
                 events,
                 runtime,
@@ -146,8 +151,20 @@ impl<L: Llm> Session<L> {
         self.inner.log.lock().unwrap().events().to_vec()
     }
 
+    /// The log's summary, with the mode as it is now rather than as the last message recorded it.
     pub fn summary(&self) -> SessionSummary {
-        summarize(self.inner.log.lock().unwrap().events())
+        let summary = summarize(self.inner.log.lock().unwrap().events());
+        SessionSummary { mode: self.mode(), ..summary }
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.inner.mode()
+    }
+
+    /// Switch modes. The next tool call is decided by the new mode, and the
+    /// next message records it, which is when the model learns of plan mode.
+    pub fn set_mode(&self, mode: Mode) {
+        self.inner.state.lock().unwrap().mode = mode;
     }
 
     /// Give the agent a message. When idle it starts a turn; during a turn the
@@ -203,6 +220,10 @@ impl<L: Llm> Inner<L> {
         Ok(())
     }
 
+    fn mode(&self) -> Mode {
+        self.state.lock().unwrap().mode
+    }
+
     fn tool_result(&self, tool_use_id: &str, tool: &str, content: String, is_error: bool, meta: Value) -> Result<(), String> {
         self.append(Event::ToolResult { tool_use_id: tool_use_id.to_string(), tool: tool.to_string(), content, is_error, meta })
     }
@@ -236,7 +257,7 @@ impl<L: Llm> Inner<L> {
 
     async fn run_turn(&self, text: String, cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
-        let opened = self.append(Event::TurnStart { turn }).and_then(|()| self.append(Event::UserMessage { text, steering: false }));
+        let opened = self.append(Event::TurnStart { turn }).and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode() }));
         let (reason, error) = match opened {
             Ok(()) => match self.run_steps(cancel).await {
                 Ok(reason) => (reason, None),
@@ -257,7 +278,7 @@ impl<L: Llm> Inner<L> {
         for _ in 0..MAX_STEPS {
             let queued: Vec<String> = self.state.lock().unwrap().inbox.drain(..).collect();
             for text in queued {
-                self.append(Event::UserMessage { text, steering: true })?;
+                self.append(Event::UserMessage { text, steering: true, mode: self.mode() })?;
             }
             if cancel.is_cancelled() {
                 return Ok("cancelled");
@@ -320,7 +341,12 @@ impl<L: Llm> Inner<L> {
                     self.tool_result(&id, &name, json!({ "INVALID_JSON": raw }).to_string(), true, Value::Null)?;
                     continue;
                 }
-                if let Verdict::Ask { reason, detail, grant } = policy::check(&name, &input, &self.workspace)
+                let verdict = policy::check(self.mode(), &name, &input, &self.workspace);
+                if let Verdict::Refuse(message) = verdict {
+                    self.tool_result(&id, &name, message.to_string(), true, json!({ "refused": true }))?;
+                    continue;
+                }
+                if let Verdict::Ask { reason, detail, grant } = verdict
                     && !grant.as_ref().is_some_and(|grant| self.state.lock().unwrap().grants.contains(grant))
                 {
                     let (sender, receiver) = oneshot::channel();
@@ -541,6 +567,48 @@ mod tests {
         let results = fixture.results();
         assert!(!results[0].1, "{}", results[0].2);
         assert_eq!(results[1], ("t2".to_string(), true, "The user declined this action.".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_mode_decides_what_asks_and_each_message_records_it() {
+        let edit = |id: &str| calls(&[(id, "edit_file", json!({ "path": "a.txt", "old_string": "", "new_string": "hi\n" }))]);
+        let echo = calls(&[("t3", "run_command", json!({ "command": "echo ok" }))]);
+        let mut fixture = fixture(ScriptedLlm::new(vec![edit("t1"), says("my plan"), edit("t2"), says("asked"), echo, says("checked")], None));
+
+        // Plan: the edit is refused without asking, and the model is told plan mode is on.
+        fixture.session.set_mode(Mode::Plan);
+        fixture.session.send("plan it".into());
+        fixture.idle().await;
+        // Manual: the same edit waits for the user, who declines.
+        fixture.session.set_mode(Mode::Manual);
+        fixture.session.send("do it".into());
+        let asked = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&asked, Decision::Deny));
+        fixture.idle().await;
+        // Auto: a command that passes the safety check runs without asking.
+        fixture.session.set_mode(Mode::Auto);
+        fixture.session.send("check".into());
+        fixture.idle().await;
+
+        let results = fixture.results();
+        assert_eq!(results[0], ("t1".to_string(), true, policy::PLAN_REFUSAL.to_string()));
+        assert_eq!(results[1], ("t2".to_string(), true, "The user declined this action.".to_string()));
+        assert_eq!((results[2].0.as_str(), results[2].1, results[2].2.trim()), ("t3", false, "ok"));
+        assert!(!fixture.workspace.path().join("a.txt").exists());
+        assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "approval/requested").count(), 1);
+
+        let modes: Vec<Mode> = fixture
+            .session
+            .snapshot()
+            .into_iter()
+            .filter_map(|envelope| match envelope.event {
+                Event::UserMessage { mode, .. } => Some(mode),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(modes, [Mode::Plan, Mode::Manual, Mode::Auto]);
+        assert_eq!(fixture.llm.requests.lock().unwrap()[0].messages[0]["content"][0]["text"], crate::session::PLAN_ON);
+        assert_eq!(fixture.session.summary().mode, Mode::Auto);
     }
 
     #[tokio::test(flavor = "multi_thread")]
