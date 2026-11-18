@@ -695,6 +695,95 @@ pre,
   gap: 8px;
 }
 
+.composer-status .button.small {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+/* The 禁制 picker: a button in the composer row, its menu opening upward over the transcript. */
+.mode-picker {
+  position: relative;
+}
+
+button.select-button {
+  color: var(--ink);
+}
+
+button.select-button svg {
+  color: var(--jade);
+}
+
+.mode-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: min(360px, calc(100vw - 48px));
+  padding: 6px;
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mode-menu-head {
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.mode-menu kbd {
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.mode-option {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  display: grid;
+  grid-template-columns: 18px 1fr 16px;
+  align-items: start;
+  gap: 10px;
+  text-align: left;
+}
+
+.mode-option:hover,
+.mode-option[aria-checked="true"] {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.mode-option svg {
+  margin-top: 2px;
+}
+
+.mode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mode-text .name {
+  font-weight: 700;
+}
+
+.mode-text .hint {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
 /* ---------- side panel ---------- */
 
 .panel {

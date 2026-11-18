@@ -4,7 +4,8 @@ import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
 import { applyDelta, changedFiles, commandRuns, fold, type StreamBlock } from "./lib/fold";
-import type { Decision, Envelope, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
+import { modeOf } from "./lib/modes";
+import type { Decision, Envelope, Mode, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
 interface State {
   sessions: SessionItem[];
@@ -26,6 +27,7 @@ type Action =
   | { type: "sessions"; sessions: SessionItem[] }
   | { type: "opening"; id: string }
   | { type: "opened"; view: SessionView }
+  | { type: "session"; item: SessionItem }
   | { type: "event"; event: UiEvent }
   | { type: "queued"; text: string }
   | { type: "page"; page: State["page"] }
@@ -84,6 +86,8 @@ function reduce(state: State, action: Action): State {
       };
       return state.buffer.reduce(appendLog, opened);
     }
+    case "session":
+      return { ...state, sessions: state.sessions.map((session) => (session.id === action.item.id ? { ...action.item, status: session.status } : session)) };
     case "event": {
       const { event } = action;
       const active = event.session_id === state.activeId;
@@ -165,6 +169,19 @@ export default function App() {
   const decide = (toolUseId: string, decision: Decision) => {
     if (state.activeId) api.resolveApproval(state.activeId, toolUseId, decision).catch(fail);
   };
+  /** Switch the active session's mode; resolves once the session has it, so a message sent after records it. */
+  const switchMode = (mode: Mode) =>
+    state.activeId ? api.setMode(state.activeId, mode).then((item) => dispatch({ type: "session", item })) : Promise.resolve();
+  const carryOut = (mode: Mode) => {
+    if (!state.activeId) return;
+    const id = state.activeId;
+    switchMode(mode)
+      .then(() => api.sendMessage(id, "照这个计划动手。"))
+      .catch(fail);
+  };
+  // The last turn in plan mode ended with the 分身's answer, not a stop or an error.
+  const lastItems = rows[rows.length - 1]?.items ?? [];
+  const planReady = active?.mode === "plan" && lastItems[lastItems.length - 1]?.kind === "text";
   const saved = (request: Promise<SettingsView>) => request.then((settings) => dispatch({ type: "settings", settings }), fail);
 
   const providers = state.settings?.providers ?? [];
@@ -214,12 +231,24 @@ export default function App() {
             {rows.length === 0 && state.queued.length === 0 ? (
               <div className="empty">
                 <h1>分身已入驻这处洞府</h1>
-                <p>吩咐一件事吧。洞府之内，分身读文件、改文件自行其是；每条命令、每次碰这个文件夹之外的东西、每次改 .git 里的文件，都要先请本尊定夺。</p>
+                <p>
+                  吩咐一件事吧。眼下的禁制是「{modeOf(active.mode).name}」：{modeOf(active.mode).hint}。碰这个文件夹之外的东西、改 .git
+                  里的文件，无论哪种禁制都要先请本尊定夺。输入框里按 Shift+Tab 换禁制。
+                </p>
               </div>
             ) : (
-              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} onDecide={decide} />
+              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} mode={active.mode} onDecide={decide} />
             )}
-            <Composer status={state.status} model={modelLabel(active)} onSend={send} onStop={() => api.cancelTurn(active.id).catch(fail)} />
+            <Composer
+              status={state.status}
+              model={modelLabel(active)}
+              mode={active.mode}
+              planReady={planReady}
+              onMode={(mode) => switchMode(mode).catch(fail)}
+              onCarryOut={carryOut}
+              onSend={send}
+              onStop={() => api.cancelTurn(active.id).catch(fail)}
+            />
           </>
         ) : (
           <>

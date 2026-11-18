@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Decision, SessionItem, SessionView, Settings, SettingsView, UiEvent } from "./types";
+import type { Decision, Mode, SessionItem, SessionView, Settings, SettingsView, UiEvent } from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
@@ -12,6 +12,7 @@ export const api = {
   sendMessage: (id: string, text: string) => invoke<boolean>("send_message", { id, text }),
   resolveApproval: (id: string, toolUseId: string, decision: Decision) =>
     invoke<boolean>("resolve_approval", { id, toolUseId, decision }),
+  setMode: (id: string, mode: Mode) => invoke<SessionItem>("set_mode", { id, mode }),
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (settings: Settings) => invoke<SettingsView>("save_settings", { settings }),

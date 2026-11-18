@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChangedFile, ToolItem } from "../lib/fold";
-import type { SessionItem, Status } from "../lib/types";
+import { MODES, modeOf, nextMode } from "../lib/modes";
+import type { Mode, SessionItem, Status } from "../lib/types";
 
 /** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
 export function Mountains() {
@@ -107,14 +108,90 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSetti
   );
 }
 
+const MODE_ICONS: Record<Mode, string> = {
+  manual: "M5.5 8.5V4a1 1 0 0 1 2 0v3.5M7.5 7V2.8a1 1 0 0 1 2 0V7M9.5 7V3.8a1 1 0 0 1 2 0V8.5M11.5 7.5a1 1 0 0 1 2 0V10a4.5 4.5 0 0 1-4.5 4.5h-.6a4 4 0 0 1-3.2-1.6L3.3 10.3a1 1 0 0 1 1.5-1.3l.7.8",
+  edit: "M6 4 2 8l4 4M10 4l4 4-4 4",
+  plan: "M4 2.5h8v11H4zM6 5.5h4M6 8h4M6 10.5h2.5",
+  auto: "M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z",
+};
+
+function ModeIcon({ mode }: { mode: Mode }) {
+  return (
+    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d={MODE_ICONS[mode]} />
+    </svg>
+  );
+}
+
+/** The 禁制 button and its menu: what the 分身 may do without asking. */
+function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => !root.current?.contains(event.target as Node) && setOpen(false);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  const current = modeOf(mode);
+  return (
+    <div className="mode-picker" ref={root} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
+      <button type="button" className="select-button" aria-haspopup="menu" aria-expanded={open} title="Shift+Tab 切换" onClick={() => setOpen(!open)}>
+        <ModeIcon mode={mode} />
+        <span className="label">禁制</span>
+        <span className="value">{current.name}</span>
+      </button>
+      {open && (
+        <div className="mode-menu" role="menu" aria-label="禁制">
+          <div className="mode-menu-head">
+            <span>禁制</span>
+            <span>
+              <kbd>Shift</kbd> + <kbd>Tab</kbd> 切换
+            </span>
+          </div>
+          {MODES.map((option) => (
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={option.value === mode}
+              key={option.value}
+              className="mode-option"
+              autoFocus={option.value === mode}
+              onClick={() => {
+                onMode(option.value);
+                setOpen(false);
+              }}
+            >
+              <ModeIcon mode={option.value} />
+              <span className="mode-text">
+                <span className="name">{option.name}</span>
+                <span className="hint">{option.hint}</span>
+              </span>
+              <svg className="check" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                {option.value === mode && <path d="m3 8.5 3.2 3L13 4.5" />}
+              </svg>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ComposerProps {
   status: Status;
   model: string;
+  mode: Mode;
+  /** The last turn in plan mode ended with the 分身's answer: offer to carry it out. */
+  planReady: boolean;
+  onMode: (mode: Mode) => void;
+  /** Switch to `mode`, then tell the 分身 to carry out its plan. */
+  onCarryOut: (mode: Mode) => void;
   onSend: (text: string) => void;
   onStop: () => void;
 }
 
-export function Composer({ status, model, onSend, onStop }: ComposerProps) {
+export function Composer({ status, model, mode, planReady, onMode, onCarryOut, onSend, onStop }: ComposerProps) {
   const [text, setText] = useState("");
   const busy = status !== "idle";
   const submit = () => {
@@ -137,6 +214,16 @@ export function Composer({ status, model, onSend, onStop }: ComposerProps) {
             <span>分身收功候旨，本尊定夺后继续。</span>
           </>
         )}
+        {status === "idle" && planReady && (
+          <>
+            <span>计划已呈上。本尊点头，就换个禁制让它动手：</span>
+            {MODES.filter((option) => option.value === "edit" || option.value === "auto").map((option) => (
+              <button type="button" key={option.value} className="button outline small" onClick={() => onCarryOut(option.value)}>
+                {option.name}，照计划动手
+              </button>
+            ))}
+          </>
+        )}
       </div>
       <div className="composer-box">
         <label htmlFor="composer-input" className="sr-only">
@@ -154,6 +241,11 @@ export function Composer({ status, model, onSend, onStop }: ComposerProps) {
               event.preventDefault();
               submit();
             }
+            // Shift+Tab cycles the 禁制 instead of moving focus back.
+            if (event.key === "Tab" && event.shiftKey) {
+              event.preventDefault();
+              onMode(nextMode(mode));
+            }
           }}
         />
         <div className="composer-row">
@@ -161,10 +253,7 @@ export function Composer({ status, model, onSend, onStop }: ComposerProps) {
             <span className="label">功法</span>
             <span className="value">{model}</span>
           </span>
-          <span className="select-button">
-            <span className="label">禁制</span>
-            <span className="value">只动洞府之内</span>
-          </span>
+          <ModePicker mode={mode} onMode={onMode} />
           <span className="spacer" />
           {busy && (
             <button type="button" className="button outline" onClick={onStop}>

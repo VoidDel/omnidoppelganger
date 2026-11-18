@@ -2,6 +2,8 @@
 
 export type Decision = "allow_once" | "allow_session" | "deny";
 export type Status = "idle" | "running" | "waiting_approval";
+/** What runs without asking: every edit asks, edits run, nothing is edited, or safe commands run too. */
+export type Mode = "manual" | "edit" | "plan" | "auto";
 
 export type ContentBlock =
   | { type: "text"; text: string }
@@ -12,7 +14,7 @@ export type ContentBlock =
 export type SessionEvent =
   | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number } }
   | { type: "turn/start"; data: { turn: number } }
-  | { type: "user/message"; data: { text: string; steering: boolean } }
+  | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string } }
   | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string } }
   | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision } }
@@ -45,6 +47,8 @@ export interface ToolMeta {
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
+  /** The mode refused the call without asking: an edit in plan mode. */
+  refused?: boolean;
 }
 
 export interface SessionItem {
@@ -54,6 +58,7 @@ export interface SessionItem {
   /** Id of the model provider the session runs on. */
   provider: string;
   model: string;
+  mode: Mode;
   created_at: string;
   updated_at: string;
   turn_open: boolean;
@@ -81,6 +86,8 @@ export interface Settings {
   provider: string;
   model: string;
   effort: string;
+  /** The mode new sessions start in. */
+  mode: Mode;
   theme: "system" | "light" | "dark";
   /** Addresses that replace a provider's default, by provider id. */
   base_urls: Record<string, string>;

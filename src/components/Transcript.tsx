@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { api } from "../lib/api";
 import type { Item, Row, StreamBlock, ToolItem } from "../lib/fold";
-import type { Decision, DiffHunk, Status } from "../lib/types";
+import type { Decision, DiffHunk, Mode, Status } from "../lib/types";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
 
@@ -66,7 +66,7 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
   const { result } = tool;
   const meta = result?.meta;
   const declined = tool.approval?.decision === "deny";
-  const waiting = declined ? "本尊驳回了" : result ? "" : "运功中";
+  const waiting = declined ? "本尊驳回了" : meta?.refused ? "先谋后动，没有改" : result ? "" : "运功中";
   switch (tool.name) {
     case "read_file":
       return { verb: "读取", target: text("path"), outcome: waiting || (result!.isError ? "没读到" : `${meta?.lines ?? 0} 行`) };
@@ -97,7 +97,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const hunk = result && !result.isError ? result.meta?.hunk : undefined;
   const output = tool.name === "run_command" ? result?.meta?.output : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
-  const failure = result?.isError && tool.name !== "run_command" && tool.approval?.decision !== "deny" ? result.content : undefined;
+  const failure = result?.isError && tool.name !== "run_command" && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : failure ? <pre>{failure}</pre> : null;
   const [open, setOpen] = useState(() => !!hunk || !!failure || (!!output && !!result?.isError));
   return (
@@ -119,6 +119,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
+  edit: { title: "分身要改一个文件，请本尊定夺", note: "眼下的禁制是步步请示，每次改文件都先请示。", always: "之后改文件都准" },
   outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
   outside_read: { title: "分身要读洞府之外的内容，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类读取都准" },
   git_write: {
@@ -133,16 +134,33 @@ function alwaysLabel(grant: string, fallback: string): string {
   return grant.startsWith("command:") ? `之后以「${grant.slice("command:".length)}」开头的命令都准` : fallback;
 }
 
-function SignSheet({ tool, onDecide }: { tool: ToolItem; onDecide: (toolUseId: string, decision: Decision) => void }) {
+/** The change an edit asks to make, drawn like a diff: what goes out, then what comes in. */
+function proposed(tool: ToolItem): DiffHunk | null {
+  const text = (name: string) => (typeof tool.input[name] === "string" ? (tool.input[name] as string) : "");
+  const lines = (value: string, kind: "-" | "+") => (value ? value.replace(/\n$/, "").split("\n").map((line) => ({ kind, text: line })) : []);
+  const changed = [...lines(text("old_string"), "-"), ...lines(text("new_string"), "+")];
+  return changed.length ? { old_start: 0, new_start: 0, lines: changed } : null;
+}
+
+interface SignSheetProps {
+  tool: ToolItem;
+  mode: Mode;
+  onDecide: (toolUseId: string, decision: Decision) => void;
+}
+
+function SignSheet({ tool, mode, onDecide }: SignSheetProps) {
   const approval = tool.approval!;
   const ask = ASK[approval.reason] ?? ASK.command;
   const oneByOne = approval.reason === "command" && !approval.grant;
+  const change = approval.reason === "edit" ? proposed(tool) : null;
   return (
     <div className="sign-sheet">
       <h2>{ask.title}</h2>
       <div className="sign-detail">{approval.detail}</div>
+      {change && <Diff hunk={change} />}
       <p>
         {ask.note}
+        {approval.reason === "command" && mode === "auto" && "放手施为只自行放行只读、构建、测试类且不碰洞府之外的命令，这条不在其列。"}
         {oneByOne && "这条命令带有管道、分号、引号、变量之类的写法，或者会执行任意代码，只能逐条批准。"}
       </p>
       <div className="actions">
@@ -181,7 +199,7 @@ function notice(reason: string, error: string | null): string {
   }
 }
 
-function ItemView({ item, onDecide }: { item: Item; onDecide: (toolUseId: string, decision: Decision) => void }) {
+function ItemView({ item, mode, onDecide }: { item: Item; mode: Mode; onDecide: (toolUseId: string, decision: Decision) => void }) {
   switch (item.kind) {
     case "text":
       return (
@@ -197,7 +215,7 @@ function ItemView({ item, onDecide }: { item: Item; onDecide: (toolUseId: string
         </details>
       );
     case "tool":
-      return item.approval && !item.approval.decision && !item.result ? <SignSheet tool={item} onDecide={onDecide} /> : <ToolCard tool={item} />;
+      return item.approval && !item.approval.decision && !item.result ? <SignSheet tool={item} mode={mode} onDecide={onDecide} /> : <ToolCard tool={item} />;
     case "fallback":
       return (
         <div className="notice">
@@ -243,10 +261,11 @@ interface Props {
   stream: StreamBlock[];
   queued: string[];
   status: Status;
+  mode: Mode;
   onDecide: (toolUseId: string, decision: Decision) => void;
 }
 
-export function Transcript({ rows, stream, queued, status, onDecide }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, onDecide }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   // Follow new content only while the reader is already at the bottom.
@@ -281,7 +300,7 @@ export function Transcript({ rows, stream, queued, status, onDecide }: Props) {
             </div>
             <div className="turn-did">
               {row.items.map((item, at) => (
-                <ItemView key={item.kind === "tool" ? item.id : at} item={item} onDecide={onDecide} />
+                <ItemView key={item.kind === "tool" ? item.id : at} item={item} mode={mode} onDecide={onDecide} />
               ))}
               {last && <Streaming blocks={stream} />}
             </div>

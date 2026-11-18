@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { MODES } from "../lib/modes";
 import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
 
 // The agent's realm (境界): cultivation stages, lowest to highest, for the API's five effort levels.
@@ -187,6 +188,23 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
               境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。下一次请求起生效。{note}
             </p>
           </fieldset>
+        </section>
+
+        <section>
+          <h2>禁制</h2>
+          <fieldset className="papers">
+            <legend>新分身起始的禁制</legend>
+            {MODES.map((option) => (
+              <label className="paper" key={option.value}>
+                <span className="name">
+                  <input type="radio" name="mode" checked={settings.mode === option.value} onChange={() => onSave({ ...settings, mode: option.value })} />
+                  {option.name}
+                </span>
+                <span className="muted">{option.hint}</span>
+              </label>
+            ))}
+          </fieldset>
+          <p className="hint">已经化出的分身，在输入框下方或按 Shift+Tab 随时换禁制。无论哪种禁制，碰洞府之外的东西、改 .git 里的文件都要请示。</p>
         </section>
 
         <section>
