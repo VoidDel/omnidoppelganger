@@ -212,7 +212,41 @@ async fn run(options: Options) -> Result<bool, String> {
             println!();
         }
     };
+    // The names of the subagents the agent has set off, by session id: their events arrive on the same channel.
+    let mut subagents: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     while let Some(event) = events.recv().await {
+        let from = match &event {
+            UiEvent::Log { session_id, .. } | UiEvent::Stream { session_id, .. } | UiEvent::Status { session_id, .. } => session_id.clone(),
+        };
+        // A subagent's work is shown under its name on standard error; its words are for the agent, not the output.
+        if from != session.id() {
+            let name = subagents.get(&from).cloned().unwrap_or_else(|| "subagent".to_string());
+            if let UiEvent::Log { envelope, .. } = event {
+                match envelope.event {
+                    Event::AssistantMessage { content, .. } => {
+                        close_line(&mut mid_line);
+                        for block in content.iter().filter(|block| block["type"] == "tool_use") {
+                            eprintln!("  [{name}] > {}", describe(block["name"].as_str().unwrap_or_default(), &block["input"]));
+                        }
+                    }
+                    Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } => {
+                        close_line(&mut mid_line);
+                        eprintln!("  [{name}] asks:");
+                        let decision = match answer {
+                            Answer::Yes => Decision::AllowOnce,
+                            Answer::No => Decision::Deny,
+                            Answer::Ask => tokio::task::spawn_blocking(move || ask(&reason, &detail, grant.is_some())).await.unwrap_or(Decision::Deny),
+                        };
+                        if let Some(child) = session.child(&from) {
+                            child.resolve_approval(&tool_use_id, decision);
+                        }
+                    }
+                    Event::TurnEnd { reason, error, .. } if reason != "completed" => eprintln!("  [{name}] ! stopped: {}", error.unwrap_or(reason)),
+                    _ => {}
+                }
+            }
+            continue;
+        }
         match event {
             UiEvent::Stream { delta: StreamDelta::TextDelta { text, .. }, .. } => {
                 print!("{text}");
@@ -246,6 +280,10 @@ async fn run(options: Options) -> Result<bool, String> {
                 Event::ToolResult { content, is_error, .. } => {
                     let first: String = content.lines().next().unwrap_or_default().chars().take(160).collect();
                     eprintln!("  {} {first}", if is_error { "✗" } else { "✓" });
+                }
+                Event::SubagentStarted { session, name, .. } => {
+                    eprintln!("  [{name}] set off");
+                    subagents.insert(session, name);
                 }
                 Event::ContextCompacted { tokens_before, .. } => eprintln!("! the conversation reached about {tokens_before} tokens and was summarized"),
                 Event::TurnEnd { reason, error, .. } => {

@@ -90,6 +90,10 @@ pub enum Event {
         provider: Option<String>,
         model: String,
         format: u32,
+        /// Id of the session whose agent set this one off as a subagent;
+        /// absent for a session the user started. Since format 8.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
     },
     /// The project's own instructions for agents, read from a file at the
     /// top of the workspace when a turn started and found new or changed.
@@ -158,6 +162,12 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tokens: Option<Tokens>,
     },
+    /// A `delegate` call set off a subagent: `session` is its own session,
+    /// with its own log, named `name`. It is here for whoever reads this
+    /// log to find the subagent's; the model reads the subagents' reports in
+    /// the call's result. Since format 8.
+    #[serde(rename = "subagent/started")]
+    SubagentStarted { tool_use_id: String, session: String, name: String },
     #[serde(rename = "approval/requested")]
     ApprovalRequested {
         tool_use_id: String,

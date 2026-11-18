@@ -21,12 +21,15 @@ use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::mcp::McpHub;
 use crate::policy::{self, Mode, Verdict};
 use crate::providers;
-use crate::session::{SessionLog, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, skills, summarize, transcript, unanswered_tool_uses};
-use crate::tools::{self, ToolContext};
+use crate::session::{SessionLog, SessionStore, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, skills, summarize, transcript, unanswered_tool_uses};
+use crate::tools::{self, ToolContext, ToolOutput};
 use crate::undo;
 
 /// A turn that needs more model requests than this is stopped: it is looping.
 const MAX_STEPS: usize = 200;
+
+/// How long a stopped turn waits for its subagents to stop too before it ends without them.
+const SUBAGENT_STOP: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +96,16 @@ struct State {
 
 struct Inner<L: Llm> {
     id: String,
+    /// The session whose agent set this one off as a subagent.
+    parent: Option<String>,
+    /// The subagents this session's agent has set off since the app started, by session id.
+    children: Mutex<HashMap<String, Session<L>>>,
+    /// Where this session's log is kept, and its subagents' logs are created.
+    store: SessionStore,
+    /// What a subagent is given to share, as this session was.
+    services: Services,
+    /// The status as last told to the client, for whoever waits for the session to go idle.
+    watch: tokio::sync::watch::Sender<Status>,
     workspace: PathBuf,
     /// Where `edit_file` saves what files held, beside the log.
     snapshots: PathBuf,
@@ -127,10 +140,14 @@ impl<L: Llm> Clone for Session<L> {
     }
 }
 
+/// What a subagent is told on top of the general prompt.
+const SUBAGENT: &str = "\n\nYou are a subagent: another agent gave you the task below as one part of a larger piece of work, and reads your last message as the result. It knows nothing of what you did except what that message says, and you know nothing of its conversation except the task.\n- Do the task and stop. Do not widen it.\n- Other subagents may be working in this workspace at the same time. Change only the files your task is about.\n- End with a report: what you found or changed, files by path; what you verified and how; what is left undone or uncertain. Say it plainly when you could not do the task.";
+
 /// The system prompt. It changes only when the project's instructions do,
 /// so the cached prefix stays valid from one request to the next.
 /// `instructions` is the project's own file for agents, as `(name, contents)`.
-pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo]) -> String {
+/// `subagent` is whether another agent set this one off, rather than the user.
+pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], subagent: bool) -> String {
     let (_, _, shell) = tools::shell();
     let project = match instructions {
         Some((name, content)) => format!(
@@ -148,12 +165,13 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
          How you work:\n\
          - Read and search before you change code, and keep each change as small as the task allows.\n\
          - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
-         - For work of several steps, keep a to-do list with `update_todos` and mark items as you go; the user follows it beside the conversation.\n\
+         - For work of several steps, keep a to-do list with `update_todos` and mark items as you go; the user follows it beside the conversation.{delegating}\n\
          - After changing code, verify it when the project gives you a way to: build it, run its tests.\n\
          - When something fails, or you could not verify a change, say so plainly.\n\
          - Reply in the language the user writes in.",
         workspace.display(),
         std::env::consts::OS,
+        delegating = if subagent { "" } else { "\n- When the work splits into parts that do not depend on each other, hand the parts to subagents with `delegate`: they work at the same time and report back to you." },
     );
     let offered = if skills.is_empty() {
         String::new()
@@ -164,7 +182,7 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
             lines.join("\n")
         )
     };
-    general + &project + &offered
+    general + if subagent { SUBAGENT } else { "" } + &project + &offered
 }
 
 impl<L: Llm> Session<L> {
@@ -182,11 +200,18 @@ impl<L: Llm> Session<L> {
         let (workspace, provider, model) = log.header();
         let mode = summarize(log.events()).mode;
         let snapshots = log.path().with_file_name("snapshots");
-        let Services { grants: kept, mcp, skills, search } = services;
+        let parent = crate::session::parent(log.events()).map(str::to_string);
+        let store = SessionStore::of(&log);
+        let Services { grants: kept, mcp, skills, search } = services.clone();
         let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
         Ok(Self {
             inner: Arc::new(Inner {
                 id: log.id().to_string(),
+                parent,
+                children: Mutex::default(),
+                store,
+                services,
+                watch: tokio::sync::watch::Sender::new(Status::Idle),
                 workspace,
                 snapshots,
                 jobs: Arc::default(),
@@ -219,6 +244,28 @@ impl<L: Llm> Session<L> {
 
     pub fn status(&self) -> Status {
         self.inner.state.lock().unwrap().status
+    }
+
+    /// Id of the session whose agent set this one off as a subagent.
+    pub fn parent(&self) -> Option<&str> {
+        self.inner.parent.as_deref()
+    }
+
+    /// The subagents this session's agent has set off since the app started.
+    /// Each is a session of its own, to be shown, messaged, and stopped like any other.
+    pub fn children(&self) -> Vec<Session<L>> {
+        self.inner.children.lock().unwrap().values().cloned().collect()
+    }
+
+    /// The subagent with this session id, if this session's agent set it off.
+    pub fn child(&self, id: &str) -> Option<Session<L>> {
+        self.inner.children.lock().unwrap().get(id).cloned()
+    }
+
+    /// Returns once no turn is running: at once when none is.
+    pub async fn wait_idle(&self) {
+        // The sender lives as long as the session, so this cannot fail.
+        let _ = self.inner.watch.subscribe().wait_for(|status| *status == Status::Idle).await;
     }
 
     /// Every event logged so far.
@@ -324,9 +371,13 @@ impl<L: Llm> Session<L> {
         self.inner.jobs.running()
     }
 
-    /// End every background command now. For when the app exits or the session is deleted.
+    /// End every background command now, this session's and its subagents'.
+    /// For when the app exits or the session is deleted.
     pub fn kill_jobs(&self) {
         self.inner.jobs.kill_all();
+        for child in self.children() {
+            child.kill_jobs();
+        }
     }
 
     /// Stop the running turn. The turn ends as `cancelled` once the current operation returns.
@@ -342,6 +393,7 @@ impl<L: Llm> Inner<L> {
     }
 
     fn emit_status(&self, status: Status) {
+        self.watch.send_replace(status);
         self.emit(UiEvent::Status { session_id: self.id.clone(), status });
     }
 
@@ -368,7 +420,7 @@ impl<L: Llm> Inner<L> {
     /// The system prompt of the next request: the general part and the instructions the log holds.
     fn system(&self) -> String {
         let log = self.log.lock().unwrap();
-        system_prompt(&self.workspace, instructions(log.events()), skills(log.events()))
+        system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), self.parent.is_some())
     }
 
     /// Log the project's instructions when they are new, changed, or gone
@@ -415,6 +467,10 @@ impl<L: Llm> Inner<L> {
     /// The tools of the next request: the built-in ones, then those of the MCP servers connected right now.
     fn tool_specs(&self) -> Vec<Value> {
         let mut specs = tools::specs();
+        // Subagents do not set off subagents of their own.
+        if self.parent.is_none() {
+            specs.push(tools::delegate_spec());
+        }
         if self.search_config().is_some() {
             specs.push(tools::search_spec());
         }
@@ -426,6 +482,95 @@ impl<L: Llm> Inner<L> {
 
     fn tool_result(&self, tool_use_id: &str, tool: &str, content: String, is_error: bool, meta: Value) -> Result<(), String> {
         self.append(Event::ToolResult { tool_use_id: tool_use_id.to_string(), tool: tool.to_string(), content, is_error, meta })
+    }
+
+    /// Start a subagent: a session of its own in this workspace, on this
+    /// session's model, in its mode and with what the user has allowed it so far.
+    fn spawn(&self, name: &str) -> Result<Session<L>, String> {
+        let log = self.store.create_child(&self.id, &self.workspace, &self.provider, &self.model()).map_err(|error| error.to_string())?;
+        let child = Session::new(log, self.llm.clone(), self.tuning.clone(), self.services.clone(), self.events.clone(), self.runtime.clone()).map_err(|error| error.to_string())?;
+        let (mode, grants) = {
+            let state = self.state.lock().unwrap();
+            (state.mode, state.grants.clone())
+        };
+        {
+            let mut state = child.inner.state.lock().unwrap();
+            state.mode = mode;
+            state.grants = grants;
+        }
+        child.rename(name)?;
+        self.children.lock().unwrap().insert(child.id().to_string(), child.clone());
+        Ok(child)
+    }
+
+    /// Run `delegate`: set off a subagent for each task, wait until all have
+    /// finished, and hand back what each reported. Stopping this turn stops them.
+    async fn delegate(&self, tool_use_id: &str, input: &Value, cancel: &CancellationToken) -> Result<ToolOutput, String> {
+        if self.parent.is_some() {
+            return Ok(ToolOutput::error("A subagent cannot delegate. Do the task yourself."));
+        }
+        let tasks = match tools::delegate_tasks(input) {
+            Ok(tasks) => tasks,
+            Err(message) => return Ok(ToolOutput::error(message)),
+        };
+        // Each task with its subagent, or why it could not be started.
+        let mut started: Vec<(String, Result<Session<L>, String>)> = Vec::new();
+        for (name, task) in tasks {
+            let child = self.spawn(&name);
+            if let Ok(child) = &child {
+                self.append(Event::SubagentStarted { tool_use_id: tool_use_id.to_string(), session: child.id().to_string(), name: name.clone() })?;
+                child.send(task);
+            }
+            started.push((name, child));
+        }
+        let children: Vec<&Session<L>> = started.iter().filter_map(|(_, child)| child.as_ref().ok()).collect();
+        let all_idle = async {
+            for child in &children {
+                child.wait_idle().await;
+            }
+        };
+        tokio::select! {
+            () = all_idle => {}
+            () = cancel.cancelled() => {
+                for child in &children {
+                    child.cancel();
+                }
+                // Each stops once what it is doing returns; one that will not is left to finish on its own.
+                let stopped = async {
+                    for child in &children {
+                        child.wait_idle().await;
+                    }
+                };
+                let _ = tokio::time::timeout(SUBAGENT_STOP, stopped).await;
+            }
+        }
+
+        let mut parts = Vec::new();
+        let mut agents = Vec::new();
+        let mut finished = 0;
+        for (name, child) in &started {
+            match child {
+                Ok(child) => {
+                    let (said, reason, error) = crate::session::report(&child.snapshot());
+                    let note = match reason.as_str() {
+                        "completed" => {
+                            finished += 1;
+                            String::new()
+                        }
+                        "running" => "[This subagent was still working when the turn was stopped.]\n".to_string(),
+                        other => format!("[This subagent stopped before finishing ({}); what follows is the last thing it said.]\n", error.as_deref().unwrap_or(other)),
+                    };
+                    let said = if said.trim().is_empty() { "(it said nothing)".to_string() } else { said };
+                    parts.push(format!("<subagent name=\"{name}\">\n{note}{said}\n</subagent>"));
+                    agents.push(json!({ "session": child.id(), "name": name, "reason": reason }));
+                }
+                Err(error) => {
+                    parts.push(format!("<subagent name=\"{name}\">\n[This subagent could not be started: {error}]\n</subagent>"));
+                    agents.push(json!({ "session": Value::Null, "name": name, "reason": "error" }));
+                }
+            }
+        }
+        Ok(ToolOutput { content: parts.join("\n\n"), is_error: finished == 0, meta: json!({ "agents": agents }) })
     }
 
     /// Run turns until no message is waiting. A message that arrives after the
@@ -699,7 +844,8 @@ impl<L: Llm> Inner<L> {
                         Decision::AllowOnce => {}
                     }
                 }
-                let output = tools::execute(&name, &input, &self.tool_context(cancel)).await;
+                // `delegate` starts sessions, which only the loop can; every other tool is the executor's.
+                let output = if name == "delegate" { self.delegate(&id, &input, cancel).await? } else { tools::execute(&name, &input, &self.tool_context(cancel)).await };
                 self.tool_result(&id, &name, output.content, output.is_error, output.meta)?;
             }
         }
@@ -844,7 +990,8 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].effort, "high");
         assert_eq!((requests[0].provider.as_str(), requests[0].session.as_str()), ("anthropic", fixture.session.id()));
-        assert_eq!(requests[0].tools.len(), tools::specs().len());
+        // The built-in tools and `delegate`, which only a session the user started is offered.
+        assert_eq!(requests[0].tools.len(), tools::specs().len() + 1);
         assert!(requests[0].system.contains(&fixture.workspace.path().display().to_string()));
         // The second request carries the whole conversation: user, assistant tool call, tool result.
         assert_eq!(requests[1].messages.len(), 3);
@@ -1142,7 +1289,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         let names: Vec<&str> = requests[0].tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
         assert_eq!(names[names.len() - 3..], ["web_search", "mcp__echo__echo", "mcp__echo__fail_now"]);
-        assert_eq!(names.len(), tools::specs().len() + 3);
+        assert_eq!(names.len(), tools::specs().len() + 4);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1203,7 +1350,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         // The summary is asked for at the end of the conversation as it was, tools included.
         assert_eq!(texts(&requests[1]), [vec!["one".to_string()], vec!["first answer".into()], vec!["two".into(), SUMMARIZE.into()]]);
-        assert_eq!(requests[1].tools.len(), tools::specs().len());
+        assert_eq!(requests[1].tools.len(), tools::specs().len() + 1);
         // The step then starts over from the summary and the message not yet answered.
         let summary = format!("{}\n\nThe user said one; I answered.", crate::session::COMPACTED);
         assert_eq!(texts(&requests[2]), [vec![summary, "two".to_string()]]);
@@ -1414,5 +1561,113 @@ mod tests {
             })
             .collect();
         assert_eq!(turns, [1, 2]);
+    }
+
+    fn delegates(id: &str, tasks: &[(&str, &str)]) -> Result<AssistantTurn, LlmError> {
+        let tasks: Vec<Value> = tasks.iter().map(|(name, task)| json!({ "name": name, "task": task })).collect();
+        calls(&[(id, "delegate", json!({ "tasks": tasks }))])
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delegates_tasks_to_subagents_and_hands_back_their_reports() {
+        // The two subagents ask the model at the same time, so they are scripted the same answer.
+        let script = vec![delegates("d1", &[("parser", "Read the parser."), ("lexer", "Read the lexer.")]), says("Found it."), says("Found it."), says("Both are fine.")];
+        let fixture = fixture(ScriptedLlm::new(script, None));
+        fixture.session.set_mode(Mode::Auto);
+        fixture.session.send("look at both".into());
+        fixture.session.wait_idle().await;
+
+        // The call's result is what the subagents said, each under its name.
+        let results = fixture.results();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].1, "{}", results[0].2);
+        assert_eq!(results[0].2, "<subagent name=\"parser\">\nFound it.\n</subagent>\n\n<subagent name=\"lexer\">\nFound it.\n</subagent>");
+        assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "subagent/started").count(), 2);
+        assert_eq!(fixture.end().0, "completed");
+
+        // Each subagent is a session of its own under this one, named for its task, in this one's mode.
+        let mut children = fixture.session.children();
+        children.sort_by_key(|child| child.summary().title);
+        assert_eq!(children.iter().map(|child| child.summary().title).collect::<Vec<_>>(), ["lexer", "parser"]);
+        for child in &children {
+            assert_eq!(child.parent(), Some(fixture.session.id()));
+            assert_eq!(child.summary().parent.as_deref(), Some(fixture.session.id()));
+            assert_eq!((child.status(), child.mode()), (Status::Idle, Mode::Auto));
+            assert_eq!(fixture.session.child(child.id()).map(|found| found.id().to_string()), Some(child.id().to_string()));
+        }
+        assert!(fixture.session.parent().is_none());
+
+        let requests = fixture.llm.requests.lock().unwrap();
+        let named = |request: &LlmRequest, name: &str| request.tools.iter().any(|tool| tool["name"] == name);
+        let own: Vec<&LlmRequest> = requests.iter().filter(|request| request.session == fixture.session.id()).collect();
+        let theirs: Vec<&LlmRequest> = requests.iter().filter(|request| request.session != fixture.session.id()).collect();
+        assert_eq!((own.len(), theirs.len()), (2, 2));
+        // The agent the user started may delegate and is not told it is a subagent; a subagent is the reverse.
+        assert!(named(own[0], "delegate") && own[0].system.contains("`delegate`") && !own[0].system.contains("You are a subagent"));
+        for request in &theirs {
+            assert!(!named(request, "delegate") && named(request, "read_file"));
+            assert!(request.system.contains("You are a subagent") && !request.system.contains("`delegate`"));
+            assert_eq!(request.messages.len(), 1);
+        }
+        let mut tasks: Vec<&str> = theirs.iter().filter_map(|request| request.messages[0]["content"][0]["text"].as_str()).collect();
+        tasks.sort();
+        assert_eq!(tasks, ["Read the lexer.", "Read the parser."]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subagent_asks_for_approval_in_its_own_session() {
+        let script = vec![delegates("d1", &[("runner", "Run it.")]), calls(&[("t1", "run_command", json!({ "command": "echo ok" }))]), says("It printed ok."), says("Done.")];
+        let mut fixture = fixture(ScriptedLlm::new(script, None));
+        fixture.session.send("run it".into());
+
+        let asked = fixture.approval().await;
+        let [child] = fixture.session.children().try_into().ok().expect("one subagent");
+        // The subagent waits; the agent that delegated to it is still at work, on the call.
+        assert_eq!((child.status(), fixture.session.status()), (Status::WaitingApproval, Status::Running));
+        assert!(!fixture.session.resolve_approval(&asked, Decision::AllowOnce));
+        assert!(child.resolve_approval(&asked, Decision::AllowOnce));
+        fixture.session.wait_idle().await;
+
+        assert_eq!(fixture.results()[0].2, "<subagent name=\"runner\">\nIt printed ok.\n</subagent>");
+        let ran: Vec<bool> = child.snapshot().into_iter().filter_map(|envelope| match envelope.event {
+            Event::ToolResult { is_error, .. } => Some(is_error),
+            _ => None,
+        }).collect();
+        assert_eq!(ran, [false]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_a_turn_stops_its_subagents() {
+        // One request passes: the one that delegates. The subagent's waits at the gate until it is stopped.
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut fixture = fixture(ScriptedLlm::new(vec![delegates("d1", &[("slow", "Take your time.")])], Some(gate)));
+        fixture.session.send("go".into());
+        fixture.until(|event| matches!(event, UiEvent::Log { envelope, .. } if matches!(envelope.event, Event::SubagentStarted { .. }))).await;
+        let [child] = fixture.session.children().try_into().ok().expect("one subagent");
+        while fixture.llm.requests.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        fixture.session.cancel();
+        fixture.session.wait_idle().await;
+        assert_eq!(child.status(), Status::Idle);
+        assert_eq!(fixture.end().0, "cancelled");
+        let results = fixture.results();
+        assert!(results[0].1 && results[0].2.contains("[This subagent stopped before finishing (cancelled)"), "{}", results[0].2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refuses_a_list_of_tasks_it_cannot_run() {
+        let none = calls(&[("d1", "delegate", json!({ "tasks": [] }))]);
+        let many: Vec<(String, String)> = (0..=tools::SUBAGENTS).map(|index| (format!("n{index}"), "t".to_string())).collect();
+        let many: Vec<(&str, &str)> = many.iter().map(|(name, task)| (name.as_str(), task.as_str())).collect();
+        let fixture = fixture(ScriptedLlm::new(vec![none, delegates("d2", &many), says("ok")], None));
+        fixture.session.send("go".into());
+        fixture.session.wait_idle().await;
+
+        let results = fixture.results();
+        assert!(results[0].1 && results[0].2.contains("at least one task"), "{}", results[0].2);
+        assert!(results[1].1 && results[1].2.contains("too many"), "{}", results[1].2);
+        assert!(fixture.session.children().is_empty());
     }
 }

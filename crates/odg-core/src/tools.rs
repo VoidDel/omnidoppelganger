@@ -274,6 +274,54 @@ pub fn search_spec() -> Value {
     })
 }
 
+/// The most subagents one `delegate` call sets off.
+pub const SUBAGENTS: usize = 8;
+
+/// The definition of `delegate`. The agent loop runs it, since it starts
+/// sessions; a subagent is not offered it, so subagents do not multiply.
+pub fn delegate_spec() -> Value {
+    json!({
+        "name": "delegate",
+        "description": format!("Hand parts of the work to subagents. Each task goes to its own subagent, which has the tools you have and works in the same workspace; they all work at the same time, and this call returns once every one has finished, with what each reported. Use it when the work splits into parts that do not depend on each other: looking into several areas of the code at once, or changing files that have nothing to do with each other. A subagent knows nothing of this conversation, so each task must stand on its own: say what to do, where, what is already known, and what to report back. Give tasks that run together different files to change, since they share the workspace. Keep for yourself what is quick, and what depends on something you have yet to learn. At most {SUBAGENTS} tasks a call."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "description": "The parts of the work, one subagent each.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "A few words to tell this subagent from the others, shown to the user." },
+                            "task": { "type": "string", "description": "Everything the subagent needs to do the part on its own." }
+                        },
+                        "required": ["name", "task"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        }
+    })
+}
+
+/// The tasks `delegate` was given, checked: `(name, task)` for each.
+pub fn delegate_tasks(input: &Value) -> Result<Vec<(String, String)>, String> {
+    let tasks = input["tasks"].as_array().filter(|tasks| !tasks.is_empty()).ok_or("`tasks` is required and must be a list of at least one task.")?;
+    if tasks.len() > SUBAGENTS {
+        return Err(format!("{} tasks are too many for one call; give {SUBAGENTS} or fewer.", tasks.len()));
+    }
+    tasks
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let task = entry["task"].as_str().map(str::trim).filter(|task| !task.is_empty()).ok_or(format!("Task {} has no `task`.", index + 1))?;
+            let name: String = entry["name"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(40).collect();
+            let name = if name.is_empty() { format!("subagent {}", index + 1) } else { name };
+            Ok((name, task.to_string()))
+        })
+        .collect()
+}
+
 /// Resolve a tool's path argument against the workspace, folding `.` and `..` without touching the disk.
 pub fn resolve(workspace: &Path, path: &str) -> PathBuf {
     let joined = if Path::new(path).is_absolute() { PathBuf::from(path) } else { workspace.join(path) };

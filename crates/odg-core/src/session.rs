@@ -20,9 +20,10 @@ use crate::providers::DEFAULT_PROVIDER;
 /// `files/restored`, and `session/renamed` events and the `tokens` field.
 /// Format 4 added the `instructions/loaded` event and the `allow_always`
 /// decision. Format 5 added `images` on a user message. Format 6 adds the
-/// `skills/listed` event. Format 7 adds the `model/changed` event. A build
+/// `skills/listed` event. Format 7 adds the `model/changed` event. Format 8
+/// adds `parent` to the header and the `subagent/started` event. A build
 /// from before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +48,8 @@ pub struct SessionSummary {
     pub workspace: String,
     pub provider: String,
     pub model: String,
+    /// Id of the session whose agent set this one off as a subagent.
+    pub parent: Option<String>,
     /// The mode of the last message, which a reopened session resumes.
     pub mode: Mode,
     pub created_at: String,
@@ -66,8 +69,23 @@ impl SessionStore {
         Self { root: root.into() }
     }
 
+    /// The store a log is kept in.
+    pub fn of(log: &SessionLog) -> Self {
+        let root = log.path().parent().and_then(Path::parent).expect("a log sits in its session's directory, inside the store");
+        Self::new(root)
+    }
+
     /// Create a session whose agent works in `workspace` with `model` from `provider`.
     pub fn create(&self, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
+        self.create_under(None, workspace, provider, model)
+    }
+
+    /// Create the session of a subagent that the agent of session `parent` sets off.
+    pub fn create_child(&self, parent: &str, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
+        self.create_under(Some(parent), workspace, provider, model)
+    }
+
+    fn create_under(&self, parent: Option<&str>, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
         fs::create_dir_all(&directory)?;
@@ -80,6 +98,7 @@ impl SessionStore {
             provider: (provider != DEFAULT_PROVIDER).then(|| provider.to_string()),
             model: model.to_string(),
             format: FORMAT_VERSION,
+            parent: parent.map(str::to_string),
         })?;
         Ok(log)
     }
@@ -402,6 +421,36 @@ pub fn instructions(events: &[Envelope]) -> Option<(&str, &str)> {
     .filter(|(_, content)| !content.is_empty())
 }
 
+/// Id of the session whose agent set this one off as a subagent, if one did.
+pub fn parent(events: &[Envelope]) -> Option<&str> {
+    match &events.first()?.event {
+        Event::SessionCreated { parent, .. } => parent.as_deref(),
+        _ => None,
+    }
+}
+
+/// How a session's work came out, for the agent that delegated it: what its
+/// agent said last, and why its last turn ended, as `(reason, error)`. A
+/// turn still open, or none yet, reads as `running`.
+pub fn report(events: &[Envelope]) -> (String, String, Option<String>) {
+    let said = events
+        .iter()
+        .rev()
+        .find_map(|envelope| match &envelope.event {
+            Event::AssistantMessage { content, .. } => {
+                let text: Vec<&str> = content.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect();
+                Some(text.join("\n")).filter(|text| !text.trim().is_empty())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    let ended = match events.iter().rev().find(|envelope| matches!(envelope.event, Event::TurnStart { .. } | Event::TurnEnd { .. })).map(|envelope| &envelope.event) {
+        Some(Event::TurnEnd { reason, error, .. }) => (reason.clone(), error.clone()),
+        _ => ("running".to_string(), None),
+    };
+    (said, ended.0, ended.1)
+}
+
 /// The model the session is on: the last one it was moved to, or else the one it was created with.
 pub fn model(events: &[Envelope]) -> String {
     events
@@ -575,6 +624,7 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         workspace,
         provider,
         model,
+        parent: parent(events).map(str::to_string),
         mode,
         created_at: events[0].ts.clone(),
         updated_at: events[events.len() - 1].ts.clone(),
@@ -930,5 +980,27 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         assert_eq!(list[0].workspace, "/b");
         assert_eq!(list[0].title.chars().count(), 41);
         assert_eq!(list[1].title, "fix the parser");
+    }
+
+    #[test]
+    fn a_subagents_session_names_its_parent_and_reports_how_it_ended() {
+        let (_directory, store) = store();
+        let parent = store.create(Path::new("/a"), "anthropic", "m").unwrap();
+        let mut child = store.create_child(parent.id(), Path::new("/a"), "anthropic", "m").unwrap();
+        assert_eq!(super::parent(child.events()), Some(parent.id()));
+        assert_eq!(super::parent(parent.events()), None);
+        assert_eq!(summarize(child.events()).parent.as_deref(), Some(parent.id()));
+        assert_eq!(SessionStore::of(&child).ids().len(), 2);
+        // A header written before subagents has no parent, and reads as none.
+        let header = serde_json::to_value(&parent.events()[0]).unwrap();
+        assert!(header["data"].get("parent").is_none());
+
+        assert_eq!(report(child.events()), (String::new(), "running".to_string(), None));
+        child.append(Event::TurnStart { turn: 1 }).unwrap();
+        child.append(assistant(vec![json!({ "type": "text", "text": "Looking." }), json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": {} })])).unwrap();
+        child.append(assistant(vec![json!({ "type": "text", "text": "It is fine." })])).unwrap();
+        assert_eq!(report(child.events()), ("It is fine.".to_string(), "running".to_string(), None));
+        child.append(Event::TurnEnd { turn: 1, reason: "error".into(), error: Some("no key".into()) }).unwrap();
+        assert_eq!(report(child.events()), ("It is fine.".to_string(), "error".to_string(), Some("no key".to_string())));
     }
 }

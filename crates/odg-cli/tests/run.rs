@@ -151,6 +151,27 @@ fn approves_or_declines_what_the_agent_asks_as_told() {
 }
 
 #[test]
+fn runs_a_subagent_and_answers_what_it_asks() {
+    let replies = vec![
+        Reply { text: "Splitting it.", tool: Some(("delegate", json!({ "tasks": [{ "name": "runner", "task": "Run the command." }] }))) },
+        // The subagent's two requests come while the agent waits for it.
+        Reply { text: "Running it.", tool: Some(("run_command", json!({ "command": "echo sub-ok" }))) },
+        Reply { text: "It printed sub-ok.", tool: None },
+        Reply { text: "All done.", tool: None },
+    ];
+    let run = odg(&["--yes", "split", "it"], replies);
+    assert!(run.output.status.success(), "{}", run.stderr());
+    // Only the agent's own words are the output; the subagent's work shows on standard error, under its name.
+    assert_eq!(run.stdout(), "Splitting it.\nAll done.\n");
+    assert!(run.stderr().contains("  [runner] set off\n"), "{}", run.stderr());
+    assert!(run.stderr().contains("  [runner] > run_command  echo sub-ok\n"), "{}", run.stderr());
+    assert_eq!(run.requests[1]["messages"][0]["content"][0]["text"], "Run the command.");
+    assert!(results(&run.requests[2])[0].0.trim() == "sub-ok");
+    assert_eq!(results(&run.requests[3]), [("<subagent name=\"runner\">\nIt printed sub-ok.\n</subagent>".to_string(), false)]);
+    assert_eq!(std::fs::read_dir(run.home.path().join("sessions")).unwrap().count(), 2);
+}
+
+#[test]
 fn says_what_is_wrong_with_its_arguments_or_the_run() {
     let run = |arguments: &[&str]| Command::new(env!("CARGO_BIN_EXE_odg")).args(arguments).env("ODG_HOME", std::env::temp_dir().join("odg-cli-unused-home")).stdin(Stdio::null()).output().unwrap();
     let none = run(&[]);
