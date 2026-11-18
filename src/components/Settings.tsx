@@ -135,6 +135,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
   const chosen = view.providers.find((provider) => provider.id === settings.provider);
   const model = useDraft(settings.model, (value) => onSave({ ...settings, model: value }));
   const note = effortNote(chosen);
+  const limit = useDraft(String(settings.context_limit), (value) => {
+    const tokens = Number.parseInt(value, 10);
+    if (Number.isFinite(tokens)) onSave({ ...settings, context_limit: tokens });
+  });
   return (
     <div className="settings">
       <div className="settings-inner">
@@ -188,6 +192,18 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
               境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。下一次请求起生效。{note}
             </p>
           </fieldset>
+        </section>
+
+        <section>
+          <h2>灵石</h2>
+          <div className="field">
+            <label htmlFor="context-limit">前情上限（token）</label>
+            <input id="context-limit" className="input mono" type="number" min={20000} step={10000} {...limit} />
+            <p className="hint">
+              每次请求都要把整段对话发给模型，对话越长越费灵石。对话到这个数，分身会把前情凝成一段摘要，之后只凭摘要接着做。模型自己装不下这么多时，按它的八成算。最低
+              20000。
+            </p>
+          </div>
         </section>
 
         <section>

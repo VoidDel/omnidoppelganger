@@ -97,6 +97,10 @@ pub fn request_body(flavor: Flavor, request: &LlmRequest) -> Value {
         // GLM puts usage in the last chunk by default.
         Flavor::Glm | Flavor::Generic => {}
     }
+    // A request without tools (a summary written from a transcript) leaves the field out: an empty list is an error to some servers.
+    if request.tools.is_empty() {
+        body.as_object_mut().expect("the body is an object").remove("tools");
+    }
     body
 }
 

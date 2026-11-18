@@ -76,6 +76,10 @@ pub fn request_body(request: &LlmRequest) -> Value {
     if let Some(effort) = effort_for(Protocol::Responses, &request.effort) {
         body["reasoning"] = json!({ "effort": effort });
     }
+    // A request without tools (a summary written from a transcript) leaves the field out: an empty list is an error to some servers.
+    if request.tools.is_empty() {
+        body.as_object_mut().expect("the body is an object").remove("tools");
+    }
     body
 }
 

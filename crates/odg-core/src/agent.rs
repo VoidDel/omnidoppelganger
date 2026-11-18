@@ -18,7 +18,8 @@ use tokio_util::sync::CancellationToken;
 use crate::events::{Decision, Envelope, Event};
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::policy::{self, Mode, Verdict};
-use crate::session::{SessionLog, SessionSummary, derive_messages, summarize, unanswered_tool_uses};
+use crate::providers;
+use crate::session::{SessionLog, SessionSummary, context_estimate, derive_messages, summarize, transcript, unanswered_tool_uses};
 use crate::tools::{self, ToolContext};
 
 /// A turn that needs more model requests than this is stopped: it is looping.
@@ -43,7 +44,23 @@ pub enum UiEvent {
 }
 
 /// Settings read at the start of every model request.
-pub type EffortSource = Arc<dyn Fn() -> String + Send + Sync>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tuning {
+    pub effort: String,
+    /// The conversation is compacted once it holds about this many tokens.
+    pub context_limit: u64,
+    /// How many tokens the model's context window holds. A conversation
+    /// close to it is summarized from a shortened transcript, since asking
+    /// for the summary would not fit either.
+    pub context_window: u64,
+}
+
+pub type TuningSource = Arc<dyn Fn() -> Tuning + Send + Sync>;
+
+/// What the model is asked when the conversation is compacted. It follows
+/// Anthropic's guidance for client-side compaction; the last sentence matters
+/// because the request still carries the tools.
+pub const SUMMARIZE: &str = "The conversation has grown too long to continue as it is. Summarize it inside <summary></summary> tags, so that the work can go on from the summary alone, without redoing anything or asking the user again. Be sure to preserve: (1) what the user asked for, decided, ruled out, or set as a preference or constraint, close to their own words; (2) the files you read or changed, by path, and what matters in each; the commands you ran and what they showed; (3) problems that came up and how they were handled; (4) approaches that were tried or set aside, and why; (5) exactly where things stand now and what is done; (6) what is still open or expected next; (7) details that would be hard to reconstruct: names, numbers, exact wording, error messages. Be complete on these even at the cost of length, and keep everything else short. Do not call any tools while writing this summary; respond with text only.";
 
 struct State {
     status: Status,
@@ -63,7 +80,7 @@ struct Inner<L: Llm> {
     provider: String,
     model: String,
     llm: Arc<L>,
-    effort: EffortSource,
+    tuning: TuningSource,
     log: Mutex<SessionLog>,
     state: Mutex<State>,
     events: UnboundedSender<UiEvent>,
@@ -108,7 +125,7 @@ impl<L: Llm> Session<L> {
     pub fn new(
         mut log: SessionLog,
         llm: Arc<L>,
-        effort: EffortSource,
+        tuning: TuningSource,
         events: UnboundedSender<UiEvent>,
         runtime: tokio::runtime::Handle,
     ) -> std::io::Result<Self> {
@@ -122,7 +139,7 @@ impl<L: Llm> Session<L> {
                 provider,
                 model,
                 llm,
-                effort,
+                tuning,
                 log: Mutex::new(log),
                 state: Mutex::new(State {
                     status: Status::Idle,
@@ -273,8 +290,77 @@ impl<L: Llm> Inner<L> {
         let _ = self.append(Event::TurnEnd { turn, reason: reason.to_string(), error });
     }
 
+    /// Replace the conversation by a summary the model writes of it. The
+    /// request is the conversation itself with the question added, which the
+    /// provider's cache makes cheap; when that would not fit the context
+    /// window (`from_transcript`, or the provider says so), it is a shortened
+    /// plain-text transcript instead.
+    async fn compact(&self, tuning: &Tuning, tokens_before: u64, mut from_transcript: bool, cancel: &CancellationToken) -> Result<(), LlmError> {
+        loop {
+            let text = |text: String| json!({ "type": "text", "text": text });
+            let messages = {
+                let log = self.log.lock().unwrap();
+                if from_transcript {
+                    // Half the window, at about three bytes a token.
+                    let budget = usize::try_from((tuning.context_window / 2).saturating_mul(3)).unwrap_or(usize::MAX);
+                    vec![json!({ "role": "user", "content": [text(format!("{}\n\n{SUMMARIZE}", transcript(log.events(), budget)))] })]
+                } else {
+                    let mut messages = derive_messages(log.events());
+                    // A step starts with the user's turn to speak, so the question joins that message.
+                    match messages.last_mut().filter(|message| message["role"] == "user").and_then(|message| message["content"].as_array_mut()) {
+                        Some(content) => content.push(text(SUMMARIZE.to_string())),
+                        None => messages.push(json!({ "role": "user", "content": [text(SUMMARIZE.to_string())] })),
+                    }
+                    messages
+                }
+            };
+            let request = LlmRequest {
+                provider: self.provider.clone(),
+                session: self.id.clone(),
+                model: self.model.clone(),
+                system: system_prompt(&self.workspace),
+                messages,
+                // The same tools keep the cached prefix valid; a transcript has no use for them.
+                tools: if from_transcript { Vec::new() } else { tools::specs() },
+                effort: tuning.effort.clone(),
+            };
+            // The summary is not the agent speaking to the user, so its fragments are not shown.
+            let (sender, mut receiver) = unbounded_channel::<StreamDelta>();
+            let discard = async { while receiver.recv().await.is_some() {} };
+            let (result, ()) = tokio::join!(self.llm.stream(request, sender, cancel.clone()), discard);
+            let turn = match result {
+                Err(error) if error.context_overflow() && !from_transcript => {
+                    from_transcript = true;
+                    continue;
+                }
+                other => other?,
+            };
+            let written: Vec<&str> = turn.content.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect();
+            let written = written.join("\n");
+            let summary = match (written.find("<summary>"), written.rfind("</summary>")) {
+                (Some(start), Some(end)) if start < end => &written[start + "<summary>".len()..end],
+                _ => written.as_str(),
+            }
+            .trim();
+            if summary.is_empty() {
+                return Err(LlmError::Protocol("the model wrote no summary".to_string()));
+            }
+            let event = Event::ContextCompacted { summary: summary.to_string(), tokens_before, tokens: providers::tokens(&self.provider, &turn.usage) };
+            return self.append(event).map_err(LlmError::Protocol);
+        }
+    }
+
+    /// Whether the model has said anything since the last compaction: without that there is nothing to summarize.
+    fn compactable(&self) -> bool {
+        let log = self.log.lock().unwrap();
+        let since = log.events().iter().rposition(|envelope| matches!(envelope.event, Event::ContextCompacted { .. })).unwrap_or(0);
+        log.events()[since..].iter().any(|envelope| matches!(envelope.event, Event::AssistantMessage { .. }))
+    }
+
     /// Run steps until the turn is over. Returns the reason it ended, or what went wrong.
     async fn run_steps(&self, cancel: &CancellationToken) -> Result<&'static str, String> {
+        // The provider refused the last request as too long, and the conversation was compacted for it.
+        let mut overflowed = false;
         for _ in 0..MAX_STEPS {
             let queued: Vec<String> = self.state.lock().unwrap().inbox.drain(..).collect();
             for text in queued {
@@ -284,6 +370,17 @@ impl<L: Llm> Inner<L> {
                 return Ok("cancelled");
             }
 
+            let tuning = (self.tuning)();
+            let estimate = context_estimate(self.log.lock().unwrap().events());
+            if estimate >= tuning.context_limit && self.compactable() {
+                let near_window = estimate >= tuning.context_window / 10 * 9;
+                // Any other failure is let pass: past the limit is not yet past the window, so
+                // the request below may still fit, and the next step tries to compact again.
+                if let Err(LlmError::Cancelled) = self.compact(&tuning, estimate, near_window, cancel).await {
+                    return Ok("cancelled");
+                }
+            }
+
             let request = LlmRequest {
                 provider: self.provider.clone(),
                 session: self.id.clone(),
@@ -291,7 +388,7 @@ impl<L: Llm> Inner<L> {
                 system: system_prompt(&self.workspace),
                 messages: derive_messages(self.log.lock().unwrap().events()),
                 tools: tools::specs(),
-                effort: (self.effort)(),
+                effort: tuning.effort.clone(),
             };
             let (sender, mut receiver) = unbounded_channel::<StreamDelta>();
             let forward = async {
@@ -304,8 +401,18 @@ impl<L: Llm> Inner<L> {
             let message = match result {
                 Ok(message) => message,
                 Err(LlmError::Cancelled) => return Ok("cancelled"),
+                // The window is smaller than the limit assumed: compact, and send the step again, once.
+                Err(error) if error.context_overflow() && !overflowed && self.compactable() => {
+                    overflowed = true;
+                    match self.compact(&tuning, estimate, true, cancel).await {
+                        Ok(()) => continue,
+                        Err(LlmError::Cancelled) => return Ok("cancelled"),
+                        Err(failure) => return Err(format!("{error}; and the conversation could not be summarized to fit: {failure}")),
+                    }
+                }
                 Err(error) => return Err(error.to_string()),
             };
+            overflowed = false;
 
             let calls: Vec<(String, String, Value)> = message
                 .content
@@ -318,6 +425,7 @@ impl<L: Llm> Inner<L> {
                 stop_reason: message.stop_reason.clone(),
                 model: message.model.clone(),
                 usage: message.usage.clone(),
+                tokens: providers::tokens(&self.provider, &message.usage),
             })?;
 
             match message.stop_reason.as_deref() {
@@ -460,6 +568,8 @@ mod tests {
 
     struct Fixture {
         _home: tempfile::TempDir,
+        /// The compaction limit and context window the session reads; none unless a test sets them.
+        limits: Arc<Mutex<(u64, u64)>>,
         workspace: tempfile::TempDir,
         session: Session<ScriptedLlm>,
         llm: Arc<ScriptedLlm>,
@@ -471,8 +581,14 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let log = SessionStore::new(home.path()).create(workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
-        let session = Session::new(log, llm.clone(), Arc::new(|| "high".to_string()), sender, tokio::runtime::Handle::current()).unwrap();
-        Fixture { _home: home, workspace, session, llm, events }
+        let limits = Arc::new(Mutex::new((u64::MAX, u64::MAX)));
+        let read = limits.clone();
+        let tuning = move || {
+            let (context_limit, context_window) = *read.lock().unwrap();
+            Tuning { effort: "high".to_string(), context_limit, context_window }
+        };
+        let session = Session::new(log, llm.clone(), Arc::new(tuning), sender, tokio::runtime::Handle::current()).unwrap();
+        Fixture { _home: home, limits, workspace, session, llm, events }
     }
 
     impl Fixture {
@@ -671,6 +787,72 @@ mod tests {
         // The read behind the edit waited for it, and saw what it wrote.
         assert!(results[0].2.contains("hello") && results[4].2.contains("changed"), "{results:?}");
         assert_eq!(fixture.end().0, "completed");
+    }
+
+    /// The texts of a request's messages, one list per message.
+    fn texts(request: &LlmRequest) -> Vec<Vec<String>> {
+        let of = |message: &Value| message["content"].as_array().unwrap().iter().filter_map(|block| block["text"].as_str().map(str::to_string)).collect();
+        request.messages.iter().map(of).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compacts_the_conversation_once_it_passes_the_limit() {
+        let mut first = says("first answer").unwrap();
+        first.usage = json!({ "input_tokens": 500, "output_tokens": 20 });
+        let mut fixture = fixture(ScriptedLlm::new(vec![Ok(first), says("<summary>The user said one; I answered.</summary>"), says("second answer")], None));
+        fixture.session.send("one".into());
+        fixture.idle().await;
+        assert_eq!(fixture.session.snapshot().iter().filter(|envelope| matches!(envelope.event, Event::ContextCompacted { .. })).count(), 0);
+
+        // The conversation holds 520 tokens, which is now past the limit.
+        *fixture.limits.lock().unwrap() = (100, 1_000_000);
+        fixture.session.send("two".into());
+        fixture.idle().await;
+
+        assert_eq!(fixture.kinds()[4..], ["turn/start", "user/message", "context/compacted", "assistant/message", "turn/end"]);
+        let requests = fixture.llm.requests.lock().unwrap();
+        // The summary is asked for at the end of the conversation as it was, tools included.
+        assert_eq!(texts(&requests[1]), [vec!["one".to_string()], vec!["first answer".into()], vec!["two".into(), SUMMARIZE.into()]]);
+        assert_eq!(requests[1].tools.len(), 4);
+        // The step then starts over from the summary and the message not yet answered.
+        let summary = format!("{}\n\nThe user said one; I answered.", crate::session::COMPACTED);
+        assert_eq!(texts(&requests[2]), [vec![summary, "two".to_string()]]);
+        let compacted = fixture.session.snapshot().into_iter().find_map(|envelope| match envelope.event {
+            Event::ContextCompacted { summary, tokens_before, .. } => Some((summary, tokens_before)),
+            _ => None,
+        });
+        assert_eq!(compacted, Some(("The user said one; I answered.".to_string(), 521)));
+        assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compacts_from_a_transcript_and_retries_when_the_provider_says_the_conversation_is_too_long() {
+        let too_long = || Err(LlmError::Api { status: Some(400), kind: "invalid_request_error".into(), message: "prompt is too long: 210000 tokens > 200000 maximum".into(), retryable: false });
+        let mut fixture = fixture(ScriptedLlm::new(vec![too_long(), says("first answer"), too_long(), says("The user said one."), says("second answer"), too_long(), says("More was said."), too_long()], None));
+        // Nothing to summarize yet: the error is the turn's.
+        fixture.session.send("one".into());
+        fixture.idle().await;
+        assert_eq!(fixture.end().0, "error");
+        fixture.session.send("one again".into());
+        fixture.idle().await;
+
+        fixture.session.send("two".into());
+        fixture.idle().await;
+        assert_eq!(fixture.end().0, "completed");
+        {
+            let requests = fixture.llm.requests.lock().unwrap();
+            // The summary request is a transcript in one message, with no tools.
+            let asked = &texts(&requests[3])[0][0];
+            assert!(requests[3].tools.is_empty() && requests[3].messages.len() == 1);
+            assert!(asked.starts_with("USER:\none\n\nUSER:\none again\n\nASSISTANT:\nfirst answer\n\nUSER:\ntwo") && asked.ends_with(SUMMARIZE), "{asked}");
+            assert_eq!(texts(&requests[4]), [vec![format!("{}\n\nThe user said one.", crate::session::COMPACTED), "two".to_string()]]);
+        }
+
+        // Still too long after compacting for it: the step is retried once, not forever.
+        fixture.session.send("three".into());
+        fixture.idle().await;
+        assert_eq!(fixture.end().0, "error");
+        assert_eq!(fixture.llm.requests.lock().unwrap().len(), 8);
     }
 
     #[tokio::test(flavor = "multi_thread")]

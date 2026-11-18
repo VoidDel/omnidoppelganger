@@ -3,7 +3,7 @@ import { Composer, Logo, Mountains, SidePanel, Sidebar } from "./components/Chro
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
-import { applyDelta, changedFiles, commandRuns, fold, type StreamBlock } from "./lib/fold";
+import { applyDelta, changedFiles, commandRuns, fold, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
 import type { Decision, Envelope, Mode, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
@@ -147,6 +147,7 @@ export default function App() {
   const rows = useMemo(() => fold(state.events), [state.events]);
   const files = useMemo(() => changedFiles(rows), [rows]);
   const runs = useMemo(() => commandRuns(rows), [rows]);
+  const spent = useMemo(() => usage(state.events), [state.events]);
   const active = state.sessions.find((session) => session.id === state.activeId);
 
   const open = (id: string) => {
@@ -243,6 +244,8 @@ export default function App() {
               status={state.status}
               model={modelLabel(active)}
               mode={active.mode}
+              usage={spent}
+              contextLimit={active.context_limit}
               planReady={planReady}
               onMode={(mode) => switchMode(mode).catch(fail)}
               onCarryOut={carryOut}

@@ -10,10 +10,16 @@ use crate::anthropic::DEFAULT_MODEL;
 use crate::fsutil::write_atomically;
 use crate::llm::Endpoint;
 use crate::policy::Mode;
-use crate::providers::{DEFAULT_PROVIDER, PROVIDERS, Protocol, Provider, provider};
+use crate::providers::{DEFAULT_PROVIDER, PROVIDERS, Protocol, Provider, context_window, provider};
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const THEMES: &[&str] = &["system", "light", "dark"];
+/// Most models here hold a million tokens, but every request sends the whole
+/// conversation, so compacting long before the window is full keeps a long
+/// session affordable.
+pub const DEFAULT_CONTEXT_LIMIT: u64 = 200_000;
+/// Below this a summary and one file read would already be past the limit.
+pub const MIN_CONTEXT_LIMIT: u64 = 20_000;
 
 /// The directory holding sessions, settings, and credentials: `$ODG_HOME`, or `~/.odg`.
 pub fn home() -> PathBuf {
@@ -26,6 +32,10 @@ pub fn home() -> PathBuf {
 
 fn default_provider() -> String {
     DEFAULT_PROVIDER.to_string()
+}
+
+fn default_context_limit() -> u64 {
+    DEFAULT_CONTEXT_LIMIT
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,6 +53,10 @@ pub struct Settings {
     /// there were modes have none, which reads as edit mode.
     #[serde(default)]
     pub mode: Mode,
+    /// A conversation is compacted into a summary once it holds about this
+    /// many tokens, or sooner on a model whose context window is smaller.
+    #[serde(default = "default_context_limit")]
+    pub context_limit: u64,
     /// `system`, `light`, or `dark`.
     pub theme: String,
     /// Addresses that replace a provider's default, by provider id; for an
@@ -60,6 +74,7 @@ impl Default for Settings {
             model: DEFAULT_MODEL.to_string(),
             effort: "high".to_string(),
             mode: Mode::Edit,
+            context_limit: DEFAULT_CONTEXT_LIMIT,
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
         }
@@ -90,12 +105,22 @@ impl Settings {
         if !THEMES.contains(&self.theme.as_str()) {
             self.theme = default.theme;
         }
+        self.context_limit = self.context_limit.max(MIN_CONTEXT_LIMIT);
         self.base_urls = std::mem::take(&mut self.base_urls)
             .into_iter()
             .map(|(id, url)| (id, url.trim().trim_end_matches('/').to_string()))
             .filter(|(id, url)| !url.is_empty() && provider(id).is_some_and(|known| known.protocol != Protocol::Anthropic))
             .collect();
         self
+    }
+}
+
+impl Settings {
+    /// The limit a session on this model compacts at: the one set here, or
+    /// four fifths of the model's context window when that is less, which
+    /// leaves room for the answer and for what the next tools return.
+    pub fn context_limit_for(&self, provider: &str, model: &str) -> u64 {
+        self.context_limit.min(context_window(provider, model) / 5 * 4)
     }
 }
 

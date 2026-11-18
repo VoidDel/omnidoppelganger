@@ -215,6 +215,10 @@ pub fn request_body(request: &LlmRequest, official: bool) -> Value {
     if official && supports_server_fallback(&request.model) {
         body["fallbacks"] = json!("default");
     }
+    // A request without tools (a summary written from a transcript) leaves the field out: an empty list is an error to some servers.
+    if request.tools.is_empty() {
+        body.as_object_mut().expect("the body is an object").remove("tools");
+    }
     body
 }
 

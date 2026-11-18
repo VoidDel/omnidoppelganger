@@ -15,12 +15,11 @@ use crate::events::{Envelope, Event};
 use crate::policy::Mode;
 use crate::providers::DEFAULT_PROVIDER;
 
-/// The newest format this build reads and writes. Format 2 adds the
-/// `provider` field to the header; an Anthropic session leaves it out and is
-/// still written as format 1, so earlier builds keep reading it. A session
-/// on another provider is format 2, which earlier builds refuse to open
-/// rather than send its conversation to Anthropic.
-pub const FORMAT_VERSION: u32 = 2;
+/// The newest format this build reads, and the one it writes. Format 2 added
+/// the `provider` field to the header. Format 3 adds the `context/compacted`
+/// event and the `tokens` field; a build from before it refuses a format 3
+/// session rather than misread it.
+pub const FORMAT_VERSION: u32 = 3;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -77,7 +76,7 @@ impl SessionStore {
             workspace: workspace.to_string_lossy().into_owned(),
             provider: (provider != DEFAULT_PROVIDER).then(|| provider.to_string()),
             model: model.to_string(),
-            format: if provider == DEFAULT_PROVIDER { 1 } else { FORMAT_VERSION },
+            format: FORMAT_VERSION,
         })?;
         Ok(log)
     }
@@ -268,18 +267,35 @@ pub const PLAN_OFF: &str = "[Plan mode is off] You may change files and run comm
 /// before is preceded by [`PLAN_ON`] or [`PLAN_OFF`] when plan mode starts or
 /// ends there; the other modes only change what asks, which the model sees
 /// in its tool results.
+///
+/// A [`Event::ContextCompacted`] starts the conversation over: nothing before
+/// it is replayed. The request then opens with its summary, followed by the
+/// user's messages the model had not answered yet, in their own words.
 pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
+    let text = |text: &str| json!({ "type": "text", "text": text });
     let mut messages = Vec::new();
     let mut pending: Vec<Value> = Vec::new();
+    // What the user said since the model last spoke.
+    let mut unanswered: Vec<Value> = Vec::new();
     let mut planning = false;
     for envelope in events {
         match &envelope.event {
-            Event::UserMessage { text, mode, .. } => {
+            Event::UserMessage { text: said, mode, .. } => {
                 if (*mode == Mode::Plan) != planning {
                     planning = !planning;
-                    pending.push(json!({ "type": "text", "text": if planning { PLAN_ON } else { PLAN_OFF } }));
+                    pending.push(text(if planning { PLAN_ON } else { PLAN_OFF }));
                 }
-                pending.push(json!({ "type": "text", "text": text }));
+                pending.push(text(said));
+                unanswered.push(text(said));
+            }
+            Event::ContextCompacted { summary, .. } => {
+                messages.clear();
+                pending.clear();
+                pending.push(text(&format!("{COMPACTED}\n\n{summary}")));
+                if planning {
+                    pending.push(text(PLAN_ON));
+                }
+                pending.extend(unanswered.iter().cloned());
             }
             Event::ToolResult { tool_use_id, content, is_error, .. } => pending.push(json!({
                 "type": "tool_result",
@@ -292,6 +308,7 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     messages.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
                 }
                 messages.push(json!({ "role": "assistant", "content": content }));
+                unanswered.clear();
             }
             _ => {}
         }
@@ -300,6 +317,78 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
         messages.push(json!({ "role": "user", "content": pending }));
     }
     messages
+}
+
+/// What opens a request after a compaction, ahead of the summary.
+pub const COMPACTED: &str = "[The conversation up to here grew too long and was replaced by the summary below. The earlier messages are gone: read a file again before relying on what it held. Carry on with the task from where the summary leaves it.]";
+
+/// About how many tokens the next request will hold. The last request's own
+/// count is exact; what was added since (tool results, user messages), or a
+/// log with no counts at all, is estimated at one token per three bytes,
+/// which runs high for English and about right for Chinese.
+pub fn context_estimate(events: &[Envelope]) -> u64 {
+    let guess = |text: &str| text.len() as u64 / 3;
+    let mut estimate = 0;
+    for envelope in events {
+        match &envelope.event {
+            Event::ContextCompacted { summary, .. } => estimate = guess(summary),
+            Event::AssistantMessage { tokens: Some(tokens), .. } => estimate = tokens.input + tokens.output,
+            Event::AssistantMessage { content, tokens: None, .. } => estimate += guess(&Value::Array(content.clone()).to_string()),
+            Event::UserMessage { text, .. } => estimate += guess(text),
+            Event::ToolResult { content, .. } => estimate += guess(content),
+            _ => {}
+        }
+    }
+    estimate
+}
+
+/// The conversation since the last compaction as plain text of at most
+/// `max_bytes`, for writing a summary when the conversation itself no longer
+/// fits a request. Tool calls and results are cut short, and when it is still
+/// too long the middle goes: the start holds the task, the end where it stands.
+pub fn transcript(events: &[Envelope], max_bytes: usize) -> String {
+    let cut = |text: &str, max: usize| {
+        let count = text.chars().count();
+        if count <= max {
+            return text.to_string();
+        }
+        let head: String = text.chars().take(max / 2).collect();
+        let tail: String = text.chars().skip(count - max / 2).collect();
+        format!("{head}\n[... {} characters omitted ...]\n{tail}", count - max)
+    };
+    let start = events.iter().rposition(|envelope| matches!(envelope.event, Event::ContextCompacted { .. })).unwrap_or(0);
+    let mut parts: Vec<String> = Vec::new();
+    for envelope in &events[start..] {
+        match &envelope.event {
+            Event::ContextCompacted { summary, .. } => parts.push(format!("SUMMARY OF EARLIER WORK:\n{summary}")),
+            Event::UserMessage { text, .. } => parts.push(format!("USER:\n{text}")),
+            Event::AssistantMessage { content, .. } => {
+                for block in content {
+                    match block["type"].as_str() {
+                        Some("text") => parts.push(format!("ASSISTANT:\n{}", block["text"].as_str().unwrap_or_default())),
+                        Some("tool_use") => parts.push(format!("ASSISTANT CALLED {}:\n{}", block["name"].as_str().unwrap_or_default(), cut(&block["input"].to_string(), 600))),
+                        _ => {}
+                    }
+                }
+            }
+            Event::ToolResult { tool, content, is_error, .. } => {
+                parts.push(format!("RESULT OF {tool}{}:\n{}", if *is_error { " (failed)" } else { "" }, cut(content, 2000)));
+            }
+            _ => {}
+        }
+    }
+    let whole = parts.join("\n\n");
+    if whole.len() <= max_bytes {
+        return whole;
+    }
+    let boundary = |mut at: usize| {
+        while !whole.is_char_boundary(at) {
+            at += 1;
+        }
+        at
+    };
+    let (head, tail) = (boundary(max_bytes / 5), boundary(whole.len() - max_bytes * 4 / 5));
+    format!("{}\n\n[... the middle of the conversation is omitted ...]\n\n{}", &whole[..head], &whole[tail..])
 }
 
 /// Fold a log into its list entry. The title is the first user message, cut to 40 characters.
@@ -371,7 +460,7 @@ mod tests {
     }
 
     fn assistant(content: Vec<Value>) -> Event {
-        Event::AssistantMessage { content, stop_reason: Some("tool_use".into()), model: "m".into(), usage: json!({}) }
+        Event::AssistantMessage { content, stop_reason: Some("tool_use".into()), model: "m".into(), usage: json!({}), tokens: None }
     }
 
     #[test]
@@ -391,14 +480,14 @@ mod tests {
     }
 
     #[test]
-    fn writes_format_1_for_anthropic_and_format_2_with_the_provider_otherwise() {
+    fn writes_the_current_format_and_names_the_provider_unless_it_is_anthropic() {
         let (_directory, store) = store();
         let header = |log: &SessionLog| serde_json::to_value(&log.events()[0]).unwrap()["data"].clone();
         let anthropic = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
-        assert_eq!(header(&anthropic)["format"], 1);
+        assert_eq!(header(&anthropic)["format"], FORMAT_VERSION);
         assert!(header(&anthropic).get("provider").is_none());
         let deepseek = store.create(Path::new("/work"), "deepseek", "deepseek-v4-pro").unwrap();
-        assert_eq!((header(&deepseek)["format"].as_u64(), header(&deepseek)["provider"].as_str()), (Some(2), Some("deepseek")));
+        assert_eq!((header(&deepseek)["format"].as_u64(), header(&deepseek)["provider"].as_str()), (Some(u64::from(FORMAT_VERSION)), Some("deepseek")));
 
         let id = deepseek.id().to_string();
         drop(deepseek);
@@ -487,6 +576,52 @@ mod tests {
                 { "type": "text", "text": "also b" },
             ] }),
         ]);
+    }
+
+    #[test]
+    fn a_compaction_starts_the_conversation_over_from_its_summary() {
+        use crate::llm::Tokens;
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
+        let user = |text: &str, steering| Event::UserMessage { text: text.into(), steering, mode: Mode::Plan };
+        let counted = |input, output| Event::AssistantMessage {
+            content: vec![json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a" } })],
+            stop_reason: Some("tool_use".into()),
+            model: "m".into(),
+            usage: json!({}),
+            tokens: Some(Tokens { input, cached: 0, output }),
+        };
+        let result = |content: &str| Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: content.into(), is_error: false, meta: Value::Null };
+        log.append(user("read a", false)).unwrap();
+        log.append(counted(1000, 50)).unwrap();
+        log.append(result(&"x".repeat(300))).unwrap();
+        log.append(user("and hurry", true)).unwrap();
+        // The last request's own count, plus a guess for what was added since.
+        assert_eq!(context_estimate(log.events()), 1050 + 100 + 3);
+        assert!(transcript(log.events(), 10_000).contains("USER:
+read a
+
+ASSISTANT CALLED read_file:"));
+        let short = transcript(log.events(), 100);
+        assert!(short.len() < 200 && short.starts_with("USER:") && short.contains("omitted") && short.ends_with("and hurry"), "{short}");
+
+        log.append(Event::ContextCompacted { summary: "Read a; it holds x.".into(), tokens_before: 1153, tokens: None }).unwrap();
+        // Only the summary goes back, then plan mode (still on), then what the model had not answered.
+        let texts = |events: &[Envelope]| -> Vec<String> {
+            derive_messages(events).iter().flat_map(|message| message["content"].as_array().unwrap().clone()).filter_map(|block| block["text"].as_str().map(str::to_string)).collect()
+        };
+        assert_eq!(derive_messages(log.events()).len(), 1);
+        assert_eq!(texts(log.events()), [format!("{COMPACTED}
+
+Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
+        assert_eq!(context_estimate(log.events()), "Read a; it holds x.".len() as u64 / 3);
+
+        // What follows the compaction is replayed as usual.
+        log.append(assistant(vec![json!({ "type": "text", "text": "on it" })])).unwrap();
+        log.append(user("thanks", false)).unwrap();
+        let messages = derive_messages(log.events());
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2]["content"], json!([{ "type": "text", "text": "thanks" }]));
     }
 
     #[test]

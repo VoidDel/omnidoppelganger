@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChangedFile, ToolItem } from "../lib/fold";
+import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
 import { MODES, modeOf, nextMode } from "../lib/modes";
 import type { Mode, SessionItem, Status } from "../lib/types";
 
@@ -182,6 +182,9 @@ interface ComposerProps {
   status: Status;
   model: string;
   mode: Mode;
+  usage: Usage;
+  /** The number of tokens at which the conversation is compacted. */
+  contextLimit: number;
   /** The last turn in plan mode ended with the 分身's answer: offer to carry it out. */
   planReady: boolean;
   onMode: (mode: Mode) => void;
@@ -191,7 +194,7 @@ interface ComposerProps {
   onStop: () => void;
 }
 
-export function Composer({ status, model, mode, planReady, onMode, onCarryOut, onSend, onStop }: ComposerProps) {
+export function Composer({ status, model, mode, usage, contextLimit, planReady, onMode, onCarryOut, onSend, onStop }: ComposerProps) {
   const [text, setText] = useState("");
   const busy = status !== "idle";
   const submit = () => {
@@ -254,6 +257,15 @@ export function Composer({ status, model, mode, planReady, onMode, onCarryOut, o
             <span className="value">{model}</span>
           </span>
           <ModePicker mode={mode} onMode={onMode} />
+          <span
+            className="select-button"
+            title={`这个会话累计用掉：输入 ${usage.spent.input}（其中 ${usage.spent.cached} 读自缓存），输出 ${usage.spent.output}。眼下的对话到 ${contextLimit} token 时，分身会把前情凝成摘要再继续。`}
+          >
+            <span className="label">灵石</span>
+            <span className="value">
+              {shortCount(usage.context)} / {shortCount(contextLimit)}
+            </span>
+          </span>
           <span className="spacer" />
           {busy && (
             <button type="button" className="button outline" onClick={onStop}>

@@ -39,6 +39,17 @@ pub enum StreamDelta {
     Reset,
 }
 
+/// What one request cost, in one shape whatever the provider's `usage` looks
+/// like. See [`crate::providers::tokens`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, serde::Deserialize)]
+pub struct Tokens {
+    /// The whole prompt, cached part included.
+    pub input: u64,
+    /// The part of the prompt read from the provider's cache.
+    pub cached: u64,
+    pub output: u64,
+}
+
 /// A complete assistant message.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AssistantTurn {
@@ -75,6 +86,17 @@ impl LlmError {
             LlmError::Network(_) => true,
             LlmError::MissingKey | LlmError::NotConfigured(_) | LlmError::Cancelled | LlmError::Protocol(_) => false,
         }
+    }
+
+    /// Whether the provider refused the request because the conversation no
+    /// longer fits the model's context window. Providers word this each their
+    /// own way and few document it, so this goes by what the message says.
+    pub fn context_overflow(&self) -> bool {
+        let LlmError::Api { kind, message, .. } = self else { return false };
+        let text = format!("{kind} {message}").to_lowercase();
+        ["context window", "context length", "context_length", "maximum context", "prompt is too long", "input is too long", "too many tokens", "token limit"]
+            .iter()
+            .any(|phrase| text.contains(phrase))
     }
 }
 

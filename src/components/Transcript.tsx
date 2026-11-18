@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { api } from "../lib/api";
-import type { Item, Row, StreamBlock, ToolItem } from "../lib/fold";
+import { type Item, type Row, type StreamBlock, type ToolItem, shortCount } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, Status } from "../lib/types";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
@@ -221,6 +221,13 @@ function ItemView({ item, mode, onDecide }: { item: Item; mode: Mode; onDecide: 
         <div className="notice">
           {item.from} 没有接这个请求，改由 {item.to} 继续。
         </div>
+      );
+    case "compacted":
+      return (
+        <details className="thinking">
+          <summary>前情太长（约 {shortCount(item.tokensBefore)} token），分身把它凝成了一段摘要，之后只凭摘要接着做</summary>
+          <p>{item.summary}</p>
+        </details>
       );
     case "notice":
       return <div className="notice">{notice(item.reason, item.error)}</div>;

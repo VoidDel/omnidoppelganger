@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use std::collections::BTreeMap;
 
-use odg_core::agent::{Session, Status, UiEvent};
+use odg_core::agent::{Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
 use odg_core::events::{Decision, Envelope};
 use odg_core::policy::Mode;
-use odg_core::providers::{PROVIDERS, Provider, Router, provider};
+use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider};
 use odg_core::session::{SessionStore, SessionSummary};
 use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore};
 use serde::Serialize;
@@ -35,6 +35,8 @@ struct SessionItem {
     #[serde(flatten)]
     summary: SessionSummary,
     status: Status,
+    /// The number of tokens at which this session's conversation is compacted.
+    context_limit: u64,
 }
 
 #[derive(Serialize)]
@@ -57,8 +59,17 @@ struct SettingsView {
 impl App {
     fn wrap(&self, log: odg_core::session::SessionLog) -> Result<Session<Router>, String> {
         let settings = self.settings.clone();
-        Session::new(log, self.llm.clone(), Arc::new(move || settings.load().effort), self.events.clone(), tokio::runtime::Handle::current())
-            .map_err(|error| error.to_string())
+        let (_, provider, model) = log.header();
+        let tuning = move || {
+            let settings = settings.load();
+            Tuning { context_limit: settings.context_limit_for(&provider, &model), context_window: context_window(&provider, &model), effort: settings.effort }
+        };
+        Session::new(log, self.llm.clone(), Arc::new(tuning), self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
+    }
+
+    fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
+        let context_limit = self.settings.load().context_limit_for(&summary.provider, &summary.model);
+        SessionItem { summary, status, context_limit }
     }
 
     /// The live session, opening it from disk on first use. The map stays
@@ -84,8 +95,8 @@ impl App {
     }
 }
 
-fn view(session: &Session<Router>) -> SessionView {
-    SessionView { item: SessionItem { summary: session.summary(), status: session.status() }, events: session.snapshot() }
+fn view(app: &App, session: &Session<Router>) -> SessionView {
+    SessionView { item: app.item(session.summary(), session.status()), events: session.snapshot() }
 }
 
 #[tauri::command]
@@ -97,12 +108,9 @@ async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionItem>, String> 
         .ids()
         .into_iter()
         .filter_map(|id| match live.get(&id) {
-            Some(session) => Some(SessionItem { summary: session.summary(), status: session.status() }),
+            Some(session) => Some(app.item(session.summary(), session.status())),
             // A stored session has no running turn: one left open by a crash is closed when it is opened.
-            None => app.store.peek(&id).ok().map(|summary| SessionItem {
-                summary: SessionSummary { turn_open: false, awaiting_approval: false, ..summary },
-                status: Status::Idle,
-            }),
+            None => app.store.peek(&id).ok().map(|summary| app.item(SessionSummary { turn_open: false, awaiting_approval: false, ..summary }, Status::Idle)),
         })
         .collect();
     items.sort_by(|a, b| b.summary.updated_at.cmp(&a.summary.updated_at));
@@ -124,12 +132,12 @@ async fn create_session(app: State<'_, App>, workspace: String) -> Result<Sessio
     let session = app.wrap(log)?;
     session.set_mode(settings.mode);
     app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
-    Ok(view(&session))
+    Ok(view(&app, &session))
 }
 
 #[tauri::command]
 async fn open_session(app: State<'_, App>, id: String) -> Result<SessionView, String> {
-    Ok(view(&app.live(&id)?))
+    Ok(view(&app, &app.live(&id)?))
 }
 
 /// Returns true when the message was queued behind a running turn.
@@ -152,7 +160,7 @@ async fn resolve_approval(app: State<'_, App>, id: String, tool_use_id: String, 
 async fn set_mode(app: State<'_, App>, id: String, mode: Mode) -> Result<SessionItem, String> {
     let session = app.live(&id)?;
     session.set_mode(mode);
-    Ok(SessionItem { summary: session.summary(), status: session.status() })
+    Ok(app.item(session.summary(), session.status()))
 }
 
 #[tauri::command]

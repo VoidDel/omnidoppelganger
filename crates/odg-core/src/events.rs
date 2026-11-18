@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::llm::Tokens;
 use crate::policy::Mode;
 
 /// One line of a session log.
@@ -63,7 +64,25 @@ pub enum Event {
         content: Vec<Value>,
         stop_reason: Option<String>,
         model: String,
+        /// The provider's own account of the request, as received.
         usage: Value,
+        /// The same in one shape for every provider; absent in logs written
+        /// before format 3, and when the provider sent no count.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<Tokens>,
+    },
+    /// The conversation grew past the context limit and was replaced by a
+    /// summary: requests after this start from `summary`, followed by any
+    /// user message the model had not answered yet. Nothing before it is
+    /// replayed. Since format 3.
+    #[serde(rename = "context/compacted")]
+    ContextCompacted {
+        summary: String,
+        /// About how many tokens the conversation held before.
+        tokens_before: u64,
+        /// What the request that wrote the summary cost.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<Tokens>,
     },
     #[serde(rename = "approval/requested")]
     ApprovalRequested {

@@ -5,6 +5,13 @@ export type Status = "idle" | "running" | "waiting_approval";
 /** What runs without asking: every edit asks, edits run, nothing is edited, or safe commands run too. */
 export type Mode = "manual" | "edit" | "plan" | "auto";
 
+/** What one request cost. `input` is the whole prompt, the cached part included. */
+export interface Tokens {
+  input: number;
+  cached: number;
+  output: number;
+}
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string }
@@ -15,7 +22,8 @@ export type SessionEvent =
   | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number } }
   | { type: "turn/start"; data: { turn: number } }
   | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode } }
-  | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string } }
+  | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }
+  | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
   | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string } }
   | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision } }
   | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
@@ -59,6 +67,8 @@ export interface SessionItem {
   provider: string;
   model: string;
   mode: Mode;
+  /** The number of tokens at which the conversation is compacted into a summary. */
+  context_limit: number;
   created_at: string;
   updated_at: string;
   turn_open: boolean;
@@ -88,6 +98,8 @@ export interface Settings {
   effort: string;
   /** The mode new sessions start in. */
   mode: Mode;
+  /** Conversations are compacted once they hold about this many tokens. */
+  context_limit: number;
   theme: "system" | "light" | "dark";
   /** Addresses that replace a provider's default, by provider id. */
   base_urls: Record<string, string>;

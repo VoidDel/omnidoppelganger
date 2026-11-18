@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -21,6 +21,34 @@ const edit = (id: string, path: string, added: number, removed: number) => [
   said(call(id, "edit_file", { path })),
   result(id, "edit_file", { path, added, removed }),
 ];
+
+describe("usage", () => {
+  const counted = (input: number, cached: number, output: number): SessionEvent => ({
+    type: "assistant/message",
+    data: { content: [{ type: "text", text: "x" }], stop_reason: "end_turn", model: "m", tokens: { input, cached, output } },
+  });
+
+  it("sums what every request cost and reports what the conversation holds now", () => {
+    const events = log(user("one"), counted(1000, 0, 50), user("two"), counted(1100, 1000, 60));
+    expect(usage(events)).toEqual({ context: 1160, spent: { input: 2100, cached: 1000, output: 110 } });
+    // A message logged before counts existed adds nothing and leaves the context as it was.
+    expect(usage([...events, ...log(said({ type: "text", text: "old" }))])).toEqual(usage(events));
+    expect(usage([])).toEqual({ context: 0, spent: { input: 0, cached: 0, output: 0 } });
+  });
+
+  it("starts the context over at a compaction, whose own request still counts as spent", () => {
+    const events = log(
+      user("one"),
+      counted(9000, 0, 100),
+      { type: "context/compacted", data: { summary: "s", tokens_before: 9100, tokens: { input: 9200, cached: 9000, output: 300 } } },
+      counted(700, 0, 40),
+    );
+    expect(usage(events.slice(0, 3)).context).toBe(300);
+    expect(usage(events)).toEqual({ context: 740, spent: { input: 18900, cached: 9000, output: 440 } });
+    const rows = fold(events);
+    expect(rows[0].items.map((item) => item.kind)).toEqual(["text", "compacted", "text"]);
+  });
+});
 
 describe("fold", () => {
   it("puts what the agent did under the message it answered", () => {

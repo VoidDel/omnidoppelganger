@@ -5,11 +5,12 @@
 //! holds one provider's content blocks and nothing is converted between them.
 
 use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::anthropic::{self, AnthropicClient};
-use crate::llm::{AssistantTurn, EndpointSource, Llm, LlmError, LlmRequest, StreamDelta};
+use crate::llm::{AssistantTurn, EndpointSource, Llm, LlmError, LlmRequest, StreamDelta, Tokens};
 use crate::openai_chat::ChatClient;
 use crate::openai_responses::ResponsesClient;
 
@@ -115,6 +116,49 @@ pub fn provider(id: &str) -> Option<&'static Provider> {
     PROVIDERS.iter().find(|provider| provider.id == id)
 }
 
+/// The context window assumed for a model no provider here documents.
+pub const UNKNOWN_CONTEXT_WINDOW: u64 = 128_000;
+
+/// How many tokens a model's context window holds, from each provider's
+/// documentation as of November 2026. A model that is not listed (a newer
+/// one typed in by hand, or anything on a custom service) gets
+/// [`UNKNOWN_CONTEXT_WINDOW`], which is small enough to be safe.
+pub fn context_window(provider: &str, model: &str) -> u64 {
+    match (provider, model) {
+        ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => 1_000_000,
+        ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => 1_050_000,
+        ("deepseek", "deepseek-v4-pro" | "deepseek-flash") => 1_000_000,
+        ("moonshot", "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "kimi-k3") => 1_048_576,
+        ("zhipu", "glm-5.3" | "glm-5.2") => 1_000_000,
+        ("zhipu", "glm-4.7") => 200_000,
+        _ => UNKNOWN_CONTEXT_WINDOW,
+    }
+}
+
+/// Read a provider's `usage` object into [`Tokens`]. The providers differ in
+/// field names and in whether the prompt count includes what was read from
+/// cache: Anthropic's does not, the others' do. `None` when it holds no count.
+pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
+    let count = |value: &Value| value.as_u64().unwrap_or(0);
+    let protocol = provider(provider_id).map_or(Protocol::Anthropic, |known| known.protocol);
+    let found = match protocol {
+        Protocol::Anthropic => {
+            let cached = count(&usage["cache_read_input_tokens"]);
+            Tokens { input: count(&usage["input_tokens"]) + cached + count(&usage["cache_creation_input_tokens"]), cached, output: count(&usage["output_tokens"]) }
+        }
+        Protocol::Responses => {
+            Tokens { input: count(&usage["input_tokens"]), cached: count(&usage["input_tokens_details"]["cached_tokens"]), output: count(&usage["output_tokens"]) }
+        }
+        Protocol::Chat(_) => Tokens {
+            input: count(&usage["prompt_tokens"]),
+            // DeepSeek reports the cache hit on its own field as well.
+            cached: count(&usage["prompt_tokens_details"]["cached_tokens"]).max(count(&usage["prompt_cache_hit_tokens"])),
+            output: count(&usage["completion_tokens"]),
+        },
+    };
+    (found.input > 0 || found.output > 0).then_some(found)
+}
+
 /// Sends each request to the client for its session's provider.
 pub struct Router {
     anthropic: AnthropicClient,
@@ -174,6 +218,26 @@ mod tests {
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);
         assert!(provider("nobody").is_none());
+    }
+
+    #[test]
+    fn reads_each_providers_usage_into_the_same_counts() {
+        use serde_json::json;
+        // Anthropic counts what it read from and wrote to the cache beside the prompt, not inside it.
+        let anthropic = json!({ "input_tokens": 10, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 90, "output_tokens": 40 });
+        assert_eq!(tokens("anthropic", &anthropic), Some(Tokens { input: 1000, cached: 900, output: 40 }));
+        let chat = json!({ "prompt_tokens": 1000, "completion_tokens": 40, "prompt_tokens_details": { "cached_tokens": 900 } });
+        assert_eq!(tokens("zhipu", &chat), Some(Tokens { input: 1000, cached: 900, output: 40 }));
+        let deepseek = json!({ "prompt_tokens": 1000, "completion_tokens": 40, "prompt_cache_hit_tokens": 900 });
+        assert_eq!(tokens("deepseek", &deepseek), Some(Tokens { input: 1000, cached: 900, output: 40 }));
+        let responses = json!({ "input_tokens": 1000, "output_tokens": 40, "input_tokens_details": { "cached_tokens": 900 } });
+        assert_eq!(tokens("openai", &responses), Some(Tokens { input: 1000, cached: 900, output: 40 }));
+        assert_eq!(tokens("zhipu", &json!({})), None);
+
+        assert_eq!(context_window("zhipu", "glm-4.7"), 200_000);
+        assert_eq!(context_window("anthropic", "claude-opus-5-5"), 1_000_000);
+        assert_eq!(context_window("zhipu", "glm-9"), UNKNOWN_CONTEXT_WINDOW);
+        assert_eq!(context_window("custom", "anything"), UNKNOWN_CONTEXT_WINDOW);
     }
 
     #[test]

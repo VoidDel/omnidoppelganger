@@ -1,7 +1,7 @@
 // Folds the session log into what the window draws. The log is the only input,
 // so reopening a session shows exactly what was on screen before.
 
-import type { ContentBlock, Decision, Envelope, StreamDelta, ToolMeta } from "./types";
+import type { ContentBlock, Decision, Envelope, StreamDelta, Tokens, ToolMeta } from "./types";
 
 export interface ToolItem {
   kind: "tool";
@@ -18,6 +18,7 @@ export type Item =
   | { kind: "thinking"; text: string }
   | ToolItem
   | { kind: "fallback"; from: string; to: string }
+  | { kind: "compacted"; summary: string; tokensBefore: number }
   | { kind: "notice"; reason: string; error: string | null };
 
 /** One row of the transcript: what the user said on the left, what the agent did about it on the right. */
@@ -75,6 +76,9 @@ export function fold(events: Envelope[]): Row[] {
         if (tool) tool.result = { content: event.data.content, isError: event.data.is_error, meta: event.data.meta };
         break;
       }
+      case "context/compacted":
+        current()?.items.push({ kind: "compacted", summary: event.data.summary, tokensBefore: event.data.tokens_before });
+        break;
       case "turn/end":
         if (event.data.reason !== "completed" && current()) {
           current().items.push({ kind: "notice", reason: event.data.reason, error: event.data.error });
@@ -85,6 +89,39 @@ export function fold(events: Envelope[]): Row[] {
     }
   }
   return rows;
+}
+
+/** 123456 as 12.3 万, the way large counts read in Chinese. */
+export const shortCount = (count: number) => (count >= 10000 ? `${(count / 10000).toFixed(count >= 1000000 ? 0 : 1).replace(/\.0$/, "")} 万` : String(count));
+
+/** What the session has spent, and how full its context is. */
+export interface Usage {
+  /** Tokens the conversation holds now: what the last request sent and got back. */
+  context: number;
+  /** Totals over every request of the session, summaries included. */
+  spent: Tokens;
+}
+
+export function usage(events: Envelope[]): Usage {
+  const spent: Tokens = { input: 0, cached: 0, output: 0 };
+  let context = 0;
+  const add = (tokens: Tokens | undefined) => {
+    if (!tokens) return;
+    spent.input += tokens.input;
+    spent.cached += tokens.cached;
+    spent.output += tokens.output;
+  };
+  for (const event of events) {
+    if (event.type === "assistant/message") {
+      add(event.data.tokens);
+      if (event.data.tokens) context = event.data.tokens.input + event.data.tokens.output;
+    } else if (event.type === "context/compacted") {
+      add(event.data.tokens);
+      // Only the summary is left, which is what its request wrote.
+      context = event.data.tokens?.output ?? 0;
+    }
+  }
+  return { context, spent };
 }
 
 /** A content block of the message being generated. */
