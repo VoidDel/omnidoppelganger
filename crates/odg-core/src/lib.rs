@@ -24,3 +24,4 @@ pub mod sse;
 mod testing;
 pub mod tools;
 pub mod undo;
+pub mod web;

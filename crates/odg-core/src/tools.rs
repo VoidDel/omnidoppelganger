@@ -195,6 +195,18 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "fetch_url",
+            "description": "Get a web page and return its text: documentation, an issue, a raw file. HTML comes back as its words, without markup. The user may have to approve the site first. A long page is cut; pass `offset` to read on. It reads one address; it does not search the web.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "The http or https address." },
+                    "offset": { "type": "integer", "description": "Character to start from, for reading on in a long page. Default 0." }
+                },
+                "required": ["url"]
+            }
+        }),
+        json!({
             "name": "load_skill",
             "description": "Read a skill's instructions. Skills are how-tos for particular kinds of work; the ones on offer are listed in your instructions by name and description. When a task matches one, load it before you start and follow it.",
             "input_schema": {
@@ -335,6 +347,14 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "command_output" => command_output(input, context).await,
         "stop_command" => stop_command(input, context).await,
         "update_todos" => update_todos(input),
+        "fetch_url" => match string_arg(input, "url") {
+            Ok(url) => {
+                let offset = usize::try_from(input["offset"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
+                let fetched = crate::web::fetch(url, offset, &context.cancel).await;
+                Ok(ToolOutput { content: fetched.content, is_error: fetched.is_error, meta: fetched.meta })
+            }
+            Err(error) => Err(error),
+        },
         "load_skill" => string_arg(input, "name").and_then(|name| match crate::skills::load(&context.skills, name) {
             Ok(instructions) => Ok(ToolOutput::ok(instructions, json!({ "skill": name }))),
             Err(error) => Err(ToolOutput::error(error)),

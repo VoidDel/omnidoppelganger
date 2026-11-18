@@ -10,6 +10,9 @@
 //! - auto: edits inside the workspace run, and so does a command that passes
 //!   [`crate::safety`]; any other command asks.
 //!
+//! Fetching a web page asks in every mode, once per site: the request leaves
+//! the machine, and its address can carry whatever the model puts in it.
+//!
 //! A tool of an MCP server asks in every mode: what it does is the server's
 //! business, and nothing here can tell a harmless one from another.
 
@@ -49,7 +52,7 @@ pub enum Verdict {
     /// Not run and not asked about: the tool gets this message as an error result.
     Refuse(&'static str),
     Ask {
-        /// The rule that asked: `command`, `edit`, `mcp`, `outside_read`, `outside_write`, or `git_write`.
+        /// The rule that asked: `command`, `edit`, `mcp`, `web`, `outside_read`, `outside_write`, or `git_write`.
         reason: &'static str,
         /// The command or path shown to the user.
         detail: String,
@@ -88,6 +91,15 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             Some(path) => ask("outside_read", path),
             None => Verdict::Allow,
         },
+        "fetch_url" => {
+            let url = input["url"].as_str().unwrap_or_default();
+            match crate::web::host(url) {
+                // The grant is the site, so its other pages do not ask again.
+                Some(host) => Verdict::Ask { reason: "web", detail: url.to_string(), grant: Some(format!("web:{host}")) },
+                // Not an address that can be fetched: the tool says so itself.
+                None => Verdict::Allow,
+            }
+        }
         tool if crate::mcp::split_name(tool).is_some() => {
             let (server, name) = crate::mcp::split_name(tool).unwrap_or_default();
             // What the user is shown: whose tool, which one, and with what, cut to a readable length.
@@ -175,6 +187,12 @@ mod tests {
             assert_eq!(decide(mode, "read_file", &read), None, "{mode:?}");
             assert_eq!(decide(mode, "read_file", &json!({ "path": "../x" })), Some("outside_read"), "{mode:?}");
         }
+        // Fetching a page asks whatever the mode, and its grant is the site.
+        for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
+            let asked = super::check(mode, "fetch_url", &json!({ "url": "https://docs.rs/serde/latest/serde/" }), workspace);
+            assert_eq!(asked, Verdict::Ask { reason: "web", detail: "https://docs.rs/serde/latest/serde/".into(), grant: Some("web:docs.rs".into()) });
+        }
+        assert_eq!(super::check(Mode::Edit, "fetch_url", &json!({ "url": "file:///etc/passwd" }), workspace), Verdict::Allow);
         // A tool of an MCP server asks whatever the mode, and its grant names that one tool.
         for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
             let asked = super::check(mode, "mcp__files__read_file", &json!({ "path": "a" }), workspace);

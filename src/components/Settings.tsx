@@ -129,6 +129,7 @@ const MCP_STATES: Record<McpServer["state"], string> = { connecting: "正在连�
 /** A kept grant as the user reads it: a command's opening words, or an MCP server's tool. */
 function grantLabel(grant: string): string {
   const borrowed = grant.startsWith("mcp:") ? mcpTool(grant.slice("mcp:".length)) : null;
+  if (grant.startsWith("web:")) return `网站 ${grant.slice("web:".length)}`;
   return borrowed ? `法器 ${borrowed.server} 的 ${borrowed.tool}` : grant.replace(/^command:/, "");
 }
 
@@ -300,7 +301,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             <div className="provider-card" key={workspace}>
               <div className="who">
                 <strong className="mono">{workspace}</strong>
-                <span className="muted">这处洞府里，以下面这些开头的命令、这些法器不再请示</span>
+                <span className="muted">这处洞府里，以下面这些开头的命令、这些法器、这些网站不再请示</span>
               </div>
               {kept.map((grant) => (
                 <div className="provider" key={grant}>

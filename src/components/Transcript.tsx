@@ -92,6 +92,8 @@ function sealOf(tool: ToolItem): string {
       return "谋";
     case "load_skill":
       return "技";
+    case "fetch_url":
+      return "网";
     default:
       // A tool of an MCP server: an instrument borrowed from outside.
       return mcpTool(tool.name) ? "器" : "术";
@@ -142,6 +144,8 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         outcome: waiting || (meta?.command ? state : "没有这个后台命令"),
       };
     }
+    case "fetch_url":
+      return { verb: "抓取网页", target: text("url"), outcome: waiting || (result!.isError ? "没取到" : `${shortCount(meta?.characters ?? 0)} 字`) };
     case "load_skill":
       return { verb: "研读技能", target: text("name"), outcome: waiting || (result!.isError ? "没有这门技能" : "已读") };
     case "update_todos": {
@@ -187,6 +191,11 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
+  web: {
+    title: "分身要上网取一个网页，请本尊定夺",
+    note: "这个请求会发到洞府之外，网址里带的内容对方都看得到。准了之后，同一个网站的其他网页不再请示。",
+    always: "之后这个网站都准",
+  },
   mcp: {
     title: "分身要动用一件外来的法器（MCP 工具），请本尊定夺",
     note: "这件法器来自你在设置里接入的 MCP 服务，它具体做什么由那个服务决定，所以无论哪种禁制都要先请示。",
@@ -248,7 +257,7 @@ function SignSheet({ tool, mode, onDecide }: SignSheetProps) {
             {alwaysLabel(approval.grant, ask.always)}
           </button>
         )}
-        {(approval.grant?.startsWith("command:") || approval.grant?.startsWith("mcp:")) && (
+        {["command:", "mcp:", "web:"].some((kind) => approval.grant?.startsWith(kind)) && (
           <button type="button" className="button outline red" title="重启应用之后也算数，可以在设置里撤销" onClick={() => onDecide(tool.id, "allow_always")}>
             这处洞府里永远都准
           </button>

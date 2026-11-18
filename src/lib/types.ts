@@ -68,6 +68,10 @@ export interface ToolMeta {
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
+  /** The address `fetch_url` ended at, its title, and how many characters of text it holds. */
+  url?: string;
+  title?: string | null;
+  characters?: number;
   /** The skill `load_skill` read. */
   skill?: string;
   /** The call went to a tool of an MCP server. */

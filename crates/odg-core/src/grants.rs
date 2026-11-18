@@ -1,10 +1,10 @@
 //! Approvals the user gave for good: "always allow `cargo test` in this
 //! workspace". They are kept in one file, by workspace, and outlive the app.
 //!
-//! Two kinds of grant can be kept, because each names one thing that stays
+//! Three kinds of grant can be kept, because each names one thing that stays
 //! the same from one day to the next: a command's, which names a program
-//! and subcommand (see `policy::command_grant`), and an MCP tool's, which
-//! names that tool. An approval of edits or of paths outside the workspace
+//! and subcommand (see `policy::command_grant`); an MCP tool's, which names
+//! that tool; and a web site's, which names its host. An approval of edits or of paths outside the workspace
 //! lasts for the session it was given in.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,7 +31,7 @@ impl GrantStore {
 
     /// Whether an approval of this grant can be kept for good.
     pub fn keeps(grant: &str) -> bool {
-        grant.starts_with("command:") || grant.starts_with("mcp:")
+        ["command:", "mcp:", "web:"].iter().any(|kind| grant.starts_with(kind))
     }
 
     /// Every kept grant. A missing or unreadable file holds none.
