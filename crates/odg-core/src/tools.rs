@@ -1,9 +1,10 @@
 //! The tools: read a file, search file contents, find files by name, edit a
-//! file, write a whole file, run a command.
+//! file, write a whole file, run a command, and read or stop a command left
+//! running in the background.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -11,6 +12,8 @@ use regex::Regex;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
+
+use crate::jobs::{Ended, Jobs, Report};
 
 const READ_LINE_LIMIT: usize = 2000;
 const READ_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -25,6 +28,8 @@ const COMMAND_OUTPUT_CHARS: usize = 30_000;
 const COMMAND_CAPTURE_BYTES: usize = 1024 * 1024;
 const COMMAND_TIMEOUT_SECONDS: u64 = 120;
 const COMMAND_TIMEOUT_LIMIT_SECONDS: u64 = 600;
+/// The longest `command_output` waits for a background command to print something.
+const OUTPUT_WAIT_LIMIT_SECONDS: u64 = 60;
 const DIFF_LINES: usize = 400;
 
 pub struct ToolContext {
@@ -34,6 +39,8 @@ pub struct ToolContext {
     /// Where `edit_file` saves what a file held before changing it, so the
     /// edit can be undone; see [`crate::undo`]. `None` saves nothing.
     pub snapshots: Option<PathBuf>,
+    /// The session's background commands. `None` means commands cannot be left running.
+    pub jobs: Option<Arc<Jobs>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -157,14 +164,38 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "run_command",
-            "description": format!("Run a shell command in the workspace and return its output and exit code. The shell is {shell_name}. The user approves each command before it runs. Use it to build, test, and inspect the project, not to read or edit files."),
+            "description": format!("Run a shell command in the workspace and return its output and exit code. The shell is {shell_name}. The user may have to approve the command before it runs. Use it to build, test, and inspect the project, not to read or edit files. For a command that does not end by itself (a dev server, a watcher) or runs for many minutes, set `background`: it then returns a job id at once, `command_output` reads what the job prints, and `stop_command` ends it."),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "The command line to run." },
-                    "timeout_seconds": { "type": "integer", "description": "Stop the command after this many seconds. Default 120, maximum 600." }
+                    "timeout_seconds": { "type": "integer", "description": "Stop the command after this many seconds. Default 120, maximum 600. Ignored with `background`." },
+                    "background": { "type": "boolean", "description": "Leave the command running and return at once. Default false." }
                 },
                 "required": ["command"]
+            }
+        }),
+        json!({
+            "name": "command_output",
+            "description": "Read what a background command has printed since you last read it, and whether it is still running. With `wait_seconds` it waits that long for the command to print something or end, which beats asking again and again.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job": { "type": "string", "description": "The job id `run_command` returned, like `b1`." },
+                    "wait_seconds": { "type": "integer", "description": "Wait up to this many seconds for new output. Default 0, maximum 60." }
+                },
+                "required": ["job"]
+            }
+        }),
+        json!({
+            "name": "stop_command",
+            "description": "Stop a background command and the processes it started. Returns what it printed last.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job": { "type": "string", "description": "The job id `run_command` returned, like `b1`." }
+                },
+                "required": ["job"]
             }
         }),
     ]
@@ -243,6 +274,8 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "search" => search(input, context).await,
         "find_files" => find_files(input, context).await,
         "run_command" => run_command(input, context).await,
+        "command_output" => command_output(input, context).await,
+        "stop_command" => stop_command(input, context).await,
         other => Err(ToolOutput::error(format!("Unknown tool `{other}`."))),
     };
     result.unwrap_or_else(|error| error)
@@ -574,13 +607,13 @@ async fn capture(mut pipe: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
 /// Remove terminal escape sequences: colors and cursor moves (CSI), links and
 /// titles (OSC), and the two-character escapes. They mean nothing to the
 /// model, cost tokens in every later request, and clutter the transcript.
-fn strip_ansi(text: &str) -> String {
+pub(crate) fn strip_ansi(text: &str) -> String {
     static ESCAPES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[0-~])").expect("valid pattern"));
     if text.contains('\u{1b}') { ESCAPES.replace_all(text, "").into_owned() } else { text.to_string() }
 }
 
 /// Stop a command and the processes it started.
-async fn kill_tree(child: &mut tokio::process::Child) {
+pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
     #[cfg(windows)]
     if let Some(pid) = child.id() {
         // `Child::kill` ends only the shell on Windows; taskkill /T takes its children too.
@@ -592,12 +625,17 @@ async fn kill_tree(child: &mut tokio::process::Child) {
             .status()
             .await;
     }
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // The shell leads its own process group (see `shell_command`), so this
+        // reaches what it started as well: a server it launched does not live on.
+        let _ = tokio::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().await;
+    }
     let _ = child.kill().await;
 }
 
-async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
-    let command_line = string_arg(input, "command")?.to_string();
-    let timeout = Duration::from_secs(input["timeout_seconds"].as_u64().unwrap_or(COMMAND_TIMEOUT_SECONDS).clamp(1, COMMAND_TIMEOUT_LIMIT_SECONDS));
+/// The shell set up to run `command_line` in the workspace, its output piped.
+fn shell_command(command_line: &str, workspace: &Path) -> tokio::process::Command {
     let (program, arguments, _) = shell();
     let mut command = tokio::process::Command::new(program);
     command.args(arguments);
@@ -608,13 +646,81 @@ async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput,
             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; if ($PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}; {command_line}"
         ));
     } else {
-        command.arg(&command_line);
+        command.arg(command_line);
     }
-    // Ask the programs the command runs not to color either; whatever still does is stripped below.
+    // Ask the programs the command runs not to color either; whatever still does is stripped from the output.
     command.env("NO_COLOR", "1");
-    command.current_dir(&context.workspace).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    command.current_dir(workspace).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
+    // Its own process group, so stopping the command can stop everything it started.
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+}
+
+fn job_arg<'a>(input: &'a Value, context: &'a ToolContext) -> Result<(&'a str, &'a Arc<Jobs>), ToolOutput> {
+    let jobs = context.jobs.as_ref().ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
+    Ok((string_arg(input, "job")?, jobs))
+}
+
+/// What a background command printed, cut like a foreground command's output, with how it stands.
+fn job_report(id: &str, report: Report) -> ToolOutput {
+    let mut output = report.output.trim_end().to_string();
+    let total = output.chars().count();
+    if total > COMMAND_OUTPUT_CHARS {
+        // The newest output says the most about where a running command stands.
+        let tail: String = output.chars().skip(total - COMMAND_OUTPUT_CHARS).collect();
+        output = format!("[... {} earlier characters omitted ...]\n{tail}", total - COMMAND_OUTPUT_CHARS);
+    }
+    let state = match report.ended {
+        None => "still running".to_string(),
+        Some(Ended::Stopped) => "stopped".to_string(),
+        Some(Ended::Exited(Some(code))) => format!("exited with code {code}"),
+        Some(Ended::Exited(None)) => "ended without an exit code".to_string(),
+    };
+    let content = format!("{}\n[job {id}: {state}]", if output.is_empty() { "(nothing new)" } else { output.as_str() });
+    let exit_code = match report.ended {
+        Some(Ended::Exited(code)) => code,
+        _ => None,
+    };
+    let failed = matches!(report.ended, Some(Ended::Exited(code)) if code != Some(0));
+    ToolOutput {
+        content,
+        is_error: failed,
+        meta: json!({ "job": id, "command": report.command, "running": report.ended.is_none(), "stopped": matches!(report.ended, Some(Ended::Stopped)).then_some("stopped"), "exit_code": exit_code, "output": output }),
+    }
+}
+
+/// A job id that names nothing: jobs do not outlive the app.
+fn no_job(id: &str) -> ToolOutput {
+    ToolOutput::error(format!("There is no background command `{id}`. Background commands end when the app closes; start it again if you need it."))
+}
+
+async fn command_output(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let (id, jobs) = job_arg(input, context)?;
+    let wait = Duration::from_secs(input["wait_seconds"].as_u64().unwrap_or(0).min(OUTPUT_WAIT_LIMIT_SECONDS));
+    let report = jobs.read(id, wait, &context.cancel).await.ok_or_else(|| no_job(id))?;
+    Ok(job_report(id, report))
+}
+
+async fn stop_command(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let (id, jobs) = job_arg(input, context)?;
+    let report = jobs.stop(id).await.ok_or_else(|| no_job(id))?;
+    Ok(job_report(id, report))
+}
+
+async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let command_line = string_arg(input, "command")?.to_string();
+    let timeout = Duration::from_secs(input["timeout_seconds"].as_u64().unwrap_or(COMMAND_TIMEOUT_SECONDS).clamp(1, COMMAND_TIMEOUT_LIMIT_SECONDS));
+    let (program, _, _) = shell();
+    let mut command = shell_command(&command_line, &context.workspace);
+    if input["background"].as_bool().unwrap_or(false) {
+        let jobs = context.jobs.as_ref().ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
+        let id = jobs.start(&command_line, command).map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
+        let content = format!("Started in the background as job {id}. Read what it prints with `command_output`, and end it with `stop_command` when it is no longer needed.");
+        return Ok(ToolOutput::ok(content, json!({ "command": command_line, "job": id, "background": true })));
+    }
 
     let started = Instant::now();
     let mut child = command.spawn().map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
@@ -676,7 +782,7 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None };
         (directory, context)
     }
 
@@ -795,6 +901,62 @@ mod tests {
         });
         let cancelled = execute("run_command", &json!({ "command": sleep }), &context).await;
         assert!(cancelled.content.contains("[stopped: cancelled]"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leaves_a_command_running_reads_what_it_prints_and_stops_it() {
+        let (_directory, mut context) = context();
+        assert!(execute("run_command", &json!({ "command": "echo x", "background": true }), &context).await.is_error);
+        let jobs = Arc::new(Jobs::default());
+        context.jobs = Some(jobs.clone());
+
+        // A command that prints, then stays: a server.
+        let serve = if cfg!(windows) { "'ready'; Start-Sleep -Seconds 60; 'never'" } else { "echo ready; sleep 60; echo never" };
+        let started = execute("run_command", &json!({ "command": serve, "background": true }), &context).await;
+        assert!(!started.is_error && started.meta["job"] == "b1" && started.meta["background"] == true, "{}", started.content);
+        let read = execute("command_output", &json!({ "job": "b1", "wait_seconds": 30 }), &context).await;
+        assert_eq!(read.content, "ready\n[job b1: still running]");
+        assert_eq!((read.meta["running"].as_bool(), read.is_error), (Some(true), false));
+        // Nothing new: the read returns at once and says so.
+        assert_eq!(execute("command_output", &json!({ "job": "b1" }), &context).await.content, "(nothing new)\n[job b1: still running]");
+        assert_eq!(jobs.running(), [("b1".to_string(), serve.to_string())]);
+
+        let begun = Instant::now();
+        let stopped = execute("stop_command", &json!({ "job": "b1" }), &context).await;
+        assert!(stopped.content.ends_with("[job b1: stopped]") && !stopped.content.contains("never"), "{}", stopped.content);
+        assert!(begun.elapsed() < Duration::from_secs(20));
+        assert!(jobs.running().is_empty());
+
+        // Stopping takes what the shell started with it, not only the shell.
+        #[cfg(unix)]
+        {
+            // The shell starts a child of its own and prints the child's process id.
+            let child = execute("run_command", &json!({ "command": "sleep 300 & echo $!; wait", "background": true }), &context).await;
+            let id = child.meta["job"].as_str().unwrap().to_string();
+            let printed = execute("command_output", &json!({ "job": id, "wait_seconds": 30 }), &context).await;
+            let pid = printed.content.lines().next().unwrap().trim().to_string();
+            // A process that is gone has no state; one that was killed and not yet collected shows Z.
+            let alive = || {
+                let state = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid]).output().unwrap().stdout;
+                !state.is_empty() && !state.starts_with(b"Z")
+            };
+            assert!(alive(), "{}", printed.content);
+            execute("stop_command", &json!({ "job": id }), &context).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(!alive(), "the command's child outlived it");
+        }
+
+        // A command that ends by itself reports its exit code, and a failure is an error result.
+        let fail = execute("run_command", &json!({ "command": "echo 分身; exit 3", "background": true }), &context).await;
+        let id = fail.meta["job"].as_str().unwrap().to_string();
+        let ended = execute("command_output", &json!({ "job": id, "wait_seconds": 30 }), &context).await;
+        // The exit can arrive a moment after the output; a second read settles it.
+        let ended = if ended.meta["running"] == true { execute("command_output", &json!({ "job": id, "wait_seconds": 30 }), &context).await } else { ended };
+        assert!(ended.is_error && ended.content.ends_with(&format!("[job {id}: exited with code 3]")), "{}", ended.content);
+        assert_eq!(ended.meta["exit_code"], 3);
+
+        assert!(execute("command_output", &json!({ "job": "b9" }), &context).await.content.starts_with("There is no background command `b9`."));
+        assert!(execute("stop_command", &json!({ "job": "b9" }), &context).await.is_error);
     }
 
     #[tokio::test]

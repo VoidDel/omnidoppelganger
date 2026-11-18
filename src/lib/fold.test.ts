@@ -22,6 +22,26 @@ const edit = (id: string, path: string, added: number, removed: number) => [
   result(id, "edit_file", { path, added, removed }),
 ];
 
+describe("background commands", () => {
+  it("lists a background command and the calls that read and stop it in the terminal", () => {
+    const rows = fold(
+      log(
+        user("serve"),
+        said(call("r1", "run_command", { command: "pnpm dev", background: true })),
+        result("r1", "run_command", { command: "pnpm dev", job: "b1", background: true }),
+        said(call("o1", "command_output", { job: "b1" })),
+        result("o1", "command_output", { command: "pnpm dev", job: "b1", running: true, output: "ready" }),
+        said(call("o2", "command_output", { job: "b9" })),
+        result("o2", "command_output", null, true),
+        said(call("s1", "stop_command", { job: "b1" })),
+        result("s1", "stop_command", { command: "pnpm dev", job: "b1", running: false, stopped: "stopped", output: "" }),
+      ),
+    );
+    // The read of a job that does not exist has nothing to show.
+    expect(commandRuns(rows).map((run) => run.name)).toEqual(["run_command", "command_output", "stop_command"]);
+  });
+});
+
 describe("undo", () => {
   const turn = (number: number): SessionEvent => ({ type: "turn/start", data: { turn: number } });
   const edited = (id: string, path: string): SessionEvent[] => [said(call(id, "edit_file", { path })), result(id, "edit_file", { path, added: 1, removed: 0, after: "f" })];

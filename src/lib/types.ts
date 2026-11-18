@@ -60,6 +60,12 @@ export interface ToolMeta {
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
+  /** The id of a background command, like `b1`. */
+  job?: string;
+  /** `run_command` left the command running and returned. */
+  background?: boolean;
+  /** A background command is still running. */
+  running?: boolean;
   /** The mode refused the call without asking: an edit in plan mode. */
   refused?: boolean;
   /** Set on an edit that can be undone: the fingerprint of what it wrote. */

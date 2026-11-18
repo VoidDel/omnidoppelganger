@@ -11,7 +11,7 @@ OmniDoppelganger（`odg`）是一个跑在你自己电脑上的编码 agent 桌�
 当前是 v0.1，第一条主线已经打通：
 
 - 在一个文件夹里开会话，流式对话，会话保存在本机，重开后原样恢复；会话可以改名、删除，侧栏能按标题、文件夹和说过的话搜索
-- 六个工具：读文件、搜内容、按名找文件和列目录、改文件（带改动对比，可一次改多处，要么全改要么不改）、整文件写入、跑命令
+- 工具：读文件、搜内容、按名找文件和列目录、改文件（带改动对比，可一次改多处，要么全改要么不改）、整文件写入、跑命令。不会自己结束的命令（开发服务器、监视器）可以放到后台跑，分身随时看它的输出、把它停掉；后台命令在应用关闭时一并结束
 - 多家模型供应商：Anthropic、OpenAI、DeepSeek、Kimi（月之暗面）、GLM（智谱），以及任意 OpenAI 兼容服务。每个会话固定用化出时选的那一家
 - 四种禁制（权限模式），输入框下方切换，或在输入框里按 Shift+Tab：
   - **步步请示**：改文件也要先批准
@@ -84,7 +84,8 @@ crates/odg-core/   核心库，不依赖桌面外壳
   openai_responses.rs  OpenAI Responses API 流式客户端
   openai_chat.rs   Chat Completions 流式客户端：DeepSeek、Kimi、GLM 和其他兼容服务
   llm.rs           客户端共用的请求、重试和报错处理
-  tools.rs         工具：read_file、search、find_files、edit_file、write_file、run_command
+  tools.rs         工具：read_file、search、find_files、edit_file、write_file、run_command、command_output、stop_command
+  jobs.rs          后台命令：启动、读输出、停止
   policy.rs        四种禁制下，哪些操作要先批准
   safety.rs        放手施为的命令安全检查
   agent.rs         agent 循环：回合、步骤、审批、传音、收回、压缩

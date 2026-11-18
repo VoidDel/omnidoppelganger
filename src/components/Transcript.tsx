@@ -58,6 +58,10 @@ function sealOf(tool: ToolItem): string {
       return tool.result?.meta?.created ? "建" : "改";
     case "run_command":
       return "行";
+    case "command_output":
+      return "观";
+    case "stop_command":
+      return "止";
     default:
       return "术";
   }
@@ -94,7 +98,18 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       };
     case "run_command": {
       const ended = meta?.stopped === "timed out" ? "超时停止" : meta?.stopped ? "已停止" : meta?.exit_code === 0 ? "成功" : `退出码 ${meta?.exit_code ?? "未知"}`;
+      if (meta?.background) return { verb: "后台运行", target: text("command"), outcome: waiting || `已起，编号 ${meta.job}` };
       return { verb: "运行", target: text("command"), outcome: waiting || (meta ? ended : "没有运行") };
+    }
+    case "command_output":
+    case "stop_command": {
+      // A background command, by its id and command line: still running, stopped, or ended by itself.
+      const state = meta?.running ? "还在跑" : meta?.stopped ? "已停止" : meta?.exit_code === 0 ? "已结束，成功" : `已结束，退出码 ${meta?.exit_code ?? "未知"}`;
+      return {
+        verb: tool.name === "stop_command" ? "停止后台命令" : "看后台输出",
+        target: meta?.command ? `${text("job")}  ${meta.command}` : text("job"),
+        outcome: waiting || (meta?.command ? state : "没有这个后台命令"),
+      };
     }
     default:
       return { verb: tool.name, target: "", outcome: waiting || (result!.isError ? "失败" : "完成") };
@@ -105,9 +120,9 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const { verb, target, outcome } = describe(tool);
   const { result } = tool;
   const hunk = result && !result.isError ? result.meta?.hunk : undefined;
-  const output = tool.name === "run_command" ? result?.meta?.output : undefined;
+  const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "stop_command" ? result?.meta?.output : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
-  const failure = result?.isError && tool.name !== "run_command" && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
+  const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : failure ? <pre>{failure}</pre> : null;
   const [open, setOpen] = useState(() => !!hunk || !!failure || (!!output && !!result?.isError));
   return (

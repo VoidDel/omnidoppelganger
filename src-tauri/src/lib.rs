@@ -179,7 +179,9 @@ async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
         return Err("the agent of this session is working; stop it before deleting the session".to_string());
     }
     // Dropping the live session closes its handle on the log, which Windows needs before the file can go.
-    sessions.remove(&id);
+    if let Some(session) = sessions.remove(&id) {
+        session.kill_jobs();
+    }
     app.store.delete(&id).map_err(|error| error.to_string())
 }
 
@@ -297,6 +299,14 @@ pub fn run() {
             save_api_key,
             delete_api_key,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|handle, event| {
+            // Commands left running in the background must not outlive the app.
+            if let tauri::RunEvent::Exit = event {
+                for session in handle.state::<App>().sessions.lock().unwrap().values() {
+                    session.kill_jobs();
+                }
+            }
+        });
 }

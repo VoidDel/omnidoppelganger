@@ -414,10 +414,12 @@ export function SidePanel({ files, runs }: { files: ChangedFile[]; runs: ToolIte
             return (
               <pre className="terminal" key={run.id}>
                 <span className="prompt">$</span> {meta.command}
+                {run.name === "run_command" && meta.background ? <span className="muted">{`\n[后台运行，编号 ${meta.job}]`}</span> : null}
+                {run.name !== "run_command" ? <span className="muted">{`  （${meta.job}${run.name === "stop_command" ? "，停止" : ""}）`}</span> : null}
                 {"\n"}
                 {meta.output}
                 {meta.stopped ? <span className="failed">{`\n[${meta.stopped === "timed out" ? "超时停止" : "已停止"}]`}</span> : null}
-                {!meta.stopped && meta.exit_code !== 0 ? <span className="failed">{`\n[退出码 ${meta.exit_code ?? "未知"}]`}</span> : null}
+                {!meta.stopped && !meta.background && !meta.running && meta.exit_code !== 0 ? <span className="failed">{`\n[退出码 ${meta.exit_code ?? "未知"}]`}</span> : null}
               </pre>
             );
           })}

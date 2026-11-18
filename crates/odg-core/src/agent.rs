@@ -80,6 +80,8 @@ struct Inner<L: Llm> {
     workspace: PathBuf,
     /// Where `edit_file` saves what files held, beside the log.
     snapshots: PathBuf,
+    /// Commands left running in the background.
+    jobs: Arc<crate::jobs::Jobs>,
     provider: String,
     model: String,
     llm: Arc<L>,
@@ -141,6 +143,7 @@ impl<L: Llm> Session<L> {
                 id: log.id().to_string(),
                 workspace,
                 snapshots,
+                jobs: Arc::default(),
                 provider,
                 model,
                 llm,
@@ -239,6 +242,16 @@ impl<L: Llm> Session<L> {
         Ok(outcome)
     }
 
+    /// The ids and command lines of the background commands still running.
+    pub fn running_jobs(&self) -> Vec<(String, String)> {
+        self.inner.jobs.running()
+    }
+
+    /// End every background command now. For when the app exits or the session is deleted.
+    pub fn kill_jobs(&self) {
+        self.inner.jobs.kill_all();
+    }
+
     /// Stop the running turn. The turn ends as `cancelled` once the current operation returns.
     pub fn cancel(&self) {
         self.inner.state.lock().unwrap().cancel.cancel();
@@ -272,7 +285,7 @@ impl<L: Llm> Inner<L> {
     }
 
     fn tool_context(&self, cancel: &CancellationToken) -> ToolContext {
-        ToolContext { workspace: self.workspace.clone(), cancel: cancel.clone(), snapshots: Some(self.snapshots.clone()) }
+        ToolContext { workspace: self.workspace.clone(), cancel: cancel.clone(), snapshots: Some(self.snapshots.clone()), jobs: Some(self.jobs.clone()) }
     }
 
     fn tool_result(&self, tool_use_id: &str, tool: &str, content: String, is_error: bool, meta: Value) -> Result<(), String> {

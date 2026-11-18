@@ -215,7 +215,9 @@ export function undoableTurns(rows: Row[]): Set<number> {
 
 /** Commands that ran, in order, for the terminal panel. */
 export function commandRuns(rows: Row[]): ToolItem[] {
-  return rows.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool" && item.name === "run_command" && !!item.result?.meta);
+  // A background command's output arrives through the calls that read or stop it.
+  const shows = (name: string) => name === "run_command" || name === "command_output" || name === "stop_command";
+  return rows.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool" && shows(item.name) && !!item.result?.meta?.command);
 }
 
 /** The approval the session is waiting on, if any. */
