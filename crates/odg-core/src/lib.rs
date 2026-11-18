@@ -10,4 +10,5 @@ pub mod llm;
 pub mod policy;
 pub mod session;
 pub mod settings;
+pub mod sse;
 pub mod tools;

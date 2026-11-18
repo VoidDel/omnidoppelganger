@@ -3,7 +3,7 @@
 //! There is no official Rust SDK, so this module owns the wire format:
 //! [`SseParser`] frames the byte stream, [`StreamAccumulator`] rebuilds the
 //! assistant message from its events, and [`AnthropicClient`] sends the
-//! request and retries what can be retried.
+//! request; [`crate::llm::with_retries`] retries what can be retried.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,14 +14,14 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::{AssistantTurn, Llm, LlmError, LlmRequest, StreamDelta};
+use crate::llm::{AssistantTurn, Attempt, Llm, LlmError, LlmRequest, StreamDelta, http_failure, with_retries};
+use crate::sse::SseParser;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2026-10-21";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 /// Streaming has no HTTP timeout to stay under, so the model gets room to finish.
 const MAX_TOKENS: u32 = 64_000;
-const MAX_ATTEMPTS: u32 = 4;
 /// The API sends pings while it works; this much silence means the connection is dead.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -37,48 +37,6 @@ pub const DEFAULT_MODEL: &str = MODELS[0].0;
 /// Models whose safety refusals the API can re-run on another model inside the same call.
 fn supports_server_fallback(model: &str) -> bool {
     matches!(model, "claude-opus-5-5" | "claude-opus-5" | "claude-fable-5-2" | "claude-fable-5-1" | "claude-sonnet-5-5")
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SseEvent {
-    pub event: String,
-    pub data: String,
-}
-
-/// Incremental server-sent-events framing. Bytes go in as they arrive, in any
-/// chunking; complete events come out.
-#[derive(Default)]
-pub struct SseParser {
-    buffer: Vec<u8>,
-    event: String,
-    data: Vec<String>,
-}
-
-impl SseParser {
-    pub fn feed(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        self.buffer.extend_from_slice(chunk);
-        let mut events = Vec::new();
-        while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') {
-            let mut line: Vec<u8> = self.buffer.drain(..=end).collect();
-            line.pop();
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            // Lines are split on the newline byte, so a line is always whole UTF-8 characters.
-            let line = String::from_utf8_lossy(&line);
-            if line.is_empty() {
-                if !self.data.is_empty() || !self.event.is_empty() {
-                    events.push(SseEvent { event: std::mem::take(&mut self.event), data: self.data.join("\n") });
-                    self.data.clear();
-                }
-            } else if let Some(value) = line.strip_prefix("event:") {
-                self.event = value.trim().to_string();
-            } else if let Some(value) = line.strip_prefix("data:") {
-                self.data.push(value.strip_prefix(' ').unwrap_or(value).to_string());
-            }
-        }
-        events
-    }
 }
 
 /// Rebuilds one assistant message from stream events.
@@ -289,7 +247,7 @@ impl AnthropicClient {
         deltas: &UnboundedSender<StreamDelta>,
         cancel: &CancellationToken,
         forwarded: &mut bool,
-    ) -> Result<AssistantTurn, (LlmError, Option<Duration>)> {
+    ) -> Attempt {
         let key = (self.key)().filter(|key| !key.trim().is_empty()).ok_or((LlmError::MissingKey, None))?;
         let mut builder = self
             .http
@@ -306,22 +264,8 @@ impl AnthropicClient {
             () = cancel.cancelled() => return Err((LlmError::Cancelled, None)),
         };
 
-        let status = response.status();
-        if !status.is_success() {
-            let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
-            let retry_after = header("retry-after").and_then(|value| value.parse::<f64>().ok()).map(Duration::from_secs_f64);
-            let should_retry = header("x-should-retry");
-            let body = response.text().await.unwrap_or_default();
-            let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-            let mut error = if parsed["error"].is_object() {
-                api_error(Some(status.as_u16()), &parsed["error"])
-            } else {
-                api_error(Some(status.as_u16()), &json!({ "type": "http_error", "message": body.chars().take(500).collect::<String>() }))
-            };
-            if let (LlmError::Api { retryable, .. }, Some(should_retry)) = (&mut error, should_retry) {
-                *retryable = should_retry == "true";
-            }
-            return Err((error, retry_after));
+        if !response.status().is_success() {
+            return Err(http_failure(response).await);
         }
 
         let mut parser = SseParser::default();
@@ -362,26 +306,15 @@ impl Llm for AnthropicClient {
         deltas: UnboundedSender<StreamDelta>,
         cancel: CancellationToken,
     ) -> Result<AssistantTurn, LlmError> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let mut forwarded = false;
-            let (error, retry_after) = match self.attempt(&request, &deltas, &cancel, &mut forwarded).await {
-                Ok(turn) => return Ok(turn),
-                Err(failure) => failure,
-            };
-            if !error.retryable() || attempt >= MAX_ATTEMPTS {
-                return Err(error);
+        with_retries(&deltas, &cancel, || {
+            let (request, deltas, cancel) = (&request, &deltas, &cancel);
+            async move {
+                let mut forwarded = false;
+                let outcome = self.attempt(request, deltas, cancel, &mut forwarded).await;
+                (outcome, forwarded)
             }
-            if forwarded {
-                let _ = deltas.send(StreamDelta::Reset);
-            }
-            let wait = retry_after.unwrap_or(Duration::from_secs(1 << (attempt - 1))).min(Duration::from_secs(60));
-            tokio::select! {
-                () = tokio::time::sleep(wait) => {}
-                () = cancel.cancelled() => return Err(LlmError::Cancelled),
-            }
-        }
+        })
+        .await
     }
 }
 

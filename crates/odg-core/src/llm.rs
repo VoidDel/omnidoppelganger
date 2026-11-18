@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -69,6 +70,68 @@ impl LlmError {
             LlmError::MissingKey | LlmError::Cancelled | LlmError::Protocol(_) => false,
         }
     }
+}
+
+/// The outcome of one HTTP attempt: the message, or the error together with
+/// the wait the server asked for before trying again.
+pub type Attempt = Result<AssistantTurn, (LlmError, Option<Duration>)>;
+
+const MAX_ATTEMPTS: u32 = 4;
+
+/// Run `attempt` until it succeeds, fails for good, or has been tried
+/// [`MAX_ATTEMPTS`] times, waiting between tries. Each attempt returns its
+/// outcome and whether it sent any fragment, so the client can be told to
+/// discard them before the next try.
+pub async fn with_retries<F, Fut>(deltas: &UnboundedSender<StreamDelta>, cancel: &CancellationToken, mut attempt: F) -> Result<AssistantTurn, LlmError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = (Attempt, bool)>,
+{
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let (outcome, forwarded) = attempt().await;
+        let (error, retry_after) = match outcome {
+            Ok(turn) => return Ok(turn),
+            Err(failure) => failure,
+        };
+        if !error.retryable() || tries >= MAX_ATTEMPTS {
+            return Err(error);
+        }
+        if forwarded {
+            let _ = deltas.send(StreamDelta::Reset);
+        }
+        let wait = retry_after.unwrap_or(Duration::from_secs(1 << (tries - 1))).min(Duration::from_secs(60));
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            () = cancel.cancelled() => return Err(LlmError::Cancelled),
+        }
+    }
+}
+
+/// Turn a non-success HTTP response into an error. Every provider here wraps
+/// its error as `{"error": {"message": ..., "type" or "code": ...}}`.
+/// 408, 409, 429, and 5xx are retryable unless `x-should-retry` says otherwise.
+pub async fn http_failure(response: reqwest::Response) -> (LlmError, Option<Duration>) {
+    let status = response.status().as_u16();
+    let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
+    let retry_after = header("retry-after").and_then(|value| value.parse::<f64>().ok()).filter(|seconds| seconds.is_finite() && *seconds >= 0.0).map(Duration::from_secs_f64);
+    let should_retry = header("x-should-retry");
+    let body = response.text().await.unwrap_or_default();
+    let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let error = &parsed["error"];
+    let text = |value: &Value| match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    };
+    let kind = text(&error["type"]).or_else(|| text(&error["code"])).unwrap_or_else(|| "http_error".to_string());
+    let message = text(&error["message"]).unwrap_or_else(|| if body.trim().is_empty() { format!("HTTP {status}") } else { body.chars().take(500).collect() });
+    let retryable = match should_retry.as_deref() {
+        Some(value) => value == "true",
+        None => matches!(status, 408 | 409 | 429) || status >= 500,
+    };
+    (LlmError::Api { status: Some(status), kind, message, retryable }, retry_after)
 }
 
 pub trait Llm: Send + Sync + 'static {
