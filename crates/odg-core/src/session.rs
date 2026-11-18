@@ -17,8 +17,8 @@ use crate::providers::DEFAULT_PROVIDER;
 
 /// The newest format this build reads, and the one it writes. Format 2 added
 /// the `provider` field to the header. Format 3 adds the `context/compacted`
-/// event and the `tokens` field; a build from before it refuses a format 3
-/// session rather than misread it.
+/// and `files/restored` events and the `tokens` field; a build from before
+/// it refuses a format 3 session rather than misread it.
 pub const FORMAT_VERSION: u32 = 3;
 const FILE_NAME: &str = "session.v1.jsonl";
 
@@ -268,6 +268,7 @@ pub const PLAN_OFF: &str = "[Plan mode is off] You may change files and run comm
 /// ends there; the other modes only change what asks, which the model sees
 /// in its tool results.
 ///
+/// A [`Event::FilesRestored`] becomes a line telling the model what was undone.
 /// A [`Event::ContextCompacted`] starts the conversation over: nothing before
 /// it is replayed. The request then opens with its summary, followed by the
 /// user's messages the model had not answered yet, in their own words.
@@ -287,6 +288,17 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 }
                 pending.push(text(said));
                 unanswered.push(text(said));
+            }
+            Event::FilesRestored { turn, restored, skipped } => {
+                let mut told = format!("[The user undid your file changes from turn {turn} on.");
+                if !restored.is_empty() {
+                    told.push_str(&format!(" Back to what they held before those changes, or removed if you had created them: {}.", restored.join(", ")));
+                }
+                if !skipped.is_empty() {
+                    told.push_str(&format!(" Left as they are, because they changed after your last edit: {}.", skipped.join(", ")));
+                }
+                told.push_str(" Read a file again before relying on what it held.]");
+                pending.push(text(&told));
             }
             Event::ContextCompacted { summary, .. } => {
                 messages.clear();

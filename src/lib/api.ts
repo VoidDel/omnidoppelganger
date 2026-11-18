@@ -13,6 +13,8 @@ export const api = {
   resolveApproval: (id: string, toolUseId: string, decision: Decision) =>
     invoke<boolean>("resolve_approval", { id, toolUseId, decision }),
   setMode: (id: string, mode: Mode) => invoke<SessionItem>("set_mode", { id, mode }),
+  /** Undo the agent's file edits from `turn` on. Rejects while a turn is running. */
+  undoTurn: (id: string, turn: number) => invoke<{ restored: string[]; skipped: string[] }>("undo_turn", { id, turn }),
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (settings: Settings) => invoke<SettingsView>("save_settings", { settings }),

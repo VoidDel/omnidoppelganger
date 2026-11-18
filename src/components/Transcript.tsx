@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { api } from "../lib/api";
-import { type Item, type Row, type StreamBlock, type ToolItem, shortCount } from "../lib/fold";
+import { type Item, type Row, type StreamBlock, type ToolItem, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, Status } from "../lib/types";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
@@ -66,7 +66,7 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
   const { result } = tool;
   const meta = result?.meta;
   const declined = tool.approval?.decision === "deny";
-  const waiting = declined ? "本尊驳回了" : meta?.refused ? "先谋后动，没有改" : result ? "" : "运功中";
+  const waiting = declined ? "本尊驳回了" : meta?.refused ? "先谋后动，没有改" : tool.undone ? "本尊已撤回" : result ? "" : "运功中";
   switch (tool.name) {
     case "read_file":
       return { verb: "读取", target: text("path"), outcome: waiting || (result!.isError ? "没读到" : `${meta?.lines ?? 0} 行`) };
@@ -229,6 +229,14 @@ function ItemView({ item, mode, onDecide }: { item: Item; mode: Mode; onDecide: 
           <p>{item.summary}</p>
         </details>
       );
+    case "restored":
+      return (
+        <div className="notice">
+          本尊撤回了第 {item.turn} 轮起的改动。
+          {item.restored.length > 0 && `已恢复原样：${item.restored.join("、")}。`}
+          {item.skipped.length > 0 && `没有动：${item.skipped.join("、")}，分身改过之后它们又有变动，恢复会盖掉那些变动。`}
+        </div>
+      );
     case "notice":
       return <div className="notice">{notice(item.reason, item.error)}</div>;
   }
@@ -270,9 +278,35 @@ interface Props {
   status: Status;
   mode: Mode;
   onDecide: (toolUseId: string, decision: Decision) => void;
+  /** Undo the 分身's file edits from this turn on. */
+  onUndo: (turn: number) => void;
 }
 
-export function Transcript({ rows, stream, queued, status, mode, onDecide }: Props) {
+/** Undoing cannot itself be undone, so the button asks once more before it acts. */
+function UndoButton({ turn, onUndo }: { turn: number; onUndo: (turn: number) => void }) {
+  const [asking, setAsking] = useState(false);
+  if (!asking) {
+    return (
+      <button type="button" className="button text small" onClick={() => setAsking(true)}>
+        撤回这一轮起的改动
+      </button>
+    );
+  }
+  return (
+    <span className="undo-confirm">
+      分身从这一轮起改的文件都会恢复原样，它新建的会删掉。
+      <button type="button" className="button outline red small" onClick={() => (setAsking(false), onUndo(turn))}>
+        确认撤回
+      </button>
+      <button type="button" className="button text small" onClick={() => setAsking(false)}>
+        算了
+      </button>
+    </span>
+  );
+}
+
+export function Transcript({ rows, stream, queued, status, mode, onDecide, onUndo }: Props) {
+  const undoable = undoableTurns(rows);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   // Follow new content only while the reader is already at the bottom.
@@ -304,6 +338,7 @@ export function Transcript({ rows, stream, queued, status, mode, onDecide }: Pro
                   {row.prompt.steering ? "，中途传音" : ""}
                 </span>
               </span>
+              {status === "idle" && !row.prompt.steering && undoable.has(row.turn) && <UndoButton turn={row.turn} onUndo={onUndo} />}
             </div>
             <div className="turn-did">
               {row.items.map((item, at) => (

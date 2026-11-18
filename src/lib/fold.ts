@@ -11,6 +11,10 @@ export interface ToolItem {
   result?: { content: string; isError: boolean; meta: ToolMeta | null };
   /** `grant` is what allowing for the session covers; without one, the request is approved each time. */
   approval?: { reason: string; detail: string; grant?: string; decision?: Decision };
+  /** The turn the call belongs to. */
+  turn: number;
+  /** The user undid this edit. */
+  undone?: boolean;
 }
 
 export type Item =
@@ -19,23 +23,26 @@ export type Item =
   | ToolItem
   | { kind: "fallback"; from: string; to: string }
   | { kind: "compacted"; summary: string; tokensBefore: number }
+  | { kind: "restored"; turn: number; restored: string[]; skipped: string[] }
   | { kind: "notice"; reason: string; error: string | null };
 
 /** One row of the transcript: what the user said on the left, what the agent did about it on the right. */
 export interface Row {
   key: string;
+  /** The turn the message opened or, for a steering message, joined. */
+  turn: number;
   prompt: { text: string; ts: string; steering: boolean };
   items: Item[];
 }
 
-function blockItem(block: ContentBlock): Item | null {
+function blockItem(block: ContentBlock, turn: number): Item | null {
   switch (block.type) {
     case "text":
       return block.text.trim() ? { kind: "text", text: block.text } : null;
     case "thinking":
       return block.thinking.trim() ? { kind: "thinking", text: block.thinking } : null;
     case "tool_use":
-      return { kind: "tool", id: block.id, name: block.name, input: block.input ?? {} };
+      return { kind: "tool", id: block.id, name: block.name, input: block.input ?? {}, turn };
     case "fallback":
       return { kind: "fallback", from: block.from.model, to: block.to.model };
     default:
@@ -48,14 +55,24 @@ export function fold(events: Envelope[]): Row[] {
   const rows: Row[] = [];
   const tools = new Map<string, ToolItem>();
   const current = () => rows[rows.length - 1];
+  let turn = 0;
   for (const event of events) {
     switch (event.type) {
+      case "turn/start":
+        turn = event.data.turn;
+        break;
       case "user/message":
-        rows.push({ key: `row-${event.seq}`, prompt: { text: event.data.text, ts: event.ts, steering: event.data.steering }, items: [] });
+        rows.push({ key: `row-${event.seq}`, turn, prompt: { text: event.data.text, ts: event.ts, steering: event.data.steering }, items: [] });
+        break;
+      case "files/restored":
+        for (const tool of tools.values()) {
+          if (tool.turn >= event.data.turn && tool.name === "edit_file" && event.data.restored.includes(tool.result?.meta?.path ?? "")) tool.undone = true;
+        }
+        current()?.items.push({ kind: "restored", turn: event.data.turn, restored: event.data.restored, skipped: event.data.skipped });
         break;
       case "assistant/message":
         for (const block of event.data.content) {
-          const item = blockItem(block);
+          const item = blockItem(block, turn);
           if (!item || !current()) continue;
           current().items.push(item);
           if (item.kind === "tool") tools.set(item.id, item);
@@ -169,7 +186,7 @@ export interface ChangedFile {
 export function changedFiles(rows: Row[]): ChangedFile[] {
   const files = new Map<string, ChangedFile>();
   for (const item of rows.flatMap((row) => row.items)) {
-    if (item.kind !== "tool" || item.name !== "edit_file" || !item.result || item.result.isError) continue;
+    if (item.kind !== "tool" || item.name !== "edit_file" || !item.result || item.result.isError || item.undone) continue;
     const meta = item.result.meta;
     if (!meta?.path) continue;
     const file = files.get(meta.path) ?? { path: meta.path, added: 0, removed: 0 };
@@ -178,6 +195,19 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
     files.set(meta.path, file);
   }
   return [...files.values()];
+}
+
+/** An edit the user can still undo: it succeeded, has a snapshot, and was not undone. */
+const undoable = (item: Item) => item.kind === "tool" && item.name === "edit_file" && !!item.result && !item.result.isError && !!item.result.meta?.after && !item.undone;
+
+/**
+ * The turns from which undoing would restore something: each turn that has
+ * an edit left to undo, or comes before one that has. Undoing from a turn
+ * takes every later turn's edits with it.
+ */
+export function undoableTurns(rows: Row[]): Set<number> {
+  const last = Math.max(0, ...rows.filter((row) => row.items.some(undoable)).map((row) => row.turn));
+  return new Set(rows.map((row) => row.turn).filter((turn) => turn > 0 && turn <= last));
 }
 
 /** Commands that ran, in order, for the terminal panel. */

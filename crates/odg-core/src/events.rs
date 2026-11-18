@@ -113,6 +113,17 @@ pub enum Event {
         /// Presentation data for the client (diff hunks, exit code); never sent to the model.
         meta: Value,
     },
+    /// The user undid the agent's edits from `turn` on. The model is told at
+    /// its next message. Since format 3.
+    #[serde(rename = "files/restored")]
+    FilesRestored {
+        turn: u64,
+        /// Files put back to what they held before those edits, or removed
+        /// when the agent had created them; paths as the tool results show them.
+        restored: Vec<String>,
+        /// Files left alone because they changed after the agent's last edit.
+        skipped: Vec<String>,
+    },
     #[serde(rename = "turn/end")]
     TurnEnd {
         turn: u64,

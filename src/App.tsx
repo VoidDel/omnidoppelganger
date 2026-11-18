@@ -238,7 +238,7 @@ export default function App() {
                 </p>
               </div>
             ) : (
-              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} mode={active.mode} onDecide={decide} />
+              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} mode={active.mode} onDecide={decide} onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)} />
             )}
             <Composer
               status={state.status}

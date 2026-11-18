@@ -695,10 +695,24 @@ pre,
   gap: 8px;
 }
 
-.composer-status .button.small {
+.composer-status .button.small,
+.turn-said .button.small {
   min-height: 32px;
   padding: 0 12px;
   font-size: 13px;
+}
+
+.turn-said .button.small {
+  align-self: flex-start;
+}
+
+.undo-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
 }
 
 /* The 禁制 picker: a button in the composer row, its menu opening upward over the transcript. */

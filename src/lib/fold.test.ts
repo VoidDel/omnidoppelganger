@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, usage, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -21,6 +21,30 @@ const edit = (id: string, path: string, added: number, removed: number) => [
   said(call(id, "edit_file", { path })),
   result(id, "edit_file", { path, added, removed }),
 ];
+
+describe("undo", () => {
+  const turn = (number: number): SessionEvent => ({ type: "turn/start", data: { turn: number } });
+  const edited = (id: string, path: string): SessionEvent[] => [said(call(id, "edit_file", { path })), result(id, "edit_file", { path, added: 1, removed: 0, after: "f" })];
+
+  it("offers every turn up to the last one with an edit, and marks what was undone", () => {
+    const events = log(turn(1), user("one"), ...edited("t1", "a.rs"), turn(2), user("two"), ...edited("t2", "b.rs"), turn(3), user("three"), said({ type: "text", text: "hi" }));
+    expect([...undoableTurns(fold(events))]).toEqual([1, 2]);
+
+    const undone = fold([...events, ...log({ type: "files/restored", data: { turn: 2, restored: ["b.rs"], skipped: [] } })].map((event, index) => ({ ...event, seq: index + 1 })));
+    expect([...undoableTurns(undone)]).toEqual([1]);
+    expect(changedFiles(undone).map((file) => file.path)).toEqual(["a.rs"]);
+    const tools = undone.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool");
+    expect(tools.map((tool) => [tool.turn, !!tool.undone])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    expect(undone[2].items[undone[2].items.length - 1]).toEqual({ kind: "restored", turn: 2, restored: ["b.rs"], skipped: [] });
+  });
+
+  it("offers nothing for edits logged before snapshots existed", () => {
+    expect(undoableTurns(fold(log(turn(1), user("one"), ...edit("t1", "a.rs", 1, 0)))).size).toBe(0);
+  });
+});
 
 describe("usage", () => {
   const counted = (input: number, cached: number, output: number): SessionEvent => ({

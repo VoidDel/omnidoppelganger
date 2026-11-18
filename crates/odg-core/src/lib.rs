@@ -19,3 +19,4 @@ pub mod sse;
 #[cfg(test)]
 mod testing;
 pub mod tools;
+pub mod undo;

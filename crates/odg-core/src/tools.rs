@@ -29,6 +29,9 @@ pub struct ToolContext {
     /// Directory relative paths resolve against and commands run in.
     pub workspace: PathBuf,
     pub cancel: CancellationToken,
+    /// Where `edit_file` saves what a file held before changing it, so the
+    /// edit can be undone; see [`crate::undo`]. `None` saves nothing.
+    pub snapshots: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -293,6 +296,13 @@ fn edit_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
         std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot create {}: {error}", parent.display())))?;
     }
     let written = if crlf { after.replace('\n', "\r\n") } else { after.clone() };
+    // The snapshot comes first: an edit that could not be undone is not made.
+    let snapshot = match (&context.snapshots, &existing) {
+        (Some(directory), Some(original)) => {
+            Some(crate::undo::save(directory, original.as_bytes()).map_err(|error| ToolOutput::error(format!("Cannot save {shown} before changing it: {error}")))?)
+        }
+        _ => None,
+    };
     crate::fsutil::write_atomically(&path, written.as_bytes()).map_err(|error| ToolOutput::error(format!("Cannot write {shown}: {error}")))?;
 
     let created = before.is_none();
@@ -303,7 +313,14 @@ fn edit_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
     } else {
         format!("Edited {shown}: {added} lines added, {removed} lines removed.")
     };
-    Ok(ToolOutput::ok(summary, json!({ "path": shown, "created": created, "added": added, "removed": removed, "hunk": diff.hunk })))
+    let mut meta = json!({ "path": shown, "created": created, "added": added, "removed": removed, "hunk": diff.hunk });
+    if context.snapshots.is_some() {
+        // What undoing needs: where the file is, what it held, and what it holds now.
+        meta["file"] = json!(path.to_string_lossy());
+        meta["before"] = json!(snapshot);
+        meta["after"] = json!(crate::undo::fingerprint(written.as_bytes()));
+    }
+    Ok(ToolOutput::ok(summary, meta))
 }
 
 struct LineDiff {
@@ -522,7 +539,7 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new() };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None };
         (directory, context)
     }
 

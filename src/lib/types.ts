@@ -27,6 +27,7 @@ export type SessionEvent =
   | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string } }
   | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision } }
   | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
+  | { type: "files/restored"; data: { turn: number; restored: string[]; skipped: string[] } }
   | { type: "turn/end"; data: { turn: number; reason: string; error: string | null } };
 
 export type Envelope = { seq: number; ts: string } & SessionEvent;
@@ -57,6 +58,8 @@ export interface ToolMeta {
   output?: string;
   /** The mode refused the call without asking: an edit in plan mode. */
   refused?: boolean;
+  /** Set on an edit that can be undone: the fingerprint of what it wrote. */
+  after?: string;
 }
 
 export interface SessionItem {

@@ -163,6 +163,20 @@ async fn set_mode(app: State<'_, App>, id: String, mode: Mode) -> Result<Session
     Ok(app.item(session.summary(), session.status()))
 }
 
+/// What an undo did, for the window to report.
+#[derive(Serialize)]
+struct Undone {
+    restored: Vec<String>,
+    skipped: Vec<String>,
+}
+
+/// Undo the agent's file edits from `turn` on. Fails while a turn is running.
+#[tauri::command]
+async fn undo_turn(app: State<'_, App>, id: String, turn: u64) -> Result<Undone, String> {
+    let outcome = app.live(&id)?.undo(turn)?;
+    Ok(Undone { restored: outcome.restored, skipped: outcome.skipped })
+}
+
 #[tauri::command]
 async fn cancel_turn(app: State<'_, App>, id: String) -> Result<(), String> {
     app.live(&id)?.cancel();
@@ -225,6 +239,7 @@ pub fn run() {
             send_message,
             resolve_approval,
             set_mode,
+            undo_turn,
             cancel_turn,
             get_settings,
             save_settings,

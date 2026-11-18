@@ -21,6 +21,7 @@ use crate::policy::{self, Mode, Verdict};
 use crate::providers;
 use crate::session::{SessionLog, SessionSummary, context_estimate, derive_messages, summarize, transcript, unanswered_tool_uses};
 use crate::tools::{self, ToolContext};
+use crate::undo;
 
 /// A turn that needs more model requests than this is stopped: it is looping.
 const MAX_STEPS: usize = 200;
@@ -77,6 +78,8 @@ struct State {
 struct Inner<L: Llm> {
     id: String,
     workspace: PathBuf,
+    /// Where `edit_file` saves what files held, beside the log.
+    snapshots: PathBuf,
     provider: String,
     model: String,
     llm: Arc<L>,
@@ -132,10 +135,12 @@ impl<L: Llm> Session<L> {
         log.repair_tail()?;
         let (workspace, provider, model) = log.header();
         let mode = summarize(log.events()).mode;
+        let snapshots = log.path().with_file_name("snapshots");
         Ok(Self {
             inner: Arc::new(Inner {
                 id: log.id().to_string(),
                 workspace,
+                snapshots,
                 provider,
                 model,
                 llm,
@@ -209,6 +214,25 @@ impl<L: Llm> Session<L> {
         sender.is_some_and(|sender| sender.send(decision).is_ok())
     }
 
+    /// Undo the agent's edits made in `turn` and every later one: each file
+    /// goes back to what it held before the first of them. Only between
+    /// turns, so no edit is in flight. See [`crate::undo`].
+    pub fn undo(&self, turn: u64) -> Result<undo::Outcome, String> {
+        // Held to the end: a turn cannot start while files are being restored.
+        let state = self.inner.state.lock().unwrap();
+        if state.status != Status::Idle {
+            return Err("the agent is working; stop it or wait before undoing".to_string());
+        }
+        let plan = undo::plan(self.inner.log.lock().unwrap().events(), turn);
+        if plan.is_empty() {
+            return Err(format!("turn {turn} and those after it have no edits to undo"));
+        }
+        let outcome = undo::apply(&plan, &self.inner.snapshots);
+        self.inner.append(Event::FilesRestored { turn, restored: outcome.restored.clone(), skipped: outcome.skipped.clone() })?;
+        drop(state);
+        Ok(outcome)
+    }
+
     /// Stop the running turn. The turn ends as `cancelled` once the current operation returns.
     pub fn cancel(&self) {
         self.inner.state.lock().unwrap().cancel.cancel();
@@ -239,6 +263,10 @@ impl<L: Llm> Inner<L> {
 
     fn mode(&self) -> Mode {
         self.state.lock().unwrap().mode
+    }
+
+    fn tool_context(&self, cancel: &CancellationToken) -> ToolContext {
+        ToolContext { workspace: self.workspace.clone(), cancel: cancel.clone(), snapshots: Some(self.snapshots.clone()) }
     }
 
     fn tool_result(&self, tool_use_id: &str, tool: &str, content: String, is_error: bool, meta: Value) -> Result<(), String> {
@@ -484,8 +512,7 @@ impl<L: Llm> Inner<L> {
                         if !reads || policy::check(self.mode(), later_name, later_input, &self.workspace) != Verdict::Allow {
                             continue;
                         }
-                        let context = ToolContext { workspace: self.workspace.clone(), cancel: cancel.clone() };
-                        let output = tools::execute(later_name, later_input, &context).await;
+                        let output = tools::execute(later_name, later_input, &self.tool_context(cancel)).await;
                         self.tool_result(later_id, later_name, output.content, output.is_error, output.meta)?;
                         ran_early.insert(later_id.clone());
                     }
@@ -508,8 +535,7 @@ impl<L: Llm> Inner<L> {
                         Decision::AllowOnce => {}
                     }
                 }
-                let context = ToolContext { workspace: self.workspace.clone(), cancel: cancel.clone() };
-                let output = tools::execute(&name, &input, &context).await;
+                let output = tools::execute(&name, &input, &self.tool_context(cancel)).await;
                 self.tool_result(&id, &name, output.content, output.is_error, output.meta)?;
             }
         }
@@ -853,6 +879,52 @@ mod tests {
         fixture.idle().await;
         assert_eq!(fixture.end().0, "error");
         assert_eq!(fixture.llm.requests.lock().unwrap().len(), 8);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn undoes_edits_from_a_turn_on_and_leaves_files_changed_since_alone() {
+        let edit = |id: &str, path: &str, old: &str, new: &str| (id.to_string(), "edit_file".to_string(), json!({ "path": path, "old_string": old, "new_string": new }));
+        let turn = |edits: Vec<(String, String, Value)>| calls(&edits.iter().map(|(id, name, input)| (id.as_str(), name.as_str(), input.clone())).collect::<Vec<_>>());
+        let mut fixture = fixture(ScriptedLlm::new(
+            vec![
+                turn(vec![edit("t1", "a.txt", "one", "two")]),
+                says("edited a"),
+                turn(vec![edit("t2", "a.txt", "two", "three"), edit("t3", "new.txt", "", "made\n"), edit("t4", "b.txt", "x", "y")]),
+                says("edited more"),
+                says("understood"),
+            ],
+            None,
+        ));
+        let file = |name: &str| fixture.workspace.path().join(name);
+        let (a, b, new) = (file("a.txt"), file("b.txt"), file("new.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        std::fs::write(&b, "x\n").unwrap();
+        fixture.session.send("first".into());
+        fixture.idle().await;
+        fixture.session.send("second".into());
+        fixture.idle().await;
+        assert_eq!((std::fs::read_to_string(&a).unwrap().as_str(), new.exists()), ("three\n", true));
+
+        // The user changes b.txt after the agent did; undoing turn 2 must not overwrite that.
+        std::fs::write(&b, "mine\n").unwrap();
+        let outcome = fixture.session.undo(2).unwrap();
+        assert_eq!(outcome, undo::Outcome { restored: vec!["a.txt".into(), "new.txt".into()], skipped: vec!["b.txt".into()] });
+        // a.txt is back to what turn 1 left, the created file is gone, b.txt is the user's.
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "two\n");
+        assert!(!new.exists());
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "mine\n");
+
+        // What is undone is not undone twice; turn 1's edit still can be. b.txt stays the user's.
+        assert_eq!(fixture.session.undo(1).unwrap(), undo::Outcome { restored: vec!["a.txt".into()], skipped: vec!["b.txt".into()] });
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "one\n");
+        assert_eq!(fixture.session.undo(1).unwrap(), undo::Outcome { restored: vec![], skipped: vec!["b.txt".into()] });
+
+        // The model hears of it with the next message.
+        fixture.session.send("third".into());
+        fixture.idle().await;
+        let requests = fixture.llm.requests.lock().unwrap();
+        let told = texts(requests.last().unwrap()).pop().unwrap().remove(0);
+        assert!(told.starts_with("[The user undid your file changes from turn 2 on.") && told.contains("a.txt, new.txt") && told.contains("after your last edit: b.txt"), "{told}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
