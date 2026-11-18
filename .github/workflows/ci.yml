@@ -1,8 +1,8 @@
 name: CI
 
-# Every push to main and every pull request: the core library on the three
-# systems the app targets, and the whole app (frontend, desktop shell) on
-# Windows, where it is developed.
+# Every push to main and every pull request: the core library and the command
+# line on the three systems the app targets, and the whole app (frontend,
+# desktop shell) on Windows, where it is developed.
 
 on:
   push:
@@ -22,7 +22,7 @@ env:
 
 jobs:
   core:
-    name: Core library (${{ matrix.os }})
+    name: Core library and command line (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -38,9 +38,9 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Static checks
-        run: cargo clippy -p odg-core --all-targets -- -D warnings
+        run: cargo clippy -p odg-core -p odg-cli --all-targets -- -D warnings
       - name: Tests
-        run: cargo test -p odg-core
+        run: cargo test -p odg-core -p odg-cli
 
   app:
     name: Frontend and desktop shell (Windows)

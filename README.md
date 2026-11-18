@@ -101,6 +101,7 @@ crates/odg-core/   核心库，不依赖桌面外壳
   agent.rs         agent 循环：回合、步骤、审批、传音、收回、压缩
   undo.rs          改文件前的快照，按轮撤回
   settings.rs      设置和密钥
+crates/odg-cli/    命令行版 odg：不开窗口跑一次任务
 src-tauri/         Tauri 命令和事件转发
 src/               React 界面
 doc/               路线图和截图
@@ -127,10 +128,21 @@ app-icon.svg       应用图标的源文件
 
 设置里保存的密钥存进系统的凭据管理器：Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service，条目归在 `OmniDoppelganger` 名下。早先存在 `~/.odg/credentials.json` 里的密钥，启动时会自动搬过去并从文件里删掉。凭据管理器用不了时（比如 Linux 上没有运行 Secret Service），密钥才留在这个明文文件里，设置页会注明。
 
+## 命令行
+
+不开窗口也能跑一次任务：
+
+```sh
+cargo run -p odg-cli -- "给 README 补一节安装说明"      # 开发时
+odg -C ../other-project --mode auto "跑一遍测试，修掉失败的"  # 装好之后
+```
+
+它和桌面应用用的是同一个分身、同一个家目录：设置、密钥、长期许可、MCP 服务、技能都通用，跑出来的会话之后在桌面应用里也看得到。分身说的话走标准输出，它做的事和要请示的事走标准错误，所以可以直接把结果接进管道。要请示时，在终端里会问你；没有终端（比如在脚本里）默认一律驳回，加 `--yes` 一律批准。`odg --help` 列出全部选项。
+
 ## 测试
 
 ```sh
-cargo test -p odg-core
+cargo test -p odg-core -p odg-cli
 pnpm test
 ```
 
@@ -145,7 +157,7 @@ pnpm e2e           # 用上次的构建直接跑
 
 它走一遍完整的一轮：化出分身、传令、分身建文件、命令等审批、批准、收尾，再撤回改动，然后核对界面、磁盘上的文件、发给模型的请求和会话日志。应用跑在临时目录里的家目录、工作文件夹和浏览器数据上，不碰你的会话和密钥，也不影响已经开着的应用。脚本在 `e2e/`：`mock-llm.mjs` 是模拟的模型服务，`cdp.mjs` 是调试端口的客户端，`run.mjs` 是测试本身。
 
-每次推送到 `main` 和每个合并请求都会自动跑一遍（`.github/workflows/ci.yml`）：核心库在 Windows、Linux、macOS 上各跑静态检查和测试，前端和桌面外壳在 Windows 上跑测试、构建和静态检查。只改文档不触发。
+每次推送到 `main` 和每个合并请求都会自动跑一遍（`.github/workflows/ci.yml`）：核心库和命令行在 Windows、Linux、macOS 上各跑静态检查和测试，前端和桌面外壳在 Windows 上跑测试、构建和静态检查。只改文档不触发。
 
 ## Logo 和图标
 

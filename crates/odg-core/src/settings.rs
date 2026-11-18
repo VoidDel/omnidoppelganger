@@ -194,6 +194,18 @@ impl SettingsStore {
         Self { directory: directory.into(), vault: None }
     }
 
+    /// The store for this run's home directory, as the desktop app and the
+    /// command line both open it. Keys go to the system's credential manager,
+    /// except in a home named by `ODG_HOME` (a test's, a portable one), which
+    /// keeps them in its own file so it never reads or changes the keys of
+    /// the user's everyday home. Keys still in the file are moved over.
+    pub fn at_home() -> Self {
+        let custom = std::env::var_os("ODG_HOME").is_some_and(|value| !value.is_empty());
+        let store = if custom { Self::new(home()) } else { Self::with_vault(home(), Arc::new(SystemVault)) };
+        store.migrate_keys();
+        store
+    }
+
     /// A store that keeps keys in `vault`, and in `credentials.json` only when the vault fails.
     pub fn with_vault(directory: impl Into<PathBuf>, vault: Arc<dyn Vault>) -> Self {
         Self { directory: directory.into(), vault: Some(vault) }
