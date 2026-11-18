@@ -44,6 +44,16 @@ pub enum Event {
         model: String,
         format: u32,
     },
+    /// The project's own instructions for agents, read from a file at the
+    /// top of the workspace when a turn started and found new or changed.
+    /// The latest one is part of the system prompt of every request after
+    /// it; empty `content` means the file is gone. Since format 3.
+    #[serde(rename = "instructions/loaded")]
+    InstructionsLoaded {
+        /// The file's name, like `AGENTS.md`.
+        path: String,
+        content: String,
+    },
     /// The user named the session. Until then its title is the first message. Since format 3.
     #[serde(rename = "session/renamed")]
     SessionRenamed { title: String },

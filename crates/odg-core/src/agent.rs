@@ -19,7 +19,7 @@ use crate::events::{Decision, Envelope, Event};
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::policy::{self, Mode, Verdict};
 use crate::providers;
-use crate::session::{SessionLog, SessionSummary, context_estimate, derive_messages, summarize, transcript, unanswered_tool_uses};
+use crate::session::{SessionLog, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, summarize, transcript, unanswered_tool_uses};
 use crate::tools::{self, ToolContext};
 use crate::undo;
 
@@ -103,10 +103,18 @@ impl<L: Llm> Clone for Session<L> {
     }
 }
 
-/// The system prompt. It is the same for every request of a session, so the cached prefix stays valid.
-pub fn system_prompt(workspace: &std::path::Path) -> String {
+/// The system prompt. It changes only when the project's instructions do,
+/// so the cached prefix stays valid from one request to the next.
+/// `instructions` is the project's own file for agents, as `(name, contents)`.
+pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>) -> String {
     let (_, _, shell) = tools::shell();
-    format!(
+    let project = match instructions {
+        Some((name, content)) => format!(
+            "\n\nThe project keeps instructions for agents in {name}, at the top of the workspace. Follow them; where they and the user disagree, the user decides.\n\n<project-instructions file=\"{name}\">\n{content}\n</project-instructions>"
+        ),
+        None => String::new(),
+    };
+    let general = format!(
         "You are OmniDoppelganger (odg), a coding agent that works in the user's workspace on their own machine.\n\
          \n\
          Workspace: {}\n\
@@ -121,7 +129,8 @@ pub fn system_prompt(workspace: &std::path::Path) -> String {
          - Reply in the language the user writes in.",
         workspace.display(),
         std::env::consts::OS,
-    )
+    );
+    general + &project
 }
 
 impl<L: Llm> Session<L> {
@@ -284,6 +293,28 @@ impl<L: Llm> Inner<L> {
         self.state.lock().unwrap().mode
     }
 
+    /// The system prompt of the next request: the general part and the instructions the log holds.
+    fn system(&self) -> String {
+        system_prompt(&self.workspace, instructions(self.log.lock().unwrap().events()))
+    }
+
+    /// Log the project's instructions when they are new, changed, or gone
+    /// since they were last logged. Done as a turn starts: an edit to the
+    /// file takes effect at the next turn, not in the middle of one.
+    fn refresh_instructions(&self) -> Result<(), String> {
+        let found = read_instructions(&self.workspace);
+        let event = {
+            let log = self.log.lock().unwrap();
+            let logged = instructions(log.events());
+            match (&found, logged) {
+                (Some((path, content)), logged) if logged != Some((path.as_str(), content.as_str())) => Some(Event::InstructionsLoaded { path: path.clone(), content: content.clone() }),
+                (None, Some((path, _))) => Some(Event::InstructionsLoaded { path: path.to_string(), content: String::new() }),
+                _ => None,
+            }
+        };
+        event.map_or(Ok(()), |event| self.append(event))
+    }
+
     fn tool_context(&self, cancel: &CancellationToken) -> ToolContext {
         ToolContext { workspace: self.workspace.clone(), cancel: cancel.clone(), snapshots: Some(self.snapshots.clone()), jobs: Some(self.jobs.clone()) }
     }
@@ -321,7 +352,10 @@ impl<L: Llm> Inner<L> {
 
     async fn run_turn(&self, text: String, cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
-        let opened = self.append(Event::TurnStart { turn }).and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode() }));
+        let opened = self
+            .append(Event::TurnStart { turn })
+            .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode() }))
+            .and_then(|()| self.refresh_instructions());
         let (reason, error) = match opened {
             Ok(()) => match self.run_steps(cancel).await {
                 Ok(reason) => (reason, None),
@@ -365,7 +399,7 @@ impl<L: Llm> Inner<L> {
                 provider: self.provider.clone(),
                 session: self.id.clone(),
                 model: self.model.clone(),
-                system: system_prompt(&self.workspace),
+                system: self.system(),
                 messages,
                 // The same tools keep the cached prefix valid; a transcript has no use for them.
                 tools: if from_transcript { Vec::new() } else { tools::specs() },
@@ -432,7 +466,7 @@ impl<L: Llm> Inner<L> {
                 provider: self.provider.clone(),
                 session: self.id.clone(),
                 model: self.model.clone(),
-                system: system_prompt(&self.workspace),
+                system: self.system(),
                 messages: derive_messages(self.log.lock().unwrap().events()),
                 tools: tools::specs(),
                 effort: tuning.effort.clone(),
@@ -832,6 +866,45 @@ mod tests {
         // The read behind the edit waited for it, and saw what it wrote.
         assert!(results[0].2.contains("hello") && results[4].2.contains("changed"), "{results:?}");
         assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn follows_the_projects_instructions_file_and_notices_when_it_changes() {
+        let mut fixture = fixture(ScriptedLlm::new(vec![says("one"), says("two"), says("three"), says("four")], None));
+        let file = fixture.workspace.path().join("AGENTS.md");
+        let loaded = |fixture: &Fixture| -> Vec<(String, String)> {
+            let events = fixture.session.snapshot().into_iter();
+            events.filter_map(|envelope| match envelope.event { Event::InstructionsLoaded { path, content } => Some((path, content)), _ => None }).collect()
+        };
+
+        // No file: nothing is logged, and the prompt says nothing of instructions.
+        fixture.session.send("first".into());
+        fixture.idle().await;
+        assert!(loaded(&fixture).is_empty());
+        assert!(!fixture.llm.requests.lock().unwrap()[0].system.contains("project-instructions"));
+
+        // The file is read as the next turn starts, and logged once while it stays the same.
+        std::fs::write(&file, "Run `cargo fmt` before finishing.\r\n").unwrap();
+        fixture.session.send("second".into());
+        fixture.idle().await;
+        fixture.session.send("third".into());
+        fixture.idle().await;
+        assert_eq!(loaded(&fixture), [("AGENTS.md".to_string(), "Run `cargo fmt` before finishing.".to_string())]);
+        assert_eq!(fixture.kinds()[4..7], ["turn/start", "user/message", "instructions/loaded"]);
+        {
+            let requests = fixture.llm.requests.lock().unwrap();
+            let expected = "<project-instructions file=\"AGENTS.md\">\nRun `cargo fmt` before finishing.\n</project-instructions>";
+            assert!(requests[1].system.ends_with(expected), "{}", requests[1].system);
+            // Unchanged instructions leave the prompt, and so the provider's cache, as they were.
+            assert_eq!(requests[1].system, requests[2].system);
+        }
+
+        // Gone again: that is logged too, and the prompt drops them.
+        std::fs::remove_file(&file).unwrap();
+        fixture.session.send("fourth".into());
+        fixture.idle().await;
+        assert_eq!(loaded(&fixture).last(), Some(&("AGENTS.md".to_string(), String::new())));
+        assert!(!fixture.llm.requests.lock().unwrap()[3].system.contains("project-instructions"));
     }
 
     /// The texts of a request's messages, one list per message.

@@ -24,6 +24,8 @@ export type Item =
   | { kind: "fallback"; from: string; to: string }
   | { kind: "compacted"; summary: string; tokensBefore: number }
   | { kind: "restored"; turn: number; restored: string[]; skipped: string[] }
+  /** The project's instructions for agents were read; empty `content` means the file is gone. */
+  | { kind: "instructions"; path: string; content: string }
   | { kind: "notice"; reason: string; error: string | null };
 
 /** One row of the transcript: what the user said on the left, what the agent did about it on the right. */
@@ -96,6 +98,9 @@ export function fold(events: Envelope[]): Row[] {
         if (tool) tool.result = { content: event.data.content, isError: event.data.is_error, meta: event.data.meta };
         break;
       }
+      case "instructions/loaded":
+        current()?.items.push({ kind: "instructions", path: event.data.path, content: event.data.content });
+        break;
       case "context/compacted":
         current()?.items.push({ kind: "compacted", summary: event.data.summary, tokensBefore: event.data.tokens_before });
         break;

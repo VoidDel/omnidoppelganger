@@ -257,6 +257,15 @@ function ItemView({ item, mode, onDecide }: { item: Item; mode: Mode; onDecide: 
           <p>{item.summary}</p>
         </details>
       );
+    case "instructions":
+      return item.content ? (
+        <details className="thinking">
+          <summary>分身读了洞府里的 {item.path}，之后都照里面的规矩办事</summary>
+          <p>{item.content}</p>
+        </details>
+      ) : (
+        <div className="notice">{item.path} 不在了，分身不再照它办事。</div>
+      );
     case "restored":
       return (
         <div className="notice">

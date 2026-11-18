@@ -17,7 +17,8 @@ use crate::providers::DEFAULT_PROVIDER;
 
 /// The newest format this build reads, and the one it writes. Format 2 added
 /// the `provider` field to the header. Format 3 adds the `context/compacted`,
-/// `files/restored`, and `session/renamed` events and the `tokens` field; a build from before
+/// `files/restored`, `session/renamed`, and `instructions/loaded` events and
+/// the `tokens` field; a build from before
 /// it refuses a format 3 session rather than misread it.
 pub const FORMAT_VERSION: u32 = 3;
 const FILE_NAME: &str = "session.v1.jsonl";
@@ -344,6 +345,38 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
         messages.push(json!({ "role": "user", "content": pending }));
     }
     messages
+}
+
+/// The names a project's instructions for agents go by, in the order they are looked for.
+pub const INSTRUCTION_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md"];
+/// Instructions are sent with every request, so a file longer than this is cut.
+const INSTRUCTION_CHARS: usize = 30_000;
+
+/// The project's instructions for agents: the first of [`INSTRUCTION_FILES`]
+/// at the top of the workspace that holds text, as `(name, contents)`.
+pub fn read_instructions(workspace: &Path) -> Option<(String, String)> {
+    INSTRUCTION_FILES.iter().find_map(|name| {
+        let text = fs::read_to_string(workspace.join(name)).ok()?;
+        let text = text.replace("\r\n", "\n");
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let mut content: String = text.chars().take(INSTRUCTION_CHARS).collect();
+        if text.chars().count() > INSTRUCTION_CHARS {
+            content.push_str(&format!("\n[{name} is longer than {INSTRUCTION_CHARS} characters; the rest is not shown here. Read the file for it.]"));
+        }
+        Some((name.to_string(), content))
+    })
+}
+
+/// The instructions in force: the last ones loaded, unless that file has since gone.
+pub fn instructions(events: &[Envelope]) -> Option<(&str, &str)> {
+    events.iter().rev().find_map(|envelope| match &envelope.event {
+        Event::InstructionsLoaded { path, content } => Some((path.as_str(), content.as_str())),
+        _ => None,
+    })
+    .filter(|(_, content)| !content.is_empty())
 }
 
 /// What opens a request after a compaction, ahead of the summary.
