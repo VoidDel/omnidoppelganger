@@ -6,7 +6,10 @@ import type { Decision, Image, Mode, SessionItem, SessionView, Settings, Setting
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
-  createSession: (workspace: string) => invoke<SessionView>("create_session", { workspace }),
+  /** Start a session in a folder; with `isolated`, in a Git worktree made for it, apart from the folder's own files. */
+  createSession: (workspace: string, isolated = false) => invoke<SessionView>("create_session", { workspace, isolated }),
+  /** Commit what a worktree session's checkout holds and merge it into the folder's branch. Rejects on a conflict, changing nothing. */
+  landSession: (id: string) => invoke<{ commits: number; into: string }>("land_session", { id }),
   openSession: (id: string) => invoke<SessionView>("open_session", { id }),
   renameSession: (id: string, title: string) => invoke<SessionItem>("rename_session", { id, title }),
   /** Remove the session and its file snapshots for good. Rejects while its agent is working. */

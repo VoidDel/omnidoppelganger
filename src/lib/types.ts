@@ -109,9 +109,19 @@ export interface Todo {
   status: "pending" | "in_progress" | "done";
 }
 
+/** The Git worktree made for a session that works apart from the folder's own files. */
+export interface Worktree {
+  /** The folder the user chose; the session is listed under it. */
+  origin: string;
+  branch: string;
+  checkout: string;
+}
+
 export interface SessionItem {
   id: string;
   title: string;
+  /** Set when the session works in a worktree of its own; its `workspace` is then inside that. */
+  worktree: Worktree | null;
   /** Id of the session whose 分身 set this one off as a 子分身; null for one the user started. */
   parent: string | null;
   workspace: string;

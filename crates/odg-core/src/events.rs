@@ -61,6 +61,18 @@ pub struct SkillInfo {
     pub description: String,
 }
 
+/// The Git worktree a session works in, made for it so that it shares no
+/// files with other sessions at work on the same repository. See [`crate::worktree`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Worktree {
+    /// The folder the user chose, in the repository's own checkout. The session's workspace stands for it.
+    pub origin: String,
+    /// The branch made for the worktree.
+    pub branch: String,
+    /// The top of the worktree's checkout.
+    pub checkout: String,
+}
+
 /// The user's answer to an approval request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,6 +106,9 @@ pub enum Event {
         /// absent for a session the user started. Since format 8.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<String>,
+        /// Set when `workspace` is in a worktree made for the session. Since format 8.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree: Option<Worktree>,
     },
     /// The project's own instructions for agents, read from a file at the
     /// top of the workspace when a turn started and found new or changed.

@@ -21,6 +21,8 @@ interface State {
   page: "chat" | "settings";
   settings: SettingsView | null;
   error: string | null;
+  /** Something that went well and is worth a line: shown until dismissed. */
+  note: string | null;
 }
 
 type Action =
@@ -33,7 +35,8 @@ type Action =
   | { type: "queued"; text: string }
   | { type: "page"; page: State["page"] }
   | { type: "settings"; settings: SettingsView }
-  | { type: "error"; error: string | null };
+  | { type: "error"; error: string | null }
+  | { type: "note"; note: string | null };
 
 const initial: State = {
   sessions: [],
@@ -47,6 +50,7 @@ const initial: State = {
   page: "chat",
   settings: null,
   error: null,
+  note: null,
 };
 
 /** Add a log event unless the snapshot already holds it. */
@@ -114,6 +118,8 @@ function reduce(state: State, action: Action): State {
       return { ...state, settings: action.settings };
     case "error":
       return { ...state, error: action.error };
+    case "note":
+      return { ...state, note: action.note };
   }
 }
 
@@ -230,7 +236,7 @@ export default function App() {
         inSettings={inSettings}
         onOpen={open}
         onNew={create}
-        onNewIn={(workspace) => api.createSession(workspace).then((view) => dispatch({ type: "opened", view }), fail)}
+        onNewIn={(workspace, isolated) => api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view }), fail)}
         onSettings={() => {
           // Read again: a command may have been allowed for good since the page was last shown.
           api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
@@ -243,6 +249,14 @@ export default function App() {
           <div className="error-banner" role="alert">
             <span style={{ flex: 1, overflowWrap: "anywhere" }}>{state.error}</span>
             <button type="button" className="button text" onClick={() => dispatch({ type: "error", error: null })}>
+              知道了
+            </button>
+          </div>
+        )}
+        {state.note && (
+          <div className="error-banner note" role="status">
+            <span style={{ flex: 1, overflowWrap: "anywhere" }}>{state.note}</span>
+            <button type="button" className="button text" onClick={() => dispatch({ type: "note", note: null })}>
               知道了
             </button>
           </div>
@@ -272,6 +286,13 @@ export default function App() {
               session={active}
               parent={state.sessions.find((session) => session.id === active.parent)}
               onOpenParent={() => active.parent && open(active.parent)}
+              onLand={() =>
+                api.landSession(active.id).then((landed) => {
+                  const note = landed.commits ? `已并回：${landed.commits} 个提交合并进了洞府的 ${landed.into} 分支。` : "这个分身的工作树里没有新的改动，没什么可并回的。";
+                  dispatch({ type: "note", note });
+                  refresh();
+                }, fail)
+              }
               panelHidden={panel.hidden}
               onTogglePanel={() => setPanel({ ...panel, hidden: !panel.hidden })}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}

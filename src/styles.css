@@ -1901,6 +1901,13 @@ button.select-button svg {
   gap: 12px;
 }
 
+/* The same strip for news that is good: jade, not cinnabar. */
+.error-banner.note {
+  border-color: var(--jade);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
 /* The mark: one circle in two halves. 本尊's half is ink, the 分身's half is gold. */
 .mark .self {
   fill: var(--ink);

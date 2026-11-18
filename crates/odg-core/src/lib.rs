@@ -25,3 +25,4 @@ mod testing;
 pub mod tools;
 pub mod undo;
 pub mod web;
+pub mod worktree;

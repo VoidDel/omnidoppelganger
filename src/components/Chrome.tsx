@@ -58,8 +58,8 @@ interface SidebarProps {
   inSettings: boolean;
   onOpen: (id: string) => void;
   onNew: () => void;
-  /** Start another session in a workspace that already has some, without asking for the folder again. */
-  onNewIn: (workspace: string) => void;
+  /** Start another session in a workspace that already has some, without asking for the folder again; `isolated` gives it a worktree of its own. */
+  onNewIn: (workspace: string, isolated: boolean) => void;
   onSettings: () => void;
   /** Ids of the sessions that hold the text, in their title, folder, or conversation. */
   onSearch: (query: string) => Promise<string[]>;
@@ -91,9 +91,11 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn
   const family = (id: string) => shown.filter((session) => childOf(session) === id);
   const open = (parent: string) => !!found || parent === activeId || family(parent).some((child) => child.id === activeId || child.status !== "idle");
   const groups = new Map<string, SessionItem[]>();
+  // A session in a worktree of its own is listed with the folder it stands for.
+  const homeOf = (session: SessionItem) => session.worktree?.origin ?? session.workspace;
   for (const session of shown.filter((session) => !childOf(session))) {
     const rows = [session, ...(open(session.id) ? family(session.id) : [])];
-    groups.set(session.workspace, [...(groups.get(session.workspace) ?? []), ...rows]);
+    groups.set(homeOf(session), [...(groups.get(homeOf(session)) ?? []), ...rows]);
   }
   return (
     <nav className="sidebar" aria-label="会话">
@@ -123,7 +125,24 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn
               <div className="group-name" title={workspace}>
                 {baseName(workspace)}
               </div>
-              <button type="button" className="group-add" title={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} aria-label={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} onClick={() => onNewIn(workspace)}>
+              {/* Offered where Git is: a 分身 with a worktree of its own, to work beside the others without touching their files. */}
+              {items.some((session) => session.branch) && (
+                <button
+                  type="button"
+                  className="group-add apart"
+                  title={`在 ${baseName(workspace)} 再化一个分身，给它一份独立的工作树（Git worktree）：它改它的，不碰这里的文件，干完再并回`}
+                  aria-label={`在 ${baseName(workspace)} 化一个用独立工作树的分身`}
+                  onClick={() => onNewIn(workspace, true)}
+                >
+                  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <circle cx="4.5" cy="3.5" r="1.7" />
+                    <circle cx="4.5" cy="12.5" r="1.7" />
+                    <circle cx="11.5" cy="5.5" r="1.7" />
+                    <path d="M4.5 5.2v5.6M11.5 7.2c0 2.6-7 1.6-7 3.6" />
+                  </svg>
+                </button>
+              )}
+              <button type="button" className="group-add" title={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} aria-label={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} onClick={() => onNewIn(workspace, false)}>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                   <path d="M8 3v10M3 8h10" />
                 </svg>
@@ -138,6 +157,7 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn
                 onClick={() => onOpen(session.id)}
               >
                 <span className="row-title">{session.title || (childOf(session) ? "子分身" : "新分身")}</span>
+                {session.worktree && !childOf(session) && <span className="chip kin" title={`用独立的工作树，分支 ${session.worktree.branch}`}>独立</span>}
                 {!childOf(session) && !open(session.id) && family(session.id).length > 0 && <span className="chip kin" title="它派出过的子分身，点开这个分身就能看到">{family(session.id).length} 子</span>}
                 {session.status === "waiting_approval" && <span className="chip await">候旨</span>}
                 {session.status === "running" && <span className="chip busy">运功中</span>}
@@ -329,6 +349,8 @@ interface SessionHeaderProps {
   /** For a 子分身: the 分身 that set it off, and the way back to it. */
   parent?: SessionItem;
   onOpenParent: () => void;
+  /** For a session in a worktree of its own: bring its work back into the folder. */
+  onLand: () => void;
   /** Whether the side panel is put away, and the way to bring it back or put it away. */
   panelHidden: boolean;
   onTogglePanel: () => void;
@@ -337,7 +359,7 @@ interface SessionHeaderProps {
 }
 
 /** The session's title and folder, with renaming and deleting. Deleting asks once more: it cannot be undone. */
-export function SessionHeader({ session, parent, onOpenParent, panelHidden, onTogglePanel, onRename, onDelete }: SessionHeaderProps) {
+export function SessionHeader({ session, parent, onOpenParent, onLand, panelHidden, onTogglePanel, onRename, onDelete }: SessionHeaderProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   // Another session shown in the same header starts clean.
@@ -377,11 +399,12 @@ export function SessionHeader({ session, parent, onOpenParent, panelHidden, onTo
           子分身，出自「{parent?.title || "主分身"}」
         </button>
       )}
-      <span className="path" title={session.workspace}>
-        {session.workspace}
+      {/* A session in a worktree shows the folder it stands for; where it really works is one hover away. */}
+      <span className="path" title={session.worktree ? `独立工作树在 ${session.workspace}` : session.workspace}>
+        {session.worktree?.origin ?? session.workspace}
       </span>
       {session.branch && (
-        <span className="branch" title="洞府里检出的 Git 分支">
+        <span className="branch" title={session.worktree ? "独立工作树的分支：分身在这上面干活，并回之前不碰洞府里的文件" : "洞府里检出的 Git 分支"}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
             <circle cx="4.5" cy="3.5" r="1.7" />
             <circle cx="4.5" cy="12.5" r="1.7" />
@@ -395,6 +418,7 @@ export function SessionHeader({ session, parent, onOpenParent, panelHidden, onTo
       {deleting ? (
         <span className="undo-confirm">
           这个分身的全部记录和改文件前存的原样都会删掉，找不回来。
+          {session.worktree && !session.parent && `它的独立工作树也一并删掉：没提交的改动就没了，提交过但没并回的留在分支 ${session.worktree.branch} 上。`}
           <button type="button" className="button outline red small" onClick={onDelete}>
             确认删除
           </button>
@@ -413,6 +437,17 @@ export function SessionHeader({ session, parent, onOpenParent, panelHidden, onTo
               </svg>
               <span className="sr-only">改名</span>
             </button>
+            {session.worktree && !session.parent && (
+              <button type="button" className="icon-button" disabled={busy} title={busy ? "分身还在运功，先收回它" : "并回：把这个分身在独立工作树里的改动提交，合并进洞府当前的分支"} onClick={onLand}>
+                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="4" cy="3.5" r="1.6" />
+                  <circle cx="4" cy="12.5" r="1.6" />
+                  <circle cx="12" cy="8" r="1.6" />
+                  <path d="M4 5.1v5.8M4 6.5c0 1.5 3 1.5 6.4 1.5" />
+                </svg>
+                <span className="sr-only">并回</span>
+              </button>
+            )}
             <button type="button" className="icon-button danger" disabled={busy} title={busy ? "分身还在运功，先收回它" : "删除这个分身"} onClick={() => setDeleting(true)}>
               <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />

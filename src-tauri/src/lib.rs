@@ -14,7 +14,8 @@ use odg_core::grants::{GrantStore, Grants};
 use odg_core::mcp::{McpHub, ServerStatus};
 use odg_core::policy::Mode;
 use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider, vision};
-use odg_core::session::{SessionStore, SessionSummary};
+use odg_core::session::{NewSession, SessionStore, SessionSummary};
+use odg_core::worktree::{self, Landed};
 use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
@@ -171,8 +172,11 @@ async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionItem>, String> 
     Ok(items)
 }
 
+/// Start a session in `workspace`. With `isolated`, in a Git worktree made for
+/// it from that folder's repository, so that it shares no files with sessions
+/// already at work there; its work comes back with [`land_session`].
 #[tauri::command]
-async fn create_session(app: State<'_, App>, workspace: String) -> Result<SessionView, String> {
+async fn create_session(app: State<'_, App>, workspace: String, isolated: Option<bool>) -> Result<SessionView, String> {
     let workspace = PathBuf::from(workspace);
     if !workspace.is_dir() {
         return Err(format!("{} is not a directory", workspace.display()));
@@ -182,7 +186,21 @@ async fn create_session(app: State<'_, App>, workspace: String) -> Result<Sessio
         let name = provider(&settings.provider).map_or(settings.provider.as_str(), |known| known.name);
         return Err(format!("{name} has no model chosen: enter a model id in settings"));
     }
-    let log = app.store.create(&workspace, &settings.provider, &settings.model).map_err(|error| error.to_string())?;
+    let (workspace, made) = match isolated {
+        Some(true) => {
+            let (workspace, made) = worktree::create(&workspace, &settings::home().join("worktrees"))?;
+            (workspace, Some(made))
+        }
+        _ => (workspace, None),
+    };
+    let new = NewSession { workspace: &workspace, provider: &settings.provider, model: &settings.model, parent: None, worktree: made.clone() };
+    let log = app.store.create_with(new).map_err(|error| {
+        // A worktree without its session would never be found again.
+        if let Some(made) = &made {
+            let _ = worktree::remove(made);
+        }
+        error.to_string()
+    })?;
     let session = app.wrap(log)?;
     session.set_mode(settings.mode);
     app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
@@ -230,11 +248,37 @@ async fn rename_session(app: State<'_, App>, id: String, title: String) -> Resul
     Ok(app.item(session.summary(), session.status()))
 }
 
+/// Bring back the work of a session that has a worktree of its own: commit
+/// what its checkout holds, and merge its branch into what the repository has
+/// checked out. A merge that conflicts is undone and reported. Fails while
+/// the session's agent, or a subagent of it, is working.
+#[tauri::command]
+async fn land_session(app: State<'_, App>, id: String) -> Result<Landed, String> {
+    let session = app.live(&id)?;
+    let summary = session.summary();
+    let made = summary.worktree.ok_or("this session works in the folder itself, so there is nothing to bring back")?;
+    if session.status() != Status::Idle || session.children().iter().any(|child| child.status() != Status::Idle) {
+        return Err("the agent is working; stop it or wait before bringing its work back".to_string());
+    }
+    let message = format!("odg: {}", if summary.title.is_empty() { "work of a session" } else { summary.title.as_str() });
+    tokio::task::spawn_blocking(move || worktree::land(&made, &message)).await.map_err(|error| error.to_string())?
+}
+
 /// Remove a session and its file snapshots for good, and with it the sessions
-/// of the subagents its agent set off. Fails while any of their agents is working.
+/// of the subagents its agent set off, and the worktree made for it: what its
+/// checkout holds uncommitted goes too, while commits that were never brought
+/// back stay in the repository under the worktree's branch. Fails while any of
+/// their agents is working.
 #[tauri::command]
 async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
     let live = app.all_live();
+    // The worktree is the session's own to remove unless it is a subagent, which works in its agent's.
+    let made = match live.get(&id) {
+        Some(session) => Some(session.summary()),
+        None => app.store.peek(&id).ok(),
+    }
+    .filter(|summary| summary.parent.is_none())
+    .and_then(|summary| summary.worktree);
     let subagents: Vec<String> = app
         .store
         .ids()
@@ -259,7 +303,11 @@ async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
         }
         app.store.delete(id).map_err(|error| error.to_string())?;
     }
-    Ok(())
+    drop(sessions);
+    match made {
+        Some(made) => worktree::remove(&made).map_err(|error| format!("the session is deleted, but its worktree at {} could not be removed: {error}", made.checkout)),
+        None => Ok(()),
+    }
 }
 
 /// Ids of the sessions whose title, workspace, or conversation holds `query`.
@@ -398,6 +446,7 @@ pub fn run() {
             create_session,
             preset_workspace,
             open_session,
+            land_session,
             rename_session,
             delete_session,
             search_sessions,

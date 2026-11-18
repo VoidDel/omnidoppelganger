@@ -55,6 +55,16 @@ mkdirSync(workspace);
 mkdirSync(home);
 writeFileSync(join(home, "mcp.json"), JSON.stringify({ mcpServers: { notes: { command: "node", args: [join(root, "e2e", "mcp-server.mjs")] } } }));
 const hello = join(workspace, "hello.txt");
+// The workspace is a Git repository with one commit, so a session can be given a worktree of its own.
+const git = (...args) => spawnSync("git", ["-C", workspace, "-c", "user.name=e2e", "-c", "user.email=e2e@localhost", ...args], { encoding: "utf8" });
+writeFileSync(join(workspace, "seed.txt"), "seed\n");
+for (const args of [["init", "--quiet", "--initial-branch", "main"], ["add", "-A"], ["commit", "--quiet", "-m", "seed"]]) {
+  const ran = git(...args);
+  if (ran.status !== 0) {
+    console.error(`git ${args[0]} failed in the test's workspace: ${ran.stderr || ran.error}`);
+    process.exit(1);
+  }
+}
 
 // What the stand-in model says: create a file and run a command, then wrap up.
 const mock = await startMock([
@@ -70,6 +80,9 @@ const mock = await startMock([
   [{ text: "我派一个子分身去查。" }, { tool: "delegate", input: { tasks: [{ name: "查文件", task: "看看 hello.txt 还在不在" }] } }],
   [{ text: "子分身查过了：不在了。" }],
   [{ text: "都查完了。" }],
+  // In a third session, with a worktree of its own: it makes a file there.
+  [{ text: "我在这边建个文件。" }, { tool: "edit_file", input: { path: "apart.txt", old_string: "", new_string: "来自独立工作树\n" } }],
+  [{ text: "建好了。" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -187,7 +200,7 @@ try {
   check(log.find((event) => event.type === "turn/end").data.reason === "completed", "the turn ended as completed");
 
   // The + beside a workspace's name starts another session there, with no folder to pick again.
-  await page.evaluate(`document.querySelector(".group-add").click()`);
+  await page.evaluate(`document.querySelector(".group-add:not(.apart)").click()`);
   await page.waitFor("a second session in the same workspace", `document.querySelectorAll(".group .row-button").length === 2 && document.querySelectorAll(".group").length === 1`);
   check(readdirSync(join(home, "sessions")).length === 2 && (await page.evaluate(`document.querySelector(".main-header h1").textContent`)) === "新分身", "the + beside a workspace opened a new session in it");
   // There the 分身 sets off a 子分身: a session of its own, listed under this one, with a way in and a way back.
@@ -214,6 +227,23 @@ try {
   await page.evaluate(`document.querySelector(".kin-link").click()`);
   await page.waitFor("the way back to the 分身", `${title} === "分头去查"`);
   step("the 子分身's page shows its task and work, and leads back to the 分身 that set it off");
+  // A 分身 with a worktree of its own works on a branch, apart from the folder's files, until its work is brought back.
+  await page.evaluate(`document.querySelector(".group-add.apart").click()`);
+  await page.waitFor("a session on a branch of its own", `document.querySelector(".main-header .branch")?.textContent.trim().startsWith("odg/")`);
+  await page.type("#composer-input", "建个文件");
+  await page.enter();
+  await page.waitForText("建好了。");
+  await page.waitFor("the turn to end", `!document.body.innerText.includes("分身正在运功")`);
+  const apart = join(workspace, "apart.txt");
+  const [checkout] = readdirSync(join(home, "worktrees"));
+  check(!existsSync(apart) && existsSync(join(home, "worktrees", checkout, "apart.txt")) && (await page.evaluate(`document.querySelectorAll(".group").length`)) === 1, "its edit went into its own worktree, and it is listed with the folder it stands for");
+  await page.click("并回");
+  await page.waitForText("已并回");
+  check(readFileSync(apart, "utf8").replace(/\r\n/g, "\n") === "来自独立工作树\n" && git("log", "--format=%s").stdout.includes("odg: 建个文件"), "bringing its work back committed it and merged it into the folder's branch");
+  await page.click("删除");
+  await page.click("确认删除");
+  await page.waitFor("the worktree to go with its session", `!document.querySelector(".main-header .branch")`);
+  check(readdirSync(join(home, "worktrees")).length === 0 && git("branch", "--list", "odg/*").stdout.trim() === "", "deleting the session removed its worktree and its merged branch");
   console.log("Passed.");
 } catch (error) {
   failed = true;

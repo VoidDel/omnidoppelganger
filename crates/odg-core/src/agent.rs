@@ -21,7 +21,7 @@ use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::mcp::McpHub;
 use crate::policy::{self, Mode, Verdict};
 use crate::providers;
-use crate::session::{SessionLog, SessionStore, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, skills, summarize, transcript, unanswered_tool_uses};
+use crate::session::{NewSession, SessionLog, SessionStore, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, skills, summarize, transcript, unanswered_tool_uses};
 use crate::tools::{self, ToolContext, ToolOutput};
 use crate::undo;
 
@@ -107,6 +107,11 @@ struct Inner<L: Llm> {
     /// The status as last told to the client, for whoever waits for the session to go idle.
     watch: tokio::sync::watch::Sender<Status>,
     workspace: PathBuf,
+    /// The folder approvals given for good are kept under: the workspace, or for
+    /// a session in a worktree the folder it stands for, so they hold there too.
+    granted_in: PathBuf,
+    /// The worktree the workspace is in, which a subagent works in too.
+    worktree: Option<crate::events::Worktree>,
     /// Where `edit_file` saves what files held, beside the log.
     snapshots: PathBuf,
     /// Commands left running in the background.
@@ -201,6 +206,8 @@ impl<L: Llm> Session<L> {
         let mode = summarize(log.events()).mode;
         let snapshots = log.path().with_file_name("snapshots");
         let parent = crate::session::parent(log.events()).map(str::to_string);
+        let worktree = crate::session::worktree(log.events()).cloned();
+        let granted_in = worktree.as_ref().map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
         let store = SessionStore::of(&log);
         let Services { grants: kept, mcp, skills, search } = services.clone();
         let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
@@ -213,6 +220,8 @@ impl<L: Llm> Session<L> {
                 services,
                 watch: tokio::sync::watch::Sender::new(Status::Idle),
                 workspace,
+                granted_in,
+                worktree,
                 snapshots,
                 jobs: Arc::default(),
                 kept,
@@ -487,7 +496,8 @@ impl<L: Llm> Inner<L> {
     /// Start a subagent: a session of its own in this workspace, on this
     /// session's model, in its mode and with what the user has allowed it so far.
     fn spawn(&self, name: &str) -> Result<Session<L>, String> {
-        let log = self.store.create_child(&self.id, &self.workspace, &self.provider, &self.model()).map_err(|error| error.to_string())?;
+        let new = NewSession { workspace: &self.workspace, provider: &self.provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone() };
+        let log = self.store.create_with(new).map_err(|error| error.to_string())?;
         let child = Session::new(log, self.llm.clone(), self.tuning.clone(), self.services.clone(), self.events.clone(), self.runtime.clone()).map_err(|error| error.to_string())?;
         let (mode, grants) = {
             let state = self.state.lock().unwrap();
@@ -793,7 +803,7 @@ impl<L: Llm> Inner<L> {
                     continue;
                 }
                 if let Verdict::Ask { reason, detail, grant } = verdict
-                    && !grant.as_ref().is_some_and(|grant| self.state.lock().unwrap().grants.contains(grant) || self.kept.allows(&self.workspace, grant))
+                    && !grant.as_ref().is_some_and(|grant| self.state.lock().unwrap().grants.contains(grant) || self.kept.allows(&self.granted_in, grant))
                 {
                     let (sender, receiver) = oneshot::channel();
                     self.state.lock().unwrap().approvals.insert(id.clone(), sender);
@@ -836,7 +846,7 @@ impl<L: Llm> Inner<L> {
                                 // Kept for good when asked and possible; for this run of the app either
                                 // way, so a grant that could not be written still holds until restart.
                                 if decision == Decision::AllowAlways && GrantStore::keeps(&grant) {
-                                    let _ = self.kept.add(&self.workspace, &grant);
+                                    let _ = self.kept.add(&self.granted_in, &grant);
                                 }
                                 self.state.lock().unwrap().grants.insert(grant);
                             }

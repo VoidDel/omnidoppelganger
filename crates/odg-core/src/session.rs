@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::events::{Envelope, Event, SkillInfo};
+use crate::events::{Envelope, Event, SkillInfo, Worktree};
 use crate::policy::Mode;
 use crate::providers::DEFAULT_PROVIDER;
 
@@ -21,7 +21,7 @@ use crate::providers::DEFAULT_PROVIDER;
 /// Format 4 added the `instructions/loaded` event and the `allow_always`
 /// decision. Format 5 added `images` on a user message. Format 6 adds the
 /// `skills/listed` event. Format 7 adds the `model/changed` event. Format 8
-/// adds `parent` to the header and the `subagent/started` event. A build
+/// adds `parent` and `worktree` to the header and the `subagent/started` event. A build
 /// from before a format refuses its sessions rather than misread them.
 pub const FORMAT_VERSION: u32 = 8;
 const FILE_NAME: &str = "session.v1.jsonl";
@@ -50,6 +50,8 @@ pub struct SessionSummary {
     pub model: String,
     /// Id of the session whose agent set this one off as a subagent.
     pub parent: Option<String>,
+    /// The worktree made for the session, when it works apart from the repository's own checkout.
+    pub worktree: Option<Worktree>,
     /// The mode of the last message, which a reopened session resumes.
     pub mode: Mode,
     pub created_at: String,
@@ -62,6 +64,18 @@ pub struct SessionSummary {
 
 pub struct SessionStore {
     root: PathBuf,
+}
+
+/// What a session is created with.
+pub struct NewSession<'a> {
+    /// The directory the agent works in.
+    pub workspace: &'a Path,
+    pub provider: &'a str,
+    pub model: &'a str,
+    /// The session whose agent sets this one off as a subagent.
+    pub parent: Option<&'a str>,
+    /// The worktree `workspace` is in, when one was made for the session.
+    pub worktree: Option<Worktree>,
 }
 
 impl SessionStore {
@@ -77,15 +91,12 @@ impl SessionStore {
 
     /// Create a session whose agent works in `workspace` with `model` from `provider`.
     pub fn create(&self, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
-        self.create_under(None, workspace, provider, model)
+        self.create_with(NewSession { workspace, provider, model, parent: None, worktree: None })
     }
 
-    /// Create the session of a subagent that the agent of session `parent` sets off.
-    pub fn create_child(&self, parent: &str, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
-        self.create_under(Some(parent), workspace, provider, model)
-    }
-
-    fn create_under(&self, parent: Option<&str>, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
+    /// Create a session: a subagent's, or one that works in a worktree, or a plain one.
+    pub fn create_with(&self, new: NewSession) -> Result<SessionLog, SessionError> {
+        let NewSession { workspace, provider, model, parent, worktree } = new;
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
         fs::create_dir_all(&directory)?;
@@ -99,6 +110,7 @@ impl SessionStore {
             model: model.to_string(),
             format: FORMAT_VERSION,
             parent: parent.map(str::to_string),
+            worktree,
         })?;
         Ok(log)
     }
@@ -429,6 +441,14 @@ pub fn parent(events: &[Envelope]) -> Option<&str> {
     }
 }
 
+/// The worktree made for the session, if it works in one.
+pub fn worktree(events: &[Envelope]) -> Option<&Worktree> {
+    match &events.first()?.event {
+        Event::SessionCreated { worktree, .. } => worktree.as_ref(),
+        _ => None,
+    }
+}
+
 /// How a session's work came out, for the agent that delegated it: what its
 /// agent said last, and why its last turn ended, as `(reason, error)`. A
 /// turn still open, or none yet, reads as `running`.
@@ -625,6 +645,7 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         provider,
         model,
         parent: parent(events).map(str::to_string),
+        worktree: worktree(events).cloned(),
         mode,
         created_at: events[0].ts.clone(),
         updated_at: events[events.len() - 1].ts.clone(),
@@ -986,7 +1007,9 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     fn a_subagents_session_names_its_parent_and_reports_how_it_ended() {
         let (_directory, store) = store();
         let parent = store.create(Path::new("/a"), "anthropic", "m").unwrap();
-        let mut child = store.create_child(parent.id(), Path::new("/a"), "anthropic", "m").unwrap();
+        let tree = Worktree { origin: "/a".into(), branch: "odg/1".into(), checkout: "/w".into() };
+        let mut child = store.create_with(NewSession { workspace: Path::new("/w"), provider: "anthropic", model: "m", parent: Some(parent.id()), worktree: Some(tree.clone()) }).unwrap();
+        assert_eq!((summarize(child.events()).worktree, summarize(parent.events()).worktree), (Some(tree), None));
         assert_eq!(super::parent(child.events()), Some(parent.id()));
         assert_eq!(super::parent(parent.events()), None);
         assert_eq!(summarize(child.events()).parent.as_deref(), Some(parent.id()));
