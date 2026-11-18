@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useReducer } from "react";
-import { Composer, Logo, Mountains, SessionHeader, SidePanel, Sidebar } from "./components/Chrome";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { Composer, Logo, Mountains, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
@@ -117,6 +117,28 @@ function reduce(state: State, action: Action): State {
   }
 }
 
+/** How the user left the side panel, kept in the window's own storage: it is about this screen, not the agent. */
+const PANEL_KEY = "odg.panel";
+
+function usePanel() {
+  const [panel, setPanel] = useState<{ width: number; hidden: boolean }>(() => {
+    try {
+      const kept = JSON.parse(localStorage.getItem(PANEL_KEY) ?? "{}");
+      return { width: typeof kept.width === "number" ? fitPanel(kept.width) : PANEL_WIDTH.initial, hidden: kept.hidden === true };
+    } catch {
+      return { width: PANEL_WIDTH.initial, hidden: false };
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(PANEL_KEY, JSON.stringify(panel));
+    } catch {
+      // Storage may be unavailable; the panel then starts out as it does the first time.
+    }
+  }, [panel]);
+  return [panel, setPanel] as const;
+}
+
 function useTheme(theme: Settings["theme"] | undefined) {
   useEffect(() => {
     const system = window.matchMedia("(prefers-color-scheme: dark)");
@@ -198,15 +220,17 @@ export default function App() {
   const defaultProvider = providers.find((provider) => provider.id === state.settings?.settings.provider);
   const missingKey = !!defaultProvider && state.settings?.keys[defaultProvider.id]?.source === "none";
   const inSettings = state.page === "settings";
-  const showPanel = !inSettings && !!active;
+  const [panel, setPanel] = usePanel();
+  const showPanel = !inSettings && !!active && !panel.hidden;
   return (
-    <div className={`app ${showPanel ? "with-panel" : ""}`}>
+    <div className={`app ${showPanel ? "with-panel" : ""}`} style={{ "--panel-width": `${panel.width}px` } as React.CSSProperties}>
       <Sidebar
         sessions={state.sessions}
         activeId={state.activeId}
         inSettings={inSettings}
         onOpen={open}
         onNew={create}
+        onNewIn={(workspace) => api.createSession(workspace).then((view) => dispatch({ type: "opened", view }), fail)}
         onSettings={() => {
           // Read again: a command may have been allowed for good since the page was last shown.
           api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
@@ -246,6 +270,8 @@ export default function App() {
           <>
             <SessionHeader
               session={active}
+              panelHidden={panel.hidden}
+              onTogglePanel={() => setPanel({ ...panel, hidden: !panel.hidden })}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
               onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
             />
@@ -306,7 +332,7 @@ export default function App() {
           </>
         )}
       </main>
-      {showPanel && <SidePanel files={files} runs={runs} todos={plan} />}
+      {showPanel && <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} />}
     </div>
   );
 }

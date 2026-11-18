@@ -85,6 +85,16 @@ export async function connect(port, timeoutMs = 60_000) {
       await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
       await send("Input.insertText", { text });
     },
+    /** Press the mouse at one point, move it to another, and let go there: a drag. Points are `{ x, y }` in the page. */
+    drag: async (from, to) => {
+      const mouse = (type, point, extra = {}) => send("Input.dispatchMouseEvent", { type, x: point.x, y: point.y, ...extra });
+      await mouse("mouseMoved", from);
+      await mouse("mousePressed", from, { button: "left", buttons: 1, clickCount: 1 });
+      // In two steps, as a hand would: some handlers only start on the first move.
+      await mouse("mouseMoved", { x: (from.x + to.x) / 2, y: to.y }, { button: "left", buttons: 1 });
+      await mouse("mouseMoved", to, { button: "left", buttons: 1 });
+      await mouse("mouseReleased", to, { button: "left", clickCount: 1 });
+    },
     /** Press and release Enter in the focused element. */
     enter: async () => {
       const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };

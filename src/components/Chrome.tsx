@@ -57,12 +57,14 @@ interface SidebarProps {
   inSettings: boolean;
   onOpen: (id: string) => void;
   onNew: () => void;
+  /** Start another session in a workspace that already has some, without asking for the folder again. */
+  onNewIn: (workspace: string) => void;
   onSettings: () => void;
   /** Ids of the sessions that hold the text, in their title, folder, or conversation. */
   onSearch: (query: string) => Promise<string[]>;
 }
 
-export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSettings, onSearch }: SidebarProps) {
+export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
   const [query, setQuery] = useState("");
   /** The sessions the search found; null while nothing is searched for. */
   const [found, setFound] = useState<Set<string> | null>(null);
@@ -93,7 +95,7 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSetti
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
           <path d="M8 3v10M3 8h10" />
         </svg>
-        化出分身
+        开辟洞府
       </button>
       {sessions.length > 0 && (
         <>
@@ -107,8 +109,15 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onSetti
         {found && shown.length === 0 && <p className="muted">没有哪个分身提过这个。</p>}
         {[...groups].map(([workspace, items]) => (
           <div className="group" key={workspace}>
-            <div className="group-name" title={workspace}>
-              {baseName(workspace)}
+            <div className="group-head">
+              <div className="group-name" title={workspace}>
+                {baseName(workspace)}
+              </div>
+              <button type="button" className="group-add" title={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} aria-label={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} onClick={() => onNewIn(workspace)}>
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                  <path d="M8 3v10M3 8h10" />
+                </svg>
+              </button>
             </div>
             {items.map((session) => (
               <button
@@ -262,9 +271,9 @@ function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void
   const current = modeOf(mode);
   return (
     <div className="mode-picker" ref={root} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
-      <button type="button" className="select-button" aria-haspopup="menu" aria-expanded={open} title="Shift+Tab 切换" onClick={() => setOpen(!open)}>
+      <button type="button" className="select-button" aria-haspopup="menu" aria-expanded={open} title={`禁制：${current.hint}。Shift+Tab 切换`} onClick={() => setOpen(!open)}>
         <ModeIcon mode={mode} />
-        <span className="label">禁制</span>
+        <span className="label sr-only">禁制</span>
         <span className="value">{current.name}</span>
       </button>
       {open && (
@@ -306,12 +315,15 @@ function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void
 
 interface SessionHeaderProps {
   session: SessionItem;
+  /** Whether the side panel is put away, and the way to bring it back or put it away. */
+  panelHidden: boolean;
+  onTogglePanel: () => void;
   onRename: (title: string) => void;
   onDelete: () => void;
 }
 
 /** The session's title and folder, with renaming and deleting. Deleting asks once more: it cannot be undone. */
-export function SessionHeader({ session, onRename, onDelete }: SessionHeaderProps) {
+export function SessionHeader({ session, panelHidden, onTogglePanel, onRename, onDelete }: SessionHeaderProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   // Another session shown in the same header starts clean.
@@ -377,6 +389,9 @@ export function SessionHeader({ session, onRename, onDelete }: SessionHeaderProp
             <button type="button" className="button text small" disabled={busy} title={busy ? "分身还在运功，先收回它" : undefined} onClick={() => setDeleting(true)}>
               删除
             </button>
+            <button type="button" className="button text small panel-toggle" aria-pressed={!panelHidden} title="右边的改动、终端、计划一栏" onClick={onTogglePanel}>
+              {panelHidden ? "展开侧栏" : "收起侧栏"}
+            </button>
           </>
         )
       )}
@@ -430,8 +445,7 @@ interface ComposerProps {
 export function Composer(props: ComposerProps) {
   const { status, provider, providerId, model, vision, mode, usage, contextLimit, contextCeiling, contextSetting, planReady } = props;
   const { onLimit, onModel, listModels, onMode, onCarryOut, onSend, onStop } = props;
-  // Anthropic was the only provider once, so its name goes without saying.
-  const modelLabel = provider && provider.id !== "anthropic" ? `${provider.name} · ${model}` : model;
+  const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const [text, setText] = useState("");
   const [images, setImages] = useState<Image[]>([]);
@@ -537,11 +551,11 @@ export function Composer(props: ComposerProps) {
           <Popup
             name="功法"
             disabled={busy}
-            title={busy ? "分身运功时不能换功法，等它收功" : "换一门功法（模型）"}
+            title={busy ? `功法：${providerName} · ${model}。分身运功时不能换，等它收功` : `功法：${providerName} · ${model}。点开换一门`}
             label={
               <>
-                <span className="label">功法</span>
-                <span className="value">{modelLabel}</span>
+                <span className="label sr-only">功法</span>
+                <span className="value">{model}</span>
               </>
             }
           >
@@ -561,10 +575,13 @@ export function Composer(props: ComposerProps) {
           <ModePicker mode={mode} onMode={onMode} />
           <Popup
             name="灵石"
-            title="前情占了多少、到多少就压缩；点开可以改"
+            title="灵石：前情占了多少 / 到多少就凝成摘要。点开看累计用量、改上限"
             label={
               <>
-                <span className="label">灵石</span>
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 2.5h6l3 4-6 7-6-7zM2 6.5h12M5 2.5l3 4 3-4" />
+                </svg>
+                <span className="label sr-only">灵石</span>
                 <span className="value">
                   {shortCount(usage.context)} / {shortCount(contextLimit)}
                 </span>
@@ -635,7 +652,7 @@ export function Composer(props: ComposerProps) {
               <circle cx="5.7" cy="6.5" r="1.1" />
               <path d="m2.5 11.5 3.2-3 2.3 2 2.5-2.7 3 3.2" />
             </svg>
-            <span className="value">附图</span>
+            <span className="sr-only">附图</span>
           </button>
           <span className="spacer" />
           {busy && (
@@ -654,11 +671,46 @@ export function Composer(props: ComposerProps) {
 
 const TODO_MARKS: Record<Todo["status"], string> = { pending: "○", in_progress: "▶", done: "✓" };
 
-export function SidePanel({ files, runs, todos }: { files: ChangedFile[]; runs: ToolItem[]; todos: Todo[] }) {
+/** The side panel's width in pixels: as the user left it, within what leaves the conversation room. */
+export const PANEL_WIDTH = { initial: 360, least: 260 };
+export const fitPanel = (width: number) => Math.round(Math.min(Math.max(width, PANEL_WIDTH.least), Math.max(PANEL_WIDTH.least, window.innerWidth - 248 - 420)));
+
+interface SidePanelProps {
+  files: ChangedFile[];
+  runs: ToolItem[];
+  todos: Todo[];
+  width: number;
+  onResize: (width: number) => void;
+}
+
+export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProps) {
   const [tab, setTab] = useState<"files" | "terminal" | "plan">("files");
+  const [dragging, setDragging] = useState(false);
   const done = todos.filter((todo) => todo.status === "done").length;
   return (
     <aside className="panel" aria-label="改动与终端">
+      {/* The edge to drag: the panel is as wide as the pointer is far from the window's right side. */}
+      <div
+        className={`panel-edge ${dragging ? "dragging" : ""}`}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖动调整侧栏宽度，双击恢复"
+        aria-valuenow={width}
+        tabIndex={0}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setDragging(true);
+        }}
+        onPointerMove={(event) => dragging && onResize(fitPanel(window.innerWidth - event.clientX))}
+        onPointerUp={() => setDragging(false)}
+        onPointerCancel={() => setDragging(false)}
+        onDoubleClick={() => onResize(fitPanel(PANEL_WIDTH.initial))}
+        onKeyDown={(event) => {
+          // Left widens the panel, right narrows it: the edge moves the way the arrow points.
+          if (event.key === "ArrowLeft") onResize(fitPanel(width + 24));
+          if (event.key === "ArrowRight") onResize(fitPanel(width - 24));
+        }}
+      />
       <div className="tabs">
         <button type="button" className="tab" aria-pressed={tab === "files"} onClick={() => setTab("files")}>
           改动

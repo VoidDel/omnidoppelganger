@@ -160,7 +160,7 @@ pre,
 }
 
 .app.with-panel {
-  grid-template-columns: 248px minmax(0, 1fr) 360px;
+  grid-template-columns: 248px minmax(0, 1fr) var(--panel-width, 360px);
 }
 
 .sidebar {
@@ -198,13 +198,42 @@ pre,
   gap: 2px;
 }
 
+/* A workspace's name, and beside it the button that starts another session there. */
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .group-name {
+  flex: 1;
+  min-width: 0;
   padding: 4px 8px;
   font-size: 12px;
   color: var(--ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.group-add {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.group-add:hover {
+  border-color: var(--line);
+  background: var(--sheet);
+  color: var(--jade);
 }
 
 .row-button {
@@ -764,9 +793,52 @@ pre,
 
 .composer-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The composer's controls stay quiet until pointed at: an icon or a value, no box, one line. */
+.composer-row .mode-picker {
+  min-width: 0;
+}
+
+.composer-row .select-button {
+  min-height: 32px;
+  min-width: 0;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.composer-row .select-button svg {
+  flex: none;
+  color: currentColor;
+}
+
+.composer-row .select-button .value {
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.composer-row .select-button:hover:not(:disabled),
+.composer-row .select-button[aria-expanded="true"] {
+  background: var(--control);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.composer-row .button {
+  flex: none;
+  min-height: 34px;
+  padding: 0 16px;
+  margin-left: 6px;
 }
 
 /* Pictures waiting to be sent, each with a button to take it off again. */
@@ -1033,12 +1105,33 @@ button.select-button svg {
 }
 
 .panel {
+  position: relative;
   min-width: 0;
   min-height: 0;
   background: var(--panel);
   border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
+}
+
+/* The panel's left edge, to drag: a thin strip over the border that shows itself when pointed at. */
+.panel-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.panel-edge:hover,
+.panel-edge.dragging,
+.panel-edge:focus-visible {
+  background: var(--jade);
+  opacity: 0.35;
+  outline: none;
 }
 
 .tabs {
@@ -1523,6 +1616,11 @@ button.select-button svg {
   }
 
   .app.with-panel .panel {
+    display: none;
+  }
+
+  /* No room for the panel at this width, so nothing to put away or bring back. */
+  .panel-toggle {
     display: none;
   }
 }

@@ -108,6 +108,20 @@ try {
   await page.waitFor("the limit to change", `${chip("灵石")}?.endsWith("/ 5 万")`);
   check(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).context_limit === 50000, "the 灵石 menu changed the context limit and saved it");
 
+  // The side panel widens when its left edge is dragged, and can be put away and brought back as it was.
+  const panelWidth = `document.querySelector(".panel")?.getBoundingClientRect().width`;
+  const narrow = await page.evaluate(panelWidth);
+  const edge = await page.evaluate(`(() => { const box = document.querySelector(".panel-edge").getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + 200 }; })()`);
+  await page.drag(edge, { x: edge.x - 120, y: edge.y });
+  await page.waitFor("the panel to widen by the distance dragged", `Math.abs(${panelWidth} - ${narrow + 120}) <= 2`);
+  await page.click("收起侧栏");
+  await page.waitFor("the panel to be put away", `!document.querySelector(".panel")`);
+  await page.click("展开侧栏");
+  await page.waitFor("the panel to come back as wide as it was left", `Math.abs(${panelWidth} - ${narrow + 120}) <= 2`);
+  // (Within two pixels: the width is kept as a whole number, and the screen's scaling puts the pointer between pixels.)
+  const kept = JSON.parse(await page.evaluate(`localStorage.getItem("odg.panel")`));
+  check(Math.abs(kept.width - (narrow + 120)) <= 2 && kept.hidden === false, "the side panel resizes by dragging, hides, and comes back, and its width is remembered");
+
   // Paste a screenshot the way the system clipboard delivers one: a file on a paste event.
   await page.evaluate(`(() => {
     const bytes = Uint8Array.from(atob(${JSON.stringify(PNG)}), (c) => c.charCodeAt(0));
@@ -166,6 +180,11 @@ try {
   const kinds = log.map((event) => event.type);
   check(kinds[0] === "session/created" && kinds.includes("approval/resolved") && kinds.at(-1) === "files/restored", "the session log holds the turn, the approval, and the undo");
   check(log.find((event) => event.type === "turn/end").data.reason === "completed", "the turn ended as completed");
+
+  // The + beside a workspace's name starts another session there, with no folder to pick again.
+  await page.evaluate(`document.querySelector(".group-add").click()`);
+  await page.waitFor("a second session in the same workspace", `document.querySelectorAll(".group .row-button").length === 2 && document.querySelectorAll(".group").length === 1`);
+  check(readdirSync(join(home, "sessions")).length === 2 && (await page.evaluate(`document.querySelector(".main-header h1").textContent`)) === "新分身", "the + beside a workspace opened a new session in it");
   console.log("Passed.");
 } catch (error) {
   failed = true;
