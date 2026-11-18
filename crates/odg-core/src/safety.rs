@@ -35,7 +35,7 @@ pub fn check(command: &str, dialect: Dialect, workspace: &Path) -> Result<(), St
     if command.trim().is_empty() {
         return Err("the command is empty".into());
     }
-    let mut scanner = Scanner { chars: command.chars().collect(), at: 0, dialect, workspace, segments: Vec::new(), segment: Vec::new(), word: Word::default() };
+    let mut scanner = Scanner { chars: command.chars().collect(), at: 0, dialect, workspace, segments: Vec::new(), segment: Vec::new(), word: Word::default(), parens: 0, string_args: Vec::new(), braces: Vec::new() };
     scanner.code(false)?;
     scanner.end_word()?;
     scanner.end_segment()?;
@@ -91,7 +91,20 @@ struct Scanner<'a> {
     segments: Vec<Segment>,
     segment: Segment,
     word: Word,
+    /// How many parentheses are open.
+    parens: usize,
+    /// The paren depths at which a string method's arguments are open, like the
+    /// `'\', ''` of `.Replace($root + '\', '')`: text to work on, not paths.
+    string_args: Vec<usize>,
+    /// One entry per open `{`: true for a hashtable, `@{ Name = value; … }`.
+    braces: Vec<bool>,
 }
+
+/// Methods that only compute a value from a string or a list, whatever object they are called on.
+const PURE_METHODS: &[&str] = &[
+    "trim", "trimstart", "trimend", "tostring", "tolower", "toupper", "tolowerinvariant", "toupperinvariant", "substring", "split", "contains",
+    "startswith", "endswith", "indexof", "lastindexof", "padleft", "padright", "equals", "compareto", "gettype", "tochararray", "normalize",
+];
 
 const CURLY_QUOTES: &[char] = &['\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}', '\u{201c}', '\u{201d}', '\u{201e}'];
 /// PowerShell reads these as a hyphen, so a flag spelled with one would slip past the flag checks.
@@ -138,24 +151,38 @@ impl Scanner<'_> {
                     self.end_word()?;
                     self.end_segment()?;
                     self.at += 2;
+                    self.parens += 1;
                     if nested {
                         depth += 1;
                     }
                 }
                 '$' if self.peek(1) == Some('{') => self.braced_variable()?,
                 '(' | '{' => {
-                    self.reject_call()?;
+                    let string_method = self.reject_call()?;
+                    if c == '{' {
+                        self.braces.push(self.dialect == Dialect::PowerShell && !self.word.quoted && self.word.bare.ends_with('@'));
+                    }
                     self.end_word()?;
                     self.end_segment()?;
                     self.at += 1;
-                    if nested && c == '(' {
-                        depth += 1;
+                    if c == '(' {
+                        self.parens += 1;
+                        if string_method {
+                            self.string_args.push(self.parens);
+                        }
+                        if nested {
+                            depth += 1;
+                        }
                     }
                 }
                 ')' => {
                     self.end_word()?;
                     self.end_segment()?;
                     self.at += 1;
+                    if self.string_args.last() == Some(&self.parens) {
+                        self.string_args.pop();
+                    }
+                    self.parens = self.parens.saturating_sub(1);
                     if nested {
                         if depth == 0 {
                             return Ok(());
@@ -167,6 +194,9 @@ impl Scanner<'_> {
                     self.end_word()?;
                     self.end_segment()?;
                     self.at += 1;
+                    if c == '}' {
+                        self.braces.pop();
+                    }
                 }
                 '|' => {
                     self.end_word()?;
@@ -222,6 +252,8 @@ impl Scanner<'_> {
                     let word = std::mem::take(&mut self.word);
                     let segment = std::mem::take(&mut self.segment);
                     self.at += 2;
+                    // The closing `)` that ends `code` closes this one.
+                    self.parens += 1;
                     self.code(true)?;
                     self.end_word()?;
                     self.end_segment()?;
@@ -263,13 +295,24 @@ impl Scanner<'_> {
     }
 
     /// `(` or `{` right after a word calls something: `$x.Delete()`, `[IO.File]::Delete(…)`, `.{ … }`.
-    fn reject_call(&self) -> Result<(), String> {
+    /// Methods that only compute a value from a string or a list, like `$_.Line.Trim()`, pass,
+    /// and return true.
+    fn reject_call(&self) -> Result<bool, String> {
         let bare = &self.word.bare;
-        let member = bare.rsplit('.').next().filter(|_| bare.contains('.')).is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'));
-        if member || bare == "." || bare.ends_with("::") {
+        let method = bare.rsplit('.').next().filter(|_| bare.contains('.')).filter(|name| !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'));
+        if let Some(method) = method {
+            let method = method.to_lowercase();
+            // FileInfo.Replace replaces files; on a property such as `$_.FullName` it is the string's.
+            let on_property = bare.split('.').count() >= 3;
+            if PURE_METHODS.contains(&method.as_str()) || (method == "replace" && on_property) {
+                return Ok(true);
+            }
+            return Err(format!("{bare}( calls a method that may change something"));
+        }
+        if bare == "." || bare.ends_with("::") {
             return Err(format!("{bare}( calls a method or a script block"));
         }
-        Ok(())
+        Ok(false)
     }
 
     /// `>` and `>>` may only send output to the null device, or join stderr to stdout.
@@ -313,19 +356,42 @@ impl Scanner<'_> {
         if self.dialect == Dialect::PowerShell && word.bare == "--%" {
             return Err("--% passes the rest unparsed".into());
         }
-        check_paths(&word, self.dialect, self.workspace)?;
+        // After `-notmatch` or `-Pattern` comes a pattern to match text against, not a path to open:
+        // `'\\(bin|obj)\\'` is a regular expression, not a network share.
+        let pattern = self.dialect == Dialect::PowerShell && self.segment.last().is_some_and(|previous| !previous.quoted && takes_pattern(&previous.bare));
+        let string_arg = self.string_args.last() == Some(&self.parens);
+        if !pattern && !string_arg {
+            check_paths(&word, self.dialect, self.workspace)?;
+        }
         self.segment.push(word);
         Ok(())
     }
 
     fn end_segment(&mut self) -> Result<(), String> {
-        let segment = std::mem::take(&mut self.segment);
+        let mut segment = std::mem::take(&mut self.segment);
+        // In a hashtable, `Name = value` names the value; the value is checked like any other.
+        // Only there: elsewhere `del = x` runs del with the arguments `=` and `x`.
+        let key = |word: &Word| !word.quoted && !word.bare.is_empty() && word.bare.chars().all(|c| c.is_alphanumeric() || c == '_');
+        if self.braces.last() == Some(&true) && segment.len() >= 2 && key(&segment[0]) && segment[1].bare == "=" && !segment[1].quoted {
+            segment.drain(..2);
+        }
         if !segment.is_empty() {
             self.segments.push(segment);
         }
         Ok(())
     }
 }
+
+/// PowerShell operators and parameters whose operand is a pattern or a value to compare, never a path.
+fn takes_pattern(word: &str) -> bool {
+    let word = word.to_lowercase();
+    let Some(name) = word.strip_prefix('-') else { return false };
+    // -cmatch and -imatch are -match with the case made explicit.
+    let name = name.strip_prefix(['c', 'i']).filter(|rest| OPERATORS.contains(rest)).unwrap_or(name);
+    OPERATORS.contains(&name) || name == "pattern"
+}
+
+const OPERATORS: &[&str] = &["eq", "ne", "match", "notmatch", "like", "notlike", "replace", "split"];
 
 /// Variables that hold a path outside the workspace.
 const OUTSIDE_VARIABLES: &[&str] = &["$home", "${home}", "$env:", "${env:", "$profile", "$pshome", "$tmpdir", "${tmpdir}", "$oldpwd"];
@@ -586,6 +652,11 @@ mod tests {
             "git diff HEAD~1 -- src/main.rs > $null",
             "cargo +nightly test -p odg-core 2>$null",
             "if (Test-Path Cargo.toml) { cargo check } else { 'no manifest' }",
+            // From a session reviewing a .NET project: a regular expression, string methods, a hashtable.
+            r#"Get-ChildItem -Recurse -Include *.cs,*.axaml -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } | ForEach-Object { $lines = (Get-Content $_.FullName | Measure-Object -Line).Lines; [PSCustomObject]@{ Path = $_.FullName.Replace((Get-Location).Path + '\', ''); Lines = $lines } } | Sort-Object Lines -Descending | Format-Table -AutoSize"#,
+            r#"(Get-ChildItem -Recurse -Include *.cs -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }) | Select-String -Pattern 'async void' | ForEach-Object { "$($_.Filename):$($_.LineNumber): $($_.Line.Trim())" }"#,
+            r#"(Get-ChildItem -Recurse -Include *.cs -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }) | Select-String -Pattern 'catch \(Exception' | Measure-Object | Select-Object -ExpandProperty Count"#,
+            r#"(Get-ChildItem -Recurse -Include *.cs -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }) | Select-String -Pattern 'catch \(Exception' -Context 0,2 | ForEach-Object { $next = ($_.Context.PostContext -join ' '); "$($_.Filename):$($_.LineNumber) → $($next.Trim())" } | Select-Object -First 12"#,
         ] {
             assert!(passes(command, Dialect::PowerShell, workspace), "{command}: {:?}", check(command, Dialect::PowerShell, workspace));
         }
@@ -643,6 +714,17 @@ mod tests {
             "Get-Content env:ANTHROPIC_API_KEY",
             "Get-Content 'FileSystem::C:/secret'",
             "del = ls",
+            // Only methods that compute a value pass; Replace only on a property, since FileInfo.Replace replaces files.
+            "Get-ChildItem | ForEach-Object { $_.Delete() }",
+            "Get-ChildItem x.txt | ForEach-Object { $_.Replace('y.txt', 'z.txt') }",
+            "(Get-Item x.txt).Replace('y.txt', 'z.txt')",
+            "(Get-Item x.txt).MoveTo('y.txt')",
+            // A pattern is exempt from the path check, the path after it is not.
+            "Select-String -Pattern 'key' ~/.ssh/config",
+            "Select-String -Pattern 'key' -Path '\\\\server\\share\\x'",
+            // A hashtable's value is checked like any command, and only @{ } is a hashtable.
+            "[PSCustomObject]@{ Path = Remove-Item x }",
+            "Get-ChildItem | ForEach-Object { del = ls }",
             "cd ..; Get-ChildItem",
             "Get-ChildItem \u{2013}Recurse",
             "echo \u{201c}hi\u{201d}",
