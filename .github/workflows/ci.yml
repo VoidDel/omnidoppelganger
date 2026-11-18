@@ -1,0 +1,72 @@
+name: CI
+
+# Every push to main and every pull request: the core library on the three
+# systems the app targets, and the whole app (frontend, desktop shell) on
+# Windows, where it is developed.
+
+on:
+  push:
+    branches: [main]
+    # Documentation alone changes nothing that is built or tested here.
+    paths-ignore: ["**.md", "doc/**"]
+  pull_request:
+    paths-ignore: ["**.md", "doc/**"]
+
+# A newer push makes the run for the older one pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: Core library (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The tools and the command safety check behave differently per shell:
+        # PowerShell on Windows, sh elsewhere.
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Static checks
+        run: cargo clippy -p odg-core --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test -p odg-core
+
+  app:
+    name: Frontend and desktop shell (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Frontend tests
+        run: pnpm test
+      # Type-checks and bundles. The desktop shell embeds the bundle when it
+      # compiles, so this comes before any cargo step.
+      - name: Frontend build
+        run: pnpm build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Static checks
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
