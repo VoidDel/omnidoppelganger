@@ -200,6 +200,11 @@ function SignSheet({ tool, mode, onDecide }: SignSheetProps) {
             {alwaysLabel(approval.grant, ask.always)}
           </button>
         )}
+        {approval.grant?.startsWith("command:") && (
+          <button type="button" className="button outline red" title="重启应用之后也算数，可以在设置里撤销" onClick={() => onDecide(tool.id, "allow_always")}>
+            这处洞府里永远都准
+          </button>
+        )}
         <button type="button" className="button text" onClick={() => onDecide(tool.id, "deny")}>
           驳回
         </button>

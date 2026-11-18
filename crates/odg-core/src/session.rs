@@ -16,11 +16,12 @@ use crate::policy::Mode;
 use crate::providers::DEFAULT_PROVIDER;
 
 /// The newest format this build reads, and the one it writes. Format 2 added
-/// the `provider` field to the header. Format 3 adds the `context/compacted`,
-/// `files/restored`, `session/renamed`, and `instructions/loaded` events and
-/// the `tokens` field; a build from before
-/// it refuses a format 3 session rather than misread it.
-pub const FORMAT_VERSION: u32 = 3;
+/// the `provider` field to the header. Format 3 added the `context/compacted`,
+/// `files/restored`, and `session/renamed` events and the `tokens` field.
+/// Format 4 adds the `instructions/loaded` event and the `allow_always`
+/// decision. A build from before a format refuses its sessions rather than
+/// misread them.
+pub const FORMAT_VERSION: u32 = 4;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]

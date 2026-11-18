@@ -208,7 +208,11 @@ export default function App() {
         inSettings={inSettings}
         onOpen={open}
         onNew={create}
-        onSettings={() => dispatch({ type: "page", page: "settings" })}
+        onSettings={() => {
+          // Read again: a command may have been allowed for good since the page was last shown.
+          api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
+          dispatch({ type: "page", page: "settings" });
+        }}
         onSearch={api.searchSessions}
       />
       <main className="main">
@@ -226,6 +230,7 @@ export default function App() {
             onSave={(settings) => saved(api.saveSettings(settings))}
             onSaveKey={(provider, key) => saved(api.saveApiKey(provider, key))}
             onDeleteKey={(provider) => saved(api.deleteApiKey(provider))}
+            onRevoke={(workspace, grant) => saved(api.revokeGrant(workspace, grant))}
           />
         ) : active ? (
           <>

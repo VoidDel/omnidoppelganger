@@ -23,6 +23,8 @@ export const api = {
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (settings: Settings) => invoke<SettingsView>("save_settings", { settings }),
+  /** Take back a command approval that was given for good. */
+  revokeGrant: (workspace: string, grant: string) => invoke<SettingsView>("revoke_grant", { workspace, grant }),
   saveApiKey: (provider: string, key: string) => invoke<SettingsView>("save_api_key", { provider, key }),
   deleteApiKey: (provider: string) => invoke<SettingsView>("delete_api_key", { provider }),
   /** Ask for a folder with the system dialog. Resolves null when the user closes it. */

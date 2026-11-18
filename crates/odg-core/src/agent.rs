@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::{Decision, Envelope, Event};
+use crate::grants::GrantStore;
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::policy::{self, Mode, Verdict};
 use crate::providers;
@@ -82,6 +83,8 @@ struct Inner<L: Llm> {
     snapshots: PathBuf,
     /// Commands left running in the background.
     jobs: Arc<crate::jobs::Jobs>,
+    /// Approvals given for good, shared by every session.
+    kept: Arc<GrantStore>,
     provider: String,
     model: String,
     llm: Arc<L>,
@@ -140,6 +143,7 @@ impl<L: Llm> Session<L> {
         mut log: SessionLog,
         llm: Arc<L>,
         tuning: TuningSource,
+        kept: Arc<GrantStore>,
         events: UnboundedSender<UiEvent>,
         runtime: tokio::runtime::Handle,
     ) -> std::io::Result<Self> {
@@ -153,6 +157,7 @@ impl<L: Llm> Session<L> {
                 workspace,
                 snapshots,
                 jobs: Arc::default(),
+                kept,
                 provider,
                 model,
                 llm,
@@ -542,7 +547,7 @@ impl<L: Llm> Inner<L> {
                     continue;
                 }
                 if let Verdict::Ask { reason, detail, grant } = verdict
-                    && !grant.as_ref().is_some_and(|grant| self.state.lock().unwrap().grants.contains(grant))
+                    && !grant.as_ref().is_some_and(|grant| self.state.lock().unwrap().grants.contains(grant) || self.kept.allows(&self.workspace, grant))
                 {
                     let (sender, receiver) = oneshot::channel();
                     self.state.lock().unwrap().approvals.insert(id.clone(), sender);
@@ -580,8 +585,13 @@ impl<L: Llm> Inner<L> {
                             self.tool_result(&id, &name, "The user declined this action.".to_string(), true, Value::Null)?;
                             continue;
                         }
-                        Decision::AllowSession => {
+                        Decision::AllowSession | Decision::AllowAlways => {
                             if let Some(grant) = grant {
+                                // Kept for good when asked and possible; for this run of the app either
+                                // way, so a grant that could not be written still holds until restart.
+                                if decision == Decision::AllowAlways && GrantStore::keeps(&grant) {
+                                    let _ = self.kept.add(&self.workspace, &grant);
+                                }
                                 self.state.lock().unwrap().grants.insert(grant);
                             }
                         }
@@ -666,7 +676,8 @@ mod tests {
             let (context_limit, context_window) = *read.lock().unwrap();
             Tuning { effort: "high".to_string(), context_limit, context_window }
         };
-        let session = Session::new(log, llm.clone(), Arc::new(tuning), sender, tokio::runtime::Handle::current()).unwrap();
+        let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
+        let session = Session::new(log, llm.clone(), Arc::new(tuning), kept, sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, limits, workspace, session, llm, events }
     }
 
@@ -766,6 +777,36 @@ mod tests {
         assert!(!results[2].1 && results[2].2.trim() == "ok");
         assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "approval/requested").count(), 2);
         assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_command_allowed_for_good_never_asks_again_in_that_workspace() {
+        let echo = |id: &str| calls(&[(id, "run_command", json!({ "command": "echo ok" }))]);
+        let edit = calls(&[("t3", "edit_file", json!({ "path": "../outside.txt", "old_string": "", "new_string": "x" }))]);
+        let mut fixture = fixture(ScriptedLlm::new(vec![echo("t1"), says("done"), echo("t2"), edit, says("done")], None));
+        fixture.session.send("run it".into());
+        let asked = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&asked, Decision::AllowAlways));
+        fixture.idle().await;
+        let store = GrantStore::new(fixture._home.path().join("grants.json"));
+        assert!(store.allows(fixture.workspace.path(), "command:echo ok"));
+
+        // A session opened later on the same workspace, as after a restart, does not ask for it.
+        let home = fixture._home.path().to_path_buf();
+        let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
+        let (sender, events) = unbounded_channel();
+        let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
+        let later = Session::new(log, fixture.llm.clone(), tuning, Arc::new(GrantStore::new(home.join("grants.json"))), sender, tokio::runtime::Handle::current()).unwrap();
+        fixture.session = later;
+        fixture.events = events;
+        fixture.session.send("again".into());
+        // The command runs; the edit outside the workspace asks, and "always" cannot be kept for it.
+        let outside = fixture.approval().await;
+        assert_eq!(fixture.results()[0], ("t2".to_string(), false, "ok".to_string()));
+        assert!(fixture.session.resolve_approval(&outside, Decision::AllowAlways));
+        fixture.idle().await;
+        assert_eq!(store.all().values().map(|kept| kept.len()).sum::<usize>(), 1);
+        let _ = std::fs::remove_file(fixture.workspace.path().parent().unwrap().join("outside.txt"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

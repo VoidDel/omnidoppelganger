@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use odg_core::agent::{Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
 use odg_core::events::{Decision, Envelope};
+use odg_core::grants::{GrantStore, Grants};
 use odg_core::policy::Mode;
 use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider};
 use odg_core::session::{SessionStore, SessionSummary};
@@ -24,6 +25,8 @@ const SESSION_EVENT: &str = "session-event";
 struct App {
     store: SessionStore,
     settings: Arc<SettingsStore>,
+    /// Command approvals given for good, by workspace.
+    grants: Arc<GrantStore>,
     llm: Arc<Router>,
     /// Sessions opened since the app started. A session stays here so its turn keeps running while another is shown.
     sessions: Mutex<HashMap<String, Session<Router>>>,
@@ -54,6 +57,8 @@ struct SettingsView {
     providers: &'static [Provider],
     efforts: &'static [&'static str],
     home: String,
+    /// The command approvals given for good, by workspace.
+    grants: Grants,
 }
 
 impl App {
@@ -64,7 +69,7 @@ impl App {
             let settings = settings.load();
             Tuning { context_limit: settings.context_limit_for(&provider, &model), context_window: context_window(&provider, &model), effort: settings.effort }
         };
-        Session::new(log, self.llm.clone(), Arc::new(tuning), self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
+        Session::new(log, self.llm.clone(), Arc::new(tuning), self.grants.clone(), self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
     }
 
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
@@ -91,6 +96,7 @@ impl App {
             providers: PROVIDERS,
             efforts: EFFORTS,
             home: settings::home().display().to_string(),
+            grants: self.grants.all(),
         }
     }
 }
@@ -239,6 +245,13 @@ fn save_settings(app: State<'_, App>, settings: Settings) -> Result<SettingsView
     Ok(app.settings_view())
 }
 
+/// Take back a command approval that was given for good.
+#[tauri::command]
+fn revoke_grant(app: State<'_, App>, workspace: String, grant: String) -> Result<SettingsView, String> {
+    app.grants.remove(&workspace, &grant).map_err(|error| error.to_string())?;
+    Ok(app.settings_view())
+}
+
 #[tauri::command]
 fn save_api_key(app: State<'_, App>, provider: String, key: String) -> Result<SettingsView, String> {
     app.settings.save_api_key(&provider, &key).map_err(|error| error.to_string())?;
@@ -278,7 +291,8 @@ pub fn run() {
                 }
             });
 
-            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, llm, sessions: Mutex::new(HashMap::new()), events });
+            let grants = Arc::new(GrantStore::new(home.join("grants.json")));
+            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, llm, sessions: Mutex::new(HashMap::new()), events });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -296,6 +310,7 @@ pub fn run() {
             cancel_turn,
             get_settings,
             save_settings,
+            revoke_grant,
             save_api_key,
             delete_api_key,
         ])

@@ -1,6 +1,6 @@
 // Shapes shared with the Rust side. Field names match the JSON the commands and events carry.
 
-export type Decision = "allow_once" | "allow_session" | "deny";
+export type Decision = "allow_once" | "allow_session" | "allow_always" | "deny";
 export type Status = "idle" | "running" | "waiting_approval";
 /** What runs without asking: every edit asks, edits run, nothing is edited, or safe commands run too. */
 export type Mode = "manual" | "edit" | "plan" | "auto";
@@ -143,4 +143,6 @@ export interface SettingsView {
   providers: Provider[];
   efforts: string[];
   home: string;
+  /** Command approvals given for good, by workspace path. */
+  grants: Record<string, string[]>;
 }

@@ -125,12 +125,14 @@ function ProviderRow({ provider, status, settings, onSave, onSaveKey, onDeleteKe
 
 interface Props {
   view: SettingsView;
+  onRevoke: (workspace: string, grant: string) => void;
   onSave: (settings: Settings) => void;
   onSaveKey: (provider: string, key: string) => void;
   onDeleteKey: (provider: string) => void;
 }
 
-export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
+export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke }: Props) {
+  const grants = Object.entries(view.grants);
   const { settings } = view;
   const chosen = view.providers.find((provider) => provider.id === settings.provider);
   const model = useDraft(settings.model, (value) => onSave({ ...settings, model: value }));
@@ -221,6 +223,27 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey }: Props) {
             ))}
           </fieldset>
           <p className="hint">已经化出的分身，在输入框下方或按 Shift+Tab 随时换禁制。无论哪种禁制，碰洞府之外的东西、改 .git 里的文件都要请示。</p>
+        </section>
+
+        <section>
+          <h2>长期许可</h2>
+          {grants.length === 0 && <p className="muted">还没有哪条命令被"永远都准"。审批命令时可以选它，之后同一处洞府里以同样开头的命令不再请示。</p>}
+          {grants.map(([workspace, kept]) => (
+            <div className="provider-card" key={workspace}>
+              <div className="who">
+                <strong className="mono">{workspace}</strong>
+                <span className="muted">这处洞府里，以下面这些开头的命令不再请示</span>
+              </div>
+              {kept.map((grant) => (
+                <div className="provider" key={grant}>
+                  <span className="mono">{grant.replace(/^command:/, "")}</span>
+                  <button type="button" className="button text" onClick={() => onRevoke(workspace, grant)}>
+                    撤销
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
         </section>
 
         <section>

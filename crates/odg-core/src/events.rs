@@ -26,6 +26,10 @@ pub enum Decision {
     /// Allow this and later requests with the same grant until the app
     /// restarts. For a request without a grant it allows this one only.
     AllowSession,
+    /// Allow this and later requests with the same grant in this workspace
+    /// for good; see [`crate::grants`]. For a grant that cannot be kept it
+    /// is [`Decision::AllowSession`]. Since format 4.
+    AllowAlways,
     Deny,
 }
 
@@ -47,7 +51,7 @@ pub enum Event {
     /// The project's own instructions for agents, read from a file at the
     /// top of the workspace when a turn started and found new or changed.
     /// The latest one is part of the system prompt of every request after
-    /// it; empty `content` means the file is gone. Since format 3.
+    /// it; empty `content` means the file is gone. Since format 4.
     #[serde(rename = "instructions/loaded")]
     InstructionsLoaded {
         /// The file's name, like `AGENTS.md`.
