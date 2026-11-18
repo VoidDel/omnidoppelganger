@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
 import { MODES, modeOf, nextMode } from "../lib/modes";
-import type { Mode, SessionItem, Status } from "../lib/types";
+import type { Mode, SessionItem, Status, Todo } from "../lib/types";
 
 /** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
 export function Mountains() {
@@ -379,8 +379,11 @@ export function Composer({ status, model, mode, usage, contextLimit, planReady, 
   );
 }
 
-export function SidePanel({ files, runs }: { files: ChangedFile[]; runs: ToolItem[] }) {
-  const [tab, setTab] = useState<"files" | "terminal">("files");
+const TODO_MARKS: Record<Todo["status"], string> = { pending: "○", in_progress: "▶", done: "✓" };
+
+export function SidePanel({ files, runs, todos }: { files: ChangedFile[]; runs: ToolItem[]; todos: Todo[] }) {
+  const [tab, setTab] = useState<"files" | "terminal" | "plan">("files");
+  const done = todos.filter((todo) => todo.status === "done").length;
   return (
     <aside className="panel" aria-label="改动与终端">
       <div className="tabs">
@@ -390,8 +393,27 @@ export function SidePanel({ files, runs }: { files: ChangedFile[]; runs: ToolIte
         <button type="button" className="tab" aria-pressed={tab === "terminal"} onClick={() => setTab("terminal")}>
           终端
         </button>
+        <button type="button" className="tab" aria-pressed={tab === "plan"} onClick={() => setTab("plan")}>
+          计划{todos.length > 0 ? ` ${done}/${todos.length}` : ""}
+        </button>
       </div>
-      {tab === "files" ? (
+      {tab === "plan" ? (
+        <div className="panel-body">
+          <h2>分身的计划</h2>
+          {todos.length === 0 && <p className="muted">分身还没有列计划。事情分好几步时，它会在这里记下每一步，做完一步勾一步。</p>}
+          <ol className="todos">
+            {todos.map((todo, index) => (
+              <li key={index} className={`todo ${todo.status}`}>
+                <span className="mark" aria-hidden="true">
+                  {TODO_MARKS[todo.status]}
+                </span>
+                <span className="sr-only">{todo.status === "done" ? "已办：" : todo.status === "in_progress" ? "正在办：" : "待办："}</span>
+                <span className="text">{todo.text}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : tab === "files" ? (
         <div className="panel-body">
           <h2>分身动过的文件</h2>
           {files.length === 0 && <p className="muted">分身还没有改过文件。</p>}

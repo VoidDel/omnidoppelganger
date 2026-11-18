@@ -61,6 +61,8 @@ export interface ToolMeta {
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
+  /** The to-do list `update_todos` recorded. */
+  todos?: Todo[];
   /** The id of a background command, like `b1`. */
   job?: string;
   /** `run_command` left the command running and returned. */
@@ -71,6 +73,12 @@ export interface ToolMeta {
   refused?: boolean;
   /** Set on an edit that can be undone: the fingerprint of what it wrote. */
   after?: string;
+}
+
+/** One item of the 分身's to-do list. */
+export interface Todo {
+  text: string;
+  status: "pending" | "in_progress" | "done";
 }
 
 export interface SessionItem {

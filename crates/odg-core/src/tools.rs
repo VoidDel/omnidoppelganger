@@ -1,6 +1,6 @@
 //! The tools: read a file, search file contents, find files by name, edit a
-//! file, write a whole file, run a command, and read or stop a command left
-//! running in the background.
+//! file, write a whole file, run a command, read or stop a command left
+//! running in the background, and keep a to-do list.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -23,6 +23,9 @@ const LINE_CHARS: usize = 2000;
 const READ_OUTPUT_CHARS: usize = 100_000;
 const SEARCH_RESULTS: usize = 200;
 const FIND_RESULTS: usize = 500;
+const TODO_ITEMS: usize = 50;
+/// The states a to-do item can be in.
+pub const TODO_STATES: &[&str] = &["pending", "in_progress", "done"];
 const SEARCH_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const COMMAND_OUTPUT_CHARS: usize = 30_000;
 const COMMAND_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -188,6 +191,28 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "update_todos",
+            "description": "Keep a to-do list for the task, which the user sees beside the conversation. Use it when the work has several steps: write the list before starting, then send it again whenever an item's state changes, marking the item you are on `in_progress` and finished ones `done`. Each call replaces the whole list. Skip it for a task of one or two steps.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "The whole list, in order.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": { "type": "string", "description": "What is to be done, in a few words." },
+                                "status": { "type": "string", "enum": TODO_STATES }
+                            },
+                            "required": ["text", "status"]
+                        }
+                    }
+                },
+                "required": ["todos"]
+            }
+        }),
+        json!({
             "name": "stop_command",
             "description": "Stop a background command and the processes it started. Returns what it printed last.",
             "input_schema": {
@@ -276,6 +301,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "run_command" => run_command(input, context).await,
         "command_output" => command_output(input, context).await,
         "stop_command" => stop_command(input, context).await,
+        "update_todos" => update_todos(input),
         other => Err(ToolOutput::error(format!("Unknown tool `{other}`."))),
     };
     result.unwrap_or_else(|error| error)
@@ -327,6 +353,30 @@ fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
         content.push_str(&format!("\n[showing lines {offset}-{last} of {}; pass offset to read more]", lines.len()));
     }
     Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines.len(), "shown": selected.len() })))
+}
+
+/// The list `update_todos` was given, checked: `(text, status)` per item.
+pub fn todo_items(input: &Value) -> Result<Vec<(String, String)>, String> {
+    let todos = input["todos"].as_array().ok_or("`todos` is required and must be a list.")?;
+    if todos.len() > TODO_ITEMS {
+        return Err(format!("The list has {} items; keep it to {TODO_ITEMS} or fewer.", todos.len()));
+    }
+    todos
+        .iter()
+        .enumerate()
+        .map(|(index, todo)| {
+            let text = todo["text"].as_str().map(str::trim).filter(|text| !text.is_empty()).ok_or(format!("Item {} has no `text`.", index + 1))?;
+            let status = todo["status"].as_str().filter(|status| TODO_STATES.contains(status)).ok_or(format!("Item {}: `status` must be one of {}.", index + 1, TODO_STATES.join(", ")))?;
+            Ok((text.to_string(), status.to_string()))
+        })
+        .collect()
+}
+
+fn update_todos(input: &Value) -> Result<ToolOutput, ToolOutput> {
+    let items = todo_items(input).map_err(ToolOutput::error)?;
+    let done = items.iter().filter(|(_, status)| status == "done").count();
+    let todos: Vec<Value> = items.iter().map(|(text, status)| json!({ "text": text, "status": status })).collect();
+    Ok(ToolOutput::ok(format!("The list has {} items, {done} done.", items.len()), json!({ "todos": todos })))
 }
 
 /// Whether a tool changes files, and so is decided, snapshotted, and undone like an edit.
@@ -1054,6 +1104,19 @@ mod tests {
         assert!(failed.is_error && failed.content.starts_with("Edit 2 of 2: `old_string` was not found") && failed.content.ends_with("Nothing was written."), "{}", failed.content);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "first\nsecond\nomega\n");
         assert!(execute("edit_file", &json!({ "path": "notes/a.txt", "edits": [] }), &context).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn keeps_a_checked_todo_list() {
+        let (_directory, context) = context();
+        let list = json!({ "todos": [{ "text": " read the parser ", "status": "done" }, { "text": "fix the lexer", "status": "in_progress" }, { "text": "run tests", "status": "pending" }] });
+        let kept = execute("update_todos", &list, &context).await;
+        assert_eq!(kept.content, "The list has 3 items, 1 done.");
+        assert_eq!(kept.meta["todos"][0], json!({ "text": "read the parser", "status": "done" }));
+        for bad in [json!({}), json!({ "todos": [{ "text": "x", "status": "started" }] }), json!({ "todos": [{ "text": "  ", "status": "done" }] })] {
+            assert!(execute("update_todos", &bad, &context).await.is_error, "{bad}");
+        }
+        assert!(execute("update_todos", &json!({ "todos": [] }), &context).await.content.starts_with("The list has 0 items"));
     }
 
     #[test]

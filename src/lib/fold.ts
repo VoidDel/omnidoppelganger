@@ -1,7 +1,7 @@
 // Folds the session log into what the window draws. The log is the only input,
 // so reopening a session shows exactly what was on screen before.
 
-import type { ContentBlock, Decision, Envelope, StreamDelta, Tokens, ToolMeta } from "./types";
+import type { ContentBlock, Decision, Envelope, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
 
 export interface ToolItem {
   kind: "tool";
@@ -216,6 +216,12 @@ const undoable = (item: Item) => item.kind === "tool" && editsFiles(item.name) &
 export function undoableTurns(rows: Row[]): Set<number> {
   const last = Math.max(0, ...rows.filter((row) => row.items.some(undoable)).map((row) => row.turn));
   return new Set(rows.map((row) => row.turn).filter((turn) => turn > 0 && turn <= last));
+}
+
+/** The to-do list as the agent last wrote it; empty when it never wrote one. */
+export function todos(rows: Row[]): Todo[] {
+  const written = rows.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool" && item.name === "update_todos" && !!item.result && !item.result.isError);
+  return written[written.length - 1]?.result?.meta?.todos ?? [];
 }
 
 /** Commands that ran, in order, for the terminal panel. */

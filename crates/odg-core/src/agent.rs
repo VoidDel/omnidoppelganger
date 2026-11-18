@@ -127,6 +127,7 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
          How you work:\n\
          - Read and search before you change code, and keep each change as small as the task allows.\n\
          - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
+         - For work of several steps, keep a to-do list with `update_todos` and mark items as you go; the user follows it beside the conversation.\n\
          - After changing code, verify it when the project gives you a way to: build it, run its tests.\n\
          - When something fails, or you could not verify a change, say so plainly.\n\
          - Reply in the language the user writes in.",

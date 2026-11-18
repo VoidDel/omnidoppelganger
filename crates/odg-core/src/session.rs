@@ -295,6 +295,8 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     let mut pending: Vec<Value> = Vec::new();
     // What the user said since the model last spoke.
     let mut unanswered: Vec<Value> = Vec::new();
+    // The to-do list as the model last wrote it.
+    let mut todos: Option<Vec<(String, String)>> = None;
     let mut planning = false;
     for envelope in events {
         match &envelope.event {
@@ -324,6 +326,11 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 if planning {
                     pending.push(text(PLAN_ON));
                 }
+                // The list is the model's own bookkeeping; a summary cannot be trusted to carry it whole.
+                if let Some(todos) = todos.as_ref().filter(|todos| !todos.is_empty()) {
+                    let lines: Vec<String> = todos.iter().map(|(item, status)| format!("- [{status}] {item}")).collect();
+                    pending.push(text(&format!("[Your to-do list as you last wrote it; update it with `update_todos` as you go.]\n{}", lines.join("\n"))));
+                }
                 pending.extend(unanswered.iter().cloned());
             }
             Event::ToolResult { tool_use_id, content, is_error, .. } => pending.push(json!({
@@ -338,6 +345,12 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 }
                 messages.push(json!({ "role": "assistant", "content": content }));
                 unanswered.clear();
+                for block in content.iter().filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos") {
+                    // A list the tool refused is not the list.
+                    if let Ok(items) = crate::tools::todo_items(&block["input"]) {
+                        todos = Some(items);
+                    }
+                }
             }
             _ => {}
         }
@@ -723,6 +736,7 @@ ASSISTANT CALLED read_file:"));
 
         log.append(Event::ContextCompacted { summary: "Read a; it holds x.".into(), tokens_before: 1153, tokens: None }).unwrap();
         // Only the summary goes back, then plan mode (still on), then what the model had not answered.
+        // (No to-do list was written in this conversation, so none is carried over.)
         let texts = |events: &[Envelope]| -> Vec<String> {
             derive_messages(events).iter().flat_map(|message| message["content"].as_array().unwrap().clone()).filter_map(|block| block["text"].as_str().map(str::to_string)).collect()
         };
@@ -738,6 +752,27 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let messages = derive_messages(log.events());
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["content"], json!([{ "type": "text", "text": "thanks" }]));
+    }
+
+    #[test]
+    fn carries_the_todo_list_across_a_compaction() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
+        let listed = |todos: Value| assistant(vec![json!({ "type": "tool_use", "id": "t", "name": "update_todos", "input": { "todos": todos } })]);
+        let result = Event::ToolResult { tool_use_id: "t".into(), tool: "update_todos".into(), content: "ok".into(), is_error: false, meta: Value::Null };
+        log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit }).unwrap();
+        log.append(listed(json!([{ "text": "read", "status": "pending" }]))).unwrap();
+        log.append(result.clone()).unwrap();
+        // The latest list counts; one the tool would refuse does not replace it.
+        log.append(listed(json!([{ "text": "read", "status": "done" }, { "text": "fix", "status": "in_progress" }]))).unwrap();
+        log.append(result.clone()).unwrap();
+        log.append(listed(json!([{ "text": "bad", "status": "unknown" }]))).unwrap();
+        log.append(result).unwrap();
+        log.append(Event::ContextCompacted { summary: "Summary.".into(), tokens_before: 9, tokens: None }).unwrap();
+        let messages = derive_messages(log.events());
+        let texts: Vec<&str> = messages[0]["content"].as_array().unwrap().iter().filter_map(|block| block["text"].as_str()).collect();
+        assert_eq!(texts.len(), 2);
+        assert!(texts[1].ends_with("as you go.]\n- [done] read\n- [in_progress] fix"), "{}", texts[1]);
     }
 
     #[test]

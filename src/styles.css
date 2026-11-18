@@ -816,6 +816,45 @@ button.select-button svg {
 
 /* ---------- side panel ---------- */
 
+.todos {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.todo {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+
+.todo .mark {
+  color: var(--ink-2);
+  text-align: center;
+}
+
+.todo.in_progress {
+  font-weight: 700;
+}
+
+.todo.in_progress .mark {
+  color: var(--jade);
+}
+
+.todo.done .text {
+  color: var(--ink-2);
+  text-decoration: line-through;
+}
+
+.todo.done .mark {
+  color: var(--jade);
+}
+
 .panel {
   min-width: 0;
   min-height: 0;

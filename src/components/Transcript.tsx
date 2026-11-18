@@ -62,6 +62,8 @@ function sealOf(tool: ToolItem): string {
       return "观";
     case "stop_command":
       return "止";
+    case "update_todos":
+      return "谋";
     default:
       return "术";
   }
@@ -110,6 +112,11 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         target: meta?.command ? `${text("job")}  ${meta.command}` : text("job"),
         outcome: waiting || (meta?.command ? state : "没有这个后台命令"),
       };
+    }
+    case "update_todos": {
+      const list = meta?.todos ?? [];
+      const current = list.find((todo) => todo.status === "in_progress")?.text ?? "";
+      return { verb: "记计划", target: current, outcome: waiting || (result!.isError ? "没记成" : `${list.filter((todo) => todo.status === "done").length} / ${list.length} 已办`) };
     }
     default:
       return { verb: tool.name, target: "", outcome: waiting || (result!.isError ? "失败" : "完成") };

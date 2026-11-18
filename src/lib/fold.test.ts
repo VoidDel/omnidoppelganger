@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -21,6 +21,20 @@ const edit = (id: string, path: string, added: number, removed: number) => [
   said(call(id, "edit_file", { path })),
   result(id, "edit_file", { path, added, removed }),
 ];
+
+describe("todos", () => {
+  it("shows the list as the agent last wrote it, skipping a list the tool refused", () => {
+    const listed = (id: string, list: object[], isError = false): SessionEvent[] => [said(call(id, "update_todos", { todos: list })), result(id, "update_todos", isError ? null : { todos: list }, isError)];
+    const rows = fold(
+      log(user("go"), ...listed("a", [{ text: "read", status: "pending" }]), ...listed("b", [{ text: "read", status: "done" }, { text: "fix", status: "in_progress" }]), ...listed("c", [{ text: "bad", status: "?" }], true)),
+    );
+    expect(todos(rows)).toEqual([
+      { text: "read", status: "done" },
+      { text: "fix", status: "in_progress" },
+    ]);
+    expect(todos(fold(log(user("go"))))).toEqual([]);
+  });
+});
 
 describe("background commands", () => {
   it("lists a background command and the calls that read and stop it in the terminal", () => {

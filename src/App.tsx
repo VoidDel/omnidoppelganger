@@ -3,7 +3,7 @@ import { Composer, Logo, Mountains, SessionHeader, SidePanel, Sidebar } from "./
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
-import { applyDelta, changedFiles, commandRuns, fold, usage, type StreamBlock } from "./lib/fold";
+import { applyDelta, changedFiles, commandRuns, fold, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
 import type { Decision, Envelope, Mode, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
@@ -153,6 +153,7 @@ export default function App() {
   const files = useMemo(() => changedFiles(rows), [rows]);
   const runs = useMemo(() => commandRuns(rows), [rows]);
   const spent = useMemo(() => usage(state.events), [state.events]);
+  const plan = useMemo(() => todos(rows), [rows]);
   const active = state.sessions.find((session) => session.id === state.activeId);
 
   const open = (id: string) => {
@@ -285,7 +286,7 @@ export default function App() {
           </>
         )}
       </main>
-      {showPanel && <SidePanel files={files} runs={runs} />}
+      {showPanel && <SidePanel files={files} runs={runs} todos={plan} />}
     </div>
   );
 }
