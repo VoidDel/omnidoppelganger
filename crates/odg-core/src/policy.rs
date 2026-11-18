@@ -11,7 +11,9 @@
 //!   [`crate::safety`]; any other command asks.
 //!
 //! Fetching a web page asks in every mode, once per site: the request leaves
-//! the machine, and its address can carry whatever the model puts in it.
+//! the machine, and its address can carry whatever the model puts in it. A
+//! web search asks too: the query goes to the search service, and each
+//! search is paid for.
 //!
 //! A tool of an MCP server asks in every mode: what it does is the server's
 //! business, and nothing here can tell a harmless one from another.
@@ -52,7 +54,7 @@ pub enum Verdict {
     /// Not run and not asked about: the tool gets this message as an error result.
     Refuse(&'static str),
     Ask {
-        /// The rule that asked: `command`, `edit`, `mcp`, `web`, `outside_read`, `outside_write`, or `git_write`.
+        /// The rule that asked: `command`, `edit`, `mcp`, `web`, `search`, `outside_read`, `outside_write`, or `git_write`.
         reason: &'static str,
         /// The command or path shown to the user.
         detail: String,
@@ -91,6 +93,7 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             Some(path) => ask("outside_read", path),
             None => Verdict::Allow,
         },
+        "web_search" => Verdict::Ask { reason: "search", detail: input["query"].as_str().unwrap_or_default().to_string(), grant: Some("search".to_string()) },
         "fetch_url" => {
             let url = input["url"].as_str().unwrap_or_default();
             match crate::web::host(url) {
@@ -193,6 +196,9 @@ mod tests {
             assert_eq!(asked, Verdict::Ask { reason: "web", detail: "https://docs.rs/serde/latest/serde/".into(), grant: Some("web:docs.rs".into()) });
         }
         assert_eq!(super::check(Mode::Edit, "fetch_url", &json!({ "url": "file:///etc/passwd" }), workspace), Verdict::Allow);
+        // A search asks in every mode too, with one grant for all searches.
+        let searched = super::check(Mode::Auto, "web_search", &json!({ "query": "tokio release notes" }), workspace);
+        assert_eq!(searched, Verdict::Ask { reason: "search", detail: "tokio release notes".into(), grant: Some("search".into()) });
         // A tool of an MCP server asks whatever the mode, and its grant names that one tool.
         for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
             let asked = super::check(mode, "mcp__files__read_file", &json!({ "path": "a" }), workspace);

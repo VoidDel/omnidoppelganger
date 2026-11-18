@@ -105,6 +105,7 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
         "find_files" => input["glob"].as_str().or(input["path"].as_str()).unwrap_or(".").to_string(),
         "run_command" => text("command"),
         "fetch_url" => text("url"),
+        "web_search" => text("query"),
         "load_skill" => text("name"),
         "command_output" | "stop_command" => text("job"),
         _ => String::new(),
@@ -119,6 +120,7 @@ fn ask(reason: &str, detail: &str, session_wide: bool) -> Decision {
         "command" => "run this command",
         "edit" => "change this file",
         "web" => "fetch this address",
+        "search" => "search the web for",
         "mcp" => "call this MCP tool",
         "git_write" => "change this file in .git",
         "outside_read" => "read outside the workspace",
@@ -187,7 +189,13 @@ async fn run(options: Options) -> Result<bool, String> {
         let settings = tuned.load();
         Tuning { context_limit: settings.context_limit_for(&tuned_provider, &tuned_model), context_window: context_window(&tuned_provider, &tuned_model), effort: settings.effort }
     };
-    let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: Some(mcp.clone()), skills: Some(home.join("skills")) };
+    let searching = store.clone();
+    let services = Services {
+        grants: Arc::new(GrantStore::new(home.join("grants.json"))),
+        mcp: Some(mcp.clone()),
+        skills: Some(home.join("skills")),
+        search: Some(Arc::new(move || searching.search())),
+    };
     let (sender, mut events) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let session = Session::new(log, llm, Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).map_err(|error| error.to_string())?;
     session.set_mode(options.mode.unwrap_or(saved.mode));

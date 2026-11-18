@@ -69,6 +69,8 @@ pub struct Services {
     pub mcp: Option<Arc<McpHub>>,
     /// The user's own skills directory; the workspace's `.odg/skills` is added to it.
     pub skills: Option<PathBuf>,
+    /// Where a web search goes, asked at every request so that saving a key switches searching on.
+    pub search: Option<crate::web::SearchSource>,
 }
 
 /// What the model is asked when the conversation is compacted. It follows
@@ -101,6 +103,7 @@ struct Inner<L: Llm> {
     mcp: Option<Arc<McpHub>>,
     /// Where skills are looked for: the user's directory, then the workspace's, which wins on a shared name.
     skill_roots: Vec<PathBuf>,
+    search: Option<crate::web::SearchSource>,
     provider: String,
     model: String,
     llm: Arc<L>,
@@ -177,7 +180,7 @@ impl<L: Llm> Session<L> {
         let (workspace, provider, model) = log.header();
         let mode = summarize(log.events()).mode;
         let snapshots = log.path().with_file_name("snapshots");
-        let Services { grants: kept, mcp, skills } = services;
+        let Services { grants: kept, mcp, skills, search } = services;
         let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
         Ok(Self {
             inner: Arc::new(Inner {
@@ -188,6 +191,7 @@ impl<L: Llm> Session<L> {
                 kept,
                 mcp,
                 skill_roots,
+                search,
                 provider,
                 model,
                 llm,
@@ -372,12 +376,21 @@ impl<L: Llm> Inner<L> {
             jobs: Some(self.jobs.clone()),
             mcp: self.mcp.clone(),
             skills: self.skill_roots.clone(),
+            search: self.search_config(),
         }
+    }
+
+    /// Where a web search would go right now; `None` when searching is not set up.
+    fn search_config(&self) -> Option<crate::web::SearchConfig> {
+        self.search.as_ref().and_then(|source| source())
     }
 
     /// The tools of the next request: the built-in ones, then those of the MCP servers connected right now.
     fn tool_specs(&self) -> Vec<Value> {
         let mut specs = tools::specs();
+        if self.search_config().is_some() {
+            specs.push(tools::search_spec());
+        }
         if let Some(hub) = &self.mcp {
             specs.extend(hub.specs());
         }
@@ -738,7 +751,7 @@ mod tests {
             Tuning { effort: "high".to_string(), context_limit, context_window }
         };
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")) };
+        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None };
         let session = Session::new(log, llm.clone(), Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, limits, workspace, session, llm, events }
     }
@@ -858,7 +871,7 @@ mod tests {
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
-        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None };
+        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None };
         let later = Session::new(log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
         fixture.events = events;
@@ -1075,7 +1088,9 @@ mod tests {
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None };
+        // Searching is set up, so the model is offered `web_search` as well.
+        let search: crate::web::SearchSource = Arc::new(|| Some(crate::web::SearchConfig { url: "http://127.0.0.1:9/web_search".into(), key: "k".into(), engine: "search_std".into() }));
+        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search) };
         let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         // Auto mode lets safe commands through, but never a server's tool.
         session.set_mode(Mode::Auto);
@@ -1099,8 +1114,8 @@ mod tests {
         // The model was offered the server's tools after the built-in ones.
         let requests = fixture.llm.requests.lock().unwrap();
         let names: Vec<&str> = requests[0].tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
-        assert_eq!(names[names.len() - 2..], ["mcp__echo__echo", "mcp__echo__fail_now"]);
-        assert_eq!(names.len(), tools::specs().len() + 2);
+        assert_eq!(names[names.len() - 3..], ["web_search", "mcp__echo__echo", "mcp__echo__fail_now"]);
+        assert_eq!(names.len(), tools::specs().len() + 3);
     }
 
     /// The texts of a request's messages, one list per message.

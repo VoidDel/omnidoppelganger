@@ -68,6 +68,9 @@ export interface ToolMeta {
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
+  /** What `web_search` looked for, and how many results came back. */
+  query?: string;
+  results?: number;
   /** The address `fetch_url` ended at, its title, and how many characters of text it holds. */
   url?: string;
   title?: string | null;
@@ -147,6 +150,8 @@ export interface Settings {
   mode: Mode;
   /** Conversations are compacted once they hold about this many tokens. */
   context_limit: number;
+  /** Which search engine `web_search` asks. */
+  search_engine: string;
   theme: "system" | "light" | "dark";
   /** Addresses that replace a provider's default, by provider id. */
   base_urls: Record<string, string>;
@@ -178,6 +183,9 @@ export interface SettingsView {
   home: string;
   /** Command approvals given for good, by workspace path. */
   grants: Record<string, string[]>;
+  /** The engines a web search can ask, `[id, what it is]`, and whether a GLM key is saved for searching to work. */
+  search_engines: [string, string][];
+  search_ready: boolean;
   /** The user's own skills, and the directory they are kept in. */
   skills: Skill[];
   skills_directory: string;

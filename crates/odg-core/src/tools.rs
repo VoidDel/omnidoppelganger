@@ -48,6 +48,8 @@ pub struct ToolContext {
     pub mcp: Option<Arc<crate::mcp::McpHub>>,
     /// The directories skills are looked for in, the workspace's last; see [`crate::skills`].
     pub skills: Vec<PathBuf>,
+    /// Where `web_search` sends a search. `None` means searching is not set up.
+    pub search: Option<crate::web::SearchConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,7 +198,7 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "fetch_url",
-            "description": "Get a web page and return its text: documentation, an issue, a raw file. HTML comes back as its words, without markup. The user may have to approve the site first. A long page is cut; pass `offset` to read on. It reads one address; it does not search the web.",
+            "description": "Get a web page and return its text: documentation, an issue, a raw file. HTML comes back as its words, without markup. The user may have to approve the site first. A long page is cut; pass `offset` to read on. It reads the one address it is given.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -251,6 +253,25 @@ pub fn specs() -> Vec<Value> {
             }
         }),
     ]
+}
+
+/// The definition of `web_search`. It is sent to the model only while a
+/// search source is set up, so the model is not offered a tool that cannot work.
+pub fn search_spec() -> Value {
+    json!({
+        "name": "web_search",
+        "description": "Search the web and get back the results' titles, addresses, and summaries. Use it for what you cannot know or find in the workspace: current facts, an error message, which page documents something. Then read a result in full with `fetch_url`. Keep the query short and specific, under 70 characters. Each search is a paid call, so do not repeat one.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "What to search for." },
+                "count": { "type": "integer", "description": "How many results to return. Default 8, at most 20." },
+                "recency": { "type": "string", "enum": ["oneDay", "oneWeek", "oneMonth", "oneYear"], "description": "Only results this recent. Default: any time." },
+                "site": { "type": "string", "description": "Only results from this site, like `docs.rs`." }
+            },
+            "required": ["query"]
+        }
+    })
 }
 
 /// Resolve a tool's path argument against the workspace, folding `.` and `..` without touching the disk.
@@ -347,6 +368,14 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "command_output" => command_output(input, context).await,
         "stop_command" => stop_command(input, context).await,
         "update_todos" => update_todos(input),
+        "web_search" => match (string_arg(input, "query"), &context.search) {
+            (Ok(query), Some(config)) => {
+                let found = crate::web::search(config, query, input, &context.cancel).await;
+                Ok(ToolOutput { content: found.content, is_error: found.is_error, meta: found.meta })
+            }
+            (Ok(_), None) => Err(ToolOutput::error("Web search is not set up: it needs a GLM (Zhipu) API key saved in the settings.")),
+            (Err(error), _) => Err(error),
+        },
         "fetch_url" => match string_arg(input, "url") {
             Ok(url) => {
                 let offset = usize::try_from(input["offset"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
@@ -897,7 +926,7 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new() };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None };
         (directory, context)
     }
 

@@ -129,6 +129,7 @@ const MCP_STATES: Record<McpServer["state"], string> = { connecting: "正在连�
 /** A kept grant as the user reads it: a command's opening words, or an MCP server's tool. */
 function grantLabel(grant: string): string {
   const borrowed = grant.startsWith("mcp:") ? mcpTool(grant.slice("mcp:".length)) : null;
+  if (grant === "search") return "联网搜索";
   if (grant.startsWith("web:")) return `网站 ${grant.slice("web:".length)}`;
   return borrowed ? `法器 ${borrowed.server} 的 ${borrowed.tool}` : grant.replace(/^command:/, "");
 }
@@ -313,6 +314,25 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               ))}
             </div>
           ))}
+        </section>
+
+        <section>
+          <h2>联网搜索</h2>
+          <div className="field">
+            <label htmlFor="search-engine">用哪家搜</label>
+            <select id="search-engine" className="input" value={settings.search_engine} onChange={(event) => onSave({ ...settings, search_engine: event.target.value })}>
+              {view.search_engines.map(([id, what]) => (
+                <option key={id} value={id}>
+                  {what}
+                </option>
+              ))}
+            </select>
+            <p className="hint">
+              搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家功法都能搜。
+              {view.search_ready ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。" : "还没有 GLM 的密钥，所以分身现在不能搜：在下面「功法出处」里填上它就行。"}
+              GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
+            </p>
+          </div>
         </section>
 
         <section>

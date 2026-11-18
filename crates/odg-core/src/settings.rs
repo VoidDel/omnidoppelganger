@@ -18,6 +18,7 @@ use crate::fsutil::write_atomically;
 use crate::llm::Endpoint;
 use crate::policy::Mode;
 use crate::providers::{DEFAULT_PROVIDER, PROVIDERS, Protocol, Provider, context_window, provider};
+use crate::web::{INTERNATIONAL_ENGINE, SEARCH_ENGINES, SearchConfig};
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const THEMES: &[&str] = &["system", "light", "dark"];
@@ -45,6 +46,10 @@ fn default_context_limit() -> u64 {
     DEFAULT_CONTEXT_LIMIT
 }
 
+fn default_search_engine() -> String {
+    SEARCH_ENGINES[0].0.to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     /// Provider of sessions created from now on. Settings saved before there
@@ -64,6 +69,9 @@ pub struct Settings {
     /// many tokens, or sooner on a model whose context window is smaller.
     #[serde(default = "default_context_limit")]
     pub context_limit: u64,
+    /// Which of Zhipu's search engines `web_search` asks; see [`SEARCH_ENGINES`].
+    #[serde(default = "default_search_engine")]
+    pub search_engine: String,
     /// `system`, `light`, or `dark`.
     pub theme: String,
     /// Addresses that replace a provider's default, by provider id; for an
@@ -82,6 +90,7 @@ impl Default for Settings {
             effort: "high".to_string(),
             mode: Mode::Edit,
             context_limit: DEFAULT_CONTEXT_LIMIT,
+            search_engine: default_search_engine(),
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
         }
@@ -113,6 +122,9 @@ impl Settings {
             self.theme = default.theme;
         }
         self.context_limit = self.context_limit.max(MIN_CONTEXT_LIMIT);
+        if !SEARCH_ENGINES.iter().any(|(id, _)| *id == self.search_engine) {
+            self.search_engine = default.search_engine;
+        }
         self.base_urls = std::mem::take(&mut self.base_urls)
             .into_iter()
             .map(|(id, url)| (id, url.trim().trim_end_matches('/').to_string()))
@@ -298,6 +310,17 @@ impl SettingsStore {
     pub fn endpoint(&self, provider_id: &str) -> Endpoint {
         let base_url = self.load().base_urls.get(provider_id).cloned().or_else(|| provider(provider_id).map(|known| known.base_url.to_string())).unwrap_or_default();
         Endpoint { base_url, key: self.api_key(provider_id) }
+    }
+
+    /// Where `web_search` searches: Zhipu's Web Search API, at the address
+    /// and with the key its models use. `None` while no GLM key is saved,
+    /// which is how searching is switched on. With the address set to
+    /// Zhipu's international site, that site's one engine is asked.
+    pub fn search(&self) -> Option<SearchConfig> {
+        let Endpoint { base_url, key } = self.endpoint("zhipu");
+        let key = key?;
+        let engine = if base_url.contains("z.ai") { INTERNATIONAL_ENGINE.to_string() } else { self.load().search_engine };
+        Some(SearchConfig { url: format!("{}/web_search", base_url.trim_end_matches('/')), key, engine })
     }
 
     /// Store a provider's key: in the vault, or, when there is none or it
@@ -515,6 +538,30 @@ mod tests {
         vault.broken.store(false, std::sync::atomic::Ordering::SeqCst);
         store.migrate_keys();
         assert!(!directory.path().join("credentials.json").exists() && !store.key_status("zhipu").plaintext);
+    }
+
+    #[test]
+    fn searching_uses_the_glm_key_and_address_and_is_off_without_a_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(directory.path());
+        // The GLM key may also come from the environment, which this test does not control.
+        if std::env::var_os("ZHIPUAI_API_KEY").is_none() {
+            assert_eq!(store.search(), None);
+        }
+        store.save_api_key("zhipu", "glm-key-0000000000000000").unwrap();
+        let search = store.search().unwrap();
+        assert_eq!((search.url.as_str(), search.engine.as_str()), ("https://open.bigmodel.cn/api/paas/v4/web_search", "search_std"));
+        assert_eq!(search.key, "glm-key-0000000000000000");
+
+        // The chosen engine is used; one this build does not know falls back to the cheapest.
+        store.save(Settings { search_engine: "search_pro".into(), ..Settings::default() }).unwrap();
+        assert_eq!(store.search().unwrap().engine, "search_pro");
+        assert_eq!(store.save(Settings { search_engine: "bing".into(), ..Settings::default() }).unwrap().search_engine, "search_std");
+        // The international site has one engine of its own.
+        let abroad = Settings { base_urls: [("zhipu".to_string(), "https://api.z.ai/api/paas/v4/".to_string())].into(), ..Settings::default() };
+        store.save(abroad).unwrap();
+        let search = store.search().unwrap();
+        assert_eq!((search.url.as_str(), search.engine.as_str()), ("https://api.z.ai/api/paas/v4/web_search", "search-prime"));
     }
 
     #[test]

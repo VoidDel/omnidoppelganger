@@ -94,6 +94,8 @@ function sealOf(tool: ToolItem): string {
       return "技";
     case "fetch_url":
       return "网";
+    case "web_search":
+      return "询";
     default:
       // A tool of an MCP server: an instrument borrowed from outside.
       return mcpTool(tool.name) ? "器" : "术";
@@ -144,6 +146,8 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         outcome: waiting || (meta?.command ? state : "没有这个后台命令"),
       };
     }
+    case "web_search":
+      return { verb: "联网搜索", target: text("query"), outcome: waiting || (result!.isError ? "没搜成" : `${meta?.results ?? 0} 条`) };
     case "fetch_url":
       return { verb: "抓取网页", target: text("url"), outcome: waiting || (result!.isError ? "没取到" : `${shortCount(meta?.characters ?? 0)} 字`) };
     case "load_skill":
@@ -168,7 +172,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "stop_command" ? result?.meta?.output : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
   // What an MCP tool returned is its whole result, so it is kept one click away like a command's output.
-  const returned = result?.meta?.mcp && !result.isError ? result.content : undefined;
+  const returned = (result?.meta?.mcp || tool.name === "web_search") && !result?.isError ? result?.content : undefined;
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
   const [open, setOpen] = useState(() => !!hunk || !!failure || (!!output && !!result?.isError));
@@ -191,6 +195,11 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
+  search: {
+    title: "分身要联网搜索，请本尊定夺",
+    note: "搜索词会发给智谱的搜索服务，每搜一次都要花灵石（基础版约 0.01 元）。",
+    always: "之后搜索都准",
+  },
   web: {
     title: "分身要上网取一个网页，请本尊定夺",
     note: "这个请求会发到洞府之外，网址里带的内容对方都看得到。准了之后，同一个网站的其他网页不再请示。",
@@ -257,7 +266,7 @@ function SignSheet({ tool, mode, onDecide }: SignSheetProps) {
             {alwaysLabel(approval.grant, ask.always)}
           </button>
         )}
-        {["command:", "mcp:", "web:"].some((kind) => approval.grant?.startsWith(kind)) && (
+        {(approval.grant === "search" || ["command:", "mcp:", "web:"].some((kind) => approval.grant?.startsWith(kind))) && (
           <button type="button" className="button outline red" title="重启应用之后也算数，可以在设置里撤销" onClick={() => onDecide(tool.id, "allow_always")}>
             这处洞府里永远都准
           </button>

@@ -1,4 +1,5 @@
-//! Fetching a web page for the model to read: `fetch_url`.
+//! Reaching the web for the model: `fetch_url` reads a page, `web_search`
+//! finds pages.
 //!
 //! The page comes back as text. HTML is reduced to its words (scripts,
 //! styles, and markup gone); other text is returned as it is; anything else
@@ -149,10 +150,141 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
     Fetched { content, is_error: false, meta: json!({ "url": landed, "title": title, "characters": total }) }
 }
 
+/// Where a search is sent. Today the one source is Zhipu's Web Search API,
+/// which takes the same key as its models; another source would be another
+/// way to build one of these and to read its answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchConfig {
+    /// The search endpoint.
+    pub url: String,
+    pub key: String,
+    /// The engine to ask, one of [`SEARCH_ENGINES`], or `search-prime` on Zhipu's international site.
+    pub engine: String,
+}
+
+/// Gives the search configuration in force, or `None` when searching is not set up.
+pub type SearchSource = std::sync::Arc<dyn Fn() -> Option<SearchConfig> + Send + Sync>;
+
+/// The engines Zhipu's site in China offers, the cheapest first: `(id, what it is)`.
+pub const SEARCH_ENGINES: &[(&str, &str)] =
+    &[("search_std", "智谱基础版，约 0.01 元一次"), ("search_pro", "智谱高阶版，约 0.03 元一次"), ("search_pro_sogou", "搜狗，约 0.05 元一次"), ("search_pro_quark", "夸克，约 0.05 元一次")];
+/// The one engine of Zhipu's international site, which also takes fewer fields.
+pub const INTERNATIONAL_ENGINE: &str = "search-prime";
+const RECENCY: &[&str] = &["oneDay", "oneWeek", "oneMonth", "oneYear"];
+const SEARCH_RESULTS: u64 = 20;
+
+/// Search the web for `query` and list what was found: title, source, date, address, and summary.
+pub async fn search(config: &SearchConfig, query: &str, input: &Value, cancel: &CancellationToken) -> Fetched {
+    let query = query.trim();
+    if query.is_empty() {
+        return failed("The query is empty.".to_string());
+    }
+    let mut count = input["count"].as_u64().unwrap_or(8).clamp(1, SEARCH_RESULTS);
+    if config.engine == "search_pro_sogou" {
+        // Sogou takes result counts in tens only.
+        count = count.div_ceil(10) * 10;
+    }
+    let mut body = json!({ "search_engine": config.engine, "search_query": query, "count": count });
+    if config.engine != INTERNATIONAL_ENGINE {
+        // Search as asked, without the service first judging whether a search is needed.
+        body["search_intent"] = json!(false);
+        body["content_size"] = json!("medium");
+    }
+    if let Some(recency) = input["recency"].as_str() {
+        if !RECENCY.contains(&recency) {
+            return failed(format!("`recency` must be one of {}.", RECENCY.join(", ")));
+        }
+        body["search_recency_filter"] = json!(recency);
+    }
+    if let Some(site) = input["site"].as_str().map(str::trim).filter(|site| !site.is_empty()) {
+        body["search_domain_filter"] = json!(site);
+    }
+
+    let client = match reqwest::Client::builder().connect_timeout(TIMEOUT).timeout(TIMEOUT).build() {
+        Ok(client) => client,
+        Err(error) => return failed(format!("Cannot set up the request: {error}")),
+    };
+    let request = client.post(&config.url).bearer_auth(config.key.trim()).json(&body);
+    let answered = async {
+        let response = request.send().await.map_err(|error| format!("Cannot reach the search service: {error}"))?;
+        let status = response.status();
+        let text = response.text().await.map_err(|error| format!("The search service's answer broke off: {error}"))?;
+        Ok::<_, String>((status, text))
+    };
+    let (status, text) = tokio::select! {
+        outcome = answered => match outcome {
+            Ok(got) => got,
+            Err(error) => return failed(error),
+        },
+        () = cancel.cancelled() => return failed("The search was cancelled.".to_string()),
+    };
+    let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    // The site in China wraps an error as {"error": {code, message}}; the international one puts both at the top.
+    let error = if answer["error"].is_object() { &answer["error"] } else { &answer };
+    if !status.is_success() || error["message"].is_string() && !answer["search_result"].is_array() {
+        let code = error["code"].as_str().map(str::to_string).or_else(|| error["code"].as_i64().map(|code| code.to_string())).unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+        let message = error["message"].as_str().unwrap_or("the search service gave no reason");
+        return failed(format!("The search failed ({code}): {message}"));
+    }
+    let results = answer["search_result"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if results.is_empty() {
+        return Fetched { content: format!("No results for `{query}`. Try other words."), is_error: false, meta: json!({ "query": query, "results": 0 }) };
+    }
+    let listed: Vec<String> = results
+        .iter()
+        .enumerate()
+        .map(|(index, result)| {
+            let field = |name: &str| result[name].as_str().map(str::trim).filter(|value| !value.is_empty());
+            let from: Vec<&str> = [field("media"), field("publish_date")].into_iter().flatten().collect();
+            let heading = format!("{}. {}{}", index + 1, field("title").unwrap_or("(no title)"), if from.is_empty() { String::new() } else { format!(" ({})", from.join(", ")) });
+            // A summary is enough to choose by; the page itself is read with fetch_url.
+            let summary: String = field("content").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(700).collect();
+            format!("{heading}\n   {}\n   {summary}", field("link").unwrap_or("(no address)"))
+        })
+        .collect();
+    Fetched { content: listed.join("\n\n"), is_error: false, meta: json!({ "query": query, "results": results.len() }) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::serve;
+
+    #[tokio::test]
+    async fn searches_through_zhipus_api_and_lists_the_results() {
+        let cancel = CancellationToken::new();
+        let found = json!({ "id": "1", "created": 1, "search_result": [
+            { "title": "Tokio 1.54 released", "content": "The  release\nadds a thing.", "link": "https://tokio.rs/blog/1-54", "media": "Tokio", "publish_date": "2026-10-01", "refer": "ref_1" },
+            { "title": "", "content": "", "link": "https://example.com/x", "media": "", "publish_date": "" },
+        ] });
+        let busy = r#"{"error":{"code":"1701","message":"too many searches at once"}}"#;
+        let (address, requests) = serve(vec![
+            page("application/json", &found.to_string()),
+            page("application/json", &json!({ "search_result": [] }).to_string()),
+            format!("HTTP/1.1 429 Too Many\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{busy}", busy.len()),
+            page("application/json", r#"{"code":1702,"message":"no engine"}"#),
+        ])
+        .await;
+        let config = |engine: &str| SearchConfig { url: format!("{address}/paas/v4/web_search"), key: " glm-key ".into(), engine: engine.into() };
+
+        let got = search(&config("search_std"), " tokio release ", &json!({ "count": 3, "recency": "oneMonth", "site": "tokio.rs" }), &cancel).await;
+        assert_eq!(got.content, "1. Tokio 1.54 released (Tokio, 2026-10-01)\n   https://tokio.rs/blog/1-54\n   The release adds a thing.\n\n2. (no title)\n   https://example.com/x\n   ");
+        assert_eq!((got.is_error, got.meta["results"].as_u64()), (false, Some(2)));
+        // The international site's engine takes fewer fields; Sogou takes counts in tens.
+        let none = search(&config(INTERNATIONAL_ENGINE), "nothing", &json!({}), &cancel).await;
+        assert_eq!((none.content.as_str(), none.is_error), ("No results for `nothing`. Try other words.", false));
+        assert_eq!(search(&config("search_pro_sogou"), "q", &json!({ "count": 12 }), &cancel).await.content, "The search failed (1701): too many searches at once");
+        assert_eq!(search(&config("search_std"), "q", &json!({}), &cancel).await.content, "The search failed (1702): no engine");
+        assert!(search(&config("search_std"), "q", &json!({ "recency": "lately" }), &cancel).await.content.starts_with("`recency` must be one of"));
+        assert!(search(&config("search_std"), "  ", &json!({}), &cancel).await.is_error);
+
+        let requests = requests.await.unwrap();
+        let body = |request: &str| -> Value { serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap() };
+        assert!(requests[0].starts_with("POST /paas/v4/web_search ") && requests[0].to_lowercase().contains("authorization: bearer glm-key\r\n"));
+        assert_eq!(body(&requests[0]), json!({ "search_engine": "search_std", "search_query": "tokio release", "count": 3, "search_intent": false, "content_size": "medium", "search_recency_filter": "oneMonth", "search_domain_filter": "tokio.rs" }));
+        assert_eq!(body(&requests[1]), json!({ "search_engine": "search-prime", "search_query": "nothing", "count": 8 }));
+        assert_eq!(body(&requests[2])["count"], 20);
+    }
 
     #[test]
     fn reduces_html_to_its_words() {

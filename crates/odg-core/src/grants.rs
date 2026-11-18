@@ -4,7 +4,8 @@
 //! Three kinds of grant can be kept, because each names one thing that stays
 //! the same from one day to the next: a command's, which names a program
 //! and subcommand (see `policy::command_grant`); an MCP tool's, which names
-//! that tool; and a web site's, which names its host. An approval of edits or of paths outside the workspace
+//! that tool; and a web site's, which names its host. So can the grant to
+//! search the web, of which there is one. An approval of edits or of paths outside the workspace
 //! lasts for the session it was given in.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,7 +32,8 @@ impl GrantStore {
 
     /// Whether an approval of this grant can be kept for good.
     pub fn keeps(grant: &str) -> bool {
-        ["command:", "mcp:", "web:"].iter().any(|kind| grant.starts_with(kind))
+        // `search` covers every web search: there is one search service, and nothing narrower to name.
+        grant == "search" || ["command:", "mcp:", "web:"].iter().any(|kind| grant.starts_with(kind))
     }
 
     /// Every kept grant. A missing or unreadable file holds none.
