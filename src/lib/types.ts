@@ -27,6 +27,7 @@ export type ContentBlock =
 export type SessionEvent =
   | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number } }
   | { type: "session/renamed"; data: { title: string } }
+  | { type: "model/changed"; data: { model: string } }
   | { type: "instructions/loaded"; data: { path: string; content: string } }
   | { type: "skills/listed"; data: { skills: Skill[] } }
   | { type: "turn/start"; data: { turn: number } }
@@ -115,6 +116,8 @@ export interface SessionItem {
   mode: Mode;
   /** The number of tokens at which the conversation is compacted into a summary. */
   context_limit: number;
+  /** The most that limit can be for this session's model. */
+  context_ceiling: number;
   /** The Git branch checked out in the workspace; null when it is not a repository. */
   branch: string | null;
   /** Whether the model takes pictures; null when its provider's documentation does not say. */

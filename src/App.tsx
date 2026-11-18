@@ -197,11 +197,6 @@ export default function App() {
   const providers = state.settings?.providers ?? [];
   const defaultProvider = providers.find((provider) => provider.id === state.settings?.settings.provider);
   const missingKey = !!defaultProvider && state.settings?.keys[defaultProvider.id]?.source === "none";
-  /** What the composer shows for a session's model: the provider's name too, unless it is Anthropic. */
-  const modelLabel = (session: SessionItem) => {
-    const provider = providers.find((known) => known.id === session.provider);
-    return provider && provider.id !== "anthropic" ? `${provider.name} · ${session.model}` : session.model;
-  };
   const inSettings = state.page === "settings";
   const showPanel = !inSettings && !!active;
   return (
@@ -236,6 +231,7 @@ export default function App() {
             onDeleteKey={(provider) => saved(api.deleteApiKey(provider))}
             onRevoke={(workspace, grant) => saved(api.revokeGrant(workspace, grant))}
             onRefresh={refreshSettings}
+            listModels={api.listModels}
             onSaveMcp={(config) =>
               api.saveMcpConfig(config).then(
                 (settings) => {
@@ -266,11 +262,21 @@ export default function App() {
             )}
             <Composer
               status={state.status}
-              model={modelLabel(active)}
+              provider={providers.find((known) => known.id === active.provider)}
+              providerId={active.provider}
+              model={active.model}
+              listModels={api.listModels}
+              onModel={(model) => api.setModel(active.id, model).then((item) => dispatch({ type: "session", item }), fail)}
               vision={active.vision}
               mode={active.mode}
               usage={spent}
               contextLimit={active.context_limit}
+              contextCeiling={active.context_ceiling}
+              contextSetting={state.settings?.settings.context_limit ?? active.context_limit}
+              onLimit={(limit) => {
+                // The limit is one setting for every session; each session's own figure comes back with the list.
+                if (state.settings) saved(api.saveSettings({ ...state.settings.settings, context_limit: limit })).then(refresh);
+              }}
               planReady={planReady}
               onMode={(mode) => switchMode(mode).catch(fail)}
               onCarryOut={carryOut}

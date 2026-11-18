@@ -18,7 +18,7 @@ use crate::llm::{AssistantTurn, Attempt, Llm, LlmError, LlmRequest, StreamDelta,
 use crate::sse::SseParser;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
-const API_VERSION: &str = "2026-10-21";
+pub(crate) const API_VERSION: &str = "2026-10-21";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 /// Streaming has no HTTP timeout to stay under, so the model gets room to finish.
 const MAX_TOKENS: u32 = 64_000;

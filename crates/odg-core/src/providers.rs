@@ -152,6 +152,42 @@ pub fn vision(provider: &str, model: &str) -> Option<bool> {
     }
 }
 
+/// Ask a provider which models it serves: `(id, display name)`, as the
+/// provider orders them. Every provider here has a list endpoint in the
+/// OpenAI shape, `{"data": [{"id": ...}]}`; Anthropic's adds a display name
+/// and wants its own headers. The list holds whatever the key may use,
+/// which for some providers includes models that are not for chat.
+pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -> Result<Vec<(String, String)>, String> {
+    let known = provider(provider_id).ok_or_else(|| format!("there is no provider `{provider_id}`"))?;
+    let key = key.map(str::trim).filter(|key| !key.is_empty()).ok_or("no API key is saved for this provider")?;
+    let base = base_url.trim_end_matches('/');
+    if base.is_empty() {
+        return Err("this provider has no address yet".to_string());
+    }
+    let http = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(15)).timeout(std::time::Duration::from_secs(30)).build().map_err(|error| error.to_string())?;
+    let request = match known.protocol {
+        Protocol::Anthropic => http.get(format!("{base}/v1/models?limit=1000")).header("x-api-key", key).header("anthropic-version", anthropic::API_VERSION),
+        Protocol::Responses | Protocol::Chat(_) => http.get(format!("{base}/models")).bearer_auth(key),
+    };
+    let response = request.send().await.map_err(|error| format!("cannot reach the provider: {error}"))?;
+    if !response.status().is_success() {
+        let (error, _) = crate::llm::http_failure(response).await;
+        return Err(error.to_string());
+    }
+    let listed: Value = response.json().await.map_err(|error| format!("the provider's answer is not JSON: {error}"))?;
+    let models: Vec<(String, String)> = listed["data"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|model| {
+            let id = model["id"].as_str().filter(|id| !id.is_empty())?;
+            Some((id.to_string(), model["display_name"].as_str().unwrap_or(id).to_string()))
+        })
+        .collect();
+    if models.is_empty() { Err("the provider listed no models".to_string()) } else { Ok(models) }
+}
+
 /// Read a provider's `usage` object into [`Tokens`]. The providers differ in
 /// field names and in whether the prompt count includes what was read from
 /// cache: Anthropic's does not, the others' do. `None` when it holds no count.
@@ -257,6 +293,37 @@ mod tests {
         assert_eq!(context_window("anthropic", "claude-opus-5-5"), 1_000_000);
         assert_eq!(context_window("zhipu", "glm-9"), UNKNOWN_CONTEXT_WINDOW);
         assert_eq!(context_window("custom", "anything"), UNKNOWN_CONTEXT_WINDOW);
+    }
+
+    #[tokio::test]
+    async fn asks_each_kind_of_provider_for_its_models() {
+        use crate::testing::{error, serve};
+        use serde_json::json;
+        let listing = |body: Value| {
+            let body = body.to_string();
+            format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
+        };
+        let (address, requests) = serve(vec![
+            listing(json!({ "data": [{ "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5" }, { "id": "claude-next" }], "has_more": false })),
+            listing(json!({ "object": "list", "data": [{ "id": "glm-5.3", "object": "model" }, { "id": "glm-5.3-flash" }, { "object": "model" }] })),
+            error(401, r#"{"error":{"message":"bad key","type":"authentication_error"}}"#),
+            listing(json!({ "data": [] })),
+        ])
+        .await;
+        let named = |id: &str, name: &str| (id.to_string(), name.to_string());
+        assert_eq!(list_models("anthropic", &address, Some("sk-ant")).await.unwrap(), [named("claude-opus-5-5", "Claude Opus 5.5"), named("claude-next", "claude-next")]);
+        assert_eq!(list_models("zhipu", &format!("{address}/api/paas/v4/"), Some(" glm-key ")).await.unwrap(), [named("glm-5.3", "glm-5.3"), named("glm-5.3-flash", "glm-5.3-flash")]);
+        assert_eq!(list_models("deepseek", &address, Some("k")).await.unwrap_err(), "authentication_error: bad key");
+        assert_eq!(list_models("openai", &address, Some("k")).await.unwrap_err(), "the provider listed no models");
+        // What cannot be asked is said without a request.
+        assert!(list_models("zhipu", &address, None).await.unwrap_err().contains("no API key"));
+        assert!(list_models("custom", "", Some("k")).await.unwrap_err().contains("no address"));
+        assert!(list_models("nobody", &address, Some("k")).await.is_err());
+
+        let requests = requests.await.unwrap();
+        let lower: Vec<String> = requests.iter().map(|request| request.to_lowercase()).collect();
+        assert!(lower[0].starts_with("get /v1/models?limit=1000 ") && lower[0].contains("x-api-key: sk-ant") && lower[0].contains("anthropic-version:"));
+        assert!(lower[1].starts_with("get /api/paas/v4/models ") && lower[1].contains("authorization: bearer glm-key\r\n"), "{}", lower[1]);
     }
 
     #[test]

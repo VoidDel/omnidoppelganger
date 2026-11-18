@@ -18,6 +18,10 @@ export const api = {
   resolveApproval: (id: string, toolUseId: string, decision: Decision) =>
     invoke<boolean>("resolve_approval", { id, toolUseId, decision }),
   setMode: (id: string, mode: Mode) => invoke<SessionItem>("set_mode", { id, mode }),
+  /** Move the session to another model of its provider. Rejects while its agent is working. */
+  setModel: (id: string, model: string) => invoke<SessionItem>("set_model", { id, model }),
+  /** The models a provider serves with the saved key, `[id, display name]`, asked from the provider itself. */
+  listModels: (provider: string) => invoke<[string, string][]>("list_models", { provider }),
   /** Undo the agent's file edits from `turn` on. Rejects while a turn is running. */
   undoTurn: (id: string, turn: number) => invoke<{ restored: string[]; skipped: string[] }>("undo_turn", { id, turn }),
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),

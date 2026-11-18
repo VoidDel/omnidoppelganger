@@ -106,6 +106,11 @@ pub enum Event {
     /// every request after it. Since format 6.
     #[serde(rename = "skills/listed")]
     SkillsListed { skills: Vec<SkillInfo> },
+    /// The user moved the session to another model of the same provider.
+    /// Requests after this go to `model`. The conversation is sent as it is:
+    /// a provider leaves out the reasoning its new model cannot read. Since format 7.
+    #[serde(rename = "model/changed")]
+    ModelChanged { model: String },
     /// The user named the session. Until then its title is the first message. Since format 3.
     #[serde(rename = "session/renamed")]
     SessionRenamed { title: String },

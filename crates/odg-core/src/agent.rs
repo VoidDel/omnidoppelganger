@@ -58,7 +58,8 @@ pub struct Tuning {
     pub context_window: u64,
 }
 
-pub type TuningSource = Arc<dyn Fn() -> Tuning + Send + Sync>;
+/// Gives the settings for a request to the model named: its window and limit depend on it.
+pub type TuningSource = Arc<dyn Fn(&str) -> Tuning + Send + Sync>;
 
 /// What a session shares with every other session of the app.
 #[derive(Clone)]
@@ -105,7 +106,8 @@ struct Inner<L: Llm> {
     skill_roots: Vec<PathBuf>,
     search: Option<crate::web::SearchSource>,
     provider: String,
-    model: String,
+    /// The model requests go to; the user can move the session to another of the same provider.
+    model: Mutex<String>,
     llm: Arc<L>,
     tuning: TuningSource,
     log: Mutex<SessionLog>,
@@ -193,7 +195,7 @@ impl<L: Llm> Session<L> {
                 skill_roots,
                 search,
                 provider,
-                model,
+                model: Mutex::new(model),
                 llm,
                 tuning,
                 log: Mutex::new(log),
@@ -232,6 +234,27 @@ impl<L: Llm> Session<L> {
 
     pub fn mode(&self) -> Mode {
         self.inner.mode()
+    }
+
+    /// Move the session to another model of its provider. Only between
+    /// turns: a turn runs on the model it started with. The conversation
+    /// carries over as it is.
+    pub fn set_model(&self, model: &str) -> Result<(), String> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err("name a model".to_string());
+        }
+        // Held to the end: a turn cannot start between the check and the change.
+        let state = self.inner.state.lock().unwrap();
+        if state.status != Status::Idle {
+            return Err("the agent is working; stop it or wait before changing the model".to_string());
+        }
+        if *self.inner.model.lock().unwrap() != model {
+            self.inner.append(Event::ModelChanged { model: model.to_string() })?;
+            *self.inner.model.lock().unwrap() = model.to_string();
+        }
+        drop(state);
+        Ok(())
     }
 
     /// Name the session. An empty name gives it its first message back as title.
@@ -336,6 +359,10 @@ impl<L: Llm> Inner<L> {
 
     fn mode(&self) -> Mode {
         self.state.lock().unwrap().mode
+    }
+
+    fn model(&self) -> String {
+        self.model.lock().unwrap().clone()
     }
 
     /// The system prompt of the next request: the general part and the instructions the log holds.
@@ -477,7 +504,7 @@ impl<L: Llm> Inner<L> {
             let request = LlmRequest {
                 provider: self.provider.clone(),
                 session: self.id.clone(),
-                model: self.model.clone(),
+                model: self.model(),
                 system: self.system(),
                 messages,
                 // The same tools keep the cached prefix valid; a transcript has no use for them.
@@ -530,7 +557,7 @@ impl<L: Llm> Inner<L> {
                 return Ok("cancelled");
             }
 
-            let tuning = (self.tuning)();
+            let tuning = (self.tuning)(&self.model());
             let estimate = context_estimate(self.log.lock().unwrap().events());
             if estimate >= tuning.context_limit && self.compactable() {
                 let near_window = estimate >= tuning.context_window / 10 * 9;
@@ -544,7 +571,7 @@ impl<L: Llm> Inner<L> {
             let request = LlmRequest {
                 provider: self.provider.clone(),
                 session: self.id.clone(),
-                model: self.model.clone(),
+                model: self.model(),
                 system: self.system(),
                 messages: derive_messages(self.log.lock().unwrap().events()),
                 tools: self.tool_specs(),
@@ -746,7 +773,7 @@ mod tests {
         let (sender, events) = unbounded_channel();
         let limits = Arc::new(Mutex::new((u64::MAX, u64::MAX)));
         let read = limits.clone();
-        let tuning = move || {
+        let tuning = move |_: &str| {
             let (context_limit, context_window) = *read.lock().unwrap();
             Tuning { effort: "high".to_string(), context_limit, context_window }
         };
@@ -870,7 +897,7 @@ mod tests {
         let home = fixture._home.path().to_path_buf();
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
-        let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
+        let tuning = Arc::new(|_: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
         let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None };
         let later = Session::new(log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
@@ -1086,7 +1113,7 @@ mod tests {
         let llm = ScriptedLlm::new(vec![echo("t1", "one"), echo("t2", "two"), echo("t3", "three"), says("done")], None);
         let log = SessionStore::new(home.path()).create(workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
-        let tuning = Arc::new(|| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
+        let tuning = Arc::new(|_: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
         // Searching is set up, so the model is offered `web_search` as well.
         let search: crate::web::SearchSource = Arc::new(|| Some(crate::web::SearchConfig { url: "http://127.0.0.1:9/web_search".into(), key: "k".into(), engine: "search_std".into() }));
@@ -1116,6 +1143,40 @@ mod tests {
         let names: Vec<&str> = requests[0].tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
         assert_eq!(names[names.len() - 3..], ["web_search", "mcp__echo__echo", "mcp__echo__fail_now"]);
         assert_eq!(names.len(), tools::specs().len() + 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn moves_to_another_model_between_turns_and_keeps_the_conversation() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let thinking = json!({ "type": "thinking", "thinking": "hm", "signature": "sig-from-scripted" });
+        let first = Ok(AssistantTurn { content: vec![thinking.clone(), json!({ "type": "text", "text": "one" })], stop_reason: Some("end_turn".into()), model: "scripted".into(), ..Default::default() });
+        let mut fixture = fixture(ScriptedLlm::new(vec![first, says("two"), says("three")], Some(gate.clone())));
+        fixture.session.send("first".into());
+        fixture.idle().await;
+
+        fixture.session.set_model(" scripted-large ").unwrap();
+        // Choosing the model it is already on changes nothing and logs nothing.
+        fixture.session.set_model("scripted-large").unwrap();
+        assert!(fixture.session.set_model("  ").is_err());
+        assert_eq!(fixture.session.summary().model, "scripted-large");
+        gate.add_permits(1);
+        fixture.session.send("second".into());
+        fixture.idle().await;
+
+        // Not while a turn runs: that turn stays on the model it started with.
+        fixture.session.send("third".into());
+        while fixture.llm.requests.lock().unwrap().len() < 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(fixture.session.set_model("scripted-small").unwrap_err().contains("is working"));
+        gate.add_permits(1);
+        fixture.idle().await;
+
+        let requests = fixture.llm.requests.lock().unwrap();
+        assert_eq!(requests.iter().map(|request| request.model.as_str()).collect::<Vec<_>>(), ["scripted", "scripted-large", "scripted-large"]);
+        // The earlier model's reasoning goes along untouched: the provider drops what the new model cannot read.
+        assert_eq!(requests[1].messages[1]["content"][0], thinking);
+        assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "model/changed").count(), 1);
     }
 
     /// The texts of a request's messages, one list per message.

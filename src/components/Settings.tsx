@@ -193,6 +193,8 @@ function McpSection({ config, servers, onSave, onRefresh }: McpSectionProps) {
 
 interface Props {
   view: SettingsView;
+  /** The models a provider serves, asked from the provider itself. */
+  listModels: (provider: string) => Promise<[string, string][]>;
   onSaveMcp: (config: string) => Promise<string | null>;
   onRefresh: () => void;
   onRevoke: (workspace: string, grant: string) => void;
@@ -201,12 +203,29 @@ interface Props {
   onDeleteKey: (provider: string) => void;
 }
 
-export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, onSaveMcp, onRefresh }: Props) {
+export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, onSaveMcp, onRefresh, listModels }: Props) {
   const grants = Object.entries(view.grants);
   const { settings } = view;
   const chosen = view.providers.find((provider) => provider.id === settings.provider);
   const model = useDraft(settings.model, (value) => onSave({ ...settings, model: value }));
   const note = effortNote(chosen);
+  // What the chosen provider says it serves, asked again when the provider or its key changes.
+  const [served, setServed] = useState<{ models: [string, string][]; why: string | null }>({ models: [], why: null });
+  const keyed = view.keys[settings.provider]?.source ?? "none";
+  useEffect(() => {
+    let current = true;
+    setServed({ models: [], why: null });
+    if (keyed === "none") return;
+    listModels(settings.provider).then(
+      (models) => current && setServed({ models, why: null }),
+      (error) => current && setServed({ models: [], why: String(error) }),
+    );
+    return () => {
+      current = false;
+    };
+  }, [settings.provider, keyed, listModels]);
+  // The provider's own list first; the built-in suggestions it does not name after it.
+  const suggestions = [...served.models, ...(chosen?.models ?? []).filter(([id]) => !served.models.some(([listed]) => listed === id))];
   const limit = useDraft(String(settings.context_limit), (value) => {
     const tokens = Number.parseInt(value, 10);
     if (Number.isFinite(tokens)) onSave({ ...settings, context_limit: tokens });
@@ -239,15 +258,21 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             <label htmlFor="default-model">修哪门功法（模型）</label>
             <input id="default-model" className="input mono" list="model-suggestions" placeholder="填写模型 ID" {...model} />
             <datalist id="model-suggestions">
-              {chosen?.models.map(([id, name]) => (
+              {suggestions.map(([id, name]) => (
                 <option key={id} value={id}>
                   {name}
                 </option>
               ))}
             </datalist>
             <p className="hint">
-              {chosen?.models.length ? "可以从列表里选，也可以直接填供应商新出的模型 ID。" : "填写这个服务提供的模型 ID。"}
-              已经化出的分身，继续修它当时的功法。
+              {served.models.length > 0
+                ? `已向 ${chosen?.name ?? settings.provider} 问到它提供的 ${served.models.length} 门功法，可以从列表里选，也可以直接填。`
+                : served.why
+                  ? `没能向 ${chosen?.name ?? settings.provider} 问到功法列表（${served.why}），先用内置的几门，也可以直接填模型 ID。`
+                  : keyed === "none"
+                    ? "填上这一家的密钥后，会自动向它问有哪些功法。眼下可以从内置的几门里选，或直接填模型 ID。"
+                    : "可以从列表里选，也可以直接填模型 ID。"}
+              这里选的是新分身用的功法；已经化出的分身，在它输入框下方换。
             </p>
           </div>
           <fieldset className="field">

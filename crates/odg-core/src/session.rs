@@ -20,9 +20,9 @@ use crate::providers::DEFAULT_PROVIDER;
 /// `files/restored`, and `session/renamed` events and the `tokens` field.
 /// Format 4 added the `instructions/loaded` event and the `allow_always`
 /// decision. Format 5 added `images` on a user message. Format 6 adds the
-/// `skills/listed` event. A build from before a format refuses its sessions
-/// rather than misread them.
-pub const FORMAT_VERSION: u32 = 6;
+/// `skills/listed` event. Format 7 adds the `model/changed` event. A build
+/// from before a format refuses its sessions rather than misread them.
+pub const FORMAT_VERSION: u32 = 7;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -193,11 +193,11 @@ impl SessionLog {
         &self.events
     }
 
-    /// Workspace, provider, and model recorded when the session was created.
+    /// The workspace and provider recorded when the session was created, and the model it is on now.
     pub fn header(&self) -> (PathBuf, String, String) {
         match &self.events[0].event {
-            Event::SessionCreated { workspace, provider, model, .. } => {
-                (PathBuf::from(workspace), provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()), model.clone())
+            Event::SessionCreated { workspace, provider, .. } => {
+                (PathBuf::from(workspace), provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()), model(&self.events))
             }
             _ => unreachable!("create and open both guarantee the header"),
         }
@@ -402,6 +402,18 @@ pub fn instructions(events: &[Envelope]) -> Option<(&str, &str)> {
     .filter(|(_, content)| !content.is_empty())
 }
 
+/// The model the session is on: the last one it was moved to, or else the one it was created with.
+pub fn model(events: &[Envelope]) -> String {
+    events
+        .iter()
+        .rev()
+        .find_map(|envelope| match &envelope.event {
+            Event::ModelChanged { model } | Event::SessionCreated { model, .. } => Some(model.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// The skills the model is told of: the last list logged.
 pub fn skills(events: &[Envelope]) -> &[SkillInfo] {
     events
@@ -507,12 +519,11 @@ pub fn matches(events: &[Envelope], query: &str) -> bool {
 /// Fold a log into its list entry. The title is the name the user gave the
 /// session, or else its first message cut to 40 characters.
 pub fn summarize(events: &[Envelope]) -> SessionSummary {
-    let (id, workspace, provider, model) = match &events[0].event {
-        Event::SessionCreated { id, workspace, provider, model, .. } => {
-            (id.clone(), workspace.clone(), provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()), model.clone())
-        }
+    let (id, workspace, provider) = match &events[0].event {
+        Event::SessionCreated { id, workspace, provider, .. } => (id.clone(), workspace.clone(), provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string())),
         _ => unreachable!("create and open both guarantee the header"),
     };
+    let model = model(events);
     let named = events.iter().rev().find_map(|envelope| match &envelope.event {
         Event::SessionRenamed { title } => Some(title.clone()),
         _ => None,

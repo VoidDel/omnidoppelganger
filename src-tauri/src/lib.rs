@@ -43,6 +43,8 @@ struct SessionItem {
     status: Status,
     /// The number of tokens at which this session's conversation is compacted.
     context_limit: u64,
+    /// The most that limit can be for the session's model: four fifths of its context window.
+    context_ceiling: u64,
     /// The Git branch checked out in the workspace, when it is a repository.
     branch: Option<String>,
     /// Whether the session's model takes pictures; `None` when its provider's documentation does not say.
@@ -80,10 +82,11 @@ struct SettingsView {
 impl App {
     fn wrap(&self, log: odg_core::session::SessionLog) -> Result<Session<Router>, String> {
         let settings = self.settings.clone();
-        let (_, provider, model) = log.header();
-        let tuning = move || {
+        let (_, provider, _) = log.header();
+        // The window and the limit follow the model the session is on when the request is made.
+        let tuning = move |model: &str| {
             let settings = settings.load();
-            Tuning { context_limit: settings.context_limit_for(&provider, &model), context_window: context_window(&provider, &model), effort: settings.effort }
+            Tuning { context_limit: settings.context_limit_for(&provider, model), context_window: context_window(&provider, model), effort: settings.effort }
         };
         let searching = self.settings.clone();
         let services = Services {
@@ -99,7 +102,8 @@ impl App {
         let context_limit = self.settings.load().context_limit_for(&summary.provider, &summary.model);
         let branch = odg_core::tools::git_branch(std::path::Path::new(&summary.workspace));
         let vision = vision(&summary.provider, &summary.model);
-        SessionItem { summary, status, context_limit, branch, vision }
+        let context_ceiling = context_window(&summary.provider, &summary.model) / 5 * 4;
+        SessionItem { summary, status, context_limit, context_ceiling, branch, vision }
     }
 
     /// The live session, opening it from disk on first use. The map stays
@@ -243,6 +247,28 @@ async fn search_sessions(app: State<'_, App>, query: String) -> Result<Vec<Strin
         .collect())
 }
 
+/// Move the session to another model of its provider. Fails while its agent is working.
+#[tauri::command]
+async fn set_model(app: State<'_, App>, id: String, model: String) -> Result<SessionItem, String> {
+    let session = app.live(&id)?;
+    session.set_model(&model)?;
+    Ok(app.item(session.summary(), session.status()))
+}
+
+/// The models a provider serves with the saved key, as `(id, display name)`, asked from the provider itself.
+#[tauri::command]
+async fn list_models(app: State<'_, App>, provider: String) -> Result<Vec<(String, String)>, String> {
+    let endpoint = app.settings.endpoint(&provider);
+    // Anthropic's address comes from the environment, like its client's.
+    let base_url = if provider == "anthropic" { anthropic_base_url() } else { endpoint.base_url };
+    odg_core::providers::list_models(&provider, &base_url, endpoint.key.as_deref()).await
+}
+
+/// Where Anthropic's API is: `ANTHROPIC_BASE_URL`, or the official address.
+fn anthropic_base_url() -> String {
+    std::env::var("ANTHROPIC_BASE_URL").ok().filter(|url| !url.trim().is_empty()).unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+}
+
 /// Switch what the session does without asking; the next tool call follows the new mode.
 #[tauri::command]
 async fn set_mode(app: State<'_, App>, id: String, mode: Mode) -> Result<SessionItem, String> {
@@ -317,8 +343,7 @@ pub fn run() {
             let home = settings::home();
             let settings = Arc::new(SettingsStore::at_home());
             let key_source = settings.clone();
-            let base_url = std::env::var("ANTHROPIC_BASE_URL").ok().filter(|url| !url.trim().is_empty()).unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-            let anthropic = AnthropicClient::new(base_url, Arc::new(move || key_source.api_key("anthropic")))?;
+            let anthropic = AnthropicClient::new(anthropic_base_url(), Arc::new(move || key_source.api_key("anthropic")))?;
             let endpoint_source = settings.clone();
             let llm = Arc::new(Router::new(anthropic, Arc::new(move |provider: &str| endpoint_source.endpoint(provider)))?);
 
@@ -349,6 +374,8 @@ pub fn run() {
             send_message,
             resolve_approval,
             set_mode,
+            set_model,
+            list_models,
             undo_turn,
             cancel_turn,
             get_settings,

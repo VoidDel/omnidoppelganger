@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
 import { MODES, modeOf, nextMode } from "../lib/modes";
-import type { Image, Mode, SessionItem, Status, Todo } from "../lib/types";
+import type { Image, Mode, Provider, SessionItem, Status, Todo } from "../lib/types";
 
 /** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
 export function Mountains() {
@@ -151,6 +151,103 @@ function ModeIcon({ mode }: { mode: Mode }) {
     </svg>
   );
 }
+
+interface PopupProps {
+  /** What the button shows. */
+  label: ReactNode;
+  title?: string;
+  disabled?: boolean;
+  /** What the menu is, for a screen reader. */
+  name: string;
+  /** The menu's contents, given a function that closes it. */
+  children: (close: () => void) => ReactNode;
+}
+
+/** A button in the composer row whose menu opens above it, and closes on Escape or a click elsewhere. */
+function Popup({ label, title, disabled, name, children }: PopupProps) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => !root.current?.contains(event.target as Node) && setOpen(false);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  return (
+    <div className="mode-picker" ref={root} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
+      <button type="button" className="select-button" aria-haspopup="menu" aria-expanded={open} title={title} disabled={disabled} onClick={() => setOpen(!open)}>
+        {label}
+      </button>
+      {open && (
+        <div className="mode-menu" role="menu" aria-label={name}>
+          {children(() => setOpen(false))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const CHECK = (
+  <svg className="check" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m3 8.5 3.2 3L13 4.5" />
+  </svg>
+);
+
+interface ModelListProps {
+  provider: Provider | undefined;
+  providerId: string;
+  model: string;
+  onPick: (model: string) => void;
+  listModels: (provider: string) => Promise<[string, string][]>;
+}
+
+/** The models to choose from: what the provider says it serves, or the built-in suggestions while that is unknown. */
+function ModelList({ provider, providerId, model, onPick, listModels }: ModelListProps) {
+  const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: [string, string][]; why?: string }>({ state: "asking", models: [] });
+  const [filter, setFilter] = useState("");
+  // Asked each time the menu opens: a provider's list changes, and so does the key it is asked with.
+  useEffect(() => {
+    let current = true;
+    listModels(providerId).then(
+      (models) => current && setAsked({ state: "told", models }),
+      (error) => current && setAsked({ state: "failed", models: [], why: String(error) }),
+    );
+    return () => {
+      current = false;
+    };
+  }, [providerId, listModels]);
+  const known = asked.state === "told" ? asked.models : (provider?.models ?? []);
+  // The model in use is always there to return to, even when the provider's list leaves it out.
+  const models = known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
+  const shown = models.filter(([id, name]) => `${id} ${name}`.toLowerCase().includes(filter.trim().toLowerCase()));
+  const name = provider?.name ?? providerId;
+  return (
+    <>
+      <div className="mode-menu-head">
+        <span>{name} 的功法</span>
+        <span>{asked.state === "asking" ? "正在问它有哪些…" : asked.state === "told" ? `它报了 ${asked.models.length} 门` : "没问到，先列内置的"}</span>
+      </div>
+      {asked.state === "failed" && <p className="menu-note">{asked.why}</p>}
+      {models.length > 8 && <input className="input menu-filter" type="search" placeholder="筛一筛" aria-label="筛选功法" autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} />}
+      <div className="menu-scroll">
+        {shown.map(([id, display]) => (
+          <button type="button" role="menuitemradio" aria-checked={id === model} key={id} className="mode-option plain" onClick={() => onPick(id)}>
+            <span className="mode-text">
+              <span className="name mono">{id}</span>
+              {display !== id && <span className="hint">{display}</span>}
+            </span>
+            {id === model ? CHECK : <span />}
+          </button>
+        ))}
+        {shown.length === 0 && <p className="menu-note">没有对得上的。</p>}
+      </div>
+      <p className="menu-note">换了之后，这个分身接下来的话由新功法来答，前情照旧带着。只能在同一出处里换。</p>
+    </>
+  );
+}
+
+/** How the context limit reads in the menu: 50000 as 5 万. */
+const LIMITS = [50_000, 100_000, 200_000, 500_000];
 
 /** The 禁制 button and its menu: what the 分身 may do without asking. */
 function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void }) {
@@ -304,13 +401,23 @@ const readBase64 = (file: File) =>
 
 interface ComposerProps {
   status: Status;
+  /** The session's provider as the core describes it, and its id for when this build does not know it. */
+  provider: Provider | undefined;
+  providerId: string;
+  /** The id of the model the session is on. */
   model: string;
   /** Whether the model takes pictures; null when that is not known, in which case they are sent. */
   vision: boolean | null;
   mode: Mode;
   usage: Usage;
-  /** The number of tokens at which the conversation is compacted. */
+  /** The number of tokens at which the conversation is compacted, the most it can be for this model, and the limit as set. */
   contextLimit: number;
+  contextCeiling: number;
+  contextSetting: number;
+  /** Set the limit, for every session. */
+  onLimit: (limit: number) => void;
+  onModel: (model: string) => void;
+  listModels: (provider: string) => Promise<[string, string][]>;
   /** The last turn in plan mode ended with the 分身's answer: offer to carry it out. */
   planReady: boolean;
   onMode: (mode: Mode) => void;
@@ -320,7 +427,12 @@ interface ComposerProps {
   onStop: () => void;
 }
 
-export function Composer({ status, model, vision, mode, usage, contextLimit, planReady, onMode, onCarryOut, onSend, onStop }: ComposerProps) {
+export function Composer(props: ComposerProps) {
+  const { status, provider, providerId, model, vision, mode, usage, contextLimit, contextCeiling, contextSetting, planReady } = props;
+  const { onLimit, onModel, listModels, onMode, onCarryOut, onSend, onStop } = props;
+  // Anthropic was the only provider once, so its name goes without saying.
+  const modelLabel = provider && provider.id !== "anthropic" ? `${provider.name} · ${model}` : model;
+  const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const [text, setText] = useState("");
   const [images, setImages] = useState<Image[]>([]);
   /** Why a picture was not taken, until the next attempt. */
@@ -338,7 +450,7 @@ export function Composer({ status, model, vision, mode, usage, contextLimit, pla
   /** Attach the pictures among `files`, saying why when one cannot be sent. */
   const attach = async (files: File[]) => {
     setRefused(null);
-    if (vision === false) return setRefused(`${model} 这门功法只认字，看不了图。换一门能看图的功法另化一个分身。`);
+    if (vision === false) return setRefused(`${model} 这门功法只认字，看不了图。点左下的功法，换一门能看图的。`);
     const taken: Image[] = [];
     for (const file of files) {
       if (!IMAGE_TYPES.includes(file.type)) setRefused("只能附 PNG、JPEG、GIF、WebP 格式的图。");
@@ -422,20 +534,83 @@ export function Composer({ status, model, vision, mode, usage, contextLimit, pla
           }}
         />
         <div className="composer-row">
-          <span className="select-button">
-            <span className="label">功法</span>
-            <span className="value">{model}</span>
-          </span>
-          <ModePicker mode={mode} onMode={onMode} />
-          <span
-            className="select-button"
-            title={`这个会话累计用掉：输入 ${usage.spent.input}（其中 ${usage.spent.cached} 读自缓存），输出 ${usage.spent.output}。眼下的对话到 ${contextLimit} token 时，分身会把前情凝成摘要再继续。`}
+          <Popup
+            name="功法"
+            disabled={busy}
+            title={busy ? "分身运功时不能换功法，等它收功" : "换一门功法（模型）"}
+            label={
+              <>
+                <span className="label">功法</span>
+                <span className="value">{modelLabel}</span>
+              </>
+            }
           >
-            <span className="label">灵石</span>
-            <span className="value">
-              {shortCount(usage.context)} / {shortCount(contextLimit)}
-            </span>
-          </span>
+            {(close) => (
+              <ModelList
+                provider={provider}
+                providerId={providerId}
+                model={model}
+                listModels={listModels}
+                onPick={(picked) => {
+                  if (picked !== model) onModel(picked);
+                  close();
+                }}
+              />
+            )}
+          </Popup>
+          <ModePicker mode={mode} onMode={onMode} />
+          <Popup
+            name="灵石"
+            title="前情占了多少、到多少就压缩；点开可以改"
+            label={
+              <>
+                <span className="label">灵石</span>
+                <span className="value">
+                  {shortCount(usage.context)} / {shortCount(contextLimit)}
+                </span>
+              </>
+            }
+          >
+            {(close) => (
+              <>
+                <div className="mode-menu-head">
+                  <span>灵石</span>
+                  <span>这个分身累计</span>
+                </div>
+                <p className="menu-note">
+                  输入 {shortCount(usage.spent.input)}（其中 {shortCount(usage.spent.cached)} 读自缓存，便宜得多），输出 {shortCount(usage.spent.output)}。眼下的前情占 {shortCount(usage.context)}。
+                </p>
+                <div className="mode-menu-head">
+                  <span>前情上限</span>
+                  <span>到了就凝成摘要</span>
+                </div>
+                {limits.map((limit) => {
+                  // A setting above what the model can hold lands on the model's own ceiling.
+                  const chosen = limit === Math.min(contextSetting, contextCeiling);
+                  return (
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={chosen}
+                      key={limit}
+                      className="mode-option plain"
+                      onClick={() => {
+                        if (!chosen) onLimit(limit);
+                        close();
+                      }}
+                    >
+                      <span className="mode-text">
+                        <span className="name">{shortCount(limit)}</span>
+                        {limit === contextCeiling && <span className="hint">这门功法装得下的最多</span>}
+                      </span>
+                      {chosen ? CHECK : <span />}
+                    </button>
+                  );
+                })}
+                <p className="menu-note">每次请求都要把整段前情发给功法，上限越高，长对话越费灵石。对所有分身生效；别的数可以到设置里填。</p>
+              </>
+            )}
+          </Popup>
           <input
             ref={picker}
             type="file"

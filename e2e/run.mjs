@@ -91,8 +91,24 @@ try {
   await page.waitFor("the MCP server to connect", connected);
   step("the app started the MCP server from mcp.json and listed its tool");
   await page.click("选文件夹作洞府，化出分身");
-  // Paste a screenshot the way the system clipboard delivers one: a file on a paste event.
   await page.waitFor("the message box", `!!document.querySelector("#composer-input")`);
+
+  // The model menu lists what the provider says it serves; picking one moves the session to it.
+  const chip = (label) => `[...document.querySelectorAll(".composer-row .select-button")].find((b) => b.querySelector(".label")?.textContent === ${JSON.stringify(label)})?.querySelector(".value")?.textContent`;
+  await page.click("功法");
+  await page.waitForText("它报了 2 门");
+  await page.click("claude-e2e-small");
+  await page.waitFor("the session to move to the picked model", `${chip("功法")} === "claude-e2e-small"`);
+  step("the model menu listed the provider's models, and picking one moved the session to it");
+
+  // The 灵石 menu sets the context limit, which is saved as a setting.
+  await page.click("灵石");
+  await page.waitForText("前情上限");
+  await page.click("5 万");
+  await page.waitFor("the limit to change", `${chip("灵石")}?.endsWith("/ 5 万")`);
+  check(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).context_limit === 50000, "the 灵石 menu changed the context limit and saved it");
+
+  // Paste a screenshot the way the system clipboard delivers one: a file on a paste event.
   await page.evaluate(`(() => {
     const bytes = Uint8Array.from(atob(${JSON.stringify(PNG)}), (c) => c.charCodeAt(0));
     const data = new DataTransfer();
@@ -118,7 +134,7 @@ try {
 
   const [first, second] = mock.requests.map((request) => request.body);
   check(mock.requests.length === 2 && mock.requests[0].headers["x-api-key"] === "e2e-key", "the model was asked twice, with the key");
-  check(first.messages[0].content.some((block) => block.text === "建一个 hello.txt，再跑个命令"), "the first request carries the user's message");
+  check(first.messages[0].content.some((block) => block.text === "建一个 hello.txt，再跑个命令") && first.model === "claude-e2e-small", "the first request carries the user's message, to the model that was picked");
   const sent = first.messages[0].content[0];
   check(sent.type === "image" && sent.source.media_type === "image/png" && sent.source.data === PNG, "the pasted screenshot reached the model unchanged, ahead of the text");
   check((await page.evaluate(`document.querySelectorAll(".shots img").length`)) === 1, "the transcript shows the screenshot with the message");

@@ -887,6 +887,42 @@ button.select-button svg {
   gap: 2px;
 }
 
+/* Parts of a composer menu beyond its options: a note, a filter, and a list that scrolls when long. */
+.menu-note {
+  margin: 0;
+  padding: 4px 10px 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.menu-filter {
+  min-height: 34px;
+  max-width: none;
+  margin: 0 4px 4px;
+  width: auto;
+  font-size: 13px;
+}
+
+.menu-scroll {
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mode-option.plain {
+  grid-template-columns: 1fr 16px;
+  min-height: 36px;
+  padding: 6px 10px;
+}
+
+.select-button:disabled {
+  cursor: default;
+}
+
 .mode-menu-head {
   padding: 6px 10px;
   display: flex;

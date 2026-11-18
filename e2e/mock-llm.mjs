@@ -49,6 +49,15 @@ export async function startMock(script) {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
     request.on("end", () => {
+      // The models the stand-in says it serves, for the app's model menu.
+      if (request.method === "GET" && request.url.startsWith("/v1/models")) {
+        const models = [
+          { id: "claude-opus-5-5", display_name: "Claude Opus 5.5" },
+          { id: "claude-e2e-small", display_name: "E2E Small" },
+        ];
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: models, has_more: false }));
+        return;
+      }
       if (request.method !== "POST" || request.url !== "/v1/messages") {
         response.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ type: "error", error: { type: "not_found_error", message: request.url } }));
         return;
