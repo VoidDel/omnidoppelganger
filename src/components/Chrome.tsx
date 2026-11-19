@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { launchFrom } from "../lib/flight";
 import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
@@ -647,6 +647,47 @@ interface ComposerProps {
   seed: { id: number; text: string } | null;
 }
 
+/**
+ * How full the conversation is, as five 灵石 lit one after another: each stands for a fifth of the room there is
+ * before it is summarized. They are jade, turn gold past seven tenths, and cinnabar past nine, where the last one beats.
+ */
+function Stones({ part }: { part: number }) {
+  const full = Math.min(Math.max(part, 0), 1);
+  return (
+    <span className={`stones ${full >= 0.9 ? "hot" : full >= 0.7 ? "warm" : ""}`} aria-hidden="true">
+      {[0, 1, 2, 3, 4].map((at) => (
+        <span key={at} style={{ "--lit": Math.min(Math.max(full * 5 - at, 0), 1) } as CSSProperties} />
+      ))}
+    </span>
+  );
+}
+
+/** How tall the box to type in stands with nothing in it, in pixels: as it starts, the least, and where it is kept. */
+const BOX = { initial: 54, least: 28, key: "odg.composer" };
+/** The most it may be made, or grow to with what is typed: it leaves the conversation most of the window. */
+const tallest = () => Math.max(BOX.initial, Math.round(window.innerHeight * 0.55));
+const fitBox = (height: number) => Math.round(Math.min(Math.max(height, BOX.least), tallest()));
+
+/** The height the box was last left at. */
+function useBoxHeight() {
+  const [height, setHeight] = useState(() => {
+    try {
+      const kept = Number(localStorage.getItem(BOX.key));
+      return kept > 0 ? fitBox(kept) : BOX.initial;
+    } catch {
+      return BOX.initial;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(BOX.key, String(height));
+    } catch {
+      // Storage may be unavailable; the box then starts out as it does the first time.
+    }
+  }, [height]);
+  return [height, setHeight] as const;
+}
+
 export function Composer(props: ComposerProps) {
   const { status, provider, providerId, model, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
   const { onLimit, onCompact, onModel, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable } = props;
@@ -654,6 +695,17 @@ export function Composer(props: ComposerProps) {
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const [text, setText] = useState("");
   const input = useRef<HTMLTextAreaElement>(null);
+  const [height, setHeight] = useBoxHeight();
+  const [dragging, setDragging] = useState(false);
+  /** Where a drag of the box's top edge began: the pointer, and the height then. Read by the pointer's own events. */
+  const held = useRef<{ y: number; height: number } | null>(null);
+  // The box is as tall as it was left, and taller while what is typed needs more, up to what leaves the conversation room.
+  useLayoutEffect(() => {
+    const box = input.current;
+    if (!box) return;
+    box.style.height = `${height}px`;
+    box.style.height = `${Math.min(Math.max(box.scrollHeight, height), tallest())}px`;
+  }, [text, height]);
   useEffect(() => {
     if (!seed) return;
     setText(seed.text);
@@ -717,7 +769,31 @@ export function Composer(props: ComposerProps) {
           </>
         )}
       </div>
+      {/* The frame carries the light round the box: jade and gold going round while the 分身 works, cinnabar held while it waits. */}
+      <div className={`composer-frame ${status === "running" ? "working" : status === "waiting_approval" ? "waiting" : ""}`}>
       <div className={`composer-box ${mode === "bypass" ? "trusted" : ""}`}>
+        {/* The box's top edge, to drag: up makes more room to write in, down gives it back to the conversation. */}
+        <div
+          className={`composer-grip ${dragging ? "dragging" : ""}`}
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="拖动调整输入框高度，双击恢复"
+          aria-valuenow={height}
+          tabIndex={0}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            held.current = { y: event.clientY, height };
+            setDragging(true);
+          }}
+          onPointerMove={(event) => held.current && setHeight(fitBox(held.current.height + held.current.y - event.clientY))}
+          onPointerUp={() => ((held.current = null), setDragging(false))}
+          onPointerCancel={() => ((held.current = null), setDragging(false))}
+          onDoubleClick={() => setHeight(BOX.initial)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowUp") setHeight(fitBox(height + 24));
+            if (event.key === "ArrowDown") setHeight(fitBox(height - 24));
+          }}
+        />
         {(images.length > 0 || refused) && (
           <div className="attachments">
             {images.map((image, index) => (
@@ -772,6 +848,9 @@ export function Composer(props: ComposerProps) {
             title={busy ? `功法：${providerName} · ${model}。分身运功时不能换，等它收功` : `功法：${providerName} · ${model}。点开换一门`}
             label={
               <>
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3.5 2.5h8a1 1 0 0 1 1 1v10h-8a1 1 0 0 1-1-1zM3.5 11.5a1 1 0 0 1 1-1h8M6 5.5h4" />
+                </svg>
                 <span className="label sr-only">功法</span>
                 <span className="value">{model}</span>
               </>
@@ -793,12 +872,10 @@ export function Composer(props: ComposerProps) {
           <ModePicker mode={mode} onMode={onMode} trustable={trustable} />
           <Popup
             name="灵石"
-            title="灵石：前情占了多少 / 到多少就凝成摘要。点开看累计用量、改上限"
+            title={`灵石：前情占了 ${shortCount(usage.context)}，到 ${shortCount(contextLimit)} 就凝成摘要。点开看累计用量、改上限`}
             label={
               <>
-                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5 2.5h6l3 4-6 7-6-7zM2 6.5h12M5 2.5l3 4 3-4" />
-                </svg>
+                <Stones part={contextLimit > 0 ? usage.context / contextLimit : 0} />
                 <span className="label sr-only">灵石</span>
                 <span className="value">
                   {shortCount(usage.context)} / {shortCount(contextLimit)}
@@ -936,6 +1013,7 @@ export function Composer(props: ComposerProps) {
             </button>
           )}
         </div>
+      </div>
       </div>
     </div>
   );

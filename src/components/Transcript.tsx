@@ -1,10 +1,10 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, createContext, isValidElement, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { inFlight, land } from "../lib/flight";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
-import { type Item, type Row, type StreamBlock, type ToolItem, mcpTool, shortCount, undoableTurns } from "../lib/fold";
+import { type Item, type Row, type StreamBlock, type ToolItem, editsFiles, mcpTool, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, SessionItem, Status } from "../lib/types";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
@@ -30,9 +30,11 @@ function Link({ href, children }: { href?: string; children?: ReactNode }) {
   );
 }
 
-/** A code block from the model's text, with a button that copies it. */
+/** A code block from the model's text, with what it is written in and a button that copies it. */
 function CodeBlock({ children }: { children?: ReactNode }) {
   const block = useRef<HTMLPreElement>(null);
+  // The fence's own word for the language, which the highlighter leaves on the code as a class.
+  const written = isValidElement<{ className?: string }>(children) ? /language-([\w+#.-]+)/.exec(children.props.className ?? "")?.[1] : undefined;
   const [copied, setCopied] = useState(false);
   const copy = () => {
     navigator.clipboard.writeText(block.current?.textContent ?? "").then(
@@ -45,9 +47,12 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   };
   return (
     <div className="code-block">
-      <button type="button" className="button text small copy" onClick={copy}>
-        {copied ? "已复制" : "复制"}
-      </button>
+      <div className="code-tools">
+        {written && <span className="lang">{written}</span>}
+        <button type="button" className="button text small copy" onClick={copy}>
+          {copied ? "已复制" : "复制"}
+        </button>
+      </div>
       <pre ref={block}>{children}</pre>
     </div>
   );
@@ -76,14 +81,62 @@ function Diff({ hunk }: { hunk: DiffHunk }) {
       {hunk.lines.map((line, index) => (
         <div key={index} className={`diff-line ${line.kind === "+" ? "added" : line.kind === "-" ? "removed" : ""}`}>
           <span className="sign">{line.kind === "-" ? "−" : line.kind}</span>
-          <span className="text">{line.text || " "}</span>
+          <span className="text">
+            {/^\s*/.exec(line.text)?.[0]}
+            <span className="words">{line.text.trimStart() || " "}</span>
+          </span>
         </div>
       ))}
     </div>
   );
 }
 
-/** The single character stamped on a tool card: read, search, edit, create, run. */
+/**
+ * Whether what is put on the page now is put there as it happens, not read back from the log: an act that
+ * arrives while the page is watched is stamped onto it; a page of old acts is simply shown.
+ */
+const Live = createContext<{ current: boolean }>({ current: false });
+
+/** The things that came onto the page together last, counted, so that each can follow the one before it. */
+const arrivals = { at: 0, count: 0 };
+
+/**
+ * Whether the thing that calls this came onto the page as it happened: decided once, when it comes. What it
+ * gives is the class that says so and the thing's place among those that came with it, which sets how long
+ * it waits its turn: several acts sent in one breath are stamped one after another, not all at once.
+ */
+function useFresh(): { className: string; style: CSSProperties | undefined } {
+  const live = useContext(Live);
+  const [nth] = useState(() => {
+    if (!live.current) return null;
+    const now = performance.now();
+    if (now - arrivals.at > 60) arrivals.count = 0;
+    arrivals.at = now;
+    return Math.min(arrivals.count++, 12);
+  });
+  return nth === null ? { className: "", style: undefined } : { className: "fresh", style: { "--nth": nth } as CSSProperties };
+}
+
+/** How much an act weighs on the page, which its seal shows. */
+type Weight = "live" | "failed" | "wrote" | "act" | "quiet";
+
+/** Acts that only look: they change nothing and reach nowhere outside the machine. */
+const LOOKS = new Set(["read_file", "search", "find_files", "load_skill", "update_todos", "command_output"]);
+
+/** Whether nothing came of an act because it was not let to, or was taken back. */
+const voided = (tool: ToolItem) => tool.approval?.decision === "deny" || !!tool.result?.meta?.refused || !!tool.undone;
+
+function weigh(tool: ToolItem): Weight {
+  const { result } = tool;
+  // Turned down by 本尊, held back by 先谋后动, or taken back since: nothing came of it, and nothing went wrong.
+  if (voided(tool)) return "quiet";
+  if (!result) return "live";
+  if (result.isError) return "failed";
+  if (editsFiles(tool.name)) return "wrote";
+  return LOOKS.has(tool.name) ? "quiet" : "act";
+}
+
+/** The single character stamped on an act: read, search, edit, create, run. */
 function sealOf(tool: ToolItem): string {
   switch (tool.name) {
     case "read_file":
@@ -194,6 +247,7 @@ interface Family {
  * its own page, not this one.
  */
 function DelegateCard({ tool, family }: { tool: ToolItem; family: Family }) {
+  const fresh = useFresh();
   const tasks = Array.isArray(tool.input.tasks) ? (tool.input.tasks as Record<string, unknown>[]) : [];
   const text = (value: unknown) => (typeof value === "string" ? value : "");
   const ended = tool.result?.meta?.agents ?? [];
@@ -212,13 +266,14 @@ function DelegateCard({ tool, family }: { tool: ToolItem; family: Family }) {
   // A call the model got wrong sets nobody off; what was wrong is all there is to show.
   const failure = tool.result?.isError && agents.length === 0 ? tool.result.content : undefined;
   return (
-    <div className="did delegate">
+    <div className={`did delegate ${weigh(tool)} ${fresh.className}`} style={fresh.style}>
       <div className="did-head">
         <span className="seal" aria-hidden="true">
           遣
         </span>
         <span className="verb">派出子分身</span>
         <span className="target">{agents.length} 个，各办一件</span>
+        <span className="leader" aria-hidden="true" />
         <span className="outcome">{outcome}</span>
       </div>
       {failure && (
@@ -243,7 +298,9 @@ function DelegateCard({ tool, family }: { tool: ToolItem; family: Family }) {
   );
 }
 
+/** One act, on one line: its seal, what was done to what, and how it came out. What it printed or changed opens under it. */
 function ToolCard({ tool }: { tool: ToolItem }) {
+  const fresh = useFresh();
   const { verb, target, outcome } = describe(tool);
   const { result } = tool;
   const hunk = result && !result.isError ? result.meta?.hunk : undefined;
@@ -253,9 +310,11 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const returned = (result?.meta?.mcp || tool.name === "web_search") && !result?.isError ? result?.content : undefined;
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
-  const [open, setOpen] = useState(() => !!hunk || !!failure || (!!output && !!result?.isError));
+  // A change and a failure are open until closed, even when they come in after the line they belong to.
+  const [chosen, setOpen] = useState<boolean | null>(null);
+  const open = chosen ?? (!!hunk || !!failure || (!!output && !!result?.isError));
   return (
-    <div className="did">
+    <div className={`did ${weigh(tool)} ${voided(tool) ? "void" : ""} ${fresh.className}`} style={fresh.style}>
       <button type="button" className="did-head" aria-expanded={body ? open : undefined} disabled={!body} onClick={() => setOpen(!open)}>
         <span className="seal" aria-hidden="true">
           {sealOf(tool)}
@@ -264,6 +323,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
         <span className="target" title={target}>
           {target}
         </span>
+        <span className="leader" aria-hidden="true" />
         <span className="outcome">{outcome}</span>
       </button>
       {/* Not 本尊's doing: the 护法 let it run, and says why. */}
@@ -361,7 +421,7 @@ function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
     (approval.reason === "command" && mode === "auto" ? "放手施为只自行放行只读、构建、测试类且不碰洞府之外的命令，这条不在其列。" : "") +
     (oneByOne ? "这条命令带有管道、分号、引号、变量之类的写法，或者会执行任意代码，只能逐条批准。" : "");
   return (
-    <div className="sign-sheet">
+    <div className={`sign-sheet ${frozen ? "frozen" : ""}`}>
       <div className="sign-head">
         <h2>{ask.title}</h2>
         {/* Why this asks and what allowing it means: a tip behind a mark, shown on hover or focus; a click keeps it open. */}
@@ -373,7 +433,7 @@ function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
         </button>
         {/* In the corner, counting down: with nobody answering in time, the request declines itself. */}
         {seconds !== null && (
-          <span className="sign-countdown" role="timer" title="放手施为下不久等：到时无人定夺，就自动驳回，分身绕开它接着做">
+          <span className={`sign-countdown ${seconds <= 10 ? "urgent" : ""}`} role="timer" title="放手施为下不久等：到时无人定夺，就自动驳回，分身绕开它接着做">
             <strong>{seconds}</strong> 秒后自动驳回
           </span>
         )}
@@ -521,13 +581,14 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
         ) : block.kind === "thinking" ? (
           <ThinkingLine key={block.index} text={block.text} />
         ) : (
-          <div key={block.index} className="did">
+          <div key={block.index} className="did live fresh">
             <div className="did-head">
               <span className="seal" aria-hidden="true">
                 起
               </span>
               <span className="verb">起手</span>
               <span className="target">{block.name}</span>
+              <span className="leader" aria-hidden="true" />
               <span className="outcome">蓄势中</span>
             </div>
           </div>
@@ -535,6 +596,79 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
       )}
     </>
   );
+}
+
+/** Fewer acts than this are simply listed; this many that only looked, one after another, fold under one line. */
+const FOLD = 4;
+
+type Part = { kind: "item"; item: Item; at: number } | { kind: "acts"; tools: ToolItem[]; key: string };
+
+/**
+ * A turn's items as they are laid out: acts that follow one another stand together as lines of one record,
+ * and everything else stands by itself. A request waiting for 本尊 and a party of 子分身 are not lines.
+ */
+function parts(items: Item[]): Part[] {
+  const out: Part[] = [];
+  items.forEach((item, at) => {
+    const line = item.kind === "tool" && item.name !== "delegate" && !(item.approval && !item.approval.decision && !item.result);
+    const last = out[out.length - 1];
+    if (!line) out.push({ kind: "item", item, at });
+    else if (last?.kind === "acts") last.tools.push(item);
+    else out.push({ kind: "acts", tools: [item], key: item.id });
+  });
+  return out;
+}
+
+/** Acts that only looked, folded under one line that says how many of each; opened, they are listed again. */
+function Folded({ tools }: { tools: ToolItem[] }) {
+  const fresh = useFresh();
+  const [open, setOpen] = useState(false);
+  const counts = new Map<string, number>();
+  for (const tool of tools) counts.set(sealOf(tool), (counts.get(sealOf(tool)) ?? 0) + 1);
+  return (
+    <>
+      <div className={`did quiet folded ${fresh.className}`} style={fresh.style}>
+        <button type="button" className="did-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <span className="seal" aria-hidden="true">
+            览
+          </span>
+          <span className="verb">查阅</span>
+          <span className="target">{[...counts].map(([seal, count]) => `${seal} ${count}`).join("，")}</span>
+          <span className="leader" aria-hidden="true" />
+          <span className="outcome">{tools.length} 处</span>
+        </button>
+      </div>
+      {open && (
+        <div className="folded-acts">
+          {tools.map((tool) => (
+            <ToolCard key={tool.id} tool={tool} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * A run of acts. Within it, a stretch of looking that is over (something else came after it, or the turn
+ * ended) folds under one line once it is long: a 分身 reads a great deal on its way to doing a little.
+ */
+function Acts({ tools, closed }: { tools: ToolItem[]; closed: boolean }) {
+  const out: ReactNode[] = [];
+  for (let at = 0; at < tools.length; ) {
+    let end = at;
+    while (end < tools.length && weigh(tools[end]) === "quiet" && !voided(tools[end])) end++;
+    if (end - at >= FOLD && (closed || end < tools.length)) {
+      out.push(<Folded key={`fold-${tools[at].id}`} tools={tools.slice(at, end)} />);
+      at = end;
+    } else {
+      // Too few to fold, or still being added to: each on its own line.
+      const stop = Math.max(end, at + 1);
+      for (const tool of tools.slice(at, stop)) out.push(<ToolCard key={tool.id} tool={tool} />);
+      at = stop;
+    }
+  }
+  return <div className="acts">{out}</div>;
 }
 
 interface Props {
@@ -630,6 +764,25 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
   const undoable = undoableTurns(rows, copied);
   /** Where a fork's own conversation begins: said once, between what it copied and what it did itself. */
   const seam = <div className="seam">以上是分叉时带过来的前情，以下是这个分叉自己的</div>;
+  // What comes onto the page a little at a time is happening now; what comes all at once is the log being read.
+  const live = useRef(false);
+  const seen = useRef<number | null>(null);
+  const count = rows.reduce((sum, row) => sum + row.items.length, 0);
+  live.current = seen.current !== null && (status !== "idle" || frozen) && count - seen.current <= 12;
+  useLayoutEffect(() => {
+    seen.current = count;
+  });
+  /** For a moment after the 分身 finishes: the light on the turn's thread goes back up to the order. */
+  const [closing, setClosing] = useState(false);
+  const was = useRef(status);
+  useEffect(() => {
+    const finished = was.current === "running" && status === "idle";
+    was.current = status;
+    if (!finished) return;
+    setClosing(true);
+    const timer = setTimeout(() => setClosing(false), 2200);
+    return () => clearTimeout(timer);
+  }, [status]);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   /** How many messages of 本尊's were on the page at the last render. */
@@ -651,6 +804,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
     }
   });
   return (
+    <Live.Provider value={live}>
     <div
       className="transcript"
       ref={scroller}
@@ -669,7 +823,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
         const canUndo = !frozen && status === "idle" && !row.prompt.steering && undoable.has(row.turn);
         const canFork = !!onFork && !row.prompt.steering && row.turn > 0;
         return (
-          <section key={row.key} className={`turn ${last ? "latest" : ""}`}>
+          <section key={row.key} className={`turn ${last ? "latest" : ""} ${last && closing ? "closing" : ""}`}>
             {ownFirst && seam}
             <div className="turn-said">
               {row.prompt.images.length > 0 && (
@@ -716,13 +870,19 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
               {/* Words sent after the order while the 分身 works wait here, under what it is working on, until it hears them. */}
               {last && queued.map((text, at) => <Queued key={at} text={text} />)}
             </div>
-            <div className="turn-did">
-              {row.items.map((item, at) => (
-                <ItemView key={item.kind === "tool" ? item.id : at} item={item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} />
-              ))}
+            <div className={`turn-did ${last && status === "running" ? "live" : ""}`}>
+              {parts(row.items).map((part, at, all) =>
+                part.kind === "acts" ? (
+                  // A run is over once something follows it, or the 分身 has stopped.
+                  <Acts key={part.key} tools={part.tools} closed={at < all.length - 1 || !last || status !== "running" || stream.length > 0} />
+                ) : (
+                  <ItemView key={part.item.kind === "tool" ? part.item.id : part.at} item={part.item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} />
+                ),
+              )}
               {last && <Streaming blocks={stream} />}
               {/* Nothing of its own yet: the seam closes what was copied. */}
               {last && copied > 0 && row.turn <= copied && seam}
+              {last && status === "running" && <span className="vein-tip" aria-hidden="true" />}
             </div>
           </section>
         );
@@ -738,5 +898,6 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
         </section>
       )}
     </div>
+    </Live.Provider>
   );
 }

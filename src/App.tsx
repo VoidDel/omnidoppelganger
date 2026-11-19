@@ -406,6 +406,7 @@ export default function App() {
               </div>
             ) : (
               <Transcript
+                key={active.id}
                 rows={rows}
                 stream={replay ? [] : state.stream}
                 queued={replay ? [] : state.queued}

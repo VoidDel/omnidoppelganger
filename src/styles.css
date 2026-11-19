@@ -1,8 +1,36 @@
-/* The "符箓" look. Material says who did what:
-   moon-white paper = what 本尊 said, yellow talisman paper = what the 分身 did,
-   cinnabar = waiting for 本尊 to decide. Jade is the colour of sending an order. */
+/* The "符箓" look. The page is quiet paper, and the seals on it speak:
+   moon-white paper = what 本尊 said; ink on the page = what the 分身 did, each act under its seal;
+   yellow talisman paper with cinnabar on it = the one thing waiting for 本尊 to decide.
+   Jade is the colour of sending an order, gold the 分身's own, cinnabar 本尊's. */
 
 :root {
+  /* Type: six sizes for everything written, and one for code. Seals and tokens are drawn to their boxes, not set on this scale. */
+  --t-micro: 12px;
+  --t-small: 14px;
+  --t-body: 16px;
+  --t-lead: 18px;
+  --t-title: 22px;
+  --t-display: 44px;
+  --t-code: 13.5px;
+  /* Corners: paper is cut nearly square, controls are rounded to the hand. */
+  --r-paper: 2px;
+  --r-control: 6px;
+  /* Space, in steps of four. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  /* Motion: how long a thing takes by how far it goes, and the two ways it moves. */
+  --d-quick: 120ms;
+  --d-move: 240ms;
+  --d-arrive: 520ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-seal: cubic-bezier(0.3, 1.5, 0.5, 1);
+  /* Where the seals of a turn line up, measured from the column's left edge, and where its words start. */
+  --rail: 21px;
+  --gutter: 43px;
   --bg: #eff3ef;
   --bg-side: #e3eae5;
   --panel: #f7f9f6;
@@ -19,7 +47,11 @@
   --talisman: #f6e7a8;
   --talisman-line: #d9bc55;
   --talisman-under: #e8c84a;
-  --talisman-ink: #5a4500;
+  --talisman-ink: #4d3b00;
+  /* Gold as ink on the page itself, where the talisman's own ink would be too dark or too light. */
+  --amber-ink: #6b5200;
+  --added: #dcebe3;
+  --added-ink: #17564d;
   --cinnabar: #b8322a;
   --cinnabar-on: #ffffff;
   --cinnabar-ink: #8c2019;
@@ -52,17 +84,22 @@
   --jade-ink: #0b1416;
   --jade-tint: #1b3f3b;
   --jade-tint-ink: #bfede3;
-  --talisman: #3a3212;
-  --talisman-line: #7d6a1e;
+  /* In the dark the talisman is still yellow paper, lit: the one bright thing on the desk. Its ink is dark. */
+  --talisman: #ecd88c;
+  --talisman-line: #b8962e;
   --talisman-under: #c9a62c;
-  --talisman-ink: #f3e3a0;
-  --cinnabar: #e0584e;
-  --cinnabar-on: #1a0b09;
+  --talisman-ink: #3d2f00;
+  --amber-ink: #f0dc94;
+  --added: #173a36;
+  --added-ink: #bfede3;
+  /* A seal is red with a pale character, in the dark as in the light. */
+  --cinnabar: #cf4a40;
+  --cinnabar-on: #fff5ef;
   --cinnabar-ink: #ffb4ab;
   --cinnabar-tint: #3d1c19;
   --cinnabar-soft: #7a342e;
   --gold: #e0b85a;
-  --gold-soft: #5c4a1c;
+  --gold-soft: #4a3c17;
   --removed: #17282a;
   --seal-gold: #ffe9a8;
   --mist-far: #15262a;
@@ -86,7 +123,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--text);
-  font-size: 16px;
+  font-size: var(--t-body);
   line-height: 1.7;
   -webkit-font-smoothing: antialiased;
 }
@@ -117,7 +154,41 @@ code,
 pre,
 .mono {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--t-code);
+}
+
+/* What scrolls keeps a narrow bar that is out of sight until the thing is pointed at, and is then a soft stroke, no box and no arrows. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* The stroke is narrower than the room it has: the border, in the colour of nothing, keeps it off the edge. */
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  background-clip: content-box;
+}
+
+:hover::-webkit-scrollbar-thumb,
+:focus-within::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--line-strong) 70%, transparent);
+}
+
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  border-width: 2px;
+  background-color: var(--line-strong);
 }
 
 .sr-only {
@@ -134,7 +205,7 @@ pre,
   flex: 0 0 auto;
   width: 24px;
   height: 24px;
-  border-radius: 3px;
+  border-radius: var(--r-paper);
   background: var(--cinnabar);
   color: var(--cinnabar-on);
   font-family: var(--text);
@@ -178,7 +249,7 @@ pre,
   align-items: center;
   gap: 10px;
   padding: 4px 6px;
-  font-size: 15px;
+  font-size: var(--t-body);
   font-weight: 700;
   letter-spacing: 0.01em;
 }
@@ -209,7 +280,7 @@ pre,
   flex: 1;
   min-width: 0;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--t-micro);
   color: var(--ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -222,7 +293,7 @@ pre,
   height: 26px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: transparent;
   color: var(--ink-2);
   display: inline-flex;
@@ -243,7 +314,7 @@ pre,
   height: 32px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: transparent;
   color: var(--ink-2);
   display: inline-flex;
@@ -273,7 +344,7 @@ pre,
   width: 100%;
   text-align: left;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: transparent;
   padding: 8px 10px;
   display: flex;
@@ -303,7 +374,7 @@ pre,
   flex-shrink: 0;
   padding: 0 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--t-micro);
   font-weight: 700;
 }
 
@@ -340,7 +411,7 @@ pre,
   width: calc(100% - 18px);
   min-height: 36px;
   margin-left: 18px;
-  font-size: 14px;
+  font-size: var(--t-small);
   position: relative;
 }
 
@@ -361,7 +432,7 @@ pre,
   min-height: 44px;
   padding: 0 18px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: transparent;
   font-weight: 700;
   display: inline-flex;
@@ -399,7 +470,7 @@ pre,
   min-height: 44px;
   padding: 0 12px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: var(--control);
   display: flex;
   align-items: center;
@@ -407,7 +478,7 @@ pre,
 }
 
 .select-button .label {
-  font-size: 12px;
+  font-size: var(--t-micro);
   color: var(--ink-2);
 }
 
@@ -440,7 +511,7 @@ pre,
 .mode-option.danger {
   margin-top: 4px;
   border-top: 1px solid var(--line);
-  border-radius: 0 0 4px 4px;
+  border-radius: 0 0 var(--r-paper) var(--r-paper);
   color: var(--cinnabar-ink);
 }
 
@@ -493,7 +564,7 @@ pre,
 
 .main-header h1 {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--t-lead);
   font-weight: 700;
   line-height: 1.35;
   overflow: hidden;
@@ -512,7 +583,7 @@ pre,
 .main-header .path {
   min-width: 0;
   color: var(--ink-2);
-  font-size: 11px;
+  font-size: var(--t-micro);
   line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -632,7 +703,7 @@ pre,
   border: 0;
   background: none;
   color: var(--jade);
-  font-size: 12px;
+  font-size: var(--t-micro);
   /* On the baseline of the last line beside it. */
   line-height: 1.7;
   margin-bottom: 3px;
@@ -667,19 +738,11 @@ pre,
   max-height: 72px;
 }
 
-/* As wide as the column: the conversation follows the window, however wide it is made. */
-.turn-did {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
 /* 本尊's order on moon-white paper, with the 分身's talisman paper showing underneath. */
 .original {
   background: var(--sheet);
   border: 1px solid var(--ink);
-  border-radius: 2px;
+  border-radius: var(--r-paper);
   box-shadow: 6px 6px 0 var(--talisman-under);
   /* Laid out as the 分身's cards are: the seal at the left, then the words, and when at the top right. */
   padding: 8px 12px 8px 8px;
@@ -717,7 +780,7 @@ pre,
 }
 
 .said-when {
-  font-size: 11px;
+  font-size: var(--t-micro);
   line-height: 14px;
   color: var(--ink-2);
   white-space: nowrap;
@@ -738,12 +801,15 @@ pre,
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--t-micro);
   color: var(--ink-2);
 }
 
+/* ---------- what the 分身 says ---------- */
+
 .prose {
   overflow-wrap: anywhere;
+  line-height: 1.8;
 }
 
 .prose > :first-child {
@@ -754,42 +820,120 @@ pre,
   margin-bottom: 0;
 }
 
+/* Lines of words keep to a measure the eye can come back along, however wide the window is made.
+   Code and tables are not read that way, and take the column's width. */
+.prose :is(p, ul, ol, blockquote, h1, h2, h3, h4) {
+  max-width: 44em;
+}
+
 .prose p,
 .prose ul,
 .prose ol,
-.prose pre {
-  margin: 0 0 10px;
+.prose pre,
+.prose blockquote {
+  margin: 0 0 var(--s-3);
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.4em;
+}
+
+.prose li + li,
+.prose li > ul,
+.prose li > ol {
+  margin-top: var(--s-1);
+}
+
+.prose li::marker {
+  color: var(--ink-2);
 }
 
 .prose h1,
 .prose h2,
-.prose h3 {
-  margin: 14px 0 6px;
-  font-size: 16px;
+.prose h3,
+.prose h4 {
+  line-height: 1.4;
+  font-weight: 700;
+}
+
+.prose h1 {
+  margin: var(--s-5) 0 var(--s-2);
+  font-size: var(--t-title);
+}
+
+.prose h2 {
+  margin: var(--s-5) 0 var(--s-2);
+  font-size: var(--t-lead);
+}
+
+.prose h3,
+.prose h4 {
+  margin: var(--s-4) 0 var(--s-1);
+  font-size: var(--t-body);
+}
+
+/* Words quoted from elsewhere: set in, under a stroke of gold. */
+.prose blockquote {
+  padding: 0 0 0 var(--s-3);
+  border-left: 3px solid var(--gold);
+  color: var(--ink-2);
+}
+
+.prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.prose hr {
+  margin: var(--s-4) 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.prose a {
+  color: var(--jade);
+  text-underline-offset: 3px;
 }
 
 .prose pre {
-  padding: 10px 12px;
+  padding: var(--s-3) var(--s-4);
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--r-paper);
   background: var(--sheet);
+  line-height: 1.65;
   overflow-x: auto;
 }
 
-/* A code block and its copy button, which shows when the block is pointed at or focused. */
+/* A code block, and over its top right corner what it is written in and the button that copies it. */
 .code-block {
   position: relative;
 }
 
-.code-block .copy {
+.code-tools {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  min-height: 28px;
-  padding: 0 8px;
-  font-size: 12px;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding: 2px var(--s-1) 0 var(--s-2);
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.code-tools .lang {
+  font-family: var(--mono);
+  padding-right: var(--s-1);
+}
+
+/* The copy button shows when the block is pointed at or focused. */
+.code-block .copy {
+  min-height: 24px;
+  padding: 0 var(--s-2);
+  font-size: var(--t-micro);
   background: var(--sheet);
   opacity: 0;
+  transition: opacity var(--d-quick) ease;
 }
 
 .code-block:hover .copy,
@@ -798,7 +942,7 @@ pre,
 }
 
 /* Code colors from the palette's own inks, so they follow the theme: cinnabar
-   for keywords, jade for text, talisman gold for numbers and names. */
+   for keywords, jade for text, gold for numbers and names. */
 .hljs-comment,
 .hljs-quote {
   color: var(--ink-2);
@@ -823,7 +967,7 @@ pre,
 .hljs-attribute,
 .hljs-symbol,
 .hljs-variable {
-  color: var(--talisman-ink);
+  color: var(--amber-ink);
 }
 
 .hljs-title,
@@ -837,70 +981,34 @@ pre,
   color: var(--cinnabar-ink);
 }
 
-.main-header .branch {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--ink-2);
-}
-
-/* On a 子分身's page: where it came from, and the way back. */
-/* Where the session comes from, in the small line under its title: a word to follow, like the branch beside it. */
-.main-header .kin-link {
-  flex: none;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--talisman-ink);
-  font-family: var(--text);
-  font-size: 11px;
-  line-height: 1.35;
-  text-decoration: underline;
-  text-decoration-color: var(--talisman-line);
-  text-underline-offset: 2px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.main-header .kin-link svg {
-  flex: none;
-}
-
 .prose .table-wrap {
-  margin: 0 0 10px;
+  margin: 0 0 var(--s-3);
   overflow-x: auto;
 }
 
+/* A table ruled as a ledger is: a line of ink over and under its head, hairlines between its rows, no boxes. */
 .prose table {
   border-collapse: collapse;
-  font-size: 14px;
+  border-top: 1px solid var(--ink);
+  font-size: var(--t-small);
 }
 
 .prose th,
 .prose td {
-  padding: 6px 12px;
-  border: 1px solid var(--line);
+  padding: 6px var(--s-5) 6px 0;
+  border-bottom: 1px solid var(--line);
   text-align: left;
   vertical-align: top;
 }
 
 .prose th {
-  background: var(--removed);
+  border-bottom-color: var(--ink);
   font-weight: 700;
   white-space: nowrap;
 }
 
-.prose td {
-  background: var(--sheet);
+.prose tr:last-child td {
+  border-bottom-color: var(--line-strong);
 }
 
 /* A task list: the model's boxes, ticked or not, in place of bullets. */
@@ -910,32 +1018,65 @@ pre,
 
 .prose li.task-list-item input {
   margin: 0 6px 0 -20px;
+  accent-color: var(--jade);
 }
 
 .prose :not(pre) > code {
-  padding: 1px 4px;
-  border-radius: 3px;
+  padding: 1px 5px;
+  border-radius: var(--r-paper);
   background: var(--removed);
 }
 
+/* What the 分身 thought, put away under one line; a small ring on the thread marks where. */
 .thinking {
+  position: relative;
   color: var(--ink-2);
-  font-size: 13px;
+  font-size: var(--t-small);
+}
+
+.thinking::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--rail) - var(--gutter) - 3.5px);
+  top: 9px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--bg);
 }
 
 .thinking summary {
   cursor: pointer;
 }
 
-/* While the 分身 thinks: one line, the newest words at its end. */
+.thinking p {
+  margin: 6px 0 0;
+  max-width: 50em;
+  white-space: pre-wrap;
+}
+
+/* While the 分身 thinks: one line, the newest words at its end, and light passing over the word that says so. */
 .thinking-live {
   display: flex;
   align-items: baseline;
   white-space: nowrap;
 }
 
+.thinking-live::before {
+  border-color: var(--jade);
+  background: var(--jade);
+  box-shadow: 0 0 8px 1px color-mix(in srgb, var(--jade) 70%, transparent);
+  animation: breathe 1.4s ease-in-out infinite alternate;
+}
+
 .thinking-live .label {
   flex: none;
+  color: transparent;
+  background: linear-gradient(100deg, var(--ink-2) 0 35%, var(--jade) 45%, var(--seal-gold) 50%, var(--jade) 55%, var(--ink-2) 65% 100%) 0 0 / 300% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: glint 2.2s linear infinite;
 }
 
 .thinking-live .tail {
@@ -955,69 +1096,341 @@ pre,
   flex: none;
 }
 
-.thinking p {
-  margin: 6px 0 0;
-  white-space: pre-wrap;
+/* ---------- what the 分身 did: ink on the page, each act under its seal ---------- */
+
+/* The acts of a turn hang on one thread, which runs down from 本尊's order through every seal.
+   The words beside it start where the order's words do. */
+.turn-did {
+  position: relative;
+  min-width: 0;
+  padding-left: var(--gutter);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
 }
 
-/* ---------- talisman paper: what the 分身 did ---------- */
+.turn-did::before,
+.turn-did::after {
+  content: "";
+  position: absolute;
+  left: var(--rail);
+  /* From under the order's own seal, behind the band that holds it. */
+  top: -14px;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.turn-did::before {
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--line);
+}
+
+.turn-did:empty::before {
+  display: none;
+}
+
+/* While the 分身 works, light runs down the thread from the order to where the next act will land. */
+.turn-did::after {
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, transparent, var(--jade) 40%, #fffdf2 50%, var(--jade) 60%, transparent) 0 -140px / 100% 140px no-repeat;
+  filter: drop-shadow(0 0 4px var(--jade));
+  opacity: 0;
+}
+
+.turn-did.live {
+  padding-bottom: var(--s-5);
+}
+
+.turn-did.live::after {
+  opacity: 1;
+  animation: vein 2.2s linear infinite;
+}
+
+/* Its work done, the light goes back up the thread once, in gold, to the order it answered. */
+.turn.closing .turn-did::after {
+  opacity: 1;
+  background-image: linear-gradient(to bottom, transparent, var(--gold) 40%, #fffdf2 50%, var(--gold) 60%, transparent);
+  filter: drop-shadow(0 0 5px var(--gold));
+  animation: vein 900ms var(--ease-out) reverse both;
+}
+
+.turn.closing .original {
+  animation: homecoming 1400ms ease-out 600ms;
+}
+
+@keyframes vein {
+  from {
+    background-position: 0 -140px;
+  }
+  to {
+    background-position: 0 calc(100% + 140px);
+  }
+}
+
+@keyframes homecoming {
+  20% {
+    box-shadow:
+      6px 6px 0 var(--talisman-under),
+      6px 6px 26px 4px color-mix(in srgb, var(--gold) 70%, transparent);
+  }
+}
+
+/* Where the thread ends while the 分身 works: a point of light, breathing. */
+.vein-tip {
+  position: absolute;
+  left: var(--rail);
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fffdf2 0 22%, var(--jade) 48%, transparent 72%);
+  box-shadow: 0 0 12px 3px color-mix(in srgb, var(--jade) 55%, transparent);
+  animation: breathe 1.2s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes breathe {
+  from {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes glint {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+/* Acts that follow one another stand close, as lines of one record. */
+.acts {
+  display: flex;
+  flex-direction: column;
+}
 
 .did {
-  background: var(--talisman);
-  border: 1px solid var(--talisman-line);
-  border-radius: 2px;
-  color: var(--ink);
-  overflow: hidden;
+  position: relative;
 }
 
-:root[data-theme="dark"] .did {
-  color: var(--talisman-ink);
-}
-
+/* One act to a line: its seal on the thread, then what was done to what, and across a row of dots how it came out. */
 .did-head {
   width: 100%;
-  min-height: 40px;
-  padding: 7px 12px 7px 8px;
+  min-height: 30px;
+  padding: 2px var(--s-2) 2px 0;
   border: 0;
+  border-radius: var(--r-control);
   background: transparent;
   text-align: left;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: baseline;
+  gap: var(--s-2);
 }
 
-/* A card with nothing to expand is not dimmed: it is a record, not an unavailable control. */
+/* A line with nothing to open is not dimmed: it is a record, not an unavailable control. */
 .did-head:disabled {
   opacity: 1;
 }
 
+button.did-head:not(:disabled):hover {
+  background: color-mix(in srgb, var(--sheet) 70%, transparent);
+}
+
+/* The seal of an act is an outline in ink, where 本尊's is cinnabar: how heavy it is says how much the act weighs. */
+.did .seal {
+  position: absolute;
+  left: calc(var(--rail) - var(--gutter) - 10px);
+  top: 5px;
+  /* Over the thread and the light that runs down it. */
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* An act on the world outside the files: a command, an errand, a borrowed instrument. */
+.did.act .seal {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+/* A file written: gold, the 分身's own colour. */
+.did.wrote .seal {
+  border-color: var(--gold);
+  background: var(--gold-soft);
+  color: var(--amber-ink);
+}
+
+/* An act gone wrong is the only one stamped in full cinnabar. */
+.did.failed .seal {
+  border-color: var(--cinnabar);
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+}
+
+.did.live .seal {
+  border-color: var(--jade);
+  color: var(--jade);
+}
+
+/* Under way: a ring of jade turning round the seal, gathering. */
+.did.live .seal::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1.5px solid transparent;
+  border-top-color: var(--jade);
+  border-right-color: color-mix(in srgb, var(--jade) 35%, transparent);
+  border-radius: 50%;
+  animation: turn 1.1s linear infinite;
+}
+
 .did-head .verb {
+  flex: none;
+}
+
+.did:is(.act, .wrote, .failed) .verb {
   font-weight: 700;
-  flex-shrink: 0;
+}
+
+.did.quiet .verb {
+  color: var(--ink-2);
 }
 
 .did-head .target {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--t-code);
+}
+
+/* What several acts read amount to, in words, not a path. */
+.did.folded .target {
+  font-family: var(--text);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+/* The dots that lead the eye from an act to how it came out, as in a ledger. */
+.did-head .leader {
+  flex: 1 1 var(--s-5);
+  min-width: var(--s-4);
+  border-bottom: 1px dotted var(--line-strong);
+  transform: translateY(-4px);
+  opacity: 0.7;
 }
 
 .did-head .outcome {
-  flex-shrink: 0;
-  font-size: 13px;
+  flex: none;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.did.failed .outcome {
+  color: var(--cinnabar-ink);
+  font-weight: 700;
+}
+
+.did.wrote .outcome {
+  color: var(--amber-ink);
+}
+
+.did.live .outcome {
+  color: var(--jade);
+}
+
+/* Taken back by 本尊, or never let run: the line stays, struck through. */
+.did.void .target {
+  color: var(--ink-2);
+  text-decoration: line-through;
+}
+
+/* A line that opens says so with a small mark at its end, which turns when it does. */
+.did-head[aria-expanded]::after {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  margin: 0 2px 2px var(--s-1);
+  border: solid var(--ink-2);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+  transition: transform var(--d-quick) var(--ease-out);
+}
+
+.did-head[aria-expanded="true"]::after {
+  transform: rotate(45deg);
+}
+
+/* A line under an act that says who let it run. */
+.did-note {
+  padding: 0 0 var(--s-1);
+  font-size: var(--t-micro);
+  color: var(--amber-ink);
+}
+
+.did-body {
+  margin: var(--s-1) 0 var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  color: var(--ink);
+  overflow-x: auto;
+  animation: unfold var(--d-move) var(--ease-out);
+}
+
+@keyframes unfold {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+    transform: translateY(-4px);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+
+.did-body pre {
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  line-height: 22px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The acts folded under one line, shown again: set in under it, on the same thread. */
+.folded-acts {
+  display: flex;
+  flex-direction: column;
+  animation: unfold var(--d-move) var(--ease-out);
 }
 
 /* The 子分身 a call set off, one to a line, each a way into its own page. */
 .did .agents {
-  margin: 0;
+  margin: var(--s-1) 0 var(--s-2);
   padding: 0;
   list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
   background: var(--sheet);
-  border-top: 1px solid var(--talisman-line);
+  overflow: hidden;
 }
 
 .did .agents li + li {
@@ -1027,7 +1440,7 @@ pre,
 .did .agent {
   width: 100%;
   min-height: 40px;
-  padding: 6px 12px;
+  padding: 6px var(--s-3);
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -1039,6 +1452,7 @@ pre,
 
 .did .agent:hover:not(:disabled) {
   background: var(--jade-tint);
+  color: var(--jade-tint-ink);
 }
 
 .did .agent:disabled {
@@ -1058,24 +1472,277 @@ pre,
 .did .agent-task {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--t-small);
   color: var(--ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* A line under a card's head that says who let it run. */
-.did-note {
-  padding: 0 12px 6px 42px;
-  font-size: 12px;
-  color: var(--talisman-ink);
+/* --- how an act arrives, when it is done while the page is watched --- */
+
+/* An act begun comes out of the paper: its seal gathers, its words bleed in like ink. */
+.did.fresh {
+  --wait: calc(var(--nth, 0) * 90ms);
+}
+
+.did.fresh.live .seal {
+  animation: gather var(--d-arrive) var(--ease-out) var(--wait) backwards;
+}
+
+.did.fresh .did-head > :not(.seal),
+.did.fresh .did-head::after {
+  animation: ink-in var(--d-arrive) var(--ease-out) var(--wait) backwards;
+}
+
+/* Done, its seal is brought down on the page, and the ink of it spreads once round where it struck. */
+.did.fresh:not(.live) .seal {
+  animation: stamp var(--d-arrive) var(--ease-seal) var(--wait) backwards;
+}
+
+.did.fresh:not(.live) .seal::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  animation: seal-ring 900ms ease-out calc(var(--wait) + 160ms) backwards;
+}
+
+.did.fresh:not(.live) .outcome {
+  animation: ink-in var(--d-arrive) var(--ease-out) calc(var(--wait) + 120ms) backwards;
+}
+
+/* One gone wrong lands off true, and shakes. */
+.did.fresh.failed .did-head {
+  animation: misfire 420ms ease-in-out calc(var(--wait) + 200ms);
+}
+
+@keyframes gather {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+    filter: blur(3px);
+  }
+}
+
+@keyframes ink-in {
+  from {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translateX(-6px);
+  }
+}
+
+@keyframes stamp {
+  from {
+    opacity: 0;
+    transform: scale(2.4) rotate(-16deg);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(0.9) rotate(3deg);
+  }
+}
+
+@keyframes seal-ring {
+  from {
+    box-shadow:
+      0 0 0 0 color-mix(in srgb, currentColor 60%, transparent),
+      0 0 14px 2px color-mix(in srgb, currentColor 50%, transparent);
+  }
+  to {
+    box-shadow:
+      0 0 0 14px transparent,
+      0 0 24px 10px transparent;
+  }
+}
+
+@keyframes misfire {
+  20%,
+  60% {
+    transform: translateX(-4px);
+  }
+  40%,
+  80% {
+    transform: translateX(3px);
+  }
+}
+
+.diff {
+  min-width: max-content;
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: var(--t-code);
+  line-height: 22px;
+  white-space: pre;
+}
+
+.diff-line {
+  display: flex;
+  padding-right: var(--s-3);
+}
+
+.diff-line .sign {
+  flex: 0 0 28px;
+  text-align: center;
+}
+
+/* New lines are washed in jade; removed lines fade and are struck through. No red against green. */
+.diff-line.added {
+  background: var(--added);
+  color: var(--added-ink);
+}
+
+.diff-line.added .sign {
+  font-weight: 700;
+}
+
+.diff-line.removed {
+  background: var(--removed);
+  color: var(--ink-2);
+}
+
+.diff-line.removed .words {
+  text-decoration: line-through;
+}
+
+/* ---------- the talisman: a request awaiting the vermilion reply ---------- */
+
+/* The one sheet of yellow paper on the page, written and ruled in cinnabar. It lies across the thread:
+   the work stops here until 本尊 answers. */
+.sign-sheet {
+  position: relative;
+  margin-left: calc(-1 * var(--gutter));
+  padding: 20px var(--s-5);
+  border: 1px solid var(--cinnabar);
+  border-radius: var(--r-paper);
+  background: var(--talisman);
+  color: var(--ink);
+  box-shadow:
+    inset 0 0 0 3px var(--talisman),
+    inset 0 0 0 4px var(--cinnabar-soft),
+    0 14px 34px -16px color-mix(in srgb, var(--cinnabar) 60%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: unroll 620ms var(--ease-out) backwards;
+}
+
+/* In the dark it is still lit paper: everything written on it keeps the inks of day. */
+:root[data-theme="dark"] .sign-sheet {
+  --ink: #1b2a2b;
+  --ink-2: #57533c;
+  --sheet: #fbf6df;
+  --bg: #f3ecd0;
+  --line: #d9c98a;
+  --line-strong: #9c8a4a;
+  --jade: #1f6f64;
+  --cinnabar: #b8322a;
+  --cinnabar-on: #ffffff;
+  --cinnabar-ink: #8c2019;
+  --cinnabar-tint: #f9e2dc;
+  --cinnabar-soft: #dba093;
+  --added: #dcebe3;
+  --added-ink: #17564d;
+  --removed: #e9e2c6;
+  box-shadow:
+    inset 0 0 0 3px var(--talisman),
+    inset 0 0 0 4px var(--cinnabar-soft),
+    0 0 44px -10px color-mix(in srgb, var(--talisman) 55%, transparent);
+}
+
+/* It comes onto the page unrolled from its top edge, and light passes over it once. */
+.sign-sheet::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 42%, rgb(255 255 255 / 0.7) 50%, transparent 58%) 130% 0 / 260% 100% no-repeat;
+  animation: sheen 1100ms ease-out 380ms backwards;
+  pointer-events: none;
+}
+
+/* Waiting, its cinnabar edge glows and dims, slowly, as an ember does. */
+.sign-sheet::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow:
+    0 0 0 1px var(--cinnabar),
+    0 0 26px 3px color-mix(in srgb, var(--cinnabar) 55%, transparent);
+  opacity: 0;
+  animation: ember 2.6s ease-in-out 700ms infinite alternate;
+  pointer-events: none;
+}
+
+.sign-sheet.frozen::after {
+  animation: none;
+}
+
+@keyframes unroll {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+    transform: translateY(-8px);
+  }
+  to {
+    clip-path: inset(-40px);
+  }
+}
+
+@keyframes sheen {
+  from {
+    background-position: -30% 0;
+  }
+}
+
+@keyframes ember {
+  to {
+    opacity: 1;
+  }
+}
+
+.sign-sheet h2 {
+  margin: 0;
+  font-family: var(--text);
+  font-size: var(--t-title);
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--cinnabar-ink);
+}
+
+.sign-sheet p {
+  margin: 0;
+}
+
+/* What is asked for, on a slip of white laid on the yellow. */
+.sign-detail {
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  padding: var(--s-2) var(--s-3);
+  font-family: var(--mono);
+  font-size: var(--t-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.sign-sheet .diff {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.sign-sheet .button.outline.red {
+  background: color-mix(in srgb, var(--sheet) 55%, transparent);
 }
 
 /* Why the 护法 would not pass it, in cinnabar: it is the reason 本尊 is asked. */
 .sign-review {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--t-small);
   font-weight: 700;
   color: var(--cinnabar-ink);
 }
@@ -1091,8 +1758,8 @@ pre,
 .sign-why {
   position: relative;
   flex: none;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   /* At the title's upper right, like a note mark, close against its last character. */
   margin: 2px 0 0 -6px;
   padding: 0;
@@ -1100,9 +1767,9 @@ pre,
   border-radius: 50%;
   background: transparent;
   color: var(--ink-2);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  line-height: 12px;
+  line-height: 14px;
   cursor: help;
 }
 
@@ -1120,13 +1787,13 @@ pre,
   z-index: 10;
   width: max-content;
   max-width: min(420px, 60vw);
-  padding: 8px 12px;
+  padding: var(--s-2) var(--s-3);
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: var(--sheet);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
   color: var(--ink);
-  font-size: 13px;
+  font-size: var(--t-small);
   font-weight: 400;
   line-height: 1.6;
   text-align: left;
@@ -1143,12 +1810,12 @@ pre,
 .sign-countdown {
   flex: none;
   margin: 4px 0 0 auto;
-  padding: 2px 12px;
+  padding: 2px var(--s-3);
   border: 1px solid var(--cinnabar);
   border-radius: 999px;
-  background: var(--cinnabar-tint);
+  background: color-mix(in srgb, var(--sheet) 60%, transparent);
   color: var(--cinnabar-ink);
-  font-size: 13px;
+  font-size: var(--t-small);
   white-space: nowrap;
 }
 
@@ -1159,118 +1826,110 @@ pre,
   font-variant-numeric: tabular-nums;
 }
 
-.did-body {
-  background: var(--sheet);
-  color: var(--ink);
-  border-top: 1px solid var(--talisman-line);
-  overflow-x: auto;
+/* The last seconds: the capsule fills with cinnabar and beats. */
+.sign-countdown.urgent {
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+  animation: beat 1s ease-in-out infinite;
 }
 
-:root[data-theme="dark"] .did-body {
-  background: var(--bg);
-}
-
-.did-body pre {
-  margin: 0;
-  padding: 8px 12px;
-  line-height: 22px;
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.diff {
-  min-width: max-content;
-  padding: 6px 0;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 22px;
-  white-space: pre;
-}
-
-.diff-line {
-  display: flex;
-  padding-right: 12px;
-}
-
-.diff-line .sign {
-  flex: 0 0 28px;
-  text-align: center;
-}
-
-/* New lines carry the talisman's yellow; removed lines fade and are struck through. No red or green. */
-.diff-line.added {
-  background: var(--talisman);
-}
-
-.diff-line.added .sign {
-  font-weight: 700;
-}
-
-.diff-line.removed {
-  background: var(--removed);
-  color: var(--ink-2);
-}
-
-.diff-line.removed .text {
-  text-decoration: line-through;
-}
-
-/* ---------- a memorial awaiting the vermilion reply ---------- */
-
-/* Paper ruled with a double cinnabar line, the way a memorial to the throne is. */
-.sign-sheet {
-  background: var(--sheet);
-  border: 1px solid var(--cinnabar);
-  border-radius: 2px;
-  box-shadow:
-    inset 0 0 0 3px var(--sheet),
-    inset 0 0 0 4px var(--cinnabar-soft);
-  padding: 18px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.sign-sheet h2 {
-  margin: 0;
-  font-family: var(--text);
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1.3;
-  color: var(--cinnabar-ink);
-}
-
-.sign-sheet p {
-  margin: 0;
-}
-
-.sign-detail {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 2px;
-  padding: 8px 12px;
-  font-family: var(--mono);
-  font-size: 13px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 200px;
-  overflow: auto;
+@keyframes beat {
+  12% {
+    transform: scale(1.08);
+  }
+  30% {
+    transform: none;
+  }
 }
 
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--s-2);
 }
 
 .notice {
-  padding: 8px 12px;
+  padding: var(--s-2) var(--s-3);
   border: 1px dashed var(--line-strong);
-  border-radius: 2px;
+  border-radius: var(--r-paper);
   color: var(--ink-2);
   overflow-wrap: anywhere;
+}
+
+/* Nothing on the page moves for one who has asked for stillness: what arrives is simply there. */
+@media (prefers-reduced-motion: reduce) {
+  .turn-did::after,
+  .vein-tip,
+  .thinking-live::before,
+  .thinking-live .label,
+  .did.live .seal::before,
+  .did.fresh .seal,
+  .did.fresh .seal::after,
+  .did.fresh .did-head,
+  .did.fresh .did-head > *,
+  .did.fresh .did-head::after,
+  .did-body,
+  .folded-acts,
+  .sign-sheet,
+  .sign-sheet::before,
+  .sign-sheet::after,
+  .sign-countdown.urgent,
+  .turn.closing .original {
+    animation: none;
+  }
+
+  .turn-did.live::after {
+    opacity: 0;
+  }
+
+  .thinking-live .label {
+    color: var(--ink-2);
+    background: none;
+  }
+
+  .sign-sheet::before {
+    display: none;
+  }
+}
+
+/* ---------- the header's small line ---------- */
+
+.main-header .branch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  line-height: 1.35;
+  color: var(--ink-2);
+}
+
+/* On a 子分身's page: where it came from, and the way back. */
+/* Where the session comes from, in the small line under its title: a word to follow, like the branch beside it. */
+.main-header .kin-link {
+  flex: none;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--amber-ink);
+  font-family: var(--text);
+  font-size: var(--t-micro);
+  line-height: 1.35;
+  text-decoration: underline;
+  text-decoration-color: var(--talisman-line);
+  text-underline-offset: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main-header .kin-link svg {
+  flex: none;
 }
 
 /* ---------- composer ---------- */
@@ -1287,32 +1946,165 @@ pre,
   align-items: center;
   gap: 8px;
   min-height: 24px;
-  font-size: 13px;
+  font-size: var(--t-small);
   color: var(--ink-2);
 }
 
+/* The angle the light round the box has come to. Registered so that it can be animated. */
+@property --turned {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
+}
+
+/* The light: jade leading, gold at its heart, on a ring that is otherwise the box's own border. */
+.composer-frame {
+  --light: conic-gradient(
+    from var(--turned),
+    var(--line-strong) 0 52%,
+    var(--jade) 70%,
+    var(--seal-gold) 80%,
+    #fffdf2 84%,
+    var(--jade) 90%,
+    var(--line-strong) 100%
+  );
+  position: relative;
+  border-radius: var(--r-control);
+}
+
+/* Behind the box, the same light out of focus: its glow on the page. */
+.composer-frame::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: calc(var(--r-control) + 3px);
+  background: var(--light);
+  filter: blur(9px);
+  opacity: 0;
+  transition: opacity var(--d-arrive) ease;
+  pointer-events: none;
+}
+
 .composer-box {
+  position: relative;
   background: var(--sheet);
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  padding: 10px 12px;
+  border-radius: var(--r-control);
+  padding: 10px var(--s-3);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--s-2);
+  transition: border-color var(--d-move) ease;
 }
 
 .composer-box:focus-within {
   border-color: var(--jade);
 }
 
+/* While the 分身 works, the light goes round and round the box. */
+.composer-frame.working {
+  animation: circulate 4.5s linear infinite;
+}
+
+.composer-frame.working::before {
+  opacity: 0.6;
+}
+
+.composer-frame.working .composer-box:not(.trusted) {
+  border-color: transparent;
+  background:
+    linear-gradient(var(--sheet), var(--sheet)) padding-box,
+    var(--light) border-box;
+}
+
+/* While it waits for 本尊, the box holds a cinnabar edge that glows and dims. */
+.composer-frame.waiting::before {
+  background: var(--cinnabar);
+  animation: ember-low 2.6s ease-in-out infinite alternate;
+}
+
+@keyframes ember-low {
+  to {
+    opacity: 0.35;
+  }
+}
+
+.composer-frame.waiting .composer-box {
+  border-color: var(--cinnabar);
+}
+
+@keyframes circulate {
+  to {
+    --turned: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-frame.working,
+  .composer-frame.waiting::before {
+    animation: none;
+  }
+
+  .composer-frame.working::before {
+    opacity: 0;
+  }
+
+  .composer-frame.working .composer-box:not(.trusted) {
+    border-color: var(--jade);
+    background: var(--sheet);
+  }
+
+  .composer-frame.waiting::before {
+    opacity: 0.25;
+  }
+}
+
+/* As tall as it was left, and taller while what is typed needs more: its height is set from what it holds. */
 .composer textarea {
+  display: block;
   width: 100%;
   border: 0;
   outline: 0;
   resize: none;
   background: transparent;
   line-height: 1.7;
-  max-height: 200px;
+}
+
+/* The box's top edge, to drag: a strip over the border that shows a short stroke of jade when pointed at. */
+.composer-grip {
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 12px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.composer-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--jade);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity var(--d-quick) ease 60ms;
+  pointer-events: none;
+}
+
+.composer-grip:hover::after,
+.composer-grip.dragging::after,
+.composer-grip:focus-visible::after {
+  opacity: 1;
+}
+
+.composer-grip:focus-visible {
+  outline: none;
 }
 
 .composer-row {
@@ -1322,9 +2114,77 @@ pre,
   min-width: 0;
 }
 
-/* The composer's controls stay quiet until pointed at: an icon or a value, no box, one line. */
+/* The composer's controls stay quiet until pointed at: an icon or a value, no box, one line.
+   The three that say how the 分身 stands (what it runs on, what it may do, how full it is) read as one strip, a hairline between each. */
 .composer-row .mode-picker {
   min-width: 0;
+}
+
+.composer-row .mode-picker + .mode-picker {
+  margin-left: var(--s-1);
+  padding-left: var(--s-1);
+  border-left: 1px solid var(--line);
+}
+
+/* A control that cannot be changed just now still says what it holds. */
+.composer-row .select-button:disabled {
+  opacity: 0.75;
+}
+
+/* Five 灵石 in a row, each a small stone standing on its point, lit from the bottom up as the conversation fills. */
+.stones {
+  --stone: var(--jade);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 3px;
+}
+
+.stones span {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  /* On its point, so "up" on the page is towards the stone's own top left corner. */
+  transform: rotate(45deg);
+  background: linear-gradient(to top left, var(--stone) calc(var(--lit) * 100%), color-mix(in srgb, var(--line-strong) 45%, transparent) 0);
+  transition: background var(--d-move) ease;
+}
+
+/* How full in figures comes out beside the stones when they are pointed at, focused, or their menu is open. */
+.composer-row .select-button:has(.stones) .value {
+  max-width: 0;
+  margin-left: calc(-1 * var(--s-1));
+  opacity: 0;
+  transition:
+    max-width var(--d-move) var(--ease-out),
+    margin var(--d-move) var(--ease-out),
+    opacity var(--d-move) ease;
+}
+
+.composer-row .select-button:has(.stones):is(:hover, :focus-visible, [aria-expanded="true"]) .value {
+  max-width: 160px;
+  margin-left: 0;
+  opacity: 1;
+}
+
+.stones.warm {
+  --stone: var(--gold);
+}
+
+.stones.hot {
+  --stone: var(--cinnabar);
+}
+
+/* Nearly full: the last stone beats. */
+.stones.hot span:last-child {
+  animation: breathe 0.9s ease-in-out infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stones.hot span:last-child {
+    animation: none;
+  }
 }
 
 .composer-row .select-button {
@@ -1334,7 +2194,7 @@ pre,
   border-color: transparent;
   background: transparent;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--t-small);
   color: var(--ink-2);
 }
 
@@ -1371,7 +2231,7 @@ pre,
   margin-left: 8px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: transparent;
   line-height: 0;
   transition: transform 160ms ease;
@@ -1468,7 +2328,7 @@ pre,
   height: 64px;
   object-fit: cover;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: var(--r-paper);
 }
 
 .attachment button {
@@ -1485,7 +2345,7 @@ pre,
 }
 
 .attachments .refused {
-  font-size: 13px;
+  font-size: var(--t-small);
   color: var(--cinnabar-ink);
 }
 
@@ -1500,7 +2360,7 @@ pre,
   max-width: 100%;
   max-height: 180px;
   border: 1px solid var(--line-strong);
-  border-radius: 2px;
+  border-radius: var(--r-paper);
 }
 
 .main-header .spacer {
@@ -1515,7 +2375,7 @@ pre,
 
 .sidebar input[type="search"] {
   min-height: 36px;
-  font-size: 14px;
+  font-size: var(--t-small);
 }
 
 .composer-status .button.small,
@@ -1523,7 +2383,7 @@ pre,
 .turn-said .button.small {
   min-height: 32px;
   padding: 0 12px;
-  font-size: 13px;
+  font-size: var(--t-small);
 }
 
 .undo-confirm {
@@ -1531,7 +2391,7 @@ pre,
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--t-small);
   color: var(--ink-2);
 }
 
@@ -1557,7 +2417,7 @@ button.select-button svg {
   padding: 6px;
   background: var(--sheet);
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: var(--r-control);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
   display: flex;
   flex-direction: column;
@@ -1568,7 +2428,7 @@ button.select-button svg {
 .menu-note {
   margin: 0;
   padding: 4px 10px 6px;
-  font-size: 12px;
+  font-size: var(--t-micro);
   line-height: 1.5;
   color: var(--ink-2);
   overflow-wrap: anywhere;
@@ -1579,7 +2439,7 @@ button.select-button svg {
   max-width: none;
   margin: 0 4px 4px;
   width: auto;
-  font-size: 13px;
+  font-size: var(--t-small);
 }
 
 .menu-scroll {
@@ -1604,23 +2464,23 @@ button.select-button svg {
   padding: 6px 10px;
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--t-micro);
   color: var(--ink-2);
 }
 
 .mode-menu kbd {
   padding: 0 4px;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--r-paper);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--t-micro);
 }
 
 .mode-option {
   min-height: 44px;
   padding: 8px 10px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--r-paper);
   background: transparent;
   display: grid;
   grid-template-columns: 18px 1fr 16px;
@@ -1652,7 +2512,7 @@ button.select-button svg {
 }
 
 .mode-text .hint {
-  font-size: 12px;
+  font-size: var(--t-micro);
   color: var(--ink-2);
 }
 
@@ -1756,7 +2616,7 @@ button.select-button svg {
   top: 50%;
   width: 4px;
   height: 40px;
-  border-radius: 2px;
+  border-radius: var(--r-paper);
   transform: translate(-50%, -50%);
 }
 
@@ -1787,7 +2647,7 @@ button.select-button svg {
   min-width: 44px;
   padding: 0 12px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: transparent;
   color: var(--ink-2);
   display: inline-flex;
@@ -1813,7 +2673,7 @@ button.select-button svg {
 
 /* How far the plan has come, beside its picture. */
 .tab .count {
-  font-size: 13px;
+  font-size: var(--t-small);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1835,23 +2695,20 @@ button.select-button svg {
 
 .panel-body h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--t-body);
   font-weight: 700;
 }
 
 .file-row {
   min-height: 44px;
   padding: 8px 12px;
-  border: 1px solid var(--talisman-line);
-  border-radius: 2px;
-  background: var(--talisman);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-:root[data-theme="dark"] .file-row {
-  color: var(--talisman-ink);
 }
 
 .file-row .target {
@@ -1861,17 +2718,18 @@ button.select-button svg {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--t-code);
 }
 
 .file-row .outcome {
-  font-size: 13px;
+  font-size: var(--t-small);
+  color: var(--amber-ink);
 }
 
 .terminal {
   margin: 0;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--t-code);
   line-height: 22px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1908,7 +2766,7 @@ button.select-button svg {
 .empty h1 {
   margin: 0;
   font-family: var(--text);
-  font-size: 48px;
+  font-size: var(--t-display);
   font-weight: 700;
   line-height: 1.25;
   text-wrap: balance;
@@ -1982,7 +2840,7 @@ button.select-button svg {
 
 .settings-tabs .tab {
   min-height: 40px;
-  font-size: 15px;
+  font-size: var(--t-body);
 }
 
 .settings {
@@ -2007,7 +2865,7 @@ button.select-button svg {
 .settings h1 {
   margin: 0;
   font-family: var(--text);
-  font-size: 24px;
+  font-size: var(--t-title);
   font-weight: 700;
   line-height: 1.3;
 }
@@ -2015,7 +2873,7 @@ button.select-button svg {
 .settings h2 {
   margin: 0;
   font-family: var(--text);
-  font-size: 20px;
+  font-size: var(--t-title);
   font-weight: 700;
   line-height: 1.3;
 }
@@ -2086,24 +2944,24 @@ button.select-button svg {
   overflow-y: auto;
   background: var(--sheet);
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: var(--r-control);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
 }
 
 .combo-list li {
   min-height: 36px;
   padding: 6px 10px;
-  border-radius: 4px;
+  border-radius: var(--r-paper);
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  font-size: 14px;
+  font-size: var(--t-small);
   cursor: pointer;
 }
 
 .combo-list li .muted {
-  font-size: 12px;
+  font-size: var(--t-micro);
   white-space: nowrap;
 }
 
@@ -2120,7 +2978,7 @@ button.select-button svg {
 .combo-list li.none {
   cursor: default;
   color: var(--ink-2);
-  font-size: 13px;
+  font-size: var(--t-small);
 }
 
 .icon-button.turning svg {
@@ -2169,7 +3027,7 @@ button.select-button svg {
 .button.compact {
   min-height: 36px;
   padding: 0 14px;
-  font-size: 14px;
+  font-size: var(--t-small);
 }
 
 .button.primary:disabled {
@@ -2206,7 +3064,7 @@ button.select-button svg {
 .key-what,
 .key-where {
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--t-small);
   color: var(--ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2230,7 +3088,7 @@ button.select-button svg {
 .key-list .undo-confirm .button {
   min-height: 32px;
   padding: 0 10px;
-  font-size: 13px;
+  font-size: var(--t-small);
 }
 
 /* A window over the page for one small job. Paper with the talisman showing under it, as 本尊's own orders are. */
@@ -2239,7 +3097,7 @@ button.select-button svg {
   max-height: calc(100vh - 48px);
   padding: 24px;
   border: 1px solid var(--ink);
-  border-radius: 2px;
+  border-radius: var(--r-paper);
   background: var(--sheet);
   color: var(--ink);
   box-shadow: 8px 8px 0 var(--talisman-under);
@@ -2258,7 +3116,7 @@ button.select-button svg {
 
 .dialog h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: var(--t-title);
   line-height: 1.3;
 }
 
@@ -2291,7 +3149,7 @@ button.select-button svg {
 .settings .hint {
   margin: 0;
   color: var(--ink-2);
-  font-size: 13px;
+  font-size: var(--t-small);
 }
 
 /* A paragraph that explains a section is set as its fields' hints are; the section's own spacing keeps it apart. */
@@ -2300,7 +3158,7 @@ button.select-button svg {
 }
 
 .settings section > p.muted {
-  font-size: 13px;
+  font-size: var(--t-small);
 }
 
 .settings .hint.failed {
@@ -2322,7 +3180,7 @@ button.select-button svg {
   max-width: 360px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: var(--sheet);
 }
 
@@ -2379,7 +3237,7 @@ button.select-button svg {
 
 .realm .name {
   font-family: var(--text);
-  font-size: 18px;
+  font-size: var(--t-lead);
   line-height: 1.2;
   color: var(--ink-2);
 }
@@ -2406,7 +3264,7 @@ button.select-button svg {
 }
 
 .provider .who strong {
-  font-size: 17px;
+  font-size: var(--t-lead);
 }
 
 /* One provider in settings: its name and key state, then the key and address fields. */
@@ -2453,7 +3311,7 @@ button.select-button svg {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 12px;
+  font-size: var(--t-micro);
   color: var(--ink-2);
 }
 
@@ -2513,7 +3371,7 @@ button.select-button svg {
 
 .replay-where {
   margin-left: 6px;
-  font-size: 14px;
+  font-size: var(--t-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -2524,7 +3382,7 @@ button.select-button svg {
   min-width: 32px;
   padding: 0 6px;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--t-code);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -2545,7 +3403,7 @@ button.select-button svg {
 }
 
 .schedule-head strong {
-  font-size: 17px;
+  font-size: var(--t-lead);
   overflow-wrap: anywhere;
 }
 
@@ -2553,7 +3411,7 @@ button.select-button svg {
 .schedule-head .undo-confirm .button {
   min-height: 32px;
   padding: 0 8px;
-  font-size: 13px;
+  font-size: var(--t-small);
 }
 
 /* One that is off keeps its place, set back. */
@@ -2578,7 +3436,7 @@ button.select-button svg {
   display: flex;
   flex-wrap: wrap;
   gap: 2px 16px;
-  font-size: 13px;
+  font-size: var(--t-small);
   color: var(--ink-2);
 }
 
@@ -2701,7 +3559,7 @@ button.select-button svg {
 .paper {
   padding: 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: var(--sheet);
   display: flex;
   flex-direction: column;
@@ -2737,7 +3595,7 @@ button.select-button svg {
   flex: 1;
   height: 28px;
   border: 1px solid;
-  border-radius: 2px;
+  border-radius: var(--r-paper);
 }
 
 .error-banner {
@@ -2746,7 +3604,7 @@ button.select-button svg {
   margin: 12px 24px 0;
   padding: 10px 12px;
   border: 1px solid var(--cinnabar);
-  border-radius: 2px;
+  border-radius: var(--r-paper);
   background: var(--cinnabar-tint);
   display: flex;
   align-items: center;
