@@ -25,7 +25,7 @@ export type ContentBlock =
   | { type: "fallback"; from: { model: string }; to: { model: string } };
 
 export type SessionEvent =
-  | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number; parent?: string } }
+  | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number; parent?: string; schedule?: string } }
   | { type: "subagent/started"; data: { tool_use_id: string; session: string; name: string } }
   | { type: "session/renamed"; data: { title: string } }
   | { type: "model/changed"; data: { model: string } }
@@ -124,6 +124,8 @@ export interface SessionItem {
   worktree: Worktree | null;
   /** Id of the session whose 分身 set this one off as a 子分身; null for one the user started. */
   parent: string | null;
+  /** Name of the 功课 (schedule) that started the session and gave it its first message; null otherwise. */
+  schedule: string | null;
   workspace: string;
   /** Id of the model provider the session runs on. */
   provider: string;
@@ -153,6 +155,27 @@ export type StreamDelta =
   | { type: "tool_input_delta"; index: number; partial: string }
   | { type: "block_stop"; index: number }
   | { type: "reset" };
+
+/** When a 功课 is due. Days of the week run from 1, Monday, to 7, Sunday; none means every day. */
+export type When = { kind: "once"; at: string } | { kind: "daily"; time: string; days: number[] } | { kind: "every"; minutes: number };
+
+/** A 功课: a task that starts by itself, in a session made for it each time. */
+export interface Schedule {
+  /** Empty in one that is new; the backend gives it. */
+  id: string;
+  name: string;
+  workspace: string;
+  prompt: string;
+  when: When;
+  mode: Mode;
+  /** Whether each session gets a Git worktree of its own. */
+  isolated: boolean;
+  enabled: boolean;
+  /** RFC 3339 time it is next due; absent when it is off or has no time left. */
+  next?: string;
+  /** How its last start went: the session it started, or why it started none. */
+  last?: { at: string; session?: string; error?: string };
+}
 
 export type UiEvent =
   | { kind: "log"; session_id: string; envelope: Envelope }

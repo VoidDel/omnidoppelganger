@@ -1646,6 +1646,8 @@ button.select-button svg {
 /* ---------- settings ---------- */
 
 .settings {
+  /* Holds what is positioned inside it (a label kept for screen readers), so that scrolls with the page and not the window. */
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1830,6 +1832,161 @@ button.select-button svg {
 .inline .input {
   flex: 1;
   min-width: 0;
+}
+
+/* ---------- 功课: the tasks set to start by themselves ---------- */
+
+.settings .lead {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--ink-2);
+}
+
+.schedule-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.schedule-head strong {
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.schedule-head .button.small,
+.schedule-head .undo-confirm .button {
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+/* One that is off keeps its place, set back. */
+.schedule.off strong,
+.schedule.off .schedule-task {
+  color: var(--ink-2);
+}
+
+.schedule-task {
+  margin: 0;
+  max-height: 4.8em;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.schedule-facts {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.schedule-facts .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--jade);
+  text-decoration: underline;
+}
+
+.schedule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.input.area {
+  max-width: 100%;
+  min-height: 96px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.input.short {
+  width: auto;
+  min-width: 96px;
+}
+
+.inline.wide .input {
+  max-width: none;
+}
+
+.kinds,
+.when-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.kind,
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.check {
+  align-items: flex-start;
+}
+
+.kind input,
+.check input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--jade);
+}
+
+.check input {
+  margin-top: 3px;
+}
+
+.days {
+  display: flex;
+  gap: 4px;
+}
+
+/* A day of the week: a round stone, jade when the 功课 falls on it. */
+.day {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--sheet);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.day input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.day:has(input:checked) {
+  border-color: var(--jade);
+  background: var(--jade);
+  color: var(--jade-ink);
+  font-weight: 700;
+}
+
+.day:has(input:focus-visible) {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
 }
 
 .papers {

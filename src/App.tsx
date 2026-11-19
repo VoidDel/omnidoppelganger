@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { Composer, Logo, Mountains, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
+import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
 import { applyDelta, changedFiles, commandRuns, fold, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
-import type { Decision, Envelope, Image, Mode, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
+import type { Decision, Envelope, Image, Mode, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
 interface State {
   sessions: SessionItem[];
@@ -18,8 +19,10 @@ interface State {
   stream: StreamBlock[];
   /** Messages sent during a turn that the agent has not picked up yet. */
   queued: string[];
-  page: "chat" | "settings";
+  page: "chat" | "settings" | "schedules";
   settings: SettingsView | null;
+  /** The 功课, read when the app starts and again whenever one comes due. */
+  schedules: Schedule[];
   error: string | null;
   /** Something that went well and is worth a line: shown until dismissed. */
   note: string | null;
@@ -35,6 +38,7 @@ type Action =
   | { type: "queued"; text: string }
   | { type: "page"; page: State["page"] }
   | { type: "settings"; settings: SettingsView }
+  | { type: "schedules"; schedules: Schedule[] }
   | { type: "error"; error: string | null }
   | { type: "note"; note: string | null };
 
@@ -49,6 +53,7 @@ const initial: State = {
   queued: [],
   page: "chat",
   settings: null,
+  schedules: [],
   error: null,
   note: null,
 };
@@ -116,6 +121,8 @@ function reduce(state: State, action: Action): State {
       return { ...state, page: action.page };
     case "settings":
       return { ...state, settings: action.settings };
+    case "schedules":
+      return { ...state, schedules: action.schedules };
     case "error":
       return { ...state, error: action.error };
     case "note":
@@ -170,8 +177,16 @@ export default function App() {
       // Titles and list order come from the log, so the list is read again when a turn starts or ends.
       if (event.kind === "status") refresh();
     });
+    const readSchedules = () => api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
+    readSchedules();
+    // A 功课 that came due started a 分身 nobody opened: the list shows it once it is read again.
+    const stopSchedules = api.onSchedulesChanged(() => {
+      readSchedules();
+      refresh();
+    });
     return () => {
       stop.then((unlisten) => unlisten());
+      stopSchedules.then((unlisten) => unlisten());
     };
   }, [refresh, fail]);
 
@@ -221,19 +236,33 @@ export default function App() {
     api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
   }, [fail]);
   const saved = (request: Promise<SettingsView>) => request.then((settings) => dispatch({ type: "settings", settings }), fail);
+  /** Take the list a change to the 功课 came back with; resolves with what went wrong, for the page to show where the change was made. */
+  const scheduled = (request: Promise<Schedule[]>) =>
+    request.then(
+      (schedules) => {
+        dispatch({ type: "schedules", schedules });
+        return null;
+      },
+      (error) => String(error),
+    );
 
   const providers = state.settings?.providers ?? [];
   const defaultProvider = providers.find((provider) => provider.id === state.settings?.settings.provider);
   const missingKey = !!defaultProvider && state.settings?.keys[defaultProvider.id]?.source === "none";
   const inSettings = state.page === "settings";
+  const inChat = state.page === "chat";
   const [panel, setPanel] = usePanel();
-  const showPanel = !inSettings && !!active && !panel.hidden;
+  const showPanel = inChat && !!active && !panel.hidden;
   return (
     <div className={`app ${showPanel ? "with-panel" : ""}`} style={{ "--panel-width": `${panel.width}px` } as React.CSSProperties}>
       <Sidebar
         sessions={state.sessions}
         activeId={state.activeId}
-        inSettings={inSettings}
+        page={state.page}
+        onSchedules={() => {
+          api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
+          dispatch({ type: "page", page: "schedules" });
+        }}
         onOpen={open}
         onNew={create}
         onNewIn={(workspace, isolated) => api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view }), fail)}
@@ -280,6 +309,29 @@ export default function App() {
               )
             }
           />
+        ) : state.page === "schedules" ? (
+          <SchedulesPage
+            schedules={state.schedules}
+            sessions={state.sessions}
+            mode={state.settings?.settings.mode ?? "edit"}
+            workspace={active ? (active.worktree?.origin ?? active.workspace) : (state.sessions.find((session) => !session.parent)?.workspace ?? "")}
+            onOpen={open}
+            onPick={api.pickWorkspace}
+            onSave={(schedule) => scheduled(api.saveSchedule(schedule))}
+            onDelete={(id) => scheduled(api.deleteSchedule(id))}
+            onRun={(id) =>
+              api.runSchedule(id).then(
+                (schedules) => {
+                  dispatch({ type: "schedules", schedules });
+                  // Asked for by hand, so shown: the 分身 it started, when it started one.
+                  const last = schedules.find((schedule) => schedule.id === id)?.last;
+                  if (last?.session && !last.error) open(last.session);
+                  return last?.error ?? null;
+                },
+                (error) => String(error),
+              )
+            }
+          />
         ) : active ? (
           <>
             <SessionHeader
@@ -307,7 +359,7 @@ export default function App() {
                 </p>
               </div>
             ) : (
-              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} mode={active.mode} delegated={!!active.parent} sessions={state.sessions} onOpen={open} onDecide={decide} onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)} />
+              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} mode={active.mode} origin={active.parent ? "agent" : active.schedule ? "schedule" : "user"} sessions={state.sessions} onOpen={open} onDecide={decide} onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)} />
             )}
             <Composer
               status={state.status}

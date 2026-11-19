@@ -83,6 +83,9 @@ const mock = await startMock([
   // In a third session, with a worktree of its own: it makes a file there.
   [{ text: "我在这边建个文件。" }, { tool: "edit_file", input: { path: "apart.txt", old_string: "", new_string: "来自独立工作树\n" } }],
   [{ text: "建好了。" }],
+  // Two sessions that 功课 (schedules) start: one by hand, one when its time comes.
+  [{ text: "清点完了。" }],
+  [{ text: "报到。" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -244,6 +247,41 @@ try {
   await page.click("确认删除");
   await page.waitFor("the worktree to go with its session", `!document.querySelector(".main-header .branch")`);
   check(readdirSync(join(home, "worktrees")).length === 0 && git("branch", "--list", "odg/*").stdout.trim() === "", "deleting the session removed its worktree and its merged branch");
+  // 功课: a task set to start by itself. The form sets one; "现在就办" starts it without waiting for its time.
+  await page.click("功课");
+  await page.waitForText("还没有功课。");
+  await page.click("添一门功课");
+  await page.waitFor("the form, with the folder of the sessions there are", `document.querySelector("#schedule-folder")?.value === ${JSON.stringify(workspace)}`);
+  await page.type("#schedule-prompt", "清点洞府里的文件");
+  await page.type("#schedule-name", "晨课");
+  await page.click("定下这门功课");
+  await page.waitForText("每天 09:00");
+  const schedules = () => JSON.parse(readFileSync(join(home, "schedules.json"), "utf8"));
+  check(schedules().length === 1 && schedules()[0].name === "晨课" && schedules()[0].workspace === workspace && Date.parse(schedules()[0].next) > Date.now(), "the form set a 功课 for nine every morning, kept with the time it is next due");
+  await page.click("现在就办");
+  await page.waitForText("清点完了。");
+  await page.waitFor("the turn to end", `!document.body.innerText.includes("分身正在运功")`);
+  const byHand = mock.requests[7].body;
+  const shown = await page.evaluate(`({ title: ${title}, said: document.querySelector(".said-meta")?.textContent, chip: [...document.querySelectorAll(".sidebar .row-button[aria-current] .chip")].map((chip) => chip.textContent).join() })`);
+  check(shown.title === "晨课" && shown.said.includes("功课交办") && shown.chip === "功课", "started by hand, it opened a 分身 named after it, whose first message is marked as the 功课's");
+  check(JSON.stringify(byHand.system).includes("A schedule the user set up started this session") && byHand.messages[0].content[0].text === "清点洞府里的文件", "the model got the task, and was told nobody may be there to answer");
+
+  // One whose time comes starts by itself: nothing is clicked between saving it and its 分身 appearing.
+  const two = (value) => String(value).padStart(2, "0");
+  const due = new Date(Date.now() + 3000);
+  const at = `${due.getFullYear()}-${two(due.getMonth() + 1)}-${two(due.getDate())}T${two(due.getHours())}:${two(due.getMinutes())}:${two(due.getSeconds())}`;
+  const timed = { id: "", name: "到点", workspace, prompt: "到点了，报个到", when: { kind: "once", at }, mode: "edit", isolated: false, enabled: true };
+  await page.evaluate(`window.__TAURI_INTERNALS__.invoke("save_schedule", { schedule: ${JSON.stringify(timed)} }).then(() => true)`);
+  const row = `[...document.querySelectorAll(".sidebar .row-button")].find((row) => row.querySelector(".row-title")?.textContent === "到点")`;
+  await page.waitFor("the 功课's own 分身 to appear when its time comes", `!!${row}`);
+  check(Date.now() >= due.getTime(), "a 功课 started a 分身 by itself, and not before its time");
+  await page.evaluate(`${row}.click()`);
+  await page.waitForText("报到。");
+  const ran = schedules().find((schedule) => schedule.name === "到点");
+  check(!ran.enabled && !ran.next && !!ran.last.session && !ran.last.error && mock.requests[8].body.messages[0].content[0].text === "到点了，报个到", "its 分身 was given the task, and a one-time 功课 is off once it has run");
+  await page.click("功课");
+  await page.waitForText("办过了，不会再办");
+  check((await page.evaluate(`document.querySelectorAll(".schedule .link").length`)) === 2, "the 功课 page shows each one's last start, with the way to its 分身");
   console.log("Passed.");
 } catch (error) {
   failed = true;

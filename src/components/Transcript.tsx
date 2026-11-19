@@ -466,8 +466,8 @@ interface Props {
   queued: string[];
   status: Status;
   mode: Mode;
-  /** The session is a 子分身's: its first message is the task its 分身 gave it, not something 本尊 said. */
-  delegated: boolean;
+  /** Who gave the session its first message: 本尊, the 分身 that set it off as a 子分身, or a 功课 that came due. */
+  origin: "user" | "agent" | "schedule";
   /** Every session in the list, to tell how the 子分身 of this one stand, and the way to open one. */
   sessions: SessionItem[];
   onOpen: (id: string) => void;
@@ -511,7 +511,7 @@ function Queued({ text }: { text: string }) {
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, delegated, sessions, onOpen, onDecide, onUndo }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, origin, sessions, onOpen, onDecide, onUndo }: Props) {
   const family = { sessions, onOpen };
   const undoable = undoableTurns(rows);
   const scroller = useRef<HTMLDivElement>(null);
@@ -545,7 +545,8 @@ export function Transcript({ rows, stream, queued, status, mode, delegated, sess
     >
       {rows.map((row, index) => {
         const last = index === rows.length - 1;
-        const task = delegated && index === 0;
+        // The first message of such a session is a task handed to it, not something 本尊 said then.
+        const task = index === 0 && origin !== "user" ? origin : null;
         return (
           <section key={row.key} className={`turn ${last ? "latest" : ""}`}>
             <div className="turn-said">
@@ -563,10 +564,10 @@ export function Transcript({ rows, stream, queued, status, mode, delegated, sess
                 {status === "idle" && !row.prompt.steering && undoable.has(row.turn) && <UndoButton turn={row.turn} onUndo={onUndo} />}
                 <span className="said-meta">
                   <span className="seal small" aria-hidden="true">
-                    {task ? "遣" : row.prompt.steering ? "音" : "令"}
+                    {task === "agent" ? "遣" : task === "schedule" ? "课" : row.prompt.steering ? "音" : "令"}
                   </span>
                   <span>
-                    {task ? "主分身交办" : "本尊"}，{time(row.prompt.ts)}
+                    {task === "agent" ? "主分身交办" : task === "schedule" ? "功课交办" : "本尊"}，{time(row.prompt.ts)}
                     {row.prompt.steering ? "，中途传音" : ""}
                   </span>
                 </span>

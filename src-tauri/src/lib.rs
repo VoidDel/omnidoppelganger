@@ -14,6 +14,7 @@ use odg_core::grants::{GrantStore, Grants};
 use odg_core::mcp::{McpHub, ServerStatus};
 use odg_core::policy::Mode;
 use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider, vision};
+use odg_core::schedule::{self, Run, Schedule, ScheduleStore};
 use odg_core::session::{NewSession, SessionStore, SessionSummary};
 use odg_core::worktree::{self, Landed};
 use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore};
@@ -23,12 +24,18 @@ use tokio::sync::mpsc::UnboundedSender;
 
 /// Name of the event the window listens to.
 const SESSION_EVENT: &str = "session-event";
+/// Name of the event that tells the window the list of schedules changed by itself: one came due.
+const SCHEDULES_EVENT: &str = "schedules-changed";
+/// How often the clock is checked against the schedules.
+const SCHEDULE_TICK: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct App {
     store: SessionStore,
     settings: Arc<SettingsStore>,
     /// Command approvals given for good, by workspace.
     grants: Arc<GrantStore>,
+    /// The tasks set to start by themselves.
+    schedules: ScheduleStore,
     /// The MCP servers the user configured, shared by every session.
     mcp: Arc<McpHub>,
     llm: Arc<Router>,
@@ -107,6 +114,61 @@ impl App {
         SessionItem { summary, status, context_limit, context_ceiling, branch, vision }
     }
 
+    /// Start a session in `workspace` on the provider and model of the
+    /// settings, in the settings' mode. With `isolated`, in a Git worktree
+    /// made for it. `schedule` names the schedule that starts it, if one does.
+    fn start(&self, workspace: PathBuf, isolated: bool, schedule: Option<&str>) -> Result<Session<Router>, String> {
+        if !workspace.is_dir() {
+            return Err(format!("{} is not a directory", workspace.display()));
+        }
+        let settings = self.settings.load();
+        if settings.model.is_empty() {
+            let name = provider(&settings.provider).map_or(settings.provider.as_str(), |known| known.name);
+            return Err(format!("{name} has no model chosen: enter a model id in settings"));
+        }
+        let (workspace, made) = match isolated {
+            true => {
+                let (workspace, made) = worktree::create(&workspace, &settings::home().join("worktrees"))?;
+                (workspace, Some(made))
+            }
+            false => (workspace, None),
+        };
+        let new = NewSession { workspace: &workspace, provider: &settings.provider, model: &settings.model, parent: None, worktree: made.clone(), schedule };
+        let log = self.store.create_with(new).map_err(|error| {
+            // A worktree without its session would never be found again.
+            if let Some(made) = &made {
+                let _ = worktree::remove(made);
+            }
+            error.to_string()
+        })?;
+        let session = self.wrap(log)?;
+        session.set_mode(settings.mode);
+        self.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
+        Ok(session)
+    }
+
+    /// Start what a schedule asks for: a session in its folder, in its mode,
+    /// named after it and given its task. Returns how that went, to be kept
+    /// with the schedule. While the session of its last start is still
+    /// working, none is started: the same task would be at work twice.
+    fn fire(&self, schedule: &Schedule) -> Run {
+        let at = schedule::stamp(&schedule::now().to_utc());
+        let last = schedule.last.as_ref().and_then(|run| run.session.clone());
+        if let Some(busy) = last.filter(|id| self.all_live().get(id).is_some_and(|session| session.status() != Status::Idle)) {
+            return Run { at, session: Some(busy), error: Some("the session it started last is still working, so this time was passed over".to_string()) };
+        }
+        match self.start(PathBuf::from(&schedule.workspace), schedule.isolated, Some(&schedule.name)) {
+            Ok(session) => {
+                session.set_mode(schedule.mode);
+                // The name is the title; a session that cannot take it is titled after the task instead.
+                let _ = session.rename(&schedule.name);
+                session.send(schedule.prompt.clone());
+                Run { at, session: Some(session.id().to_string()), error: None }
+            }
+            Err(error) => Run { at, session: None, error: Some(error) },
+        }
+    }
+
     /// The live session, opening it from disk on first use. The map stays
     /// locked while the log is opened, so a log never gets two writers.
     fn live(&self, id: &str) -> Result<Session<Router>, String> {
@@ -177,34 +239,37 @@ async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionItem>, String> 
 /// already at work there; its work comes back with [`land_session`].
 #[tauri::command]
 async fn create_session(app: State<'_, App>, workspace: String, isolated: Option<bool>) -> Result<SessionView, String> {
-    let workspace = PathBuf::from(workspace);
-    if !workspace.is_dir() {
-        return Err(format!("{} is not a directory", workspace.display()));
-    }
-    let settings = app.settings.load();
-    if settings.model.is_empty() {
-        let name = provider(&settings.provider).map_or(settings.provider.as_str(), |known| known.name);
-        return Err(format!("{name} has no model chosen: enter a model id in settings"));
-    }
-    let (workspace, made) = match isolated {
-        Some(true) => {
-            let (workspace, made) = worktree::create(&workspace, &settings::home().join("worktrees"))?;
-            (workspace, Some(made))
-        }
-        _ => (workspace, None),
-    };
-    let new = NewSession { workspace: &workspace, provider: &settings.provider, model: &settings.model, parent: None, worktree: made.clone() };
-    let log = app.store.create_with(new).map_err(|error| {
-        // A worktree without its session would never be found again.
-        if let Some(made) = &made {
-            let _ = worktree::remove(made);
-        }
-        error.to_string()
-    })?;
-    let session = app.wrap(log)?;
-    session.set_mode(settings.mode);
-    app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
+    let session = app.start(PathBuf::from(workspace), isolated == Some(true), None)?;
     Ok(view(&app, &session))
+}
+
+/// The tasks set to start by themselves, in the order they were added.
+#[tauri::command]
+fn list_schedules(app: State<'_, App>) -> Vec<Schedule> {
+    app.schedules.all()
+}
+
+/// Add a schedule, or change the one with its id. Returns the list.
+#[tauri::command]
+fn save_schedule(app: State<'_, App>, schedule: Schedule) -> Result<Vec<Schedule>, String> {
+    app.schedules.save(schedule, &schedule::now())?;
+    Ok(app.schedules.all())
+}
+
+/// Remove a schedule. The sessions it started stay. Returns the list.
+#[tauri::command]
+fn delete_schedule(app: State<'_, App>, id: String) -> Result<Vec<Schedule>, String> {
+    app.schedules.remove(&id)?;
+    Ok(app.schedules.all())
+}
+
+/// Start a schedule's task now, whatever its time; when it is next due stays
+/// as it was. Returns the list, which says how the start went.
+#[tauri::command]
+async fn run_schedule(app: State<'_, App>, id: String) -> Result<Vec<Schedule>, String> {
+    let schedule = app.schedules.all().into_iter().find(|kept| kept.id == id).ok_or("this schedule is no longer there")?;
+    app.schedules.record(&id, app.fire(&schedule))?;
+    Ok(app.schedules.all())
 }
 
 /// The folder a new session opens in without asking, when `ODG_E2E_WORKSPACE`
@@ -438,13 +503,36 @@ pub fn run() {
             let mcp = Arc::new(McpHub::new(home.join("mcp.json"), tauri::async_runtime::handle().inner().clone()));
             // Servers connect in the background; a session uses whichever are ready when it asks the model.
             mcp.reload();
-            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, mcp, llm, sessions: Mutex::new(HashMap::new()), events });
+            let schedules = ScheduleStore::new(home.join("schedules.json"));
+            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, llm, sessions: Mutex::new(HashMap::new()), events });
+
+            // The clock: whatever has come due is started, with or without a window to show it in.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(SCHEDULE_TICK);
+                loop {
+                    tick.tick().await;
+                    let app = handle.state::<App>();
+                    // A list that cannot be read or written is left for the next tick.
+                    let due = app.schedules.take_due(&schedule::now()).unwrap_or_default();
+                    for schedule in &due {
+                        let _ = app.schedules.record(&schedule.id, app.fire(schedule));
+                    }
+                    if !due.is_empty() {
+                        let _ = handle.emit(SCHEDULES_EVENT, ());
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_sessions,
             create_session,
             preset_workspace,
+            list_schedules,
+            save_schedule,
+            delete_schedule,
+            run_schedule,
             open_session,
             land_session,
             rename_session,

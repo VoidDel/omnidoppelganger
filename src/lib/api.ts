@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Decision, Image, Mode, SessionItem, SessionView, Settings, SettingsView, UiEvent } from "./types";
+import type { Decision, Image, Mode, Schedule, SessionItem, SessionView, Settings, SettingsView, UiEvent } from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
@@ -10,6 +10,15 @@ export const api = {
   createSession: (workspace: string, isolated = false) => invoke<SessionView>("create_session", { workspace, isolated }),
   /** Commit what a worktree session's checkout holds and merge it into the folder's branch. Rejects on a conflict, changing nothing. */
   landSession: (id: string) => invoke<{ commits: number; into: string }>("land_session", { id }),
+  /** The 功课: tasks set to start by themselves. Each change resolves with the list after it. */
+  listSchedules: () => invoke<Schedule[]>("list_schedules"),
+  /** Add a schedule, or change the one with its id. Rejects when it could never run. */
+  saveSchedule: (schedule: Schedule) => invoke<Schedule[]>("save_schedule", { schedule }),
+  deleteSchedule: (id: string) => invoke<Schedule[]>("delete_schedule", { id }),
+  /** Start a schedule's task now. How the start went is in the list: the schedule's `last`. */
+  runSchedule: (id: string) => invoke<Schedule[]>("run_schedule", { id }),
+  /** Called when a schedule came due and the list changed by itself. */
+  onSchedulesChanged: (handler: () => void) => listen("schedules-changed", handler),
   openSession: (id: string) => invoke<SessionView>("open_session", { id }),
   renameSession: (id: string, title: string) => invoke<SessionItem>("rename_session", { id, title }),
   /** Remove the session and its file snapshots for good. Rejects while its agent is working. */

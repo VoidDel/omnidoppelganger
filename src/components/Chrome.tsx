@@ -55,7 +55,9 @@ const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).po
 interface SidebarProps {
   sessions: SessionItem[];
   activeId: string | null;
-  inSettings: boolean;
+  /** What the main area shows: a conversation, or one of the two pages reached from the foot of this list. */
+  page: "chat" | "settings" | "schedules";
+  onSchedules: () => void;
   onOpen: (id: string) => void;
   onNew: () => void;
   /** Start another session in a workspace that already has some, without asking for the folder again; `isolated` gives it a worktree of its own. */
@@ -65,7 +67,7 @@ interface SidebarProps {
   onSearch: (query: string) => Promise<string[]>;
 }
 
-export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
+export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
   const [query, setQuery] = useState("");
   /** The sessions the search found; null while nothing is searched for. */
   const [found, setFound] = useState<Set<string> | null>(null);
@@ -153,10 +155,11 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn
                 type="button"
                 key={session.id}
                 className={`row-button ${childOf(session) ? "child" : ""}`}
-                aria-current={!inSettings && session.id === activeId ? "true" : undefined}
+                aria-current={page === "chat" && session.id === activeId ? "true" : undefined}
                 onClick={() => onOpen(session.id)}
               >
                 <span className="row-title">{session.title || (childOf(session) ? "子分身" : "新分身")}</span>
+                {session.schedule && <span className="chip kin" title={`功课「${session.schedule}」到时辰化出的分身`}>功课</span>}
                 {session.worktree && !childOf(session) && <span className="chip kin" title={`用独立的工作树，分支 ${session.worktree.branch}`}>独立</span>}
                 {!childOf(session) && !open(session.id) && family(session.id).length > 0 && <span className="chip kin" title="它派出过的子分身，点开这个分身就能看到">{family(session.id).length} 子</span>}
                 {session.status === "waiting_approval" && <span className="chip await">候旨</span>}
@@ -166,7 +169,14 @@ export function Sidebar({ sessions, activeId, inSettings, onOpen, onNew, onNewIn
           </div>
         ))}
       </div>
-      <button type="button" className="row-button" aria-current={inSettings ? "page" : undefined} onClick={onSettings}>
+      <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title="功课：到了时辰，自行化出分身去办" onClick={onSchedules}>
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="8" cy="8" r="6" />
+          <path d="M8 4.5V8l2.5 1.5" />
+        </svg>
+        功课
+      </button>
+      <button type="button" className="row-button" aria-current={page === "settings" ? "page" : undefined} onClick={onSettings}>
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
           <circle cx="8" cy="8" r="2.2" />
           <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
