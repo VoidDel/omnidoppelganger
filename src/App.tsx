@@ -282,6 +282,28 @@ export default function App() {
   const inChat = state.page === "chat";
   const [panel, setPanel] = usePanel();
   const showPanel = inChat && !!active && !panel.hidden;
+  const banners = (
+    <>
+        {state.error && (
+          <div className="error-banner" role="alert">
+            <span style={{ flex: 1, overflowWrap: "anywhere" }}>{state.error}</span>
+            {/* 本尊's seal on what was read: stamping it puts the notice away. */}
+            <button type="button" className="seal seal-button" title="阅过了，收起这一条" onClick={() => dispatch({ type: "error", error: null })}>
+              阅<span className="sr-only">过了，收起这一条</span>
+            </button>
+          </div>
+        )}
+        {state.note && (
+          <div className="error-banner note" role="status">
+            <span style={{ flex: 1, overflowWrap: "anywhere" }}>{state.note}</span>
+            {/* 本尊's seal on what was read: stamping it puts the notice away. */}
+            <button type="button" className="seal seal-button" title="阅过了，收起这一条" onClick={() => dispatch({ type: "note", note: null })}>
+              阅<span className="sr-only">过了，收起这一条</span>
+            </button>
+          </div>
+        )}
+    </>
+  );
   return (
     <div className={`app ${showPanel ? "with-panel" : ""}`} style={{ "--panel-width": `${panel.width}px` } as React.CSSProperties}>
       <Sidebar
@@ -303,22 +325,8 @@ export default function App() {
         onSearch={api.searchSessions}
       />
       <main className="main">
-        {state.error && (
-          <div className="error-banner" role="alert">
-            <span style={{ flex: 1, overflowWrap: "anywhere" }}>{state.error}</span>
-            <button type="button" className="button text" onClick={() => dispatch({ type: "error", error: null })}>
-              知道了
-            </button>
-          </div>
-        )}
-        {state.note && (
-          <div className="error-banner note" role="status">
-            <span style={{ flex: 1, overflowWrap: "anywhere" }}>{state.note}</span>
-            <button type="button" className="button text" onClick={() => dispatch({ type: "note", note: null })}>
-              知道了
-            </button>
-          </div>
-        )}
+        {/* What went wrong, or went well: under the session's title where there is one, at the top of the page otherwise. */}
+        {!(inChat && active) && banners}
         {inSettings && state.settings ? (
           <SettingsPage
             view={state.settings}
@@ -384,6 +392,7 @@ export default function App() {
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
               onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
             />
+            {banners}
             {rows.length === 0 && state.queued.length === 0 ? (
               <div className="empty">
                 <h1>分身已入驻这处洞府</h1>

@@ -2475,3 +2475,30 @@ button.select-button svg {
     display: none;
   }
 }
+/* A seal that is pressed: 本尊 stamps what was read. */
+.seal-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  font-size: 19px;
+  line-height: 30px;
+  cursor: pointer;
+  transition: transform 80ms ease;
+}
+
+.seal-button:hover,
+.seal-button:focus-visible {
+  box-shadow: 0 0 0 3px var(--cinnabar-soft);
+}
+
+.seal-button:active {
+  transform: scale(0.92);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seal-button {
+    transition: none;
+  }
+}
+
