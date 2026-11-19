@@ -21,9 +21,10 @@ use crate::providers::DEFAULT_PROVIDER;
 /// Format 4 added the `instructions/loaded` event and the `allow_always`
 /// decision. Format 5 added `images` on a user message. Format 6 adds the
 /// `skills/listed` event. Format 7 adds the `model/changed` event. Format 8
-/// adds `parent` and `worktree` to the header and the `subagent/started` event. A build
+/// adds `parent` and `worktree` to the header and the `subagent/started` event.
+/// Format 9 adds `schedule` to the header. A build
 /// from before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +53,8 @@ pub struct SessionSummary {
     pub parent: Option<String>,
     /// The worktree made for the session, when it works apart from the repository's own checkout.
     pub worktree: Option<Worktree>,
+    /// Name of the schedule that started the session, when one did.
+    pub schedule: Option<String>,
     /// The mode of the last message, which a reopened session resumes.
     pub mode: Mode,
     pub created_at: String,
@@ -76,6 +79,8 @@ pub struct NewSession<'a> {
     pub parent: Option<&'a str>,
     /// The worktree `workspace` is in, when one was made for the session.
     pub worktree: Option<Worktree>,
+    /// Name of the schedule that starts the session.
+    pub schedule: Option<&'a str>,
 }
 
 impl SessionStore {
@@ -91,12 +96,12 @@ impl SessionStore {
 
     /// Create a session whose agent works in `workspace` with `model` from `provider`.
     pub fn create(&self, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
-        self.create_with(NewSession { workspace, provider, model, parent: None, worktree: None })
+        self.create_with(NewSession { workspace, provider, model, parent: None, worktree: None, schedule: None })
     }
 
-    /// Create a session: a subagent's, or one that works in a worktree, or a plain one.
+    /// Create a session: a subagent's, one that works in a worktree, one a schedule starts, or a plain one.
     pub fn create_with(&self, new: NewSession) -> Result<SessionLog, SessionError> {
-        let NewSession { workspace, provider, model, parent, worktree } = new;
+        let NewSession { workspace, provider, model, parent, worktree, schedule } = new;
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
         fs::create_dir_all(&directory)?;
@@ -111,6 +116,7 @@ impl SessionStore {
             format: FORMAT_VERSION,
             parent: parent.map(str::to_string),
             worktree,
+            schedule: schedule.map(str::to_string),
         })?;
         Ok(log)
     }
@@ -441,6 +447,14 @@ pub fn parent(events: &[Envelope]) -> Option<&str> {
     }
 }
 
+/// Name of the schedule that started the session, if one did.
+pub fn schedule(events: &[Envelope]) -> Option<&str> {
+    match &events.first()?.event {
+        Event::SessionCreated { schedule, .. } => schedule.as_deref(),
+        _ => None,
+    }
+}
+
 /// The worktree made for the session, if it works in one.
 pub fn worktree(events: &[Envelope]) -> Option<&Worktree> {
     match &events.first()?.event {
@@ -646,6 +660,7 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         model,
         parent: parent(events).map(str::to_string),
         worktree: worktree(events).cloned(),
+        schedule: schedule(events).map(str::to_string),
         mode,
         created_at: events[0].ts.clone(),
         updated_at: events[events.len() - 1].ts.clone(),
@@ -1008,12 +1023,14 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let parent = store.create(Path::new("/a"), "anthropic", "m").unwrap();
         let tree = Worktree { origin: "/a".into(), branch: "odg/1".into(), checkout: "/w".into() };
-        let mut child = store.create_with(NewSession { workspace: Path::new("/w"), provider: "anthropic", model: "m", parent: Some(parent.id()), worktree: Some(tree.clone()) }).unwrap();
+        let mut child = store.create_with(NewSession { workspace: Path::new("/w"), provider: "anthropic", model: "m", parent: Some(parent.id()), worktree: Some(tree.clone()), schedule: None }).unwrap();
+        let timed = store.create_with(NewSession { workspace: Path::new("/a"), provider: "anthropic", model: "m", parent: None, worktree: None, schedule: Some("nightly") }).unwrap();
+        assert_eq!((summarize(timed.events()).schedule.as_deref(), summarize(child.events()).schedule), (Some("nightly"), None));
         assert_eq!((summarize(child.events()).worktree, summarize(parent.events()).worktree), (Some(tree), None));
         assert_eq!(super::parent(child.events()), Some(parent.id()));
         assert_eq!(super::parent(parent.events()), None);
         assert_eq!(summarize(child.events()).parent.as_deref(), Some(parent.id()));
-        assert_eq!(SessionStore::of(&child).ids().len(), 2);
+        assert_eq!(SessionStore::of(&child).ids().len(), 3);
         // A header written before subagents has no parent, and reads as none.
         let header = serde_json::to_value(&parent.events()[0]).unwrap();
         assert!(header["data"].get("parent").is_none());

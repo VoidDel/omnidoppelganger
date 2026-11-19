@@ -109,6 +109,10 @@ pub enum Event {
         /// Set when `workspace` is in a worktree made for the session. Since format 8.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worktree: Option<Worktree>,
+        /// Name of the schedule that started the session and gave it its
+        /// first message, with nobody there; see [`crate::schedule`]. Since format 9.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedule: Option<String>,
     },
     /// The project's own instructions for agents, read from a file at the
     /// top of the workspace when a turn started and found new or changed.

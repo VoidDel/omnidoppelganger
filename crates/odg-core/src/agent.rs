@@ -148,11 +148,24 @@ impl<L: Llm> Clone for Session<L> {
 /// What a subagent is told on top of the general prompt.
 const SUBAGENT: &str = "\n\nYou are a subagent: another agent gave you the task below as one part of a larger piece of work, and reads your last message as the result. It knows nothing of what you did except what that message says, and you know nothing of its conversation except the task.\n- Do the task and stop. Do not widen it.\n- Other subagents may be working in this workspace at the same time. Change only the files your task is about.\n- End with a report: what you found or changed, files by path; what you verified and how; what is left undone or uncertain. Say it plainly when you could not do the task.";
 
+/// What a session started by a schedule is told on top of the general prompt.
+const SCHEDULED: &str = "\n\nA schedule the user set up started this session, and the first message is the task it carries. The user may not be at the computer.\n- Do not ask a question and wait for the answer. Where the task is unclear, take the cautious reading and say which you took.\n- A tool call that needs approval waits until the user is back, so prefer what you can do without one.\n- End with a report for the user to read later: what you did, what you found, and what needs their attention.";
+
+/// Who gave a session its first message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    User,
+    /// Another agent, which set this one off as a subagent.
+    Agent,
+    /// A schedule; see [`crate::schedule`].
+    Schedule,
+}
+
 /// The system prompt. It changes only when the project's instructions do,
 /// so the cached prefix stays valid from one request to the next.
 /// `instructions` is the project's own file for agents, as `(name, contents)`.
-/// `subagent` is whether another agent set this one off, rather than the user.
-pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], subagent: bool) -> String {
+pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], origin: Origin) -> String {
+    let subagent = origin == Origin::Agent;
     let (_, _, shell) = tools::shell();
     let project = match instructions {
         Some((name, content)) => format!(
@@ -187,7 +200,12 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
             lines.join("\n")
         )
     };
-    general + if subagent { SUBAGENT } else { "" } + &project + &offered
+    let told = match origin {
+        Origin::User => "",
+        Origin::Agent => SUBAGENT,
+        Origin::Schedule => SCHEDULED,
+    };
+    general + told + &project + &offered
 }
 
 impl<L: Llm> Session<L> {
@@ -429,7 +447,12 @@ impl<L: Llm> Inner<L> {
     /// The system prompt of the next request: the general part and the instructions the log holds.
     fn system(&self) -> String {
         let log = self.log.lock().unwrap();
-        system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), self.parent.is_some())
+        let origin = match (&self.parent, crate::session::schedule(log.events())) {
+            (Some(_), _) => Origin::Agent,
+            (None, Some(_)) => Origin::Schedule,
+            (None, None) => Origin::User,
+        };
+        system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), origin)
     }
 
     /// Log the project's instructions when they are new, changed, or gone
@@ -496,7 +519,7 @@ impl<L: Llm> Inner<L> {
     /// Start a subagent: a session of its own in this workspace, on this
     /// session's model, in its mode and with what the user has allowed it so far.
     fn spawn(&self, name: &str) -> Result<Session<L>, String> {
-        let new = NewSession { workspace: &self.workspace, provider: &self.provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone() };
+        let new = NewSession { workspace: &self.workspace, provider: &self.provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone(), schedule: None };
         let log = self.store.create_with(new).map_err(|error| error.to_string())?;
         let child = Session::new(log, self.llm.clone(), self.tuning.clone(), self.services.clone(), self.events.clone(), self.runtime.clone()).map_err(|error| error.to_string())?;
         let (mode, grants) = {
@@ -923,9 +946,15 @@ mod tests {
     }
 
     fn fixture(llm: Arc<ScriptedLlm>) -> Fixture {
+        fixture_started_by(llm, None)
+    }
+
+    /// A session the user started, or one started by the schedule of the given name.
+    fn fixture_started_by(llm: Arc<ScriptedLlm>, schedule: Option<&str>) -> Fixture {
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let log = SessionStore::new(home.path()).create(workspace.path(), "anthropic", "scripted").unwrap();
+        let new = NewSession { workspace: workspace.path(), provider: "anthropic", model: "scripted", parent: None, worktree: None, schedule };
+        let log = SessionStore::new(home.path()).create_with(new).unwrap();
         let (sender, events) = unbounded_channel();
         let limits = Arc::new(Mutex::new((u64::MAX, u64::MAX)));
         let read = limits.clone();
@@ -986,6 +1015,18 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_a_schedule_started_is_told_nobody_may_be_there() {
+        let mut fixture = fixture_started_by(ScriptedLlm::new(vec![says("done")], None), Some("nightly"));
+        fixture.session.send("run the tests".into());
+        fixture.idle().await;
+        let requests = fixture.llm.requests.lock().unwrap();
+        assert!(requests[0].system.contains("A schedule the user set up started this session") && !requests[0].system.contains("You are a subagent"));
+        // It is still a session of the user's own, so it may hand work to subagents.
+        assert_eq!(requests[0].tools.len(), tools::specs().len() + 1);
+        assert_eq!(fixture.session.summary().schedule.as_deref(), Some("nightly"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn runs_allowed_tools_and_feeds_results_back() {
         let mut fixture = fixture(ScriptedLlm::new(vec![calls(&[("t1", "read_file", json!({ "path": "a.txt" }))]), says("done")], None));
         std::fs::write(fixture.workspace.path().join("a.txt"), "hello\n").unwrap();
@@ -1002,7 +1043,7 @@ mod tests {
         assert_eq!((requests[0].provider.as_str(), requests[0].session.as_str()), ("anthropic", fixture.session.id()));
         // The built-in tools and `delegate`, which only a session the user started is offered.
         assert_eq!(requests[0].tools.len(), tools::specs().len() + 1);
-        assert!(requests[0].system.contains(&fixture.workspace.path().display().to_string()));
+        assert!(requests[0].system.contains(&fixture.workspace.path().display().to_string()) && !requests[0].system.contains("A schedule"));
         // The second request carries the whole conversation: user, assistant tool call, tool result.
         assert_eq!(requests[1].messages.len(), 3);
         assert_eq!(requests[1].messages[2]["content"][0]["type"], "tool_result");
