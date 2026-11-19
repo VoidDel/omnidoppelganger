@@ -190,11 +190,13 @@ async fn run(options: Options) -> Result<bool, String> {
         Tuning { context_limit: settings.context_limit_for(&tuned_provider, model), context_window: context_window(&tuned_provider, model), effort: settings.effort }
     };
     let searching = store.clone();
+    let confining = store.clone();
     let services = Services {
         grants: Arc::new(GrantStore::new(home.join("grants.json"))),
         mcp: Some(mcp.clone()),
         skills: Some(home.join("skills")),
         search: Some(Arc::new(move || searching.search())),
+        sandbox: Some(Arc::new(move || confining.sandbox())),
     };
     let (sender, mut events) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let session = Session::new(log, llm, Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).map_err(|error| error.to_string())?;

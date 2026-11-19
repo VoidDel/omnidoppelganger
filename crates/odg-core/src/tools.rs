@@ -50,6 +50,8 @@ pub struct ToolContext {
     pub skills: Vec<PathBuf>,
     /// Where `web_search` sends a search. `None` means searching is not set up.
     pub search: Option<crate::web::SearchConfig>,
+    /// What confines the commands that run. `None` means they are not confined.
+    pub sandbox: Option<crate::sandbox::Sandbox>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,7 +181,8 @@ pub fn specs() -> Vec<Value> {
                 "properties": {
                     "command": { "type": "string", "description": "The command line to run." },
                     "timeout_seconds": { "type": "integer", "description": "Stop the command after this many seconds. Default 120, maximum 600. Ignored with `background`." },
-                    "background": { "type": "boolean", "description": "Leave the command running and return at once. Default false." }
+                    "background": { "type": "boolean", "description": "Leave the command running and return at once. Default false." },
+                    "unsandboxed": { "type": "boolean", "description": "Only matters when the user has the command sandbox on, in which a command can write only under the workspace and the temporary directories. Set it for a command that must write elsewhere, such as a package manager's cache; the user is then asked every time. Default false." }
                 },
                 "required": ["command"]
             }
@@ -826,10 +829,14 @@ pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
 }
 
-/// The shell set up to run `command_line` in the workspace, its output piped.
-fn shell_command(command_line: &str, workspace: &Path) -> tokio::process::Command {
+/// The shell set up to run `command_line` in the workspace, its output piped;
+/// confined to `sandbox` when there is one. Fails when it cannot be confined.
+fn shell_command(command_line: &str, workspace: &Path, sandbox: Option<&crate::sandbox::Sandbox>) -> std::io::Result<tokio::process::Command> {
     let (program, arguments, _) = shell();
-    let mut command = tokio::process::Command::new(program);
+    let mut command = match sandbox {
+        Some(sandbox) => crate::sandbox::command(program, sandbox)?,
+        None => tokio::process::Command::new(program),
+    };
     command.args(arguments);
     if cfg!(windows) {
         // PowerShell writes pipes in the console code page unless told otherwise,
@@ -848,8 +855,11 @@ fn shell_command(command_line: &str, workspace: &Path) -> tokio::process::Comman
     // Its own process group, so stopping the command can stop everything it started.
     #[cfg(unix)]
     command.process_group(0);
-    command
+    Ok(command)
 }
+
+/// What a failed command printed when it was not let to write somewhere, as the systems that confine say it.
+const DENIED: &[&str] = &["permission denied", "operation not permitted", "read-only file system", "eacces", "eperm"];
 
 fn job_arg<'a>(input: &'a Value, context: &'a ToolContext) -> Result<(&'a str, &'a Arc<Jobs>), ToolOutput> {
     let jobs = context.jobs.as_ref().ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
@@ -906,12 +916,14 @@ async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput,
     let command_line = string_arg(input, "command")?.to_string();
     let timeout = Duration::from_secs(input["timeout_seconds"].as_u64().unwrap_or(COMMAND_TIMEOUT_SECONDS).clamp(1, COMMAND_TIMEOUT_LIMIT_SECONDS));
     let (program, _, _) = shell();
-    let mut command = shell_command(&command_line, &context.workspace);
+    // The model may ask for a command to run unconfined; the user has then been asked (see `policy::check_in`).
+    let sandbox = context.sandbox.as_ref().filter(|_| input["unsandboxed"] != true);
+    let mut command = shell_command(&command_line, &context.workspace, sandbox).map_err(|error| ToolOutput::error(format!("Cannot confine the command to the sandbox: {error}")))?;
     if input["background"].as_bool().unwrap_or(false) {
         let jobs = context.jobs.as_ref().ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
         let id = jobs.start(&command_line, command).map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
         let content = format!("Started in the background as job {id}. Read what it prints with `command_output`, and end it with `stop_command` when it is no longer needed.");
-        return Ok(ToolOutput::ok(content, json!({ "command": command_line, "job": id, "background": true })));
+        return Ok(ToolOutput::ok(content, json!({ "command": command_line, "job": id, "background": true, "sandboxed": sandbox.is_some() })));
     }
 
     let started = Instant::now();
@@ -955,6 +967,17 @@ async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput,
         (None, Some(code)) => content.push_str(&format!("\n[exit code {code}]")),
         (None, None) => content.push_str("\n[ended without an exit code]"),
     }
+    // A confined command that was refused a write is told why, and the way out.
+    if let Some(sandbox) = sandbox
+        && exit_code != Some(0)
+        && DENIED.iter().any(|said| output.to_lowercase().contains(said))
+    {
+        let roots: Vec<String> = sandbox.writable.iter().map(|root| root.display().to_string()).collect();
+        content.push_str(&format!(
+            "\n[The command ran in the sandbox the user switched on: it could write only under {}. If that is why it failed and it must write elsewhere, run it again with `unsandboxed` set; the user is asked first.]",
+            roots.join(", ")
+        ));
+    }
     Ok(ToolOutput {
         content,
         is_error: stopped.is_some() || exit_code != Some(0),
@@ -964,6 +987,7 @@ async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput,
             "stopped": stopped,
             "duration_ms": started.elapsed().as_millis() as u64,
             "output": output,
+            "sandboxed": sandbox.is_some(),
         }),
     })
 }
@@ -974,7 +998,7 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None };
         (directory, context)
     }
 
@@ -1093,6 +1117,40 @@ mod tests {
         });
         let cancelled = execute("run_command", &json!({ "command": sleep }), &context).await;
         assert!(cancelled.content.contains("[stopped: cancelled]"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sandboxed_command_is_told_why_a_write_was_refused_and_can_ask_to_leave() {
+        if let Err(why) = crate::sandbox::support() {
+            eprintln!("not run: {why}");
+            return;
+        }
+        let (directory, context) = context();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("out.txt");
+        // Only the workspace: the test's other directory is under the system's temporary one, which a session would allow.
+        let context = ToolContext { sandbox: Some(crate::sandbox::Sandbox { writable: vec![directory.path().to_path_buf()] }), jobs: Some(Arc::new(Jobs::default())), ..context };
+
+        let inside = execute("run_command", &json!({ "command": "echo in > in.txt && cat in.txt" }), &context).await;
+        assert!(!inside.is_error && inside.content == "in" && inside.meta["sandboxed"] == true, "{}", inside.content);
+
+        let refused = execute("run_command", &json!({ "command": format!("echo out > {}", target.display()) }), &context).await;
+        assert!(refused.is_error && !target.exists(), "{}", refused.content);
+        assert!(refused.content.contains("ran in the sandbox") && refused.content.contains("`unsandboxed`") && refused.content.contains(&directory.path().display().to_string()), "{}", refused.content);
+        // A command that fails for a reason of its own is not told about the sandbox.
+        let failed = execute("run_command", &json!({ "command": "exit 3" }), &context).await;
+        assert!(failed.is_error && !failed.content.contains("sandbox"), "{}", failed.content);
+
+        // One left running is confined too.
+        let started = execute("run_command", &json!({ "command": format!("echo out > {}; echo done", target.display()), "background": true }), &context).await;
+        assert_eq!(started.meta["sandboxed"], true);
+        let printed = execute("command_output", &json!({ "job": started.meta["job"], "wait_seconds": 20 }), &context).await;
+        assert!(printed.content.contains("done") && !target.exists(), "{}", printed.content);
+
+        // Asked to run unconfined, it does: whether it may is the policy's to decide before this.
+        let free = execute("run_command", &json!({ "command": format!("echo out > {}", target.display()), "unsandboxed": true }), &context).await;
+        assert!(!free.is_error && free.meta["sandboxed"] == false && target.is_file(), "{}", free.content);
     }
 
     #[tokio::test(flavor = "multi_thread")]

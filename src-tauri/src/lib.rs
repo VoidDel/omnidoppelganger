@@ -82,6 +82,8 @@ struct SettingsView {
     /// The user's own skills, and the directory they are kept in.
     skills: Vec<odg_core::events::SkillInfo>,
     skills_directory: String,
+    /// What confines commands on this system when the user switches that on, or why nothing can.
+    sandbox_support: Result<&'static str, String>,
     /// The text of `mcp.json`, and how each server it lists stands.
     mcp_config: String,
     mcp_servers: Vec<ServerStatus>,
@@ -97,11 +99,13 @@ impl App {
             Tuning { context_limit: settings.context_limit_for(&provider, model), context_window: context_window(&provider, model), effort: settings.effort }
         };
         let searching = self.settings.clone();
+        let confining = self.settings.clone();
         let services = Services {
             grants: self.grants.clone(),
             mcp: Some(self.mcp.clone()),
             skills: Some(settings::home().join("skills")),
             search: Some(Arc::new(move || searching.search())),
+            sandbox: Some(Arc::new(move || confining.sandbox())),
         };
         Session::new(log, self.llm.clone(), Arc::new(tuning), services, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
     }
@@ -206,6 +210,7 @@ impl App {
             search_ready: self.settings.search().is_some(),
             skills: odg_core::skills::listing(&odg_core::skills::discover(&[settings::home().join("skills")])),
             skills_directory: settings::home().join("skills").display().to_string(),
+            sandbox_support: odg_core::sandbox::support(),
             mcp_config: self.mcp.config_text(),
             mcp_servers: self.mcp.statuses(),
         }

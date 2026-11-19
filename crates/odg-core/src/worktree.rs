@@ -36,6 +36,12 @@ fn identity(directory: &Path) -> &'static [&'static str] {
     if git(directory, &[], &["config", "user.email"]).is_ok_and(|email| !email.is_empty()) { &[] } else { &FALLBACK_IDENTITY }
 }
 
+/// The directory Git keeps the repository `directory` is in: its `.git`. For
+/// a worktree's checkout that is the repository's own, somewhere else.
+pub fn git_directory(directory: &Path) -> Option<PathBuf> {
+    git(directory, &[], &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
 /// The top of the repository `directory` is in, if it is in one.
 pub fn repository(directory: &Path) -> Option<PathBuf> {
     git(directory, &[], &["rev-parse", "--show-toplevel"]).ok().filter(|top| !top.is_empty()).map(|top| PathBuf::from(top).components().collect())
@@ -145,6 +151,8 @@ mod tests {
         assert!(worktree.branch.starts_with("odg/") && workspace.starts_with(&root));
         assert_eq!(crate::tools::git_branch(&workspace).as_deref(), Some(worktree.branch.as_str()));
         assert_eq!(read(workspace.join("src").join("a.txt")), "one\n");
+        // Git keeps the worktree's history in the repository's own directory, not in the checkout.
+        assert_eq!(git_directory(&workspace).unwrap().canonicalize().unwrap(), top.join(".git").canonicalize().unwrap());
 
         // Work in the worktree leaves the repository's own files alone until it is brought back.
         std::fs::write(workspace.join("src").join("a.txt"), "one\ntwo\n").unwrap();

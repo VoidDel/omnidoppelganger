@@ -77,6 +77,8 @@ pub struct Services {
     pub skills: Option<PathBuf>,
     /// Where a web search goes, asked at every request so that saving a key switches searching on.
     pub search: Option<crate::web::SearchSource>,
+    /// Whether commands are confined, asked at every command; `None` means never. See [`crate::sandbox`].
+    pub sandbox: Option<crate::sandbox::SandboxSource>,
 }
 
 /// What the model is asked when the conversation is compacted. It follows
@@ -125,6 +127,9 @@ struct Inner<L: Llm> {
     /// Where skills are looked for: the user's directory, then the workspace's, which wins on a shared name.
     skill_roots: Vec<PathBuf>,
     search: Option<crate::web::SearchSource>,
+    sandbox: Option<crate::sandbox::SandboxSource>,
+    /// Where Git keeps the workspace's repository, found when a command is first confined.
+    git_directory: std::sync::OnceLock<Option<PathBuf>>,
     provider: String,
     /// The model requests go to; the user can move the session to another of the same provider.
     model: Mutex<String>,
@@ -229,7 +234,7 @@ impl<L: Llm> Session<L> {
         let worktree = crate::session::worktree(log.events()).cloned();
         let granted_in = worktree.as_ref().map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
         let store = SessionStore::of(&log);
-        let Services { grants: kept, mcp, skills, search } = services.clone();
+        let Services { grants: kept, mcp, skills, search, sandbox } = services.clone();
         let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
         Ok(Self {
             inner: Arc::new(Inner {
@@ -248,6 +253,8 @@ impl<L: Llm> Session<L> {
                 mcp,
                 skill_roots,
                 search,
+                sandbox,
+                git_directory: std::sync::OnceLock::new(),
                 provider,
                 model: Mutex::new(model),
                 llm,
@@ -492,7 +499,22 @@ impl<L: Llm> Inner<L> {
             mcp: self.mcp.clone(),
             skills: self.skill_roots.clone(),
             search: self.search_config(),
+            sandbox: self.sandbox_now(),
         }
+    }
+
+    /// Whether this session's commands are confined right now: the user has switched that on, and the system can.
+    fn sandboxed(&self) -> bool {
+        self.sandbox.as_ref().is_some_and(|source| source().is_some()) && crate::sandbox::support().is_ok()
+    }
+
+    /// What confines this session's commands right now, if anything does.
+    fn sandbox_now(&self) -> Option<crate::sandbox::Sandbox> {
+        let mut extra = self.sandbox.as_ref().and_then(|source| source())?;
+        crate::sandbox::support().ok()?;
+        // Git writes to the repository's own directory, which a worktree's checkout, or a workspace below the top, does not hold.
+        extra.extend(self.git_directory.get_or_init(|| crate::worktree::git_directory(&self.workspace)).clone());
+        Some(crate::sandbox::Sandbox { writable: crate::sandbox::roots(&self.workspace, &extra) })
     }
 
     /// Where a web search would go right now; `None` when searching is not set up.
@@ -824,7 +846,7 @@ impl<L: Llm> Inner<L> {
                     self.tool_result(&id, &name, json!({ "INVALID_JSON": raw }).to_string(), true, Value::Null)?;
                     continue;
                 }
-                let verdict = policy::check(self.mode(), &name, &input, &self.workspace);
+                let verdict = policy::check_in(self.mode(), &name, &input, &self.workspace, self.sandboxed());
                 if let Verdict::Refuse(message) = verdict {
                     self.tool_result(&id, &name, message.to_string(), true, json!({ "refused": true }))?;
                     continue;
@@ -955,6 +977,11 @@ mod tests {
 
     /// A session the user started, or one started by the schedule of the given name.
     fn fixture_started_by(llm: Arc<ScriptedLlm>, schedule: Option<&str>) -> Fixture {
+        fixture_with(llm, schedule, false)
+    }
+
+    /// The same, with the command sandbox switched on when `sandbox`.
+    fn fixture_with(llm: Arc<ScriptedLlm>, schedule: Option<&str>, sandbox: bool) -> Fixture {
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let new = NewSession { workspace: workspace.path(), provider: "anthropic", model: "scripted", parent: None, worktree: None, schedule };
@@ -967,7 +994,7 @@ mod tests {
             Tuning { effort: "high".to_string(), context_limit, context_window }
         };
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None };
+        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None, sandbox: sandbox.then(|| Arc::new(|| Some(Vec::new())) as crate::sandbox::SandboxSource) };
         let session = Session::new(log, llm.clone(), Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, limits, workspace, session, llm, events }
     }
@@ -1016,6 +1043,28 @@ mod tests {
                 other => panic!("the log ends with {other:?}, not turn/end"),
             }
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_the_sandbox_on_commands_run_confined_and_leaving_it_asks() {
+        if let Err(why) = crate::sandbox::support() {
+            eprintln!("not run: {why}");
+            return;
+        }
+        let script = vec![calls(&[("t1", "run_command", json!({ "command": "ls" })), ("t2", "run_command", json!({ "command": "ls", "unsandboxed": true }))]), says("done")];
+        let mut fixture = fixture_with(ScriptedLlm::new(script, None), None, true);
+        // Auto mode runs `ls` without asking. The same command asking to leave the sandbox is the user's to decide.
+        fixture.session.set_mode(Mode::Auto);
+        fixture.session.send("list the files".into());
+        assert_eq!(fixture.approval().await, "t2");
+        fixture.session.resolve_approval("t2", Decision::AllowOnce);
+        fixture.idle().await;
+        let log = fixture.session.snapshot();
+        let asked: Vec<&str> = log.iter().filter_map(|envelope| if let Event::ApprovalRequested { reason, .. } = &envelope.event { Some(reason.as_str()) } else { None }).collect();
+        assert_eq!(asked, ["unsandboxed"]);
+        let confined: Vec<(&str, bool)> = log.iter().filter_map(|envelope| if let Event::ToolResult { tool_use_id, meta, .. } = &envelope.event { Some((tool_use_id.as_str(), meta["sandboxed"] == true)) } else { None }).collect();
+        assert_eq!(confined, [("t1", true), ("t2", false)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1100,7 +1149,7 @@ mod tests {
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|_: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX });
-        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None };
+        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None };
         let later = Session::new(log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
         fixture.events = events;
@@ -1319,7 +1368,7 @@ mod tests {
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
         // Searching is set up, so the model is offered `web_search` as well.
         let search: crate::web::SearchSource = Arc::new(|| Some(crate::web::SearchConfig { url: "http://127.0.0.1:9/web_search".into(), key: "k".into(), engine: "search_std".into() }));
-        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search) };
+        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search), sandbox: None };
         let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         // Auto mode lets safe commands through, but never a server's tool.
         session.set_mode(Mode::Auto);

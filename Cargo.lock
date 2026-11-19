@@ -2792,6 +2792,7 @@ dependencies = [
  "globset",
  "ignore",
  "keyring",
+ "libc",
  "regex",
  "reqwest",
  "serde",

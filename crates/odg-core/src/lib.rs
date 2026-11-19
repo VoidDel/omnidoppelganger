@@ -16,6 +16,7 @@ pub mod openai_responses;
 pub mod policy;
 pub mod providers;
 pub mod safety;
+pub mod sandbox;
 pub mod schedule;
 pub mod session;
 pub mod settings;

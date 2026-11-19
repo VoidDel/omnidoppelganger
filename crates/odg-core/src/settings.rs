@@ -79,6 +79,14 @@ pub struct Settings {
     /// address comes from `ANTHROPIC_BASE_URL` instead.
     #[serde(default)]
     pub base_urls: BTreeMap<String, String>,
+    /// Whether the commands the agent runs are confined to writing under the
+    /// workspace; see [`crate::sandbox`]. Has no effect where the system cannot confine them.
+    #[serde(default)]
+    pub sandbox: bool,
+    /// Directories confined commands may also write under, besides the
+    /// workspace and the temporary directories: a build cache, say.
+    #[serde(default)]
+    pub sandbox_paths: Vec<String>,
 }
 
 impl Default for Settings {
@@ -93,6 +101,8 @@ impl Default for Settings {
             search_engine: default_search_engine(),
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
+            sandbox: false,
+            sandbox_paths: Vec::new(),
         }
     }
 }
@@ -321,6 +331,13 @@ impl SettingsStore {
         let key = key?;
         let engine = if base_url.contains("z.ai") { INTERNATIONAL_ENGINE.to_string() } else { self.load().search_engine };
         Some(SearchConfig { url: format!("{}/web_search", base_url.trim_end_matches('/')), key, engine })
+    }
+
+    /// The directories the user added for confined commands to write under,
+    /// or `None` when commands are not to be confined; see [`crate::sandbox::SandboxSource`].
+    pub fn sandbox(&self) -> Option<Vec<PathBuf>> {
+        let settings = self.load();
+        settings.sandbox.then(|| settings.sandbox_paths.iter().map(|path| path.trim()).filter(|path| !path.is_empty()).map(PathBuf::from).collect())
     }
 
     /// Store a provider's key: in the vault, or, when there is none or it

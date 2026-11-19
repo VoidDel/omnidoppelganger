@@ -54,7 +54,7 @@ pub enum Verdict {
     /// Not run and not asked about: the tool gets this message as an error result.
     Refuse(&'static str),
     Ask {
-        /// The rule that asked: `command`, `edit`, `mcp`, `web`, `search`, `outside_read`, `outside_write`, or `git_write`.
+        /// The rule that asked: `command`, `unsandboxed`, `edit`, `mcp`, `web`, `search`, `outside_read`, `outside_write`, or `git_write`.
         reason: &'static str,
         /// The command or path shown to the user.
         detail: String,
@@ -63,6 +63,16 @@ pub enum Verdict {
         /// kind of request must be approved every time.
         grant: Option<String>,
     },
+}
+
+/// [`check`] for a session whose commands are confined when `sandboxed`; see
+/// [`crate::sandbox`]. A command that asks to run unconfined is the user's to
+/// decide each time, whatever the mode and whatever was allowed before.
+pub fn check_in(mode: Mode, tool: &str, input: &Value, workspace: &Path, sandboxed: bool) -> Verdict {
+    if sandboxed && tool == "run_command" && input["unsandboxed"] == true {
+        return Verdict::Ask { reason: "unsandboxed", detail: input["command"].as_str().unwrap_or_default().to_string(), grant: None };
+    }
+    check(mode, tool, input, workspace)
 }
 
 pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict {
@@ -226,6 +236,21 @@ mod tests {
         assert_eq!(reason(check("edit_file", &json!({ "path": "../x.rs" }), workspace)), Some("outside_write"));
         assert_eq!(reason(check("read_file", &json!({ "path": "../x.rs" }), workspace)), Some("outside_read"));
         assert_eq!(reason(check("search", &json!({ "pattern": "x", "path": ".." }), workspace)), Some("outside_read"));
+    }
+
+    #[test]
+    fn a_command_that_leaves_the_sandbox_always_asks() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        // A command auto mode runs without asking, and would again with the sandbox on.
+        let listing = if cfg!(windows) { "Get-ChildItem" } else { "ls" };
+        let inside = json!({ "command": listing });
+        let outside = json!({ "command": listing, "unsandboxed": true });
+        assert_eq!(check_in(Mode::Auto, "run_command", &inside, workspace, true), Verdict::Allow);
+        assert_eq!(check_in(Mode::Auto, "run_command", &outside, workspace, true), Verdict::Ask { reason: "unsandboxed", detail: listing.to_string(), grant: None });
+        // With no sandbox there is nothing to leave: the word changes nothing.
+        assert_eq!(check_in(Mode::Auto, "run_command", &outside, workspace, false), Verdict::Allow);
+        assert_eq!(check_in(Mode::Edit, "edit_file", &json!({ "path": "a.txt", "unsandboxed": true }), workspace, true), Verdict::Allow);
     }
 
     #[test]
