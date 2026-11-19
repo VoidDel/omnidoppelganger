@@ -187,7 +187,7 @@ async fn run(options: Options) -> Result<bool, String> {
     let (tuned, tuned_provider) = (store.clone(), provider_id.clone());
     let tuning = move |model: &str| {
         let settings = tuned.load();
-        let window = tuned.context_window(&tuned_provider, model).tokens;
+        let window = tuned.context_window(&settings, &tuned_provider, model).tokens;
         Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort }
     };
     let searching = store.clone();

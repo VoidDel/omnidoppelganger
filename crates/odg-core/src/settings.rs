@@ -28,6 +28,8 @@ pub const THEMES: &[&str] = &["system", "light", "dark"];
 pub const DEFAULT_CONTEXT_LIMIT: u64 = 200_000;
 /// Below this a summary and one file read would already be past the limit.
 pub const MIN_CONTEXT_LIMIT: u64 = 20_000;
+/// The smallest context window the user can set for a model: one whose four fifths is the lowest limit.
+pub const MIN_CONTEXT_WINDOW: u64 = MIN_CONTEXT_LIMIT / 4 * 5;
 
 /// The directory holding sessions, settings, and credentials: `$ODG_HOME`, or `~/.odg`.
 pub fn home() -> PathBuf {
@@ -69,6 +71,10 @@ pub struct Settings {
     /// many tokens, or sooner on a model whose context window is smaller.
     #[serde(default = "default_context_limit")]
     pub context_limit: u64,
+    /// Compact at four fifths of each model's own context window, whatever
+    /// `context_limit` says: as much of the conversation as the model holds.
+    #[serde(default)]
+    pub context_auto: bool,
     /// Which of Zhipu's search engines `web_search` asks; see [`SEARCH_ENGINES`].
     #[serde(default = "default_search_engine")]
     pub search_engine: String,
@@ -87,6 +93,11 @@ pub struct Settings {
     /// workspace and the temporary directories: a build cache, say.
     #[serde(default)]
     pub sandbox_paths: Vec<String>,
+    /// Context windows the user set by hand, in tokens, by `<provider>/<model>`:
+    /// for a model whose provider does not say and that this build does not
+    /// know, or one the user knows better. See [`SettingsStore::context_window`].
+    #[serde(default)]
+    pub context_windows: BTreeMap<String, u64>,
 }
 
 impl Default for Settings {
@@ -98,11 +109,13 @@ impl Default for Settings {
             effort: "high".to_string(),
             mode: Mode::Edit,
             context_limit: DEFAULT_CONTEXT_LIMIT,
+            context_auto: false,
             search_engine: default_search_engine(),
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
             sandbox: false,
             sandbox_paths: Vec::new(),
+            context_windows: BTreeMap::new(),
         }
     }
 }
@@ -132,6 +145,11 @@ impl Settings {
             self.theme = default.theme;
         }
         self.context_limit = self.context_limit.max(MIN_CONTEXT_LIMIT);
+        // A window of nothing is one that was cleared; one too small to work in is raised to the smallest that does.
+        self.context_windows.retain(|key, tokens| *tokens > 0 && key.split_once('/').is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty()));
+        for tokens in self.context_windows.values_mut() {
+            *tokens = (*tokens).max(MIN_CONTEXT_WINDOW);
+        }
         if !SEARCH_ENGINES.iter().any(|(id, _)| *id == self.search_engine) {
             self.search_engine = default.search_engine;
         }
@@ -149,7 +167,8 @@ impl Settings {
     /// four fifths of the model's context window when that is less, which
     /// leaves room for the answer and for what the next tools return.
     pub fn context_limit_within(&self, window: u64) -> u64 {
-        self.context_limit.min(window / 5 * 4)
+        let ceiling = window / 5 * 4;
+        if self.context_auto { ceiling } else { self.context_limit.min(ceiling) }
     }
 }
 
@@ -209,6 +228,8 @@ impl Vault for SystemVault {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowSource {
+    /// The user set it by hand in the settings.
+    Set,
     /// The provider said so when asked for its models.
     Provider,
     /// The provider's documentation said so when this build was made.
@@ -305,10 +326,14 @@ impl SettingsStore {
         std::fs::read_to_string(self.models_path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
     }
 
-    /// How many tokens a model's context window holds: what its provider
-    /// reported when asked for its models, or what its documentation said, or
-    /// when neither is known a size small enough to be safe.
-    pub fn context_window(&self, provider: &str, model: &str) -> Window {
+    /// How many tokens a model's context window holds: what the user set for
+    /// it in `settings`, or what its provider reported when asked for its
+    /// models, or what its documentation said, or when none of these is known
+    /// a size small enough to be safe.
+    pub fn context_window(&self, settings: &Settings, provider: &str, model: &str) -> Window {
+        if let Some(tokens) = settings.context_windows.get(&format!("{provider}/{model}")) {
+            return Window { tokens: *tokens, source: WindowSource::Set };
+        }
         let mut held = self.windows.lock().unwrap();
         let reported = held.get_or_insert_with(|| self.read_windows()).get(provider).and_then(|models| models.get(model)).copied();
         match (reported, documented_window(provider, model)) {
@@ -630,25 +655,36 @@ mod tests {
         let store = SettingsStore::new(directory.path().join("home"));
         let listed = |id: &str, context_window: Option<u64>| Listed { id: id.to_string(), name: id.to_string(), context_window };
         let window = |tokens, source| Window { tokens, source };
+        let plain = Settings::default();
         // Before anything is reported: the documentation, or the safe size for a model it does not list.
-        assert_eq!(store.context_window("zhipu", "glm-4.7"), window(200_000, WindowSource::Documented));
-        assert_eq!(store.context_window("zhipu", "glm-5.3-flash"), window(UNKNOWN_CONTEXT_WINDOW, WindowSource::Unknown));
+        assert_eq!(store.context_window(&plain, "zhipu", "glm-4.7"), window(200_000, WindowSource::Documented));
+        assert_eq!(store.context_window(&plain, "zhipu", "glm-9"), window(UNKNOWN_CONTEXT_WINDOW, WindowSource::Unknown));
 
         // What the provider says comes first, and is kept for the next run. A model it gave no size for keeps what was known.
         store.record_models("zhipu", &[listed("glm-5.3-flash", Some(256_000)), listed("glm-4.7", Some(128_000)), listed("glm-5.3", None)]).unwrap();
-        assert_eq!(store.context_window("zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
-        assert_eq!(store.context_window("zhipu", "glm-4.7"), window(128_000, WindowSource::Provider));
-        assert_eq!(store.context_window("zhipu", "glm-5.3"), window(1_000_000, WindowSource::Documented));
+        assert_eq!(store.context_window(&plain, "zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
+        assert_eq!(store.context_window(&plain, "zhipu", "glm-4.7"), window(128_000, WindowSource::Provider));
+        assert_eq!(store.context_window(&plain, "zhipu", "glm-5.3"), window(1_000_000, WindowSource::Documented));
         // Another provider's model of the same name is another model.
-        assert_eq!(store.context_window("custom", "glm-5.3-flash").source, WindowSource::Unknown);
+        assert_eq!(store.context_window(&plain, "custom", "glm-5.3-flash").source, WindowSource::Unknown);
         let again = SettingsStore::new(directory.path().join("home"));
-        assert_eq!(again.context_window("zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
+        assert_eq!(again.context_window(&plain, "zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
         again.record_models("zhipu", &[listed("glm-5.3-flash", None)]).unwrap();
-        assert_eq!(again.context_window("zhipu", "glm-5.3-flash").tokens, 256_000);
+        assert_eq!(again.context_window(&plain, "zhipu", "glm-5.3-flash").tokens, 256_000);
+
+        // What the user sets for a model comes before all of it, for that model of that provider alone; cleared, the rest decides again.
+        let set = again.save(Settings { context_windows: [("zhipu/glm-5.3-flash".to_string(), 500_000), ("zhipu/tiny".to_string(), 1_000), ("zhipu/cleared".to_string(), 0), ("nowhere".to_string(), 9)].into(), ..Settings::default() }).unwrap();
+        assert_eq!(set.context_windows, [("zhipu/glm-5.3-flash".to_string(), 500_000), ("zhipu/tiny".to_string(), MIN_CONTEXT_WINDOW)].into());
+        assert_eq!(again.context_window(&set, "zhipu", "glm-5.3-flash"), window(500_000, WindowSource::Set));
+        assert_eq!(again.context_window(&set, "zhipu", "glm-4.7"), window(128_000, WindowSource::Provider));
+        assert_eq!(again.context_window(&plain, "zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
 
         // The limit a session compacts at is the one set, or four fifths of the window when that is less.
         let settings = Settings { context_limit: 200_000, ..Settings::default() };
         assert_eq!((settings.context_limit_within(1_000_000), settings.context_limit_within(128_000)), (200_000, 102_400));
+        // Set to follow the model, it is four fifths of the window whatever limit is set.
+        let auto = Settings { context_auto: true, ..settings };
+        assert_eq!((auto.context_limit_within(1_000_000), auto.context_limit_within(128_000)), (800_000, 102_400));
     }
 
     #[test]

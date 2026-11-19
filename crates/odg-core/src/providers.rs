@@ -128,8 +128,11 @@ pub fn documented_window(provider: &str, model: &str) -> Option<u64> {
         ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(1_050_000),
         ("deepseek", "deepseek-v4-pro" | "deepseek-flash") => Some(1_000_000),
         ("moonshot", "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "kimi-k3") => Some(1_048_576),
-        ("zhipu", "glm-5.3" | "glm-5.2") => Some(1_000_000),
-        ("zhipu", "glm-4.7") => Some(200_000),
+        // Zhipu's model overview, which is the only place it says: its list of models carries no sizes.
+        ("zhipu", "glm-5.3" | "glm-5.3-flash" | "glm-5.3-flashx" | "glm-5.3-flashx-legal" | "glm-5.2" | "glm-4-long") => Some(1_000_000),
+        ("zhipu", "glm-5.1" | "glm-5v-turbo" | "glm-5-turbo" | "glm-5" | "glm-4.7" | "glm-4.7-flashx" | "glm-4.7-flash" | "glm-4.6") => Some(200_000),
+        // Smaller than what an unlisted model is assumed to hold, so these must be said.
+        ("zhipu", "glm-4.1v-thinking-flashx" | "glm-4.1v-thinking-flash") => Some(64_000),
         _ => None,
     }
 }
@@ -317,7 +320,7 @@ mod tests {
         assert_eq!(context_window("anthropic", "claude-opus-5-5"), 1_000_000);
         assert_eq!(context_window("zhipu", "glm-9"), UNKNOWN_CONTEXT_WINDOW);
         assert_eq!(context_window("custom", "anything"), UNKNOWN_CONTEXT_WINDOW);
-        assert_eq!((documented_window("zhipu", "glm-4.7"), documented_window("zhipu", "glm-5.3-flash")), (Some(200_000), None));
+        assert_eq!((documented_window("zhipu", "glm-4.7"), documented_window("zhipu", "glm-5.3-flash"), documented_window("zhipu", "glm-9")), (Some(200_000), Some(1_000_000), None));
     }
 
     #[tokio::test]

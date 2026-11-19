@@ -98,7 +98,7 @@ impl App {
         // The window and the limit follow the model the session is on when the request is made.
         let tuning = move |model: &str| {
             let settings = store.load();
-            let window = store.context_window(&provider, model).tokens;
+            let window = store.context_window(&settings, &provider, model).tokens;
             Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort }
         };
         let searching = self.settings.clone();
@@ -114,8 +114,9 @@ impl App {
     }
 
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
-        let window = self.settings.context_window(&summary.provider, &summary.model).tokens;
-        let context_limit = self.settings.load().context_limit_within(window);
+        let settings = self.settings.load();
+        let window = self.settings.context_window(&settings, &summary.provider, &summary.model).tokens;
+        let context_limit = settings.context_limit_within(window);
         let branch = odg_core::tools::git_branch(std::path::Path::new(&summary.workspace));
         let vision = vision(&summary.provider, &summary.model);
         let context_ceiling = window / 5 * 4;
@@ -216,7 +217,7 @@ impl App {
             skills_directory: settings::home().join("skills").display().to_string(),
             context_window: {
                 let settings = self.settings.load();
-                self.settings.context_window(&settings.provider, &settings.model)
+                self.settings.context_window(&settings, &settings.provider, &settings.model)
             },
             sandbox_support: odg_core::sandbox::support(),
             mcp_config: self.mcp.config_text(),
@@ -465,6 +466,14 @@ async fn undo_turn(app: State<'_, App>, id: String, turn: u64) -> Result<Undone,
     Ok(Undone { restored: outcome.restored, skipped: outcome.skipped })
 }
 
+/// Have the model summarize the session's conversation now, between turns.
+/// Returns how many tokens the conversation held before.
+#[tauri::command]
+async fn compact_session(app: State<'_, App>, id: String) -> Result<u64, String> {
+    let session = app.live(&id)?;
+    session.compact_now().await
+}
+
 #[tauri::command]
 async fn cancel_turn(app: State<'_, App>, id: String) -> Result<(), String> {
     app.live(&id)?.cancel();
@@ -577,6 +586,7 @@ pub fn run() {
             list_models,
             undo_turn,
             cancel_turn,
+            compact_session,
             get_settings,
             save_settings,
             save_mcp_config,

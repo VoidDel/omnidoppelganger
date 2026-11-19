@@ -416,6 +416,55 @@ impl<L: Llm> Session<L> {
         }
     }
 
+    /// Have the model summarize the conversation now, between turns, as it
+    /// does by itself once the conversation passes the limit: the next
+    /// request starts from the summary. The session counts as working while
+    /// it does, so it can be stopped, and a message sent meanwhile opens a
+    /// turn once it is done. Returns how many tokens the conversation held.
+    pub async fn compact_now(&self) -> Result<u64, String> {
+        let cancel = {
+            let mut state = self.inner.state.lock().unwrap();
+            if state.status != Status::Idle {
+                return Err("the agent is working; stop it or wait before compacting".to_string());
+            }
+            if !self.inner.compactable() {
+                return Err("there is nothing to summarize: the agent has said nothing since the conversation began or was last summarized".to_string());
+            }
+            state.status = Status::Running;
+            state.cancel = CancellationToken::new();
+            state.cancel.clone()
+        };
+        self.inner.emit_status(Status::Running);
+        let tuning = (self.inner.tuning)(&self.inner.model());
+        let estimate = context_estimate(self.inner.log.lock().unwrap().events());
+        // Near the window, the conversation itself would not fit beside the question: summarize a transcript of it.
+        let near_window = estimate >= tuning.context_window / 10 * 9;
+        let outcome = self.inner.compact(&tuning, estimate, near_window, &cancel).await;
+        // What was sent meanwhile is answered now; otherwise the session is idle again.
+        let next = {
+            let mut state = self.inner.state.lock().unwrap();
+            let next = state.inbox.pop_front();
+            if next.is_none() {
+                state.status = Status::Idle;
+            } else {
+                state.cancel = CancellationToken::new();
+            }
+            next.map(|message| (message, state.cancel.clone()))
+        };
+        match next {
+            Some((message, cancel)) => {
+                let inner = self.inner.clone();
+                self.inner.runtime.spawn(async move { inner.run_turns(message, cancel).await });
+            }
+            None => self.inner.emit_status(Status::Idle),
+        }
+        match outcome {
+            Ok(()) => Ok(estimate),
+            Err(LlmError::Cancelled) => Err("stopped before the summary was written; the conversation is as it was".to_string()),
+            Err(error) => Err(format!("the conversation could not be summarized, and is as it was: {error}")),
+        }
+    }
+
     /// Stop the running turn. The turn ends as `cancelled` once the current operation returns.
     pub fn cancel(&self) {
         self.inner.state.lock().unwrap().cancel.cancel();
@@ -1464,6 +1513,33 @@ mod tests {
         });
         assert_eq!(compacted, Some(("The user said one; I answered.".to_string(), 521)));
         assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compacts_the_conversation_when_asked_between_turns() {
+        let script = vec![says("first answer"), says("<summary>The user said one.</summary>"), says("second answer")];
+        let mut fixture = fixture(ScriptedLlm::new(script, None));
+        // Nothing has been said yet, so there is nothing to summarize.
+        assert!(fixture.session.compact_now().await.unwrap_err().contains("nothing to summarize"));
+        fixture.session.send("one".into());
+        fixture.idle().await;
+
+        // Well below any limit, asked for by hand: the summary replaces the conversation, outside any turn.
+        let before = fixture.session.compact_now().await.unwrap();
+        assert!(before > 0);
+        // The session counted as working while it summarized, and is idle again.
+        fixture.until(|event| matches!(event, UiEvent::Status { status: Status::Running, .. })).await;
+        fixture.idle().await;
+        assert_eq!(fixture.kinds()[4..], ["context/compacted"]);
+        assert_eq!(fixture.session.status(), Status::Idle);
+        assert!(fixture.session.compact_now().await.unwrap_err().contains("nothing to summarize"), "a summary with nothing said after it is not summarized again");
+
+        // The next turn starts from the summary.
+        fixture.session.send("two".into());
+        fixture.idle().await;
+        let requests = fixture.llm.requests.lock().unwrap();
+        let summary = format!("{}\n\nThe user said one.", crate::session::COMPACTED);
+        assert_eq!(texts(&requests[2]), [vec![summary, "two".to_string()]]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
