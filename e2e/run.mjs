@@ -264,7 +264,7 @@ try {
   await page.waitForText("清点完了。");
   await page.waitFor("the turn to end", `!document.body.innerText.includes("分身正在运功")`);
   const byHand = mock.requests[7].body;
-  const shown = await page.evaluate(`({ title: ${title}, said: document.querySelector(".said-meta")?.textContent, chip: [...document.querySelectorAll(".sidebar .row-button[aria-current] .chip")].map((chip) => chip.textContent).join() })`);
+  const shown = await page.evaluate(`({ title: ${title}, said: document.querySelector(".said-when")?.textContent, chip: [...document.querySelectorAll(".sidebar .row-button[aria-current] .chip")].map((chip) => chip.textContent).join() })`);
   check(shown.title === "晨课" && shown.said.includes("功课交办") && shown.chip === "功课", "started by hand, it opened a 分身 named after it, whose first message is marked as the 功课's");
   check(JSON.stringify(byHand.system).includes("A schedule the user set up started this session") && byHand.messages[0].content[0].text === "清点洞府里的文件", "the model got the task, and was told nobody may be there to answer");
 
@@ -305,7 +305,7 @@ try {
   check(heard.includes("分头去查") && heard.includes("接着查") && unchanged.length === source.length, "the fork went on from what it copied, and the session it came from stayed as it was");
 
   // "从这里分叉" on a message forks before it, and brings the message back to the box to send again or change.
-  await page.evaluate(`[...document.querySelectorAll(".said-foot button")].filter((button) => button.textContent.trim() === "从这里分叉").at(-1).click()`);
+  await page.evaluate(`[...document.querySelectorAll(".said-top button")].filter((button) => button.textContent.trim() === "从这里分叉").at(-1).click()`);
   await page.waitFor("a fork from before the second message", `document.querySelector("#composer-input")?.value === "接着查" && document.body.innerText.includes("都查完了。") && !document.body.innerText.includes("分叉这边查完了。")`);
   const refork = logs().find((events) => events[0].data.fork?.session === forked[0].data.id);
   check(refork[0].data.fork.turn === 1 && !refork.some((event) => event.type === "turn/start" && event.data.turn === 2), "a fork from a message holds the turns before it, with the message back in the box");

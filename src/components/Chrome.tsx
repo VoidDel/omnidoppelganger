@@ -393,6 +393,8 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
   const busy = session.status !== "idle";
   return (
     <header className="main-header">
+      {/* The title, and under it in small letters the folder the session works in. */}
+      <div className="title-block">
       {draft === null ? (
         <h1>{session.title || "新分身"}</h1>
       ) : (
@@ -410,6 +412,24 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
           }}
         />
       )}
+      {/* A session in a worktree shows the folder it stands for; where it really works is one hover away. */}
+      <div className="where">
+      <span className="path" title={session.worktree ? `独立工作树在 ${session.workspace}` : session.workspace}>
+        {session.worktree?.origin ?? session.workspace}
+      </span>
+      {session.branch && (
+        <span className="branch" title={session.worktree ? "独立工作树的分支：分身在这上面干活，并回之前不碰洞府里的文件" : "洞府里检出的 Git 分支"}>
+          <svg aria-hidden="true" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <circle cx="4.5" cy="3.5" r="1.7" />
+            <circle cx="4.5" cy="12.5" r="1.7" />
+            <circle cx="11.5" cy="5.5" r="1.7" />
+            <path d="M4.5 5.2v5.6M11.5 7.2c0 2.6-7 1.6-7 3.6" />
+          </svg>
+          {session.branch}
+        </span>
+      )}
+      </div>
+      </div>
       {session.parent && (
         <button type="button" className="kin-link" title="这是一个子分身，回到派它出来的分身" onClick={onOpenParent}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -425,21 +445,6 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
           </svg>
           分叉{source ? `，出自「${source.title || "新分身"}」` : ""}
         </button>
-      )}
-      {/* A session in a worktree shows the folder it stands for; where it really works is one hover away. */}
-      <span className="path" title={session.worktree ? `独立工作树在 ${session.workspace}` : session.workspace}>
-        {session.worktree?.origin ?? session.workspace}
-      </span>
-      {session.branch && (
-        <span className="branch" title={session.worktree ? "独立工作树的分支：分身在这上面干活，并回之前不碰洞府里的文件" : "洞府里检出的 Git 分支"}>
-          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <circle cx="4.5" cy="3.5" r="1.7" />
-            <circle cx="4.5" cy="12.5" r="1.7" />
-            <circle cx="11.5" cy="5.5" r="1.7" />
-            <path d="M4.5 5.2v5.6M11.5 7.2c0 2.6-7 1.6-7 3.6" />
-          </svg>
-          {session.branch}
-        </span>
       )}
       <span className="spacer" />
       {deleting ? (
@@ -832,17 +837,17 @@ interface SidePanelProps {
 export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProps) {
   const [tab, setTab] = useState<"files" | "terminal" | "plan">("files");
   const [dragging, setDragging] = useState(false);
-  const done = todos.filter((todo) => todo.status === "done").length;
-  return (
-    <aside className="panel" aria-label="改动与终端">
-      {/* The edge to drag: the panel is as wide as the pointer is far from the window's right side. */}
-      <div
   // Read by the pointer's own events, which can come before the page has drawn again: the state above is for how the edge looks.
   const held = useRef(false);
   const hold = (down: boolean) => {
     held.current = down;
     setDragging(down);
   };
+  const done = todos.filter((todo) => todo.status === "done").length;
+  return (
+    <aside className="panel" aria-label="改动与终端">
+      {/* The edge to drag: the panel is as wide as the pointer is far from the window's right side. */}
+      <div
         className={`panel-edge ${dragging ? "dragging" : ""}`}
         role="separator"
         aria-orientation="vertical"
@@ -864,14 +869,27 @@ export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProp
         }}
       />
       <div className="tabs">
-        <button type="button" className="tab" aria-pressed={tab === "files"} onClick={() => setTab("files")}>
-          改动
+        {/* Pictures to look at; each one's name is in its title and for a screen reader. */}
+        <button type="button" className="tab" aria-pressed={tab === "files"} title="改动：分身动过的文件" onClick={() => setTab("files")}>
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 1.8h5.2L12 4.6v9.6H4z" />
+            <path d="M9.2 1.8v2.8H12M6.2 8h3.6M8 6.2v3.6M6.2 11.8h3.6" />
+          </svg>
+          <span className="sr-only">改动</span>
         </button>
-        <button type="button" className="tab" aria-pressed={tab === "terminal"} onClick={() => setTab("terminal")}>
-          终端
+        <button type="button" className="tab" aria-pressed={tab === "terminal"} title="终端：分身跑过的命令和输出" onClick={() => setTab("terminal")}>
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" />
+            <path d="M4.6 6.2 6.8 8l-2.2 1.8M8.4 10h3" />
+          </svg>
+          <span className="sr-only">终端</span>
         </button>
-        <button type="button" className="tab" aria-pressed={tab === "plan"} onClick={() => setTab("plan")}>
-          计划{todos.length > 0 ? ` ${done}/${todos.length}` : ""}
+        <button type="button" className="tab" aria-pressed={tab === "plan"} title="计划：分身列的步骤，做完一步勾一步" onClick={() => setTab("plan")}>
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2.2 4.2l1.3 1.3 2.2-2.4M2.2 9.2l1.3 1.3 2.2-2.4M8.2 4.4h5.6M8.2 9.4h5.6M2.6 13.4h2.6M8.2 13.4h5.6" />
+          </svg>
+          <span className="sr-only">计划 </span>
+          {todos.length > 0 && <span className="count">{`${done}/${todos.length}`}</span>}
         </button>
       </div>
       {tab === "plan" ? (

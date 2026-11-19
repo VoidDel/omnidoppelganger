@@ -519,7 +519,12 @@ function UndoButton({ turn, onUndo }: { turn: number; onUndo: (turn: number) => 
 function Queued({ text }: { text: string }) {
   return (
     <div className="said-queued">
-      <div className="original queued">{text || "（图）"}</div>
+      <div className="original queued">
+        <span className="seal" aria-hidden="true">
+          音
+        </span>
+        <div className="said-text">{text || "（图）"}</div>
+      </div>
       <div className="said-foot">
         <span className="said-meta">传音在途，分身做完这一步就会听到</span>
       </div>
@@ -566,6 +571,10 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
         // The first message of such a session is a task handed to it, not something 本尊 said then.
         const task = index === 0 && origin !== "user" ? origin : null;
         const ownFirst = copied > 0 && row.turn > copied && (index === 0 || rows[index - 1].turn <= copied);
+        // Who the message is from, said only when it is not simply 本尊's order: the seal says the rest.
+        const who = task === "agent" ? "主分身交办" : task === "schedule" ? "功课交办" : row.prompt.steering ? "中途传音" : null;
+        const canUndo = !frozen && status === "idle" && !row.prompt.steering && undoable.has(row.turn);
+        const canFork = !!onFork && !row.prompt.steering && row.turn > 0;
         return (
           <section key={row.key} className={`turn ${last ? "latest" : ""}`}>
             {ownFirst && seam}
@@ -577,31 +586,40 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                   ))}
                 </div>
               )}
-              {/* A message of pictures alone has no words to show. */}
-              {(row.prompt.text || row.prompt.images.length === 0) && <div className={`original ${last && status === "running" ? "working" : ""}`}>{row.prompt.text}</div>}
-              {/* Under the message, at its right: who said it and when, last in the line so it keeps its place. */}
-              <div className="said-foot">
-                {!frozen && status === "idle" && !row.prompt.steering && undoable.has(row.turn) && <UndoButton turn={row.turn} onUndo={onUndo} />}
-                {onFork && !row.prompt.steering && row.turn > 0 && (
+              {/* Over the card's right end, small: the way to fork from here, and when it was said. */}
+              <div className="said-top">
+                {canFork && (
                   <button
                     type="button"
-                    className="button text small"
-                    title="另起一个分身：带着这句话之前的对话，这句话放回输入框，改了再传。只分对话，洞府里的文件还是现在的样子"
-                    onClick={() => onFork(row.turn, row.prompt.text)}
+                    className="icon-button"
+                    title="从这里分叉：另起一个分身，带着这句话之前的对话，这句话放回输入框，改了再传。只分对话，洞府里的文件还是现在的样子"
+                    onClick={() => onFork?.(row.turn, row.prompt.text)}
                   >
-                    从这里分叉
+                    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M8 14V9.5M8 9.5C8 6.5 4 7 4 3.5M8 9.5c0-3 4-2.5 4-6M2.5 5 4 3.5 5.5 5M10.5 5 12 3.5 13.5 5" />
+                    </svg>
+                    <span className="sr-only">从这里分叉</span>
                   </button>
                 )}
-                <span className="said-meta">
-                  <span className="seal small" aria-hidden="true">
-                    {task === "agent" ? "遣" : task === "schedule" ? "课" : row.prompt.steering ? "音" : "令"}
-                  </span>
-                  <span>
-                    {task === "agent" ? "主分身交办" : task === "schedule" ? "功课交办" : "本尊"}，{time(row.prompt.ts)}
-                    {row.prompt.steering ? "，中途传音" : ""}
-                  </span>
+                <span className="said-when">
+                  {who && `${who}，`}
+                  {time(row.prompt.ts)}
                 </span>
               </div>
+              {/* The message, laid out as the 分身's own cards are: its seal first, then the words. */}
+              <div className={`original ${last && status === "running" ? "working" : ""}`} title={`${who ?? "本尊"}，${time(row.prompt.ts)}`}>
+                <span className="seal" aria-hidden="true">
+                  {task === "agent" ? "遣" : task === "schedule" ? "课" : row.prompt.steering ? "音" : "令"}
+                </span>
+                {/* A message of pictures alone has no words to show. */}
+                {row.prompt.text && <div className="said-text">{row.prompt.text}</div>}
+              </div>
+              {/* Under the message, at its right: what can be done from it. */}
+              {canUndo && (
+                <div className="said-foot">
+                  <UndoButton turn={row.turn} onUndo={onUndo} />
+                </div>
+              )}
               {/* Words sent after the order while the 分身 works wait here, under what it is working on, until it hears them. */}
               {last && queued.map((text, at) => <Queued key={at} text={text} />)}
             </div>

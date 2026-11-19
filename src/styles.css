@@ -434,26 +434,40 @@ pre,
   gap: 12px;
 }
 
+/* The title, and under it the folder. */
+.title-block {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .main-header h1 {
   margin: 0;
   font-size: 17px;
   font-weight: 700;
-  flex: 0 1 auto;
-  min-width: 0;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Under the title, small: the folder, and after it the branch checked out there. */
+.main-header .where {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .main-header .path {
+  min-width: 0;
   color: var(--ink-2);
-  font-size: 13px;
-  /* The path gives way long before the title does. */
-  flex: 0 50 auto;
+  font-size: 11px;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 80px;
 }
 
 .spacer {
@@ -524,41 +538,45 @@ pre,
   padding: 16px 24px 14px;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
-  /* 本尊's side of the page is the right: the message there, and under it who said it and when. */
+  /* The message fills the column the 分身's cards fill under it; what can be done from it sits under its right end. */
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 8px;
+}
+
+.turn-said > * {
+  max-width: 960px;
 }
 
 .turn-said .original {
   flex: none;
   min-width: 0;
-  max-width: min(100%, 760px);
-  /* A long message keeps to a part of the view, and scrolls inside it. */
+}
+
+/* A long message keeps to a part of the view, and scrolls inside its card. */
+.turn-said .said-text {
   max-height: 30vh;
   overflow-y: auto;
 }
 
 .turn-said .shots {
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 /* A word on its way to a 分身 at work, under the message it is working on. */
 .said-queued {
-  max-width: 100%;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 6px;
 }
 
-.turn-said .said-queued .original {
+.turn-said .said-queued .said-text {
   max-height: 18vh;
 }
 
 .said-foot {
-  max-width: 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -584,10 +602,46 @@ pre,
   border: 1px solid var(--ink);
   border-radius: 2px;
   box-shadow: 6px 6px 0 var(--talisman-under);
-  padding: 12px 14px;
+  /* Laid out as the 分身's cards are: the seal at the left, then the words, and when at the top right. */
+  padding: 8px 12px 8px 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  transition: box-shadow 240ms ease;
+}
+
+.original .seal {
+  /* Level with the first line of the words. */
+  margin-top: 2px;
+}
+
+.said-text {
+  flex: 0 1 auto;
+  min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  transition: box-shadow 240ms ease;
+}
+
+/* Over the card's right end, small: the way to fork from the message, and when it was said. */
+.said-top {
+  /* Close to the card it belongs to: the column's gap is for things that stand apart. */
+  margin: -10px 0 -6px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.said-top .icon-button {
+  width: 22px;
+  height: 22px;
+}
+
+.said-when {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ink-2);
+  white-space: nowrap;
 }
 
 .original.working {
@@ -709,12 +763,10 @@ pre,
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  gap: 3px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.35;
   color: var(--ink-2);
 }
 
@@ -1476,11 +1528,43 @@ button.select-button svg {
   touch-action: none;
 }
 
-.panel-edge:hover,
-.panel-edge.dragging,
-.panel-edge:focus-visible {
+/* Pointed at or dragged, the border under it turns into a fine jade line with a grip at its middle. */
+.panel-edge::before,
+.panel-edge::after {
+  content: "";
+  position: absolute;
+  left: 50%;
   background: var(--jade);
-  opacity: 0.35;
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity 140ms ease 60ms;
+  pointer-events: none;
+}
+
+.panel-edge::before {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+
+.panel-edge::after {
+  top: 50%;
+  width: 4px;
+  height: 40px;
+  border-radius: 2px;
+  transform: translate(-50%, -50%);
+}
+
+.panel-edge:hover::before,
+.panel-edge:hover::after,
+.panel-edge.dragging::before,
+.panel-edge.dragging::after,
+.panel-edge:focus-visible::before,
+.panel-edge:focus-visible::after {
+  opacity: 1;
+}
+
+.panel-edge:focus-visible {
   outline: none;
 }
 
@@ -1495,10 +1579,26 @@ button.select-button svg {
 
 .tab {
   min-height: 44px;
-  padding: 0 14px;
+  min-width: 44px;
+  padding: 0 12px;
   border: 0;
   border-radius: 6px;
   background: transparent;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+/* How far the plan has come, beside its picture. */
+.tab .count {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .tab[aria-pressed="true"] {
