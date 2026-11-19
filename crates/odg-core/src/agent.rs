@@ -1328,6 +1328,8 @@ mod tests {
         fixture.idle().await;
         let results = fixture.results();
         assert_eq!(results.iter().map(|(id, is_error, _)| (id.as_str(), *is_error)).collect::<Vec<_>>(), [
+        // The request is logged a moment before the status changes: wait for that too.
+        fixture.until(|event| matches!(event, UiEvent::Status { status: Status::WaitingApproval, .. })).await;
             ("t2", false),
             ("t3", false),
             ("t1", false),
