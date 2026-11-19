@@ -226,9 +226,11 @@ const undoable = (item: Item) => item.kind === "tool" && editsFiles(item.name) &
  * an edit left to undo, or comes before one that has. Undoing from a turn
  * takes every later turn's edits with it.
  */
-export function undoableTurns(rows: Row[]): Set<number> {
-  const last = Math.max(0, ...rows.filter((row) => row.items.some(undoable)).map((row) => row.turn));
-  return new Set(rows.map((row) => row.turn).filter((turn) => turn > 0 && turn <= last));
+export function undoableTurns(rows: Row[], copied = 0): Set<number> {
+  // In a fork, the turns copied from the other session are that session's to undo: it keeps what the files held.
+  const own = rows.filter((row) => row.turn > copied);
+  const last = Math.max(0, ...own.filter((row) => row.items.some(undoable)).map((row) => row.turn));
+  return new Set(own.map((row) => row.turn).filter((turn) => turn > 0 && turn <= last));
 }
 
 /** The to-do list as the agent last wrote it; empty when it never wrote one. */

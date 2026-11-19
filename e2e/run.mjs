@@ -86,6 +86,8 @@ const mock = await startMock([
   // Two sessions that 功课 (schedules) start: one by hand, one when its time comes.
   [{ text: "清点完了。" }],
   [{ text: "报到。" }],
+  // In a fork of the second session: the conversation it copied, and one more message.
+  [{ text: "分叉这边查完了。" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -282,6 +284,48 @@ try {
   await page.click("功课");
   await page.waitForText("办过了，不会再办");
   check((await page.evaluate(`document.querySelectorAll(".schedule .link").length`)) === 2, "the 功课 page shows each one's last start, with the way to its 分身");
+  // A fork goes on from another session's conversation, in a session of its own.
+  const rowOf = (name) => `[...document.querySelectorAll(".sidebar .row-button")].find((row) => row.querySelector(".row-title")?.textContent === ${JSON.stringify(name)})`;
+  const logs = () => readdirSync(join(home, "sessions")).map((id) => readFileSync(join(home, "sessions", id, "session.v1.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)));
+  await page.evaluate(`${rowOf("分头去查")}.click()`);
+  await page.waitFor("the session to fork", `${title} === "分头去查" && document.body.innerText.includes("都查完了。")`);
+  const before = logs().length;
+  await page.click("分叉");
+  await page.waitFor("the fork's own page", `document.querySelector(".kin-link")?.textContent.includes("出自「分头去查」") && document.body.innerText.includes("以上是分叉时带过来的前情")`);
+  const forked = logs().find((events) => events[0].data.fork);
+  const source = logs().find((events) => events[0].data.id === forked[0].data.fork.session);
+  check(logs().length === before + 1 && forked[0].data.fork.turn === 1 && JSON.stringify(forked.slice(1)) === JSON.stringify(source.slice(1)), "forking a session made a new one whose log begins as a copy of the conversation, event for event");
+  check((await page.evaluate(`[...document.querySelectorAll(".sidebar .row-button[aria-current] .chip")].map((chip) => chip.textContent).join()`)) === "分叉" && (await page.evaluate(`document.body.innerText.includes("已分叉")`)), "the fork is marked in the list, and says that only the conversation was forked");
+  await page.type("#composer-input", "接着查");
+  await page.enter();
+  await page.waitForText("分叉这边查完了。");
+  await page.waitFor("the turn to end", `!document.body.innerText.includes("分身正在运功")`);
+  const heard = mock.requests[9].body.messages.filter((message) => message.role === "user").flatMap((message) => message.content).filter((block) => block.type === "text").map((block) => block.text);
+  const unchanged = logs().find((events) => events[0].data.id === source[0].data.id);
+  check(heard.includes("分头去查") && heard.includes("接着查") && unchanged.length === source.length, "the fork went on from what it copied, and the session it came from stayed as it was");
+
+  // "从这里分叉" on a message forks before it, and brings the message back to the box to send again or change.
+  await page.evaluate(`[...document.querySelectorAll(".said-foot button")].filter((button) => button.textContent.trim() === "从这里分叉").at(-1).click()`);
+  await page.waitFor("a fork from before the second message", `document.querySelector("#composer-input")?.value === "接着查" && document.body.innerText.includes("都查完了。") && !document.body.innerText.includes("分叉这边查完了。")`);
+  const refork = logs().find((events) => events[0].data.fork?.session === forked[0].data.id);
+  check(refork[0].data.fork.turn === 1 && !refork.some((event) => event.type === "turn/start" && event.data.turn === 2), "a fork from a message holds the turns before it, with the message back in the box");
+
+  // A replay shows the session as it stood, a step at a time, in place of the message box, and changes nothing.
+  await page.click("回放");
+  await page.waitFor("the replay bar in place of the message box", `!!document.querySelector(".replay") && document.querySelector("#composer-input").offsetParent === null`);
+  await page.evaluate(`(() => { const play = document.querySelector(".replay-play"); if (play.textContent.includes("暂停")) play.click(); })()`);
+  await page.waitFor("the replay to stop playing", `document.querySelector(".replay-play").textContent.includes("播放")`);
+  await page.evaluate(`(() => { const first = [...document.querySelectorAll(".replay button")].find((button) => button.textContent.trim() === "回到开头"); if (!first.disabled) first.click(); })()`);
+  const where = `(document.querySelector(".replay-where")?.textContent ?? "")`;
+  await page.waitFor("the first step", `${where}.startsWith("第 1 / ")`);
+  const steps = Number((await page.evaluate(where)).match(/第 1 \/ (\d+) 步/)[1]);
+  const started = await page.evaluate(`({ asked: document.body.innerText.includes("分头去查"), answered: document.body.innerText.includes("我派一个子分身去查"), ended: document.body.innerText.includes("都查完了。") })`);
+  check(steps === 4 && started.asked && !started.answered && !started.ended, "the replay's first step shows the first message and nothing the 分身 did after it");
+  for (let step = 1; step < steps; step++) await page.click("下一步");
+  await page.waitFor("the last step", `${where}.startsWith("第 ${steps} / ") && document.body.innerText.includes("都查完了。")`);
+  await page.click("退出回放");
+  await page.waitFor("the message box to come back with what was in it", `!document.querySelector(".replay") && document.querySelector("#composer-input").offsetParent !== null && document.querySelector("#composer-input").value === "接着查"`);
+  check(logs().find((events) => events[0].data.id === refork[0].data.id).length === refork.length, "stepping through the replay reached the end, left the log as it was, and gave the message box back");
   console.log("Passed.");
 } catch (error) {
   failed = true;

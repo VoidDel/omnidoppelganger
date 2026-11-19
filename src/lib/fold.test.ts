@@ -83,6 +83,13 @@ describe("undo", () => {
     expect(undone[2].items[undone[2].items.length - 1]).toEqual({ kind: "restored", turn: 2, restored: ["b.rs"], skipped: [] });
   });
 
+  it("leaves the turns a fork copied to the session that made them", () => {
+    const rows = fold(log(turn(1), user("one"), ...edited("t1", "a.rs"), turn(2), user("two"), ...edited("t2", "b.rs"), turn(3), user("three"), ...edited("t3", "c.rs")));
+    expect([...undoableTurns(rows)]).toEqual([1, 2, 3]);
+    expect([...undoableTurns(rows, 2)]).toEqual([3]);
+    expect([...undoableTurns(rows, 3)]).toEqual([]);
+  });
+
   it("treats a whole-file write like an edit", () => {
     const written: SessionEvent[] = [said(call("w1", "write_file", { path: "c.rs", content: "x" })), result("w1", "write_file", { path: "c.rs", added: 1, removed: 0, after: "f" })];
     const rows = fold(log(turn(1), user("one"), ...written));

@@ -25,7 +25,7 @@ export type ContentBlock =
   | { type: "fallback"; from: { model: string }; to: { model: string } };
 
 export type SessionEvent =
-  | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number; parent?: string; schedule?: string } }
+  | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number; parent?: string; schedule?: string; fork?: { session: string; turn: number } } }
   | { type: "subagent/started"; data: { tool_use_id: string; session: string; name: string } }
   | { type: "session/renamed"; data: { title: string } }
   | { type: "model/changed"; data: { model: string } }
@@ -126,6 +126,8 @@ export interface SessionItem {
   parent: string | null;
   /** Name of the 功课 (schedule) that started the session and gave it its first message; null otherwise. */
   schedule: string | null;
+  /** Set for a fork: the session its conversation was copied from, and the last turn that was copied (0 for none). */
+  fork: { session: string; turn: number } | null;
   workspace: string;
   /** Id of the model provider the session runs on. */
   provider: string;

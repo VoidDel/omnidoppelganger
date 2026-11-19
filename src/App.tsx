@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { Composer, Logo, Mountains, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
+import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { api } from "./lib/api";
 import { applyDelta, changedFiles, commandRuns, fold, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
+import { replayStops, turnAt } from "./lib/replay";
 import type { Decision, Envelope, Image, Mode, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
 interface State {
@@ -192,7 +194,24 @@ export default function App() {
 
   useTheme(state.settings?.settings.theme);
 
-  const rows = useMemo(() => fold(state.events), [state.events]);
+  /** The replay of the session on the page: which stop it is at. Null while the page shows the present. */
+  const [replay, setReplay] = useState<{ at: number; playing: boolean; speed: number } | null>(null);
+  // A replay is of one session: opening another, or leaving the conversation, ends it.
+  useEffect(() => setReplay(null), [state.activeId, state.page]);
+  const stops = useMemo(() => replayStops(state.events), [state.events]);
+  const playing = !!replay?.playing;
+  const speed = replay?.speed ?? 1;
+  useEffect(() => {
+    if (!playing) return;
+    const timer = setInterval(() => setReplay((now) => (now && now.at < stops.length - 1 ? { ...now, at: now.at + 1 } : now && { ...now, playing: false })), STEP_MS / speed);
+    return () => clearInterval(timer);
+  }, [playing, speed, stops.length]);
+  /** What the page shows: the whole log, or in a replay the log as far as the stop it is at. */
+  const shown = useMemo(() => (replay ? state.events.slice(0, (stops[replay.at] ?? -1) + 1) : state.events), [replay?.at, !replay, state.events, stops]);
+  /** Words a fork brings to the message box. */
+  const [seed, setSeed] = useState<{ id: number; text: string } | null>(null);
+
+  const rows = useMemo(() => fold(shown), [shown]);
   const files = useMemo(() => changedFiles(rows), [rows]);
   const runs = useMemo(() => commandRuns(rows), [rows]);
   const spent = useMemo(() => usage(state.events), [state.events]);
@@ -202,6 +221,16 @@ export default function App() {
   const open = (id: string) => {
     dispatch({ type: "opening", id });
     api.openSession(id).then((view) => dispatch({ type: "opened", view }), fail);
+  };
+  /** Fork the session on the page: before `turn`, bringing that turn's message to the box; or all of it. */
+  const forkFrom = (turn?: number, text?: string) => {
+    if (!state.activeId) return;
+    api.forkSession(state.activeId, turn).then((view) => {
+      dispatch({ type: "opened", view });
+      if (text !== undefined) setSeed({ id: Date.now(), text });
+      const point = turn === undefined ? "带着到现在为止的全部对话" : turn > 1 ? `带着第 ${turn} 轮之前的对话，那一轮的话放回了输入框` : "从头来过，头一句话放回了输入框";
+      dispatch({ type: "note", note: `已分叉：这是一个新的分身，${point}。只分了对话：洞府里的文件是同一份，还是现在的样子。` });
+    }, fail);
   };
   const create = async () => {
     try {
@@ -338,6 +367,11 @@ export default function App() {
               session={active}
               parent={state.sessions.find((session) => session.id === active.parent)}
               onOpenParent={() => active.parent && open(active.parent)}
+              source={state.sessions.find((session) => session.id === active.fork?.session)}
+              onOpenSource={() => active.fork && open(active.fork.session)}
+              onFork={() => forkFrom()}
+              replaying={!!replay}
+              onReplay={() => setReplay(replay || stops.length === 0 ? null : { at: 0, playing: true, speed: 1 })}
               onLand={() =>
                 api.landSession(active.id).then((landed) => {
                   const note = landed.commits ? `已并回：${landed.commits} 个提交合并进了洞府的 ${landed.into} 分支。` : "这个分身的工作树里没有新的改动，没什么可并回的。";
@@ -359,8 +393,38 @@ export default function App() {
                 </p>
               </div>
             ) : (
-              <Transcript rows={rows} stream={state.stream} queued={state.queued} status={state.status} mode={active.mode} origin={active.parent ? "agent" : active.schedule ? "schedule" : "user"} sessions={state.sessions} onOpen={open} onDecide={decide} onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)} />
+              <Transcript
+                rows={rows}
+                stream={replay ? [] : state.stream}
+                queued={replay ? [] : state.queued}
+                status={replay ? "idle" : state.status}
+                mode={active.mode}
+                origin={active.parent ? "agent" : active.schedule ? "schedule" : "user"}
+                sessions={state.sessions}
+                copied={active.fork?.turn ?? 0}
+                frozen={!!replay}
+                onOpen={open}
+                onDecide={decide}
+                onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)}
+                onFork={active.parent ? undefined : forkFrom}
+              />
             )}
+            {replay ? (
+              <ReplayBar
+                at={replay.at}
+                count={stops.length}
+                playing={replay.playing}
+                speed={replay.speed}
+                turn={turnAt(state.events, stops[replay.at] ?? 0)}
+                time={new Date(state.events[stops[replay.at] ?? 0]?.ts ?? Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                onSeek={(at) => setReplay((now) => now && { ...now, at })}
+                onPlaying={(playing) => setReplay((now) => now && { ...now, playing })}
+                onSpeed={(speed) => setReplay((now) => now && { ...now, speed })}
+                onExit={() => setReplay(null)}
+              />
+            ) : null}
+            {/* Kept while a replay stands in its place, so what was being typed is still there afterwards. */}
+            <div style={{ display: replay ? "none" : "contents" }}>
             <Composer
               status={state.status}
               provider={providers.find((known) => known.id === active.provider)}
@@ -383,7 +447,9 @@ export default function App() {
               onCarryOut={carryOut}
               onSend={send}
               onStop={() => api.cancelTurn(active.id).catch(fail)}
+              seed={seed}
             />
+            </div>
           </>
         ) : (
           <>

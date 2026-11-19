@@ -243,6 +243,19 @@ async fn create_session(app: State<'_, App>, workspace: String, isolated: Option
     Ok(view(&app, &session))
 }
 
+/// Start a session that goes on from a point in another's conversation: its
+/// log begins as a copy of that session's up to where turn `before` starts,
+/// or of all of it when `before` is none, less a turn still running. Only the
+/// conversation is copied: the fork works on the same files, as they are now.
+#[tauri::command]
+async fn fork_session(app: State<'_, App>, id: String, before: Option<u64>) -> Result<SessionView, String> {
+    let source = app.live(&id)?;
+    let log = app.store.fork(&source.snapshot(), before).map_err(|error| error.to_string())?;
+    let session = app.wrap(log)?;
+    app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
+    Ok(view(&app, &session))
+}
+
 /// The tasks set to start by themselves, in the order they were added.
 #[tauri::command]
 fn list_schedules(app: State<'_, App>) -> Vec<Schedule> {
@@ -337,13 +350,15 @@ async fn land_session(app: State<'_, App>, id: String) -> Result<Landed, String>
 #[tauri::command]
 async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
     let live = app.all_live();
-    // The worktree is the session's own to remove unless it is a subagent, which works in its agent's.
-    let made = match live.get(&id) {
+    let summary_of = |id: &str| match live.get(id) {
         Some(session) => Some(session.summary()),
-        None => app.store.peek(&id).ok(),
-    }
-    .filter(|summary| summary.parent.is_none())
-    .and_then(|summary| summary.worktree);
+        None => app.store.peek(id).ok(),
+    };
+    // The worktree is the session's own to remove unless it is a subagent, which works in its agent's;
+    // or another session of the user's works in it too: a fork of this one, or the one this was forked from.
+    let made = summary_of(&id).filter(|summary| summary.parent.is_none()).and_then(|summary| summary.worktree).filter(|made| {
+        !app.store.ids().iter().filter(|other| **other != id).filter_map(|other| summary_of(other)).any(|other| other.parent.is_none() && other.worktree.as_ref() == Some(made))
+    });
     let subagents: Vec<String> = app
         .store
         .ids()
@@ -529,6 +544,7 @@ pub fn run() {
             list_sessions,
             create_session,
             preset_workspace,
+            fork_session,
             list_schedules,
             save_schedule,
             delete_schedule,

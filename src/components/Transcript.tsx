@@ -315,10 +315,12 @@ function proposed(tool: ToolItem): DiffHunk | null {
 interface SignSheetProps {
   tool: ToolItem;
   mode: Mode;
+  /** The page shows the past: the request is shown as it stood, with nothing to press. */
+  frozen: boolean;
   onDecide: (toolUseId: string, decision: Decision) => void;
 }
 
-function SignSheet({ tool, mode, onDecide }: SignSheetProps) {
+function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
   const approval = tool.approval!;
   const ask = ASK[approval.reason] ?? ASK.command;
   const oneByOne = approval.reason === "command" && !approval.grant;
@@ -333,7 +335,8 @@ function SignSheet({ tool, mode, onDecide }: SignSheetProps) {
         {approval.reason === "command" && mode === "auto" && "放手施为只自行放行只读、构建、测试类且不碰洞府之外的命令，这条不在其列。"}
         {oneByOne && "这条命令带有管道、分号、引号、变量之类的写法，或者会执行任意代码，只能逐条批准。"}
       </p>
-      <div className="actions">
+      {frozen && <p className="muted">当时分身停在这里，候本尊定夺。</p>}
+      <div className="actions" hidden={frozen}>
         <button type="button" className="button solid" onClick={() => onDecide(tool.id, "allow_once")}>
           准这一次
         </button>
@@ -374,7 +377,7 @@ function notice(reason: string, error: string | null): string {
   }
 }
 
-function ItemView({ item, mode, family, onDecide }: { item: Item; mode: Mode; family: Family; onDecide: (toolUseId: string, decision: Decision) => void }) {
+function ItemView({ item, mode, family, frozen, onDecide }: { item: Item; mode: Mode; family: Family; frozen: boolean; onDecide: (toolUseId: string, decision: Decision) => void }) {
   switch (item.kind) {
     case "text":
       return (
@@ -392,7 +395,7 @@ function ItemView({ item, mode, family, onDecide }: { item: Item; mode: Mode; fa
         </details>
       );
     case "tool":
-      if (item.approval && !item.approval.decision && !item.result) return <SignSheet tool={item} mode={mode} onDecide={onDecide} />;
+      if (item.approval && !item.approval.decision && !item.result) return <SignSheet tool={item} mode={mode} frozen={frozen} onDecide={onDecide} />;
       return item.name === "delegate" ? <DelegateCard tool={item} family={family} /> : <ToolCard tool={item} />;
     case "fallback":
       return (
@@ -470,10 +473,16 @@ interface Props {
   origin: "user" | "agent" | "schedule";
   /** Every session in the list, to tell how the 子分身 of this one stand, and the way to open one. */
   sessions: SessionItem[];
+  /** In a fork: the last turn copied from the session it was forked from. 0 in any other session. */
+  copied: number;
+  /** The page shows the session as it stood at a point in its past (a replay): nothing on it acts. */
+  frozen: boolean;
   onOpen: (id: string) => void;
   onDecide: (toolUseId: string, decision: Decision) => void;
   /** Undo the 分身's file edits from this turn on. */
   onUndo: (turn: number) => void;
+  /** Start a fork that goes on from before this turn, with the turn's message to send again or change. Absent where a fork cannot be made. */
+  onFork?: (turn: number, text: string) => void;
 }
 
 /** Undoing cannot itself be undone, so the button asks once more before it acts. */
@@ -511,9 +520,11 @@ function Queued({ text }: { text: string }) {
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, origin, sessions, onOpen, onDecide, onUndo }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onUndo, onFork }: Props) {
   const family = { sessions, onOpen };
-  const undoable = undoableTurns(rows);
+  const undoable = undoableTurns(rows, copied);
+  /** Where a fork's own conversation begins: said once, between what it copied and what it did itself. */
+  const seam = <div className="seam">以上是分叉时带过来的前情，以下是这个分叉自己的</div>;
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   /** How many messages of 本尊's were on the page at the last render. */
@@ -547,8 +558,10 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
         const last = index === rows.length - 1;
         // The first message of such a session is a task handed to it, not something 本尊 said then.
         const task = index === 0 && origin !== "user" ? origin : null;
+        const ownFirst = copied > 0 && row.turn > copied && (index === 0 || rows[index - 1].turn <= copied);
         return (
           <section key={row.key} className={`turn ${last ? "latest" : ""}`}>
+            {ownFirst && seam}
             <div className="turn-said">
               {row.prompt.images.length > 0 && (
                 <div className="shots">
@@ -561,7 +574,17 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
               {(row.prompt.text || row.prompt.images.length === 0) && <div className={`original ${last && status === "running" ? "working" : ""}`}>{row.prompt.text}</div>}
               {/* Under the message, at its right: who said it and when, last in the line so it keeps its place. */}
               <div className="said-foot">
-                {status === "idle" && !row.prompt.steering && undoable.has(row.turn) && <UndoButton turn={row.turn} onUndo={onUndo} />}
+                {!frozen && status === "idle" && !row.prompt.steering && undoable.has(row.turn) && <UndoButton turn={row.turn} onUndo={onUndo} />}
+                {onFork && !row.prompt.steering && row.turn > 0 && (
+                  <button
+                    type="button"
+                    className="button text small"
+                    title="另起一个分身：带着这句话之前的对话，这句话放回输入框，改了再传。只分对话，洞府里的文件还是现在的样子"
+                    onClick={() => onFork(row.turn, row.prompt.text)}
+                  >
+                    从这里分叉
+                  </button>
+                )}
                 <span className="said-meta">
                   <span className="seal small" aria-hidden="true">
                     {task === "agent" ? "遣" : task === "schedule" ? "课" : row.prompt.steering ? "音" : "令"}
@@ -577,9 +600,11 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
             </div>
             <div className="turn-did">
               {row.items.map((item, at) => (
-                <ItemView key={item.kind === "tool" ? item.id : at} item={item} mode={mode} family={family} onDecide={onDecide} />
+                <ItemView key={item.kind === "tool" ? item.id : at} item={item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} />
               ))}
               {last && <Streaming blocks={stream} />}
+              {/* Nothing of its own yet: the seam closes what was copied. */}
+              {last && copied > 0 && row.turn <= copied && seam}
             </div>
           </section>
         );

@@ -159,6 +159,7 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
                 onClick={() => onOpen(session.id)}
               >
                 <span className="row-title">{session.title || (childOf(session) ? "子分身" : "新分身")}</span>
+                {session.fork && <span className="chip kin" title="分叉：它的前情抄自另一个分身">分叉</span>}
                 {session.schedule && <span className="chip kin" title={`功课「${session.schedule}」到时辰化出的分身`}>功课</span>}
                 {session.worktree && !childOf(session) && <span className="chip kin" title={`用独立的工作树，分支 ${session.worktree.branch}`}>独立</span>}
                 {!childOf(session) && !open(session.id) && family(session.id).length > 0 && <span className="chip kin" title="它派出过的子分身，点开这个分身就能看到">{family(session.id).length} 子</span>}
@@ -359,6 +360,14 @@ interface SessionHeaderProps {
   /** For a 子分身: the 分身 that set it off, and the way back to it. */
   parent?: SessionItem;
   onOpenParent: () => void;
+  /** For a fork: the session it was forked from, when that is still there, and the way to it. */
+  source?: SessionItem;
+  onOpenSource: () => void;
+  /** Start a fork of the whole conversation. */
+  onFork: () => void;
+  /** Whether the session is being replayed, and the way into and out of that. */
+  replaying: boolean;
+  onReplay: () => void;
   /** For a session in a worktree of its own: bring its work back into the folder. */
   onLand: () => void;
   /** Whether the side panel is put away, and the way to bring it back or put it away. */
@@ -369,7 +378,7 @@ interface SessionHeaderProps {
 }
 
 /** The session's title and folder, with renaming and deleting. Deleting asks once more: it cannot be undone. */
-export function SessionHeader({ session, parent, onOpenParent, onLand, panelHidden, onTogglePanel, onRename, onDelete }: SessionHeaderProps) {
+export function SessionHeader({ session, parent, onOpenParent, source, onOpenSource, onFork, replaying, onReplay, onLand, panelHidden, onTogglePanel, onRename, onDelete }: SessionHeaderProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   // Another session shown in the same header starts clean.
@@ -407,6 +416,14 @@ export function SessionHeader({ session, parent, onOpenParent, onLand, panelHidd
             <path d="M12.5 13V7.5a2 2 0 0 0-2-2h-7M6.5 2.5l-3 3 3 3" />
           </svg>
           子分身，出自「{parent?.title || "主分身"}」
+        </button>
+      )}
+      {session.fork && (
+        <button type="button" className="kin-link" disabled={!source} title={source ? "这是一个分叉：它的前情抄自那个分身。点这里过去" : "这是一个分叉：它的前情抄自另一个分身，那个分身已经删了"} onClick={onOpenSource}>
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 14V9.5M8 9.5C8 6.5 4 7 4 3.5M8 9.5c0-3 4-2.5 4-6M2.5 5 4 3.5 5.5 5M10.5 5 12 3.5 13.5 5" />
+          </svg>
+          分叉{source ? `，出自「${source.title || "新分身"}」` : ""}
         </button>
       )}
       {/* A session in a worktree shows the folder it stands for; where it really works is one hover away. */}
@@ -447,6 +464,21 @@ export function SessionHeader({ session, parent, onOpenParent, onLand, panelHidd
               </svg>
               <span className="sr-only">改名</span>
             </button>
+            <button type="button" className="icon-button replay-toggle" aria-pressed={replaying} title={replaying ? "退出回放，回到现在" : "回放：从头一步步看这个分身做过什么"} onClick={onReplay}>
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3.2 5.2A5.5 5.5 0 1 1 2.5 8M3 2.5v2.9h2.9" />
+                <path d="M6.8 5.9 10.3 8 6.8 10.1z" fill="currentColor" />
+              </svg>
+              <span className="sr-only">回放</span>
+            </button>
+            {!session.parent && (
+              <button type="button" className="icon-button" title="分叉：另起一个分身，带着这里到现在的全部对话，从这里往别处走。只分对话，洞府里的文件是同一份" onClick={onFork}>
+                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 14V9.5M8 9.5C8 6.5 4 7 4 3.5M8 9.5c0-3 4-2.5 4-6M2.5 5 4 3.5 5.5 5M10.5 5 12 3.5 13.5 5" />
+                </svg>
+                <span className="sr-only">分叉</span>
+              </button>
+            )}
             {session.worktree && !session.parent && (
               <button type="button" className="icon-button" disabled={busy} title={busy ? "分身还在运功，先收回它" : "并回：把这个分身在独立工作树里的改动提交，合并进洞府当前的分支"} onClick={onLand}>
                 <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -521,14 +553,22 @@ interface ComposerProps {
   onCarryOut: (mode: Mode) => void;
   onSend: (text: string, images: Image[]) => void;
   onStop: () => void;
+  /** Words to put in the box, as when a fork brings back the message it starts before; a new `id` puts them in. */
+  seed: { id: number; text: string } | null;
 }
 
 export function Composer(props: ComposerProps) {
   const { status, provider, providerId, model, vision, mode, usage, contextLimit, contextCeiling, contextSetting, planReady } = props;
-  const { onLimit, onModel, listModels, onMode, onCarryOut, onSend, onStop } = props;
+  const { onLimit, onModel, listModels, onMode, onCarryOut, onSend, onStop, seed } = props;
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const [text, setText] = useState("");
+  const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!seed) return;
+    setText(seed.text);
+    input.current?.focus();
+  }, [seed?.id]);
   const [images, setImages] = useState<Image[]>([]);
   /** Why a picture was not taken, until the next attempt. */
   const [refused, setRefused] = useState<string | null>(null);
@@ -607,6 +647,7 @@ export function Composer(props: ComposerProps) {
         </label>
         <textarea
           id="composer-input"
+          ref={input}
           rows={2}
           value={text}
           placeholder={busy ? "给分身传一句音" : "吩咐一件事，回车传令"}

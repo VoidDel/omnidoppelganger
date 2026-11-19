@@ -10,6 +10,11 @@ export const api = {
   createSession: (workspace: string, isolated = false) => invoke<SessionView>("create_session", { workspace, isolated }),
   /** Commit what a worktree session's checkout holds and merge it into the folder's branch. Rejects on a conflict, changing nothing. */
   landSession: (id: string) => invoke<{ commits: number; into: string }>("land_session", { id }),
+  /**
+   * Start a session that goes on from a point in another's conversation: its log begins as a copy of that one's up to
+   * where turn `before` starts, or of all of it without `before`. The files are not copied: it works on the same ones.
+   */
+  forkSession: (id: string, before?: number) => invoke<SessionView>("fork_session", { id, before: before ?? null }),
   /** The 功课: tasks set to start by themselves. Each change resolves with the list after it. */
   listSchedules: () => invoke<Schedule[]>("list_schedules"),
   /** Add a schedule, or change the one with its id. Rejects when it could never run. */
