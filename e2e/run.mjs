@@ -335,13 +335,30 @@ try {
   // A provider is added to the list of keys in a window of its own, and its key is kept.
   await page.click("功法");
   await page.waitFor("the list of providers that are set up", `document.querySelectorAll(".key-list li").length === 1 && document.querySelector(".key-list").textContent.includes("环境变量")`);
-  await page.click("新增功法");
+  // The button beside the model field asks the provider for its list again.
+  const listed = mock.lists.count;
+  await page.click("刷新功法列表");
+  for (let waited = 0; mock.lists.count === listed && waited < 100; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
+  await page.waitForText("问到它提供的 2 门功法");
+  check(mock.lists.count === listed + 1, "the refresh button asked the provider for its models again");
+  await page.click("新增宗门");
   await page.waitFor("the window that adds one", `document.querySelector("dialog.dialog")?.open`);
   await page.evaluate(`(() => { const select = document.querySelector("#key-provider"); select.value = "deepseek"; select.dispatchEvent(new Event("change", { bubbles: true })); })()`);
   await page.type("#key-value", "e2e-deepseek-key-1234");
   await page.click("保存");
   await page.waitFor("the provider to join the list", `!document.querySelector("dialog.dialog") && document.querySelectorAll(".key-list li").length === 2`);
   check(readFileSync(join(home, "credentials.json"), "utf8").includes("e2e-deepseek-key-1234") && !(await page.evaluate(`document.body.innerText`)).includes("e2e-deepseek-key-1234"), "a key added in the window is saved, and the list shows only its ends");
+  // The model field's list holds every model, not only those that match what the field already says.
+  await page.evaluate(`document.querySelector("#default-model").focus()`);
+  await page.waitFor("the list of models", `document.querySelectorAll(".combo-list li[role=option]").length >= 2`);
+  const choices = await page.evaluate(`({ held: document.querySelector("#default-model").value, listed: [...document.querySelectorAll(".combo-list li[role=option] .mono")].map((item) => item.textContent) })`);
+  check(choices.listed.includes("claude-e2e-small") && !"claude-e2e-small".includes(choices.held) && choices.listed.includes(choices.held), "the model list offers every model the provider serves, whatever the field holds");
+  await page.evaluate(`[...document.querySelectorAll(".combo-list li[role=option]")].find((item) => item.textContent.includes("claude-e2e-small")).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))`);
+  await page.waitFor("the pick to be kept", `document.querySelector("#default-model").value === "claude-e2e-small" && !document.querySelector(".combo-list")`);
+  // The page shows the pick at once; the file follows when the save comes back.
+  const savedModel = () => JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).model;
+  for (let waited = 0; savedModel() !== "claude-e2e-small" && waited < 50; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
+  check(savedModel() === "claude-e2e-small", "picking a model from the list saves it as the default");
   console.log("Passed.");
 } catch (error) {
   failed = true;

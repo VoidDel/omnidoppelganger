@@ -292,7 +292,7 @@ function ModelList({ provider, providerId, model, onPick, listModels }: ModelLis
         ))}
         {shown.length === 0 && <p className="menu-note">没有对得上的。</p>}
       </div>
-      <p className="menu-note">换了之后，这个分身接下来的话由新功法来答，前情照旧带着。只能在同一出处里换。</p>
+      <p className="menu-note">换了之后，这个分身接下来的话由新功法来答，前情照旧带着。只能在同一宗门里换。</p>
     </>
   );
 }

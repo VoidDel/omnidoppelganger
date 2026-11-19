@@ -45,12 +45,15 @@ function events(reply, index) {
  */
 export async function startMock(script) {
   const requests = [];
+  /** How many times the list of models was asked for. */
+  const lists = { count: 0 };
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
     request.on("end", () => {
       // The models the stand-in says it serves, for the app's model menu.
       if (request.method === "GET" && request.url.startsWith("/v1/models")) {
+        lists.count += 1;
         const models = [
           { id: "claude-opus-5-5", display_name: "Claude Opus 5.5" },
           { id: "claude-e2e-small", display_name: "E2E Small" },
@@ -80,6 +83,7 @@ export async function startMock(script) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     requests,
+    lists,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

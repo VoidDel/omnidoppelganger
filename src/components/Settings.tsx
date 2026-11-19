@@ -41,6 +41,113 @@ function useDraft(value: string, save: (value: string) => void) {
   };
 }
 
+interface ComboProps {
+  id: string;
+  /** The choice that is saved. */
+  value: string;
+  /** The choices: what each is saved as, the words it is shown by, and a note set beside them in the list. */
+  options: { value: string; text: string; note?: string }[];
+  /** Whether something that is not among the choices can be typed in: a model's id, say. */
+  editable: boolean;
+  /** Set the choices in the face used for code. */
+  mono?: boolean;
+  placeholder?: string;
+  onSave: (value: string) => void;
+}
+
+/**
+ * A field with a list under it, one look for every such choice on the page. The list opens with every choice in it,
+ * whatever the field holds: the browser's own suggestions show only those matching what is already there, which
+ * hides most of them. In a field that can be typed in, typing narrows the list.
+ */
+function Combo({ id, value, options, editable, mono, placeholder, onSave }: ComboProps) {
+  const shownFor = (kept: string) => (editable ? kept : (options.find((option) => option.value === kept)?.text ?? kept));
+  const [draft, setDraft] = useState(shownFor(value));
+  useEffect(() => setDraft(shownFor(value)), [value, options.length]);
+  const [open, setOpen] = useState(false);
+  /** Whether the user has typed since the list opened: only then does what is typed narrow it. */
+  const [typed, setTyped] = useState(false);
+  const [at, setAt] = useState(-1);
+  const wanted = draft.trim().toLowerCase();
+  const shown = typed && wanted ? options.filter((option) => option.value.toLowerCase().includes(wanted) || option.text.toLowerCase().includes(wanted)) : options;
+  const close = () => {
+    setOpen(false);
+    setTyped(false);
+    setAt(-1);
+  };
+  const commit = (picked: string) => {
+    close();
+    setDraft(shownFor(picked.trim()));
+    if (picked.trim() !== value) onSave(picked.trim());
+  };
+  return (
+    <div className="combo">
+      <input
+        id={id}
+        className={`input ${mono ? "mono" : ""}`}
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={`${id}-list`}
+        aria-autocomplete={editable ? "list" : "none"}
+        autoComplete="off"
+        readOnly={!editable}
+        placeholder={placeholder}
+        value={draft}
+        onFocus={() => setOpen(true)}
+        onClick={() => setOpen(true)}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setTyped(true);
+          setOpen(true);
+          setAt(-1);
+        }}
+        // Leaving the field keeps what was typed; picking from the list does not leave it (see the options).
+        onBlur={() => (editable ? commit(draft) : close())}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            setOpen(true);
+            if (shown.length > 0) setAt((now) => (now + (event.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length);
+          }
+          if (event.key === "Enter") {
+            if (open && at >= 0 && shown[at]) commit(shown[at].value);
+            else if (editable) commit(draft);
+          }
+          if (event.key === "Escape" && open) {
+            event.stopPropagation();
+            close();
+            setDraft(shownFor(value));
+          }
+        }}
+      />
+      <svg className="combo-mark" aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="m4 6 4 4 4-4" />
+      </svg>
+      {open && (
+        <ul id={`${id}-list`} className="combo-list" role="listbox">
+          {shown.map((option, index) => (
+            <li
+              key={option.value}
+              role="option"
+              aria-selected={option.value === value}
+              className={index === at ? "at" : ""}
+              // Before the field would lose focus, so the pick is not overtaken by what the field holds.
+              onMouseDown={(event) => {
+                event.preventDefault();
+                commit(option.value);
+              }}
+            >
+              <span className={mono ? "mono" : ""}>{option.text}</span>
+              {option.note && <span className="muted">{option.note}</span>}
+            </li>
+          ))}
+          {shown.length === 0 && <li className="none">没有对得上的。照这样填也行，回车保存。</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function KeyLine({ provider, status }: { provider: Provider; status: KeyStatus }) {
   return (
     <>
@@ -81,7 +188,7 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
   const save = async () => {
     const url = takesAddress ? address.trim() : "";
     if (!key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
-    if (takesAddress && !chosen.base_url && !url) return setWrong("这一家没有默认的接口地址，要填上。");
+    if (takesAddress && !chosen.base_url && !url) return setWrong("这个宗门没有默认的接口地址，要填上。");
     // One after the other: each answer carries the whole of the settings, and the last one to arrive is what is shown.
     if (key.trim()) await onSaveKey(chosen.id, key);
     if (url !== (settings.base_urls[chosen.id] ?? "")) {
@@ -99,10 +206,10 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
           void save();
         }}
       >
-        <h2 id="key-dialog-title">{provider ? `${provider.name} 的密钥` : "新增功法"}</h2>
+        <h2 id="key-dialog-title">{provider ? `${provider.name} 的密钥` : "新增宗门"}</h2>
         {!provider && (
           <div className="field">
-            <label htmlFor="key-provider">哪一家</label>
+            <label htmlFor="key-provider">哪个宗门</label>
             <select
               id="key-provider"
               className="input"
@@ -161,6 +268,15 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
   );
 }
 
+/**
+ * The providers that are set up: those with a key, or an address of their own, and the one the default 分身 uses,
+ * so that a missing key shows. They are what the list holds, and what the default can be picked from.
+ */
+function setUp(view: SettingsView): Provider[] {
+  const { settings } = view;
+  return view.providers.filter((provider) => (view.keys[provider.id] ?? NO_KEY).source !== "none" || !!settings.base_urls[provider.id] || provider.id === settings.provider);
+}
+
 interface KeyListProps {
   view: SettingsView;
   onSave: (settings: Settings) => unknown;
@@ -178,7 +294,7 @@ function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const statusOf = (provider: Provider) => view.keys[provider.id] ?? NO_KEY;
-  const listed = view.providers.filter((provider) => statusOf(provider).source !== "none" || !!settings.base_urls[provider.id] || provider.id === settings.provider);
+  const listed = setUp(view);
   const rest = view.providers.filter((provider) => !listed.includes(provider));
   /** Take a provider out of the list: its saved key, and the address set for it. A key from the environment is not ours to remove. */
   const remove = async (provider: Provider) => {
@@ -192,13 +308,13 @@ function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
   return (
     <section>
       <div className="section-head">
-        <h2>功法出处</h2>
+        <h2>宗门</h2>
         <span className="spacer" />
-        <button type="button" className="button primary compact" disabled={rest.length === 0} title={rest.length === 0 ? "每一家都在列表里了" : "添一家功法出处，填上它的密钥"} onClick={() => setEditing("new")}>
+        <button type="button" className="button primary compact" disabled={rest.length === 0} title={rest.length === 0 ? "每个宗门都在列表里了" : "添一个宗门（模型供应商），填上它的密钥"} onClick={() => setEditing("new")}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
             <path d="M8 3v10M3 8h10" />
           </svg>
-          新增功法
+          新增宗门
         </button>
       </div>
       <ul className="key-list">
@@ -212,7 +328,11 @@ function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
             <li key={provider.id}>
               <div className="key-who">
                 <strong>{provider.name}</strong>
-                {provider.id === settings.provider && <span className="chip busy">新分身在用</span>}
+                {provider.id === settings.provider && (
+                  <span className="chip busy" title="默认分身出自这个宗门，在下面「默认分身」里换">
+                    默认
+                  </span>
+                )}
               </div>
               <div className={`key-what ${status.source === "none" ? "missing" : ""} ${shown ? "" : "wide"}`}>
                 {status.source === "saved" && <span className="mono">{status.preview}</span>}
@@ -355,7 +475,7 @@ const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] =
   {
     id: "model",
     name: "功法",
-    hint: "各家功法出处和它们的密钥，新分身用哪一门，推演多深，前情留多长",
+    hint: "各个宗门和它们的密钥，默认分身修哪门功法、推演多深，前情留多长",
     icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
   },
   { id: "rules", name: "禁制", hint: "分身不问就能做什么，沙箱，已经长期准过的事", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
@@ -390,23 +510,29 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
   const grants = Object.entries(view.grants);
   const { settings } = view;
   const chosen = view.providers.find((provider) => provider.id === settings.provider);
-  const model = useDraft(settings.model, (value) => onSave({ ...settings, model: value }));
   const note = effortNote(chosen);
   // What the chosen provider says it serves, asked again when the provider or its key changes.
   const [served, setServed] = useState<{ models: [string, string][]; why: string | null }>({ models: [], why: null });
   const keyed = view.keys[settings.provider]?.source ?? "none";
+  const [asked, setAsked] = useState(0);
+  const [asking, setAsking] = useState(false);
   useEffect(() => {
     let current = true;
     setServed({ models: [], why: null });
     if (keyed === "none") return;
-    listModels(settings.provider).then(
-      (models) => current && setServed({ models, why: null }),
-      (error) => current && setServed({ models: [], why: String(error) }),
-    );
+    setAsking(true);
+    listModels(settings.provider)
+      .then(
+        (models) => current && setServed({ models, why: null }),
+        (error) => current && setServed({ models: [], why: String(error) }),
+      )
+      .finally(() => current && setAsking(false));
     return () => {
       current = false;
+      setAsking(false);
     };
-  }, [settings.provider, keyed, listModels]);
+    // `asked` counts the times the user asked for the list again.
+  }, [settings.provider, keyed, listModels, asked]);
   // The provider's own list first; the built-in suggestions it does not name after it.
   const suggestions = [...served.models, ...(chosen?.models ?? []).filter(([id]) => !served.models.some(([listed]) => listed === id))];
   const limit = useDraft(String(settings.context_limit), (value) => {
@@ -414,8 +540,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
     if (Number.isFinite(tokens)) onSave({ ...settings, context_limit: tokens });
   });
   return (
-    <div className="settings-page">
-      <header className="main-header settings-tabs">
+    <div className="settings">
+      {/* Inside what scrolls, and kept at its top: the strip then lines up with the column under it, whatever the scrollbar takes. */}
+      <header className="settings-tabs">
+        <div className="settings-tabs-inner">
         {TABS.map((item) => (
           <button type="button" className="tab" key={item.id} aria-pressed={tab === item.id} title={item.hint} onClick={() => setTab(item.id)}>
             <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -424,56 +552,69 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             {item.name}
           </button>
         ))}
+        </div>
       </header>
-    <div className="settings">
       <div className="settings-inner">
         {tab === "model" && (
           <>
         <KeyList view={view} onSave={onSave} onSaveKey={onSaveKey} onDeleteKey={onDeleteKey} />
         <section>
-          <h2>新分身的功法</h2>
+          <h2>默认分身</h2>
+          <p className="muted">新化出的分身照这里的来。已经化出的不受影响，要换功法在它输入框下方换。</p>
           <div className="field">
-            <label htmlFor="default-provider">出处（模型供应商）</label>
-            <select
-              id="default-provider"
-              className="input"
-              value={settings.provider}
-              onChange={(event) => {
-                const next = view.providers.find((provider) => provider.id === event.target.value);
-                onSave({ ...settings, provider: event.target.value, model: next?.models[0]?.[0] ?? "" });
-              }}
-            >
-              {view.providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name}
-                  {view.keys[provider.id]?.source === "none" ? "（未填密钥）" : ""}
-                </option>
-              ))}
-            </select>
+            <label htmlFor="default-provider">宗门（模型供应商）</label>
+            <div className="inline model-row">
+              {/* Only the 宗门 in the list above: one that is not set up could not answer. */}
+              <Combo
+                id="default-provider"
+                value={settings.provider}
+                options={setUp(view).map((provider) => ({ value: provider.id, text: provider.name, note: view.keys[provider.id]?.source === "none" ? "未填密钥" : "" }))}
+                editable={false}
+                onSave={(id) => onSave({ ...settings, provider: id, model: view.providers.find((provider) => provider.id === id)?.models[0]?.[0] ?? "" })}
+              />
+            </div>
+            <p className="hint">只列上面已有的宗门。要用别家，先点「新增宗门」把它添进来。</p>
           </div>
           <div className="field">
             <label htmlFor="default-model">功法（模型）</label>
-            <input id="default-model" className="input mono" list="model-suggestions" placeholder="填写模型 ID" {...model} />
-            <datalist id="model-suggestions">
-              {suggestions.map(([id, name]) => (
-                <option key={id} value={id}>
-                  {name}
-                </option>
-              ))}
-            </datalist>
+            <div className="inline model-row">
+              <Combo
+                id="default-model"
+                value={settings.model}
+                options={suggestions.map(([id, name]) => ({ value: id, text: id, note: name === id ? "" : name }))}
+                editable
+                mono
+                placeholder="填写模型 ID"
+                onSave={(value) => onSave({ ...settings, model: value })}
+              />
+              <button
+                type="button"
+                className={`icon-button ${asking ? "turning" : ""}`}
+                disabled={asking || keyed === "none"}
+                title={keyed === "none" ? "先给这个宗门填上密钥，才问得到它的功法" : asking ? "正在问……" : `再向 ${chosen?.name ?? settings.provider} 问一遍它有哪些功法`}
+                onClick={() => setAsked((times) => times + 1)}
+              >
+                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M13.2 8a5.2 5.2 0 0 1-9.3 3.2M2.8 8a5.2 5.2 0 0 1 9.3-3.2" />
+                  <path d="M12.6 2.2v2.9H9.7M3.4 13.8v-2.9h2.9" />
+                </svg>
+                <span className="sr-only">刷新功法列表</span>
+              </button>
+            </div>
             <p className="hint">
-              {served.models.length > 0
+              {asking
+                ? `正在向 ${chosen?.name ?? settings.provider} 问它有哪些功法……`
+                : served.models.length > 0
                 ? `已向 ${chosen?.name ?? settings.provider} 问到它提供的 ${served.models.length} 门功法，可以从列表里选，也可以直接填。`
                 : served.why
                   ? `没能向 ${chosen?.name ?? settings.provider} 问到功法列表（${served.why}），先用内置的几门，也可以直接填模型 ID。`
                   : keyed === "none"
-                    ? "填上这一家的密钥后，会自动向它问有哪些功法。眼下可以从内置的几门里选，或直接填模型 ID。"
+                    ? "填上这个宗门的密钥后，会自动向它问有哪些功法。眼下可以从内置的几门里选，或直接填模型 ID。"
                     : "可以从列表里选，也可以直接填模型 ID。"}
-              这里选的是新分身用的功法；已经化出的分身，在它输入框下方换。
             </p>
           </div>
           <fieldset className="field">
-            <legend>分身境界</legend>
+            <legend>境界</legend>
             <div className="realms">
               {view.efforts.map((effort) => (
                 <label className="realm" key={effort}>
@@ -647,7 +788,6 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
           </>
         )}
       </div>
-    </div>
     </div>
   );
 }

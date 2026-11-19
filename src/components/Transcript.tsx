@@ -379,7 +379,7 @@ function notice(reason: string, error: string | null): string {
       return "上次关闭应用时，分身这一轮还没收功。";
     default:
       return error === "no API key is configured"
-        ? "还没有这个功法出处（模型供应商）的 API 密钥，分身出不了关。到设置里填上，再传一次令。"
+        ? "还没有这个宗门（模型供应商）的 API 密钥，分身出不了关。到设置里填上，再传一次令。"
         : `这一轮走火了，已经停下：${error ?? "原因不明"}`;
   }
 }
