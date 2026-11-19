@@ -289,7 +289,7 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
     always: "之后这个网站都准",
   },
   mcp: {
-    title: "分身要动用一件外来的法器（MCP 工具），请本尊定夺",
+    title: "分身要动用一件身外法器（MCP 工具），请本尊定夺",
     note: "这件法器来自你在设置里接入的 MCP 服务，它具体做什么由那个服务决定，所以无论哪种禁制都要先请示。",
     always: "之后这件法器都准",
   },
