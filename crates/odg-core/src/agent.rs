@@ -43,6 +43,8 @@ pub enum Status {
 /// `Stream` fragments are transient and belong to the message being generated.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// Nearly every event sent is a log event, so a smaller enum with the envelope boxed would save nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum UiEvent {
     Log { session_id: String, envelope: Envelope },
     Stream { session_id: String, delta: StreamDelta },
@@ -447,10 +449,12 @@ impl<L: Llm> Inner<L> {
     /// The system prompt of the next request: the general part and the instructions the log holds.
     fn system(&self) -> String {
         let log = self.log.lock().unwrap();
-        let origin = match (&self.parent, crate::session::schedule(log.events())) {
+        // A fork of a session a schedule started is the user's: they are there, having just made it.
+        let scheduled = crate::session::schedule(log.events()).is_some() && crate::session::forked_from(log.events()).is_none();
+        let origin = match (&self.parent, scheduled) {
             (Some(_), _) => Origin::Agent,
-            (None, Some(_)) => Origin::Schedule,
-            (None, None) => Origin::User,
+            (None, true) => Origin::Schedule,
+            (None, false) => Origin::User,
         };
         system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), origin)
     }

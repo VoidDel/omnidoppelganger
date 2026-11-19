@@ -73,6 +73,16 @@ pub struct Worktree {
     pub checkout: String,
 }
 
+/// Where a session's conversation comes from, when its log began as a copy
+/// of another session's: a fork, made to go on from an earlier point another way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fork {
+    /// Id of the session the conversation was copied from.
+    pub session: String,
+    /// The last turn that was copied; 0 when none was, only what came before the first.
+    pub turn: u64,
+}
+
 /// The user's answer to an approval request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,6 +123,10 @@ pub enum Event {
         /// first message, with nobody there; see [`crate::schedule`]. Since format 9.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schedule: Option<String>,
+        /// Set when the events after this one, up to the end of a turn, were
+        /// copied from another session's log. Since format 10.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fork: Option<Fork>,
     },
     /// The project's own instructions for agents, read from a file at the
     /// top of the workspace when a turn started and found new or changed.

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::events::{Envelope, Event, SkillInfo, Worktree};
+use crate::events::{Envelope, Event, Fork, SkillInfo, Worktree};
 use crate::policy::Mode;
 use crate::providers::DEFAULT_PROVIDER;
 
@@ -22,9 +22,9 @@ use crate::providers::DEFAULT_PROVIDER;
 /// decision. Format 5 added `images` on a user message. Format 6 adds the
 /// `skills/listed` event. Format 7 adds the `model/changed` event. Format 8
 /// adds `parent` and `worktree` to the header and the `subagent/started` event.
-/// Format 9 adds `schedule` to the header. A build
+/// Format 9 adds `schedule` to the header, and format 10 `fork`. A build
 /// from before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +37,9 @@ pub enum SessionError {
     MissingHeader(String),
     #[error("session format {0} is newer than this build reads")]
     FutureFormat(u32),
+    /// What was asked for cannot be done with this session.
+    #[error("{0}")]
+    Refused(String),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -55,6 +58,8 @@ pub struct SessionSummary {
     pub worktree: Option<Worktree>,
     /// Name of the schedule that started the session, when one did.
     pub schedule: Option<String>,
+    /// Where the conversation was copied from, when the session is a fork.
+    pub fork: Option<Fork>,
     /// The mode of the last message, which a reopened session resumes.
     pub mode: Mode,
     pub created_at: String,
@@ -117,7 +122,57 @@ impl SessionStore {
             parent: parent.map(str::to_string),
             worktree,
             schedule: schedule.map(str::to_string),
+            fork: None,
         })?;
+        Ok(log)
+    }
+
+    /// Start a session that goes on from a point in another's conversation:
+    /// a fork. Its log begins as a copy of `events`, the other session's log,
+    /// up to where turn `before` starts; or of the whole of it when `before`
+    /// is none, less a turn still running at the end. The copied events keep
+    /// their times. The fork works in the same workspace, on the same
+    /// provider and model, and is the user's own: a subagent's session is
+    /// refused, since its agent waits for one report.
+    ///
+    /// Only the conversation is copied. The files are the workspace's, as
+    /// they are now, and the snapshots that undo the copied turns' edits stay
+    /// with the session that made them: see [`crate::undo::plan`].
+    pub fn fork(&self, events: &[Envelope], before: Option<u64>) -> Result<SessionLog, SessionError> {
+        let Some(Event::SessionCreated { id: source, workspace, provider, model, parent, worktree, schedule, .. }) = events.first().map(|envelope| &envelope.event) else {
+            return Err(SessionError::Refused("the session to fork has no header".to_string()));
+        };
+        if parent.is_some() {
+            return Err(SessionError::Refused("a subagent's session cannot be forked; fork the session of the agent that set it off".to_string()));
+        }
+        let starts = |wanted: u64| events.iter().position(|envelope| matches!(envelope.event, Event::TurnStart { turn } if turn == wanted));
+        let end = match before.or_else(|| open_turn(events)) {
+            Some(turn) => starts(turn).ok_or_else(|| SessionError::Refused(format!("this session has no turn {turn} to fork before")))?,
+            None => events.len(),
+        };
+        let copied = &events[1..end];
+        let turn = copied.iter().filter_map(|envelope| if let Event::TurnStart { turn } = envelope.event { Some(turn) } else { None }).max().unwrap_or(0);
+
+        let id = uuid::Uuid::now_v7().to_string();
+        let directory = self.root.join(&id);
+        fs::create_dir_all(&directory)?;
+        let path = directory.join(FILE_NAME);
+        let file = OpenOptions::new().create_new(true).append(true).open(&path)?;
+        let mut log = SessionLog { id: id.clone(), path, events: Vec::new(), file };
+        log.append(Event::SessionCreated {
+            id,
+            workspace: workspace.clone(),
+            provider: provider.clone(),
+            model: model.clone(),
+            format: FORMAT_VERSION,
+            parent: None,
+            worktree: worktree.clone(),
+            schedule: schedule.clone(),
+            fork: Some(Fork { session: source.clone(), turn }),
+        })?;
+        for envelope in copied {
+            log.append_at(envelope.ts.clone(), envelope.event.clone())?;
+        }
         Ok(log)
     }
 
@@ -242,11 +297,12 @@ impl SessionLog {
 
     /// Append one event and flush it to disk before returning it.
     pub fn append(&mut self, event: Event) -> io::Result<Envelope> {
-        let envelope = Envelope {
-            seq: self.events.len() as u64 + 1,
-            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            event,
-        };
+        self.append_at(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true), event)
+    }
+
+    /// Append an event that happened at `ts`: now, or when it is copied from another log, then.
+    fn append_at(&mut self, ts: String, event: Event) -> io::Result<Envelope> {
+        let envelope = Envelope { seq: self.events.len() as u64 + 1, ts, event };
         let mut line = serde_json::to_vec(&envelope).map_err(io::Error::other)?;
         line.push(b'\n');
         self.file.write_all(&line)?;
@@ -443,6 +499,14 @@ pub fn instructions(events: &[Envelope]) -> Option<(&str, &str)> {
 pub fn parent(events: &[Envelope]) -> Option<&str> {
     match &events.first()?.event {
         Event::SessionCreated { parent, .. } => parent.as_deref(),
+        _ => None,
+    }
+}
+
+/// Where the session's conversation was copied from, if it is a fork.
+pub fn forked_from(events: &[Envelope]) -> Option<&Fork> {
+    match &events.first()?.event {
+        Event::SessionCreated { fork, .. } => fork.as_ref(),
         _ => None,
     }
 }
@@ -661,9 +725,11 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         parent: parent(events).map(str::to_string),
         worktree: worktree(events).cloned(),
         schedule: schedule(events).map(str::to_string),
+        fork: forked_from(events).cloned(),
         mode,
         created_at: events[0].ts.clone(),
-        updated_at: events[events.len() - 1].ts.clone(),
+        // A fork is new when it is made, though the last event copied into it is as old as it was.
+        updated_at: events[0].ts.clone().max(events[events.len() - 1].ts.clone()),
         turn_open,
         awaiting_approval: turn_open && !requested.is_empty(),
     }
@@ -1019,6 +1085,59 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     }
 
     #[test]
+    fn a_fork_starts_as_a_copy_of_the_conversation_up_to_a_turn() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/a"), "anthropic", "m").unwrap();
+        let said = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![] };
+        let edited = Event::ToolResult { tool_use_id: "t1".into(), tool: "edit_file".into(), content: "ok".into(), is_error: false, meta: json!({ "file": "/a/x.txt", "path": "x.txt", "after": "1-0" }) };
+        for event in [
+            Event::TurnStart { turn: 1 },
+            said("first"),
+            assistant(vec![json!({ "type": "tool_use", "id": "t1", "name": "edit_file", "input": {} })]),
+            edited,
+            Event::TurnEnd { turn: 1, reason: "completed".into(), error: None },
+            Event::SessionRenamed { title: "named".into() },
+            Event::TurnStart { turn: 2 },
+            said("second"),
+            Event::TurnEnd { turn: 2, reason: "completed".into(), error: None },
+            Event::TurnStart { turn: 3 },
+            said("third"),
+        ] {
+            log.append(event).unwrap();
+        }
+        let kinds = |log: &SessionLog| log.events().iter().map(|envelope| serde_json::to_value(envelope).unwrap()["type"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+        // Before turn 2: the first turn and what came between the two, each event at its old time and place.
+        let fork = store.fork(log.events(), Some(2)).unwrap();
+        assert_eq!(kinds(&fork), kinds(&log)[..7]);
+        assert_eq!(fork.events()[1..], log.events()[1..7]);
+        let summary = summarize(fork.events());
+        assert_eq!(summary.fork, Some(Fork { session: log.id().to_string(), turn: 1 }));
+        assert_eq!((summary.title.as_str(), summary.workspace.as_str(), summary.turn_open), ("named", "/a", false));
+        assert_eq!(summary.updated_at, summary.created_at, "a fork is as new as its header, not as old as what it copied");
+        assert_ne!(fork.id(), log.id());
+        // It reopens like any session, and goes on from there by itself.
+        let fork_id = fork.id().to_string();
+        drop(fork);
+        let mut fork = store.open(&fork_id).unwrap();
+        fork.append(Event::TurnStart { turn: 2 }).unwrap();
+        assert_eq!((fork.events().len(), log.events().len()), (8, 12));
+        // The edit it copied is the other session's to undo: its snapshot is kept there.
+        assert_eq!(crate::undo::plan(log.events(), 1).len(), 1);
+        assert_eq!(crate::undo::plan(fork.events(), 1), []);
+
+        // The whole conversation, less the turn that is still running; and before the first turn, nothing but the header.
+        let whole = store.fork(log.events(), None).unwrap();
+        assert_eq!((kinds(&whole).len(), summarize(whole.events()).fork.unwrap().turn), (10, 2));
+        let bare = store.fork(log.events(), Some(1)).unwrap();
+        assert_eq!((bare.events().len(), summarize(bare.events()).fork.unwrap().turn), (1, 0));
+
+        assert!(store.fork(log.events(), Some(9)).err().unwrap().to_string().contains("no turn 9"));
+        let child = store.create_with(NewSession { workspace: Path::new("/a"), provider: "anthropic", model: "m", parent: Some(log.id()), worktree: None, schedule: None }).unwrap();
+        assert!(store.fork(child.events(), None).err().unwrap().to_string().contains("subagent"));
+    }
+
+    #[test]
     fn a_subagents_session_names_its_parent_and_reports_how_it_ended() {
         let (_directory, store) = store();
         let parent = store.create(Path::new("/a"), "anthropic", "m").unwrap();
@@ -1031,6 +1150,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         assert_eq!(super::parent(parent.events()), None);
         assert_eq!(summarize(child.events()).parent.as_deref(), Some(parent.id()));
         assert_eq!(SessionStore::of(&child).ids().len(), 3);
+        assert_eq!(summarize(child.events()).fork, None);
         // A header written before subagents has no parent, and reads as none.
         let header = serde_json::to_value(&parent.events()[0]).unwrap();
         assert!(header["data"].get("parent").is_none());

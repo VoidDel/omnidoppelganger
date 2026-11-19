@@ -63,14 +63,18 @@ pub struct FileUndo {
 
 /// The files to restore to undo every edit made in `turn` and later that has
 /// not been undone already, in the order they were first edited.
+///
+/// In a fork, the edits of the turns it copied are left out: their snapshots
+/// are kept by the session that made them, which is where to undo them.
 pub fn plan(events: &[Envelope], turn: u64) -> Vec<FileUndo> {
+    let copied = crate::session::forked_from(events).map_or(0, |fork| fork.turn);
     let mut current = 0;
     let mut edits: Vec<(u64, FileUndo)> = Vec::new();
     for envelope in events {
         match &envelope.event {
             Event::TurnStart { turn } => current = *turn,
             Event::FilesRestored { turn: from, restored, .. } => edits.retain(|(turn, edit)| !(turn >= from && restored.contains(&edit.shown))),
-            Event::ToolResult { tool, is_error: false, meta, .. } if crate::tools::edits_files(tool) => {
+            Event::ToolResult { tool, is_error: false, meta, .. } if current > copied && crate::tools::edits_files(tool) => {
                 // An edit logged before snapshots existed has none, and cannot be undone.
                 if let (Some(file), Some(shown), Some(after)) = (meta["file"].as_str(), meta["path"].as_str(), meta["after"].as_str()) {
                     let before = meta["before"].as_str().map(str::to_string);
