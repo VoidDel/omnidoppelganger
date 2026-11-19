@@ -447,15 +447,18 @@ export default function App() {
               contextLimit={active.context_limit}
               contextCeiling={active.context_ceiling}
               contextSetting={state.settings?.settings.context_limit ?? active.context_limit}
+              contextAuto={!!state.settings?.settings.context_auto}
               onLimit={(limit) => {
                 // The limit is one setting for every session; each session's own figure comes back with the list.
-                if (state.settings) saved(api.saveSettings({ ...state.settings.settings, context_limit: limit })).then(refresh);
+                if (state.settings)
+                  saved(api.saveSettings(limit === "auto" ? { ...state.settings.settings, context_auto: true } : { ...state.settings.settings, context_limit: limit, context_auto: false })).then(refresh);
               }}
               planReady={planReady}
               onMode={(mode) => switchMode(mode).catch(fail)}
               onCarryOut={carryOut}
               onSend={send}
               onStop={() => api.cancelTurn(active.id).catch(fail)}
+              onCompact={() => api.compactSession(active.id).catch(fail)}
               seed={seed}
             />
             </div>

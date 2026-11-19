@@ -1427,7 +1427,12 @@ button.select-button svg {
   text-align: left;
 }
 
-.mode-option:hover,
+.mode-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-option:hover:not(:disabled),
 .mode-option[aria-checked="true"] {
   background: var(--jade-tint);
   color: var(--jade-tint-ink);
@@ -1933,6 +1938,22 @@ button.select-button svg {
   .icon-button.turning svg {
     animation: none;
   }
+}
+
+/* A field's name over controls that are not one input, so it labels them as a group. */
+.field-label {
+  font-weight: 700;
+}
+
+/* A word in a line of text that does something: it reads as part of the line. */
+.inline-link {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--jade);
+  font-size: inherit;
+  text-decoration: underline;
 }
 
 /* A section's heading with what can be done to the section at its right. */

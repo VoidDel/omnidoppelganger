@@ -361,6 +361,14 @@ function McpSection({ config, servers, onSave, onRefresh }: McpSectionProps) {
   );
 }
 
+/** Who says how large a model's context window is. */
+const WINDOW_SOURCES: Record<SettingsView["context_window"]["source"], string> = {
+  set: "本尊自己填的",
+  provider: "宗门自己报的",
+  documented: "照宗门文档记的",
+  unknown: "宗门没报，表里也没有，按保守值估的",
+};
+
 /** The pages the settings are sorted into: what a 分身 runs on, what it may do, what it can reach, and how the app looks. */
 export type SettingsTab = "model" | "rules" | "tools" | "look";
 
@@ -435,6 +443,23 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
   const suggestions = [...served.models, ...(chosen?.models ?? []).filter(([id]) => !served.models.some(([listed]) => listed === id))];
   /** The most the limit can be for the model new 分身 use: four fifths of its context window. */
   const ceiling = Math.floor(view.context_window.tokens / 5) * 4;
+  const windowKey = `${settings.provider}/${settings.model}`;
+  /** Whether the field that corrects the model's window is open, and what is typed in it. */
+  const [editingWindow, setEditingWindow] = useState(false);
+  const [windowDraft, setWindowDraft] = useState("");
+  // Another model has another figure: the field is put away, and starts from that model's own.
+  useEffect(() => {
+    setEditingWindow(false);
+    setWindowDraft(settings.context_windows[windowKey] ? String(settings.context_windows[windowKey]) : "");
+  }, [windowKey, settings.context_windows[windowKey]]);
+  /** Keep the window typed for this model, or with nothing typed leave it to be found out; then put the field away. */
+  const saveWindow = (value: string) => {
+    setEditingWindow(false);
+    const { [windowKey]: kept, ...others } = settings.context_windows;
+    const tokens = Number.parseInt(value, 10);
+    const next = Number.isFinite(tokens) && tokens > 0 ? tokens : undefined;
+    if (next !== kept) onSave({ ...settings, context_windows: next ? { ...others, [windowKey]: next } : others });
+  };
   const limit = useDraft(String(settings.context_limit), (value) => {
     const tokens = Number.parseInt(value, 10);
     if (Number.isFinite(tokens)) onSave({ ...settings, context_limit: tokens });
@@ -512,7 +537,43 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                     ? "填上这个宗门的密钥后，会自动向它问有哪些功法。眼下可以从内置的几门里选，或直接填模型 ID。"
                     : "可以从列表里选，也可以直接填模型 ID。"}
             </p>
+            {/* How much the model itself can hold, and who says so: a fact about the model, so one line, with the way to correct it kept out of sight. */}
+            <p className="hint window-line" id="context-window">
+              {settings.model} 的上下文窗口：{shortCount(view.context_window.tokens)} token（{WINDOW_SOURCES[view.context_window.source]}）。
+              {!editingWindow && (
+                <button type="button" className="inline-link" title="程序查不到或查错了时，自己填一个" onClick={() => setEditingWindow(true)}>
+                  改
+                </button>
+              )}
+              {view.context_window.source === "set" && (
+                <button type="button" className="inline-link" title="不用自己填的数，回到程序查到的" onClick={() => saveWindow("")}>
+                  改回自动
+                </button>
+              )}
+            </p>
           </div>
+          {editingWindow && (
+            <div className="field">
+              <label htmlFor="context-window-set">这门功法一次最多能装多少（token）</label>
+              <input
+                id="context-window-set"
+                className="input mono"
+                type="number"
+                min={25000}
+                step={1000}
+                autoFocus
+                placeholder={String(view.context_window.tokens)}
+                value={windowDraft}
+                onChange={(event) => setWindowDraft(event.target.value)}
+                onBlur={() => saveWindow(windowDraft)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") saveWindow(windowDraft);
+                  if (event.key === "Escape") setEditingWindow(false);
+                }}
+              />
+              <p className="hint">这是功法自己的硬指标，不是想让对话多长：填得比实际大，请求会被宗门拒掉。留空不改。</p>
+            </div>
+          )}
           <fieldset className="field">
             <legend>境界</legend>
             <div className="realms">
@@ -532,20 +593,38 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
         <section>
           <h2>灵石</h2>
           <div className="field">
-            <label htmlFor="context-limit">前情上限（token）</label>
-            <input id="context-limit" className="input mono" type="number" min={20000} step={10000} {...limit} />
+            <span className="field-label" id="context-limit-label">前情上限</span>
+            <div className="kinds" role="radiogroup" aria-labelledby="context-limit-label">
+              <label className="kind">
+                <input type="radio" name="context-limit-kind" checked={settings.context_auto} onChange={() => onSave({ ...settings, context_auto: true })} />
+                自动
+              </label>
+              <label className="kind">
+                <input type="radio" name="context-limit-kind" checked={!settings.context_auto} onChange={() => onSave({ ...settings, context_auto: false })} />
+                自己定
+              </label>
+            </div>
+            {!settings.context_auto && (
+              <>
+                <label htmlFor="context-limit" className="sr-only">
+                  前情上限（token）
+                </label>
+                <input id="context-limit" className="input mono" type="number" min={20000} step={10000} {...limit} />
+              </>
+            )}
             <p className="hint">
-              每次请求都要把整段对话发给模型，对话越长越费灵石。对话到这个数，分身会把前情凝成一段摘要，之后只凭摘要接着做。模型自己装不下这么多时，按它的八成算。最低
-              20000。
-            </p>
-            {/* How much the model itself can hold, and who says so: the limit above never goes past four fifths of it. */}
-            <p className="hint" id="context-window">
-              {view.context_window.source === "unknown"
-                ? `${settings.model} 的上下文窗口有多大，宗门没报，内置的表里也没有这门功法，先按保守的 ${shortCount(view.context_window.tokens)} 算。`
-                : `${settings.model} 的上下文窗口是 ${shortCount(view.context_window.tokens)} token（${view.context_window.source === "provider" ? "宗门自己报的" : "照宗门文档记的"}）。`}
-              {settings.context_limit > ceiling && `上限最多用到窗口的八成，所以眼下实际是 ${shortCount(ceiling)}。`}
+              每次请求都要把整段对话发给模型，对话越长越费灵石。对话到上限，分身会把前情凝成一段摘要，之后只凭摘要接着做。
+              {settings.context_auto
+                ? `自动：按每门功法自己的窗口，用到它的八成，${settings.model} 眼下是 ${shortCount(ceiling)}。窗口大的功法前情留得长，也更费灵石。`
+                : "自己定一个数（token，最低 20000），对所有功法都用它；功法装不下这么多时，按它窗口的八成算。"}
             </p>
           </div>
+          {/* Said here only when it matters: the model cannot hold as much as the limit asks for. */}
+          {!settings.context_auto && settings.context_limit > ceiling && (
+            <p className="hint" id="context-capped">
+              {settings.model} 的上下文窗口只有 {shortCount(view.context_window.tokens)}，前情上限最多用到它的八成，所以眼下实际是 {shortCount(ceiling)}。
+            </p>
+          )}
         </section>
           </>
         )}

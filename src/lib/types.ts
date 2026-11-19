@@ -204,6 +204,10 @@ export interface Settings {
   sandbox: boolean;
   /** Directories confined commands may also write under. */
   sandbox_paths: string[];
+  /** Context windows the user set by hand, in tokens, by `<provider>/<model>`. */
+  context_windows: Record<string, number>;
+  /** Compact at four fifths of each model's own context window, whatever `context_limit` says. */
+  context_auto: boolean;
 }
 
 export interface KeyStatus {
@@ -239,7 +243,7 @@ export interface SettingsView {
    * The context window of the model new 分身 use, and how it is known: the provider said so when asked for its
    * models, its documentation said so when this build was made, or nobody did and a size small enough to be safe is assumed.
    */
-  context_window: { tokens: number; source: "provider" | "documented" | "unknown" };
+  context_window: { tokens: number; source: "set" | "provider" | "documented" | "unknown" };
   /** What confines commands on this system (`Ok`), or why nothing can (`Err`). */
   sandbox_support: { Ok?: string; Err?: string };
   /** The user's own skills, and the directory they are kept in. */

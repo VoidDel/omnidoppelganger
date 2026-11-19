@@ -297,7 +297,7 @@ function ModelList({ provider, providerId, model, onPick, listModels }: ModelLis
   );
 }
 
-/** How the context limit reads in the menu: 50000 as 5 万. */
+/** The limits the menu offers, read there as 50K, 100K, 200K, 500K. */
 const LIMITS = [50_000, 100_000, 200_000, 500_000];
 
 /** The 禁制 button and its menu: what the 分身 may do without asking. */
@@ -547,8 +547,12 @@ interface ComposerProps {
   contextLimit: number;
   contextCeiling: number;
   contextSetting: number;
+  /** Whether the limit follows each model's own window. */
+  contextAuto: boolean;
   /** Set the limit, for every session. */
-  onLimit: (limit: number) => void;
+  onLimit: (limit: number | "auto") => void;
+  /** Have the 分身 summarize the conversation now. */
+  onCompact: () => void;
   onModel: (model: string) => void;
   listModels: (provider: string) => Promise<[string, string][]>;
   /** The last turn in plan mode ended with the 分身's answer: offer to carry it out. */
@@ -563,8 +567,8 @@ interface ComposerProps {
 }
 
 export function Composer(props: ComposerProps) {
-  const { status, provider, providerId, model, vision, mode, usage, contextLimit, contextCeiling, contextSetting, planReady } = props;
-  const { onLimit, onModel, listModels, onMode, onCarryOut, onSend, onStop, seed } = props;
+  const { status, provider, providerId, model, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
+  const { onLimit, onCompact, onModel, listModels, onMode, onCarryOut, onSend, onStop, seed } = props;
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const [text, setText] = useState("");
@@ -727,13 +731,46 @@ export function Composer(props: ComposerProps) {
                 <p className="menu-note">
                   输入 {shortCount(usage.spent.input)}（其中 {shortCount(usage.spent.cached)} 读自缓存，便宜得多），输出 {shortCount(usage.spent.output)}。眼下的前情占 {shortCount(usage.context)}。
                 </p>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="mode-option plain"
+                  disabled={busy || usage.context === 0}
+                  title={busy ? "分身运功时不能凝练，等它收功" : usage.context === 0 ? "还没有前情可凝" : undefined}
+                  onClick={() => {
+                    onCompact();
+                    close();
+                  }}
+                >
+                  <span className="mode-text">
+                    <span className="name">现在就凝成摘要</span>
+                    <span className="hint">不等到上限：让分身把前情凝成一段摘要，之后的请求省灵石。摘要会丢掉细节</span>
+                  </span>
+                  <span />
+                </button>
                 <div className="mode-menu-head">
                   <span>前情上限</span>
                   <span>到了就凝成摘要</span>
                 </div>
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={contextAuto}
+                  className="mode-option plain"
+                  onClick={() => {
+                    if (!contextAuto) onLimit("auto");
+                    close();
+                  }}
+                >
+                  <span className="mode-text">
+                    <span className="name">自动</span>
+                    <span className="hint">按功法自己的窗口，用到八成：这门是 {shortCount(contextCeiling)}</span>
+                  </span>
+                  {contextAuto ? CHECK : <span />}
+                </button>
                 {limits.map((limit) => {
                   // A setting above what the model can hold lands on the model's own ceiling.
-                  const chosen = limit === Math.min(contextSetting, contextCeiling);
+                  const chosen = !contextAuto && limit === Math.min(contextSetting, contextCeiling);
                   return (
                     <button
                       type="button"

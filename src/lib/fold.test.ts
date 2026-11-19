@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -21,6 +21,13 @@ const edit = (id: string, path: string, added: number, removed: number) => [
   said(call(id, "edit_file", { path })),
   result(id, "edit_file", { path, added, removed }),
 ];
+
+describe("counts", () => {
+  it("reads tokens in K and M, with a decimal only where it shows the difference", () => {
+    expect([999, 1280, 50_000, 102_400, 128_000, 200_000, 262_144].map(shortCount)).toEqual(["999", "1.3K", "50K", "102K", "128K", "200K", "262K"]);
+    expect([1_000_000, 1_048_576, 1_050_000, 12_500_000].map(shortCount)).toEqual(["1M", "1.05M", "1.05M", "13M"]);
+  });
+});
 
 describe("images", () => {
   it("keeps the pictures a message came with, and none for a message without", () => {

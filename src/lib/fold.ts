@@ -129,8 +129,20 @@ export function fold(events: Envelope[]): Row[] {
   return rows;
 }
 
-/** 123456 as 12.3 万, the way large counts read in Chinese. */
-export const shortCount = (count: number) => (count >= 10000 ? `${(count / 10000).toFixed(count >= 1000000 ? 0 : 1).replace(/\.0$/, "")} 万` : String(count));
+/**
+ * A count of tokens or characters in the K and M that models' windows are given in: 123456 as 123K, 1048576 as
+ * 1.05M. Below ten of a unit it keeps a decimal, which is where the difference shows.
+ */
+export const shortCount = (count: number) => {
+  const scaled = (unit: number, suffix: string) => {
+    const value = count / unit;
+    const places = value < 10 ? (unit === 1_000_000 ? 2 : 1) : 0;
+    return `${Number(value.toFixed(places))}${suffix}`;
+  };
+  if (count >= 1_000_000) return scaled(1_000_000, "M");
+  if (count >= 1_000) return scaled(1_000, "K");
+  return String(count);
+};
 
 /** What the session has spent, and how full its context is. */
 export interface Usage {

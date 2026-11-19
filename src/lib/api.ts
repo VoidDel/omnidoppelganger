@@ -42,6 +42,8 @@ export const api = {
   /** Undo the agent's file edits from `turn` on. Rejects while a turn is running. */
   undoTurn: (id: string, turn: number) => invoke<{ restored: string[]; skipped: string[] }>("undo_turn", { id, turn }),
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),
+  /** Have the model summarize the conversation now, between turns. Resolves with how many tokens it held before. */
+  compactSession: (id: string) => invoke<number>("compact_session", { id }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (settings: Settings) => invoke<SettingsView>("save_settings", { settings }),
   /** Check and save the MCP server list, then connect to what it names. Rejects when the text is not a valid list. */

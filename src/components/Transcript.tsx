@@ -413,7 +413,7 @@ function ItemView({ item, mode, family, frozen, onDecide }: { item: Item; mode: 
     case "compacted":
       return (
         <details className="thinking">
-          <summary>前情太长（约 {shortCount(item.tokensBefore)} token），分身把它凝成了一段摘要，之后只凭摘要接着做</summary>
+          <summary>分身把约 {shortCount(item.tokensBefore)} token 的前情凝成了一段摘要，之后只凭摘要接着做</summary>
           <p>{item.summary}</p>
         </details>
       );

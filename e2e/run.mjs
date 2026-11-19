@@ -88,6 +88,8 @@ const mock = await startMock([
   [{ text: "报到。" }],
   // In a fork of the second session: the conversation it copied, and one more message.
   [{ text: "分叉这边查完了。" }],
+  // Asked for by hand from the 灵石 menu: a summary of the conversation.
+  [{ text: "<summary>本尊让分身分头去查，子分身查过了。</summary>" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -126,8 +128,8 @@ try {
   // The 灵石 menu sets the context limit, which is saved as a setting.
   await page.click("灵石");
   await page.waitForText("前情上限");
-  await page.click("5 万");
-  await page.waitFor("the limit to change", `${chip("灵石")}?.endsWith("/ 5 万")`);
+  await page.click("50K");
+  await page.waitFor("the limit to change", `${chip("灵石")}?.endsWith("/ 50K")`);
   check(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).context_limit === 50000, "the 灵石 menu changed the context limit and saved it");
 
   // The side panel widens when its left edge is dragged, and can be put away and brought back as it was.
@@ -363,8 +365,35 @@ try {
   for (let waited = 0; savedModel() !== "claude-e2e-small" && waited < 50; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
   check(savedModel() === "claude-e2e-small", "picking a model from the list saves it as the default");
   // The provider said how large that model's context window is when it listed its models; the page says so, and it is kept.
-  await page.waitFor("the model's context window as the provider reported it", `document.querySelector("#context-window")?.textContent.includes("40 万") && document.querySelector("#context-window").textContent.includes("宗门自己报的")`);
+  await page.waitFor("the model's context window as the provider reported it", `document.querySelector("#context-window")?.textContent.includes("400K") && document.querySelector("#context-window").textContent.includes("宗门自己报的")`);
   check(JSON.parse(readFileSync(join(home, "models.json"), "utf8")).anthropic["claude-e2e-small"] === 400000, "a context window the provider reports is shown with its source, and kept for the next run");
+  // The model's window is one line; "改" opens the field that corrects it, which comes before what the provider said.
+  check(!(await page.evaluate(`!!document.querySelector("#context-window-set")`)), "the field that corrects a model's context window is out of sight until asked for");
+  await page.click("改");
+  await page.type("#context-window-set", "300000");
+  await page.enter();
+  await page.waitFor("the window as set by hand", `document.querySelector("#context-window")?.textContent.includes("300K") && document.querySelector("#context-window").textContent.includes("本尊自己填的") && !document.querySelector("#context-window-set")`);
+  check(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).context_windows["anthropic/claude-e2e-small"] === 300000, "a context window set by hand is saved for that model and comes before what the provider reported");
+  await page.click("改回自动");
+  await page.waitFor("the provider's figure again", `document.querySelector("#context-window")?.textContent.includes("400K") && document.querySelector("#context-window").textContent.includes("宗门自己报的")`);
+  check(Object.keys(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).context_windows).length === 0, "taking it back gives the window to what the provider reported");
+  // The limit can follow each model's own window instead of one figure for all.
+  const pickLimit = (name) => page.evaluate(`[...document.querySelectorAll("input[name=context-limit-kind]")].find((input) => input.closest("label").textContent.trim() === ${JSON.stringify(name)}).click()`);
+  await pickLimit("自动");
+  await page.waitFor("the limit to follow the model", `!document.querySelector("#context-limit") && document.body.innerText.includes("用到它的八成，claude-e2e-small 眼下是 320K")`);
+  check(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).context_auto === true, "the limit set to 自动 follows the model's own window: four fifths of it");
+  await pickLimit("自己定");
+  await page.waitFor("the figure again", `!!document.querySelector("#context-limit")`);
+  // The 灵石 menu has the conversation summarized now, without waiting for the limit.
+  await page.evaluate(`${rowOf("分头去查")}.click()`);
+  await page.waitFor("the session to summarize", `${title} === "分头去查" && document.body.innerText.includes("都查完了。")`);
+  await page.click("灵石");
+  await page.click("现在就凝成摘要");
+  await page.waitForText("凝成了一段摘要");
+  const summarizing = mock.requests.at(-1).body;
+  // Several sessions are named so; the one on the page is the one whose log now ends in a summary.
+  const summarized = logs().filter((events) => events.at(-1).type === "context/compacted");
+  check(JSON.stringify(summarizing.messages).includes("Summarize it inside <summary>") && summarized.length === 1 && summarized[0].at(-2).type === "turn/end", "the 灵石 menu had the conversation summarized now, between turns");
   console.log("Passed.");
 } catch (error) {
   failed = true;
