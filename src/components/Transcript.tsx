@@ -4,6 +4,7 @@ import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
+import { Light } from "./Light";
 import { type Item, type Row, type StreamBlock, type ToolItem, editsFiles, mcpTool, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, SessionItem, Status } from "../lib/types";
 
@@ -301,6 +302,10 @@ function DelegateCard({ tool, family }: { tool: ToolItem; family: Family }) {
 /** One act, on one line: its seal, what was done to what, and how it came out. What it printed or changed opens under it. */
 function ToolCard({ tool }: { tool: ToolItem }) {
   const fresh = useFresh();
+  // Its place among those that came with it sets how long it waits to be shown. Having been shown under way,
+  // it has waited: its seal comes down the moment it is done.
+  const [begun] = useState(() => weigh(tool) === "live");
+  const style = begun && weigh(tool) !== "live" && fresh.style ? ({ "--nth": 0 } as CSSProperties) : fresh.style;
   const { verb, target, outcome } = describe(tool);
   const { result } = tool;
   const hunk = result && !result.isError ? result.meta?.hunk : undefined;
@@ -314,9 +319,10 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const [chosen, setOpen] = useState<boolean | null>(null);
   const open = chosen ?? (!!hunk || !!failure || (!!output && !!result?.isError));
   return (
-    <div className={`did ${weigh(tool)} ${voided(tool) ? "void" : ""} ${fresh.className}`} style={fresh.style}>
+    <div className={`did ${weigh(tool)} ${voided(tool) ? "void" : ""} ${fresh.className}`} style={style}>
       <button type="button" className="did-head" aria-expanded={body ? open : undefined} disabled={!body} onClick={() => setOpen(!open)}>
         <span className="seal" aria-hidden="true">
+          {weigh(tool) === "live" && <Light />}
           {sealOf(tool)}
         </span>
         <span className="verb">{verb}</span>
@@ -560,7 +566,10 @@ function ThinkingLine({ text }: { text: string }) {
   });
   return (
     <div className="thinking thinking-live" title={text.slice(-2000)}>
-      <span className="label">推演中：</span>
+      {/* The words twice, the second in jade over the first, which comes and goes: said once to a screen reader. */}
+      <span className="label" data-lit="推演中：">
+        推演中：
+      </span>
       <span ref={line} className={`tail ${full ? "full" : ""}`}>
         <span ref={words}>{tail}</span>
       </span>
@@ -584,7 +593,7 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
           <div key={block.index} className="did live fresh">
             <div className="did-head">
               <span className="seal" aria-hidden="true">
-                起
+                <Light />起
               </span>
               <span className="verb">起手</span>
               <span className="target">{block.name}</span>
@@ -601,21 +610,41 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
 /** Fewer acts than this are simply listed; this many that only looked, one after another, fold under one line. */
 const FOLD = 4;
 
-type Part = { kind: "item"; item: Item; at: number } | { kind: "acts"; tools: ToolItem[]; key: string };
+type Part = { kind: "item"; item: Item; key: string } | { kind: "act"; tool: ToolItem } | { kind: "fold"; tools: ToolItem[] };
+
+/** Whether a tool call is shown as a line: not a request waiting for 本尊, and not a party of 子分身. */
+const isLine = (item: Item): boolean => item.kind === "tool" && item.name !== "delegate" && !(item.approval && !item.approval.decision && !item.result);
+
+/** Whether an act only looked, and is done: such acts, several in a row, fold under one line. */
+const looked = (tool: ToolItem) => weigh(tool) === "quiet" && !voided(tool);
 
 /**
- * A turn's items as they are laid out: acts that follow one another stand together as lines of one record,
- * and everything else stands by itself. A request waiting for 本尊 and a party of 子分身 are not lines.
+ * A turn's items as they are laid out, one after another with nothing nested, so that an act keeps its place
+ * on the page (and what was opened in it) whatever comes to stand beside it. A stretch of acts that only looked
+ * is folded under one line once there are enough of them, and stays folded as more join it: a 分身 reads a
+ * great deal on its way to doing a little. An act still under way is not part of a fold until it is done.
  */
 function parts(items: Item[]): Part[] {
   const out: Part[] = [];
-  items.forEach((item, at) => {
-    const line = item.kind === "tool" && item.name !== "delegate" && !(item.approval && !item.approval.decision && !item.result);
-    const last = out[out.length - 1];
-    if (!line) out.push({ kind: "item", item, at });
-    else if (last?.kind === "acts") last.tools.push(item);
-    else out.push({ kind: "acts", tools: [item], key: item.id });
-  });
+  for (let at = 0; at < items.length; ) {
+    const item = items[at];
+    if (!isLine(item)) {
+      out.push({ kind: "item", item, key: item.kind === "tool" ? item.id : `item-${at}` });
+      at++;
+      continue;
+    }
+    let end = at;
+    while (end < items.length && isLine(items[end]) && looked(items[end] as ToolItem)) end++;
+    if (end - at >= FOLD) {
+      out.push({ kind: "fold", tools: items.slice(at, end) as ToolItem[] });
+      at = end;
+    } else {
+      // Too few to fold, or not an act that only looked: each on its own line.
+      const stop = Math.max(end, at + 1);
+      for (const tool of items.slice(at, stop) as ToolItem[]) out.push({ kind: "act", tool });
+      at = stop;
+    }
+  }
   return out;
 }
 
@@ -647,28 +676,6 @@ function Folded({ tools }: { tools: ToolItem[] }) {
       )}
     </>
   );
-}
-
-/**
- * A run of acts. Within it, a stretch of looking that is over (something else came after it, or the turn
- * ended) folds under one line once it is long: a 分身 reads a great deal on its way to doing a little.
- */
-function Acts({ tools, closed }: { tools: ToolItem[]; closed: boolean }) {
-  const out: ReactNode[] = [];
-  for (let at = 0; at < tools.length; ) {
-    let end = at;
-    while (end < tools.length && weigh(tools[end]) === "quiet" && !voided(tools[end])) end++;
-    if (end - at >= FOLD && (closed || end < tools.length)) {
-      out.push(<Folded key={`fold-${tools[at].id}`} tools={tools.slice(at, end)} />);
-      at = end;
-    } else {
-      // Too few to fold, or still being added to: each on its own line.
-      const stop = Math.max(end, at + 1);
-      for (const tool of tools.slice(at, stop)) out.push(<ToolCard key={tool.id} tool={tool} />);
-      at = stop;
-    }
-  }
-  return <div className="acts">{out}</div>;
 }
 
 interface Props {
@@ -775,14 +782,21 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
   /** For a moment after the 分身 finishes: the light on the turn's thread goes back up to the order. */
   const [closing, setClosing] = useState(false);
   const was = useRef(status);
+  const closes = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
     const finished = was.current === "running" && status === "idle";
     was.current = status;
-    if (!finished) return;
-    setClosing(true);
-    const timer = setTimeout(() => setClosing(false), 2200);
-    return () => clearTimeout(timer);
+    if (finished) {
+      setClosing(true);
+      clearTimeout(closes.current);
+      closes.current = setTimeout(() => setClosing(false), 2200);
+    } else if (status === "running") {
+      // The next turn has begun before the light was home: it is that turn's light now.
+      clearTimeout(closes.current);
+      setClosing(false);
+    }
   }, [status]);
+  useEffect(() => () => clearTimeout(closes.current), []);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   /** How many messages of 本尊's were on the page at the last render. */
@@ -871,17 +885,21 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
               {last && queued.map((text, at) => <Queued key={at} text={text} />)}
             </div>
             <div className={`turn-did ${last && status === "running" ? "live" : ""}`}>
-              {parts(row.items).map((part, at, all) =>
-                part.kind === "acts" ? (
-                  // A run is over once something follows it, or the 分身 has stopped.
-                  <Acts key={part.key} tools={part.tools} closed={at < all.length - 1 || !last || status !== "running" || stream.length > 0} />
+              {parts(row.items).map((part) =>
+                part.kind === "act" ? (
+                  <ToolCard key={part.tool.id} tool={part.tool} />
+                ) : part.kind === "fold" ? (
+                  // Named for the act it starts with, which stays as the fold grows.
+                  <Folded key={`fold-${part.tools[0].id}`} tools={part.tools} />
                 ) : (
-                  <ItemView key={part.item.kind === "tool" ? part.item.id : part.at} item={part.item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} />
+                  <ItemView key={part.key} item={part.item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} />
                 ),
               )}
               {last && <Streaming blocks={stream} />}
               {/* Nothing of its own yet: the seam closes what was copied. */}
               {last && copied > 0 && row.turn <= copied && seam}
+              {/* The light on the thread: down it while the 分身 works, back up it once when it is done. */}
+              {last && (status === "running" || closing) && <span className="vein" aria-hidden="true" />}
               {last && status === "running" && <span className="vein-tip" aria-hidden="true" />}
             </div>
           </section>

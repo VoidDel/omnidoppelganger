@@ -44,6 +44,8 @@ describe("ahead", () => {
     expect(ahead(after(30_000), now)).toBe("马上");
     expect(ahead(after(4 * MINUTE + 10_000), now)).toBe("5 分钟后");
     expect(ahead(after(3 * HOUR + 10 * MINUTE), now)).toBe("3 小时后");
+    // The last minute before the hour is the hour, not sixty minutes.
+    expect(ahead(after(59 * MINUTE + 30_000), now)).toBe("1 小时后");
   });
 
   it("goes by the calendar after that", () => {

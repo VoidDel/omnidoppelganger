@@ -21,7 +21,6 @@
   --s-3: 12px;
   --s-4: 16px;
   --s-5: 24px;
-  --s-6: 32px;
   /* Motion: how long a thing takes by how far it goes, and the two ways it moves. */
   --d-quick: 120ms;
   --d-move: 240ms;
@@ -56,7 +55,6 @@
   --talisman: #f6e7a8;
   --talisman-line: #d9bc55;
   --talisman-under: #e8c84a;
-  --talisman-ink: #4d3b00;
   /* Gold as ink on the page itself, where the talisman's own ink would be too dark or too light. */
   --amber-ink: #6b5200;
   --added: #dcebe3;
@@ -97,7 +95,6 @@
   --talisman: #ecd88c;
   --talisman-line: #b8962e;
   --talisman-under: #c9a62c;
-  --talisman-ink: #3d2f00;
   --amber-ink: #f0dc94;
   --added: #173a36;
   --added-ink: #bfede3;
@@ -572,44 +569,26 @@ pre,
   background: var(--jade);
 }
 
-/* At work: 运 in a jade outline, a ring of jade turning round it. */
+/* At work: 运 in jade, light going round its edge. */
 .row-seal.busy {
-  --seal-light: conic-gradient(
-    from var(--turned),
-    color-mix(in srgb, var(--jade) 45%, transparent) 0 40%,
-    var(--jade) 62%,
-    var(--seal-gold) 78%,
-    #fffdf2 84%,
-    var(--jade) 92%,
-    color-mix(in srgb, var(--jade) 45%, transparent) 100%
-  );
+  isolation: isolate;
   border: 1px solid transparent;
-  background:
-    linear-gradient(var(--seal-ground, var(--bg-side)), var(--seal-ground, var(--bg-side))) padding-box,
-    var(--seal-light) border-box;
   color: var(--jade);
-  animation: circulate 2s linear infinite;
 }
 
-/* The seal is filled with what it lies on, which for the 分身 on screen is its row's paper. */
+/* The step of a plan in hand while the 分身 is not at work: the same seal, unlit. */
+.row-seal.hand {
+  border: 1px solid var(--jade);
+  color: var(--jade);
+}
+
+/* A seal's light covers its middle with what the seal lies on, which for the 分身 on screen is its row's paper. */
+.row-seal {
+  --seal-ground: var(--bg-side);
+}
+
 .row-button[aria-current] .row-seal {
   --seal-ground: var(--sheet);
-}
-
-.row-seal.busy::after {
-  content: "";
-  position: absolute;
-  inset: -4px;
-  padding: 4px;
-  border-radius: calc(var(--r-paper) + 4px);
-  background: var(--seal-light);
-  filter: blur(4px);
-  opacity: 0.85;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
 }
 
 /* Waiting for 本尊: 候 in full cinnabar, glowing and dimming. */
@@ -1417,12 +1396,18 @@ pre,
 }
 
 .thinking-live .label {
+  position: relative;
   flex: none;
-  color: transparent;
-  background: linear-gradient(100deg, var(--ink-2) 0 35%, var(--jade) 45%, var(--seal-gold) 50%, var(--jade) 55%, var(--ink-2) 65% 100%) 0 0 / 300% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  animation: glint 2.2s linear infinite;
+}
+
+/* The same words in jade over them, coming and going. */
+.thinking-live .label::after {
+  content: attr(data-lit);
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--jade);
+  animation: glow 1.4s ease-in-out infinite alternate;
 }
 
 .thinking-live .tail {
@@ -1455,8 +1440,8 @@ pre,
   gap: var(--s-3);
 }
 
-.turn-did::before,
-.turn-did::after {
+/* One pixel of line down the middle of its box. */
+.turn-did::before {
   content: "";
   position: absolute;
   left: var(--rail-edge);
@@ -1465,10 +1450,6 @@ pre,
   top: -14px;
   bottom: 0;
   pointer-events: none;
-}
-
-/* One pixel of line down the middle of its box. */
-.turn-did::before {
   background: linear-gradient(to right, transparent calc(50% - 0.5px), var(--line) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
 }
 
@@ -1476,32 +1457,40 @@ pre,
   display: none;
 }
 
-/* While the 分身 works, light runs down the thread from the order to where the next act will land. */
-.turn-did::after {
-  /* Three pixels of light, in the middle of the same box. */
-  background: linear-gradient(to bottom, transparent, var(--jade) 40%, #fffdf2 50%, var(--jade) 60%, transparent) 50% -140px / 3px 140px no-repeat;
-  filter: drop-shadow(0 0 4px var(--jade));
-  opacity: 0;
-}
-
 .turn-did.live {
   padding-bottom: var(--s-5);
 }
 
 /* While it works the thread ends at the heart of its point of light, not below it. */
-.turn-did.live::before,
-.turn-did.live::after {
+.turn-did.live::before {
   bottom: 7px;
 }
 
-.turn-did.live::after {
-  opacity: 1;
+/* While the 分身 works, light runs down the thread from the order to where the next act will land. It is drawn
+   in the middle of a box as tall as the thread, and the box is moved by half its height each way inside one that
+   hides what goes past its ends: only moving is done at each step, no painting. */
+.vein {
+  position: absolute;
+  left: var(--rail-edge);
+  width: var(--rail-box);
+  top: -14px;
+  bottom: 7px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.vein::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Three pixels of light, in the middle of the thread's box. */
+  background: linear-gradient(to bottom, transparent, var(--jade) 40%, #fffdf2 50%, var(--jade) 60%, transparent) 50% 50% / 3px 140px no-repeat;
+  filter: drop-shadow(0 0 4px var(--jade));
   animation: vein 2.2s linear infinite;
 }
 
 /* Its work done, the light goes back up the thread once, in gold, to the order it answered. */
-.turn.closing .turn-did::after {
-  opacity: 1;
+.turn.closing .vein::after {
   background-image: linear-gradient(to bottom, transparent, var(--gold) 40%, #fffdf2 50%, var(--gold) 60%, transparent);
   filter: drop-shadow(0 0 5px var(--gold));
   animation: vein 900ms var(--ease-out) reverse both;
@@ -1513,10 +1502,10 @@ pre,
 
 @keyframes vein {
   from {
-    background-position: 50% -140px;
+    transform: translateY(-50%);
   }
   to {
-    background-position: 50% calc(100% + 140px);
+    transform: translateY(50%);
   }
 }
 
@@ -1558,19 +1547,10 @@ pre,
   }
 }
 
-@keyframes glint {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: 0 0;
-  }
-}
-
-/* Acts that follow one another stand close, as lines of one record. */
-.acts {
-  display: flex;
-  flex-direction: column;
+/* Acts that follow one another stand close, as lines of one record: the space the column puts between its
+   parts is taken back between two of them. */
+.turn-did > :is(.did:not(.delegate), .folded-acts) + :is(.did:not(.delegate), .folded-acts) {
+  margin-top: calc(-1 * var(--s-3));
 }
 
 .did {
@@ -1636,40 +1616,70 @@ button.did-head:not(:disabled):hover {
   color: var(--cinnabar-on);
 }
 
-/* Under way: light goes round the seal's edge, jade leading and gold at its heart, as it does round the box
-   an order is written in; and the same light, out of focus, glows about it. */
+/* Under way: light goes round the seal's edge, as it does round the box an order is written in. */
 .did.live .seal {
-  --seal-light: conic-gradient(
-    from var(--turned),
-    color-mix(in srgb, var(--jade) 45%, transparent) 0 40%,
-    var(--jade) 62%,
-    var(--seal-gold) 78%,
-    #fffdf2 84%,
-    var(--jade) 92%,
-    color-mix(in srgb, var(--jade) 45%, transparent) 100%
-  );
+  --seal-ground: var(--bg);
   border-color: transparent;
-  background:
-    linear-gradient(var(--bg), var(--bg)) padding-box,
-    var(--seal-light) border-box;
+  background: transparent;
   color: var(--jade);
-  animation: circulate 2s linear infinite;
 }
 
-.did.live .seal::before {
-  content: "";
+/* ---------- light going round an edge ---------- */
+
+/* Two layers under the words of what they light (see Light.tsx). `edge` is the thing's own box with the light
+   turning in it, covered but for a hair's breadth round its rim; `aura` is the same light a little larger and
+   out of focus. What turns is one square of gradient, turned whole by the compositor: nothing is laid out or
+   painted again as it goes round, so it costs next to nothing however long the 分身 works. A gradient whose
+   angle is animated looks the same and has the page painted afresh at every step. */
+.aura,
+.edge {
   position: absolute;
-  inset: -4px;
-  padding: 4px;
-  border-radius: calc(var(--r-paper) + 4px);
-  background: var(--seal-light);
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.edge {
+  inset: -1px;
+  border-radius: var(--r-paper);
+  --light-rest: color-mix(in srgb, var(--jade) 45%, var(--seal-ground, var(--bg)));
+}
+
+.aura {
+  inset: -5px;
+  z-index: -2;
+  border-radius: 6px;
   filter: blur(4px);
   opacity: 0.85;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
+  --light-rest: transparent;
+}
+
+.aura::before,
+.edge::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--light-side, 64px);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  background: conic-gradient(var(--light-rest) 0 40%, var(--jade) 62%, var(--seal-gold) 78%, #fffdf2 84%, var(--jade) 92%, var(--light-rest) 100%);
+  animation: go-round var(--light-time, 2s) linear infinite;
+}
+
+/* What the light does not reach of the thing's middle. */
+.edge::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 1px;
+  background: var(--seal-ground, var(--bg));
+}
+
+@keyframes go-round {
+  to {
+    rotate: 1turn;
+  }
 }
 
 .did-head .verb {
@@ -1864,9 +1874,7 @@ button.did-head:not(:disabled):hover {
 }
 
 .did.fresh.live .seal {
-  animation:
-    gather var(--d-arrive) var(--ease-out) var(--wait) backwards,
-    circulate 2s linear infinite;
+  animation: gather var(--d-arrive) var(--ease-out) var(--wait) backwards;
 }
 
 .did.fresh .did-head > :not(.seal),
@@ -2235,46 +2243,10 @@ button.did-head:not(:disabled):hover {
   overflow-wrap: anywhere;
 }
 
-/* Nothing on the page moves for one who has asked for stillness: what arrives is simply there. */
+/* What these look like for one who has asked for stillness (the rule that stops all motion is at the end of the file). */
 @media (prefers-reduced-motion: reduce) {
-  .did.live .seal,
-  .row-seal.busy {
-    border-color: var(--jade);
-    background: var(--bg);
-  }
-
-  .did.live .seal::before,
-  .row-seal.busy::after {
-    display: none;
-  }
-
-  .turn-did::after,
-  .vein-tip,
-  .thinking-live::before,
-  .thinking-live .label,
-  .did.live .seal,
-  .did.fresh .seal,
-  .did.fresh .seal::after,
-  .did.fresh .did-head,
-  .did.fresh .did-head > *,
-  .did.fresh .did-head::after,
-  .did-body,
-  .folded-acts,
-  .sign-sheet,
-  .sign-sheet::before,
-  .sign-sheet::after,
-  .sign-countdown.urgent,
-  .turn.closing .original {
-    animation: none;
-  }
-
-  .turn-did.live::after {
-    opacity: 0;
-  }
-
-  .thinking-live .label {
-    color: var(--ink-2);
-    background: none;
+  .did.live .seal {
+    border-color: transparent;
   }
 
   .sign-sheet::before {
@@ -2340,38 +2312,53 @@ button.did-head:not(:disabled):hover {
   color: var(--ink-2);
 }
 
-/* The angle the light round the box has come to. Registered so that it can be animated. */
-@property --turned {
-  syntax: "<angle>";
-  inherits: true;
-  initial-value: 0deg;
-}
-
-/* The light: jade leading, gold at its heart, on a ring that is otherwise the box's own border. */
+/* The frame carries the light round the box while the 分身 works (see "light going round an edge"), and a
+   cinnabar glow while it waits. */
 .composer-frame {
-  --light: conic-gradient(
-    from var(--turned),
-    var(--line-strong) 0 52%,
-    var(--jade) 70%,
-    var(--seal-gold) 80%,
-    #fffdf2 84%,
-    var(--jade) 90%,
-    var(--line-strong) 100%
-  );
   position: relative;
+  isolation: isolate;
   border-radius: var(--r-control);
 }
 
-/* Behind the box, the same light out of focus: its glow on the page. */
+.composer-frame > .edge {
+  inset: 0;
+  border-radius: var(--r-control);
+  --light-rest: var(--line-strong);
+  /* A square that covers the box whichever way it is turned. */
+  --light-side: 140%;
+  --light-time: 4.5s;
+  animation: come var(--d-arrive) ease backwards;
+}
+
+.composer-frame > .edge::after {
+  display: none;
+}
+
+.composer-frame > .aura {
+  inset: -3px;
+  border-radius: calc(var(--r-control) + 3px);
+  filter: blur(9px);
+  opacity: 0.6;
+  --light-side: 140%;
+  --light-time: 4.5s;
+  animation: come var(--d-arrive) ease backwards;
+}
+
+@keyframes come {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Behind the box while it waits for 本尊: a glow of cinnabar. */
 .composer-frame::before {
   content: "";
   position: absolute;
   inset: -3px;
+  z-index: -1;
   border-radius: calc(var(--r-control) + 3px);
-  background: var(--light);
   filter: blur(9px);
   opacity: 0;
-  transition: opacity var(--d-arrive) ease;
   pointer-events: none;
 }
 
@@ -2391,20 +2378,10 @@ button.did-head:not(:disabled):hover {
   border-color: var(--jade);
 }
 
-/* While the 分身 works, the light goes round and round the box. */
-.composer-frame.working {
-  animation: circulate 4.5s linear infinite;
-}
-
-.composer-frame.working::before {
-  opacity: 0.6;
-}
-
+/* While the 分身 works, the box's own edge gives way to the light going round under it. */
 .composer-frame.working .composer-box:not(.trusted) {
   border-color: transparent;
-  background:
-    linear-gradient(var(--sheet), var(--sheet)) padding-box,
-    var(--light) border-box;
+  background-clip: padding-box;
 }
 
 /* While it waits for 本尊, the box holds a cinnabar edge that glows and dims. */
@@ -2423,25 +2400,9 @@ button.did-head:not(:disabled):hover {
   border-color: var(--cinnabar);
 }
 
-@keyframes circulate {
-  to {
-    --turned: 360deg;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .composer-frame.working,
-  .composer-frame.waiting::before {
-    animation: none;
-  }
-
-  .composer-frame.working::before {
-    opacity: 0;
-  }
-
   .composer-frame.working .composer-box:not(.trusted) {
     border-color: var(--jade);
-    background: var(--sheet);
   }
 
   .composer-frame.waiting::before {
@@ -2568,7 +2529,8 @@ button.did-head:not(:disabled):hover {
 
 /* Nearly full: the last stone beats. */
 .stones.hot span:last-child {
-  animation: breathe 0.9s ease-in-out infinite alternate;
+  /* It glows and dims; made larger and smaller, it would lose the turn that stands it on its point. */
+  animation: glow 0.9s ease-in-out infinite alternate;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3412,15 +3374,25 @@ button.select-button svg {
   margin: 0;
 }
 
-/* Far mountains in three washes of ink, with the golden core rising behind them. Home screen only. */
+/* Far mountains in three washes of ink, with the golden core rising behind them. Home screen only.
+   Several drawings in one frame, one on another, with the mist between them. */
 .mountains {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  width: 100%;
   height: 46%;
+  overflow: hidden;
   pointer-events: none;
+  /* The mist is placed by the frame's width, as the drawings are scaled by it. */
+  container-type: inline-size;
+}
+
+.mountains svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 /* A stroke in the fill's own colour with round joins softens every peak, as a wet brush would. */
@@ -3451,33 +3423,44 @@ button.select-button svg {
 
 /* The core's light swells and fades, as slowly as breath. */
 .mountains .halo {
-  transform-box: fill-box;
-  transform-origin: center;
   animation: swell 7s ease-in-out infinite alternate;
 }
 
 @keyframes swell {
   from {
-    opacity: 0.45;
-    transform: scale(0.85);
+    opacity: 0.4;
   }
 }
 
+/* A band of mist: the page's own colour, thick in its middle and gone at its ends, drifting across. */
 .mountains .mist {
-  opacity: 0.9;
+  position: absolute;
+  left: 0;
+  border-radius: 999px;
+  background: linear-gradient(to right, transparent, color-mix(in srgb, var(--bg) 85%, transparent) 50%, transparent);
 }
 
 .mountains .mist.slow {
+  bottom: 10.8cqw;
+  width: 75cqw;
+  height: 4.5cqw;
   animation: drift 64s linear infinite;
 }
 
 .mountains .mist.fast {
+  bottom: 7.3cqw;
+  width: 58cqw;
+  height: 3.3cqw;
   animation: drift 41s linear -18s infinite;
 }
 
+/* From out of sight at the left to out of sight at the right, by its own width. */
 @keyframes drift {
+  from {
+    transform: translateX(-110%);
+  }
   to {
-    transform: translateX(2000px);
+    transform: translateX(190%);
   }
 }
 
@@ -3720,6 +3703,7 @@ button.select-button svg {
 
 .desk-item .row-seal {
   margin-top: 0;
+  --seal-ground: var(--sheet);
 }
 
 .desk-item.busy {
@@ -4745,34 +4729,45 @@ button.select-button svg {
   color: var(--jade-tint-ink);
 }
 
-/* The mark: one circle in two halves. 本尊's half is ink, the 分身's half is gold. */
+/* The mark: one circle in two halves, each a drawing of its own, one on the other. 本尊's half is ink, the
+   分身's half is gold. */
+.mark {
+  position: relative;
+  flex: none;
+  display: inline-block;
+}
+
+.mark > span {
+  position: absolute;
+  inset: 0;
+}
+
+.mark svg {
+  display: block;
+}
+
 .mark .self {
   fill: var(--ink);
-  transform: translate(0.5px, 0);
 }
 
 .mark .double {
   fill: var(--talisman-under);
-  transform: translate(-0.5px, 0);
   transition: transform 320ms ease;
 }
 
-/* It is the only thing that moves on its own: the 分身's half drifts out and back while it works. */
+/* The 分身's half drifts out and back while it works, along the line the circle is cut on. */
 .mark.working .double {
   animation: part 1.6s ease-in-out infinite alternate;
 }
 
 .mark.waiting .double {
   fill: var(--cinnabar);
-  transform: translate(-2.4px, 0);
+  transform: translate(calc(var(--unit) * -1.65), calc(var(--unit) * -0.95));
 }
 
 @keyframes part {
-  from {
-    transform: translate(-0.5px, 0);
-  }
   to {
-    transform: translate(-2.6px, 0);
+    transform: translate(calc(var(--unit) * -1.82), calc(var(--unit) * -1.05));
   }
 }
 
@@ -4796,7 +4791,7 @@ button.select-button svg {
 @media (prefers-reduced-motion: reduce) {
   .mark.working .double {
     animation: none;
-    transform: translate(-2.4px, 0);
+    transform: translate(calc(var(--unit) * -1.65), calc(var(--unit) * -0.95));
   }
 
   .original,
@@ -4817,6 +4812,37 @@ button.select-button svg {
 
   /* No room for the panel at this width, so nothing to put away or bring back. */
   .panel-toggle {
+    display: none;
+  }
+}
+
+/* ---------- for one who has asked the system for stillness ---------- */
+
+/* Nothing moves, whatever rule above says it should and however that rule is written: the lists of names in the
+   parts above set what a thing looks like when it does not move, and this stops the moving itself. Without it,
+   a rule more exactly aimed than the one that says "none" went on moving. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  /* A seal or a box at work: a plain edge of jade, no light going round and no glow. */
+  .aura {
+    display: none;
+  }
+
+  .edge::before {
+    background: var(--jade);
+  }
+
+  .vein {
+    display: none;
+  }
+
+  .thinking-live .label::after {
     display: none;
   }
 }

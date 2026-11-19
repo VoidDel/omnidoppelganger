@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { clock } from "../lib/schedule";
 import type { Schedule, SessionItem } from "../lib/types";
 import { ago, ahead } from "../lib/when";
+import { Light } from "./Light";
 
 const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 const homeOf = (session: SessionItem) => session.worktree?.origin ?? session.workspace;
@@ -57,7 +58,7 @@ export function Desk({ sessions, schedules, onOpen, onSchedules }: DeskProps) {
           {working.map((session, at) => (
             <button type="button" key={session.id} className="desk-item busy" style={{ animationDelay: `${at * 70}ms` }} onClick={() => onOpen(session.id)}>
               <span className="row-seal busy" aria-hidden="true">
-                运
+                <Light />运
               </span>
               <span className="desk-title">{titleOf(session)}</span>
               {where(session)}

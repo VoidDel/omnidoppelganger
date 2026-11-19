@@ -27,9 +27,11 @@ export function ahead(ts: string, now: Date): string {
   const seconds = (then.getTime() - now.getTime()) / 1000;
   if (!Number.isFinite(seconds)) return "";
   if (seconds < 60) return "马上";
-  if (seconds < 3600) return `${Math.ceil(seconds / 60)} 分钟后`;
+  // Rounded up, so that what is said is never sooner than it is; the last minute of an hour is then the hour.
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟后`;
   const days = Math.round((dayOf(then) - dayOf(now)) / 86_400_000);
-  if (days === 0) return `${Math.floor(seconds / 3600)} 小时后`;
+  if (days === 0) return `${Math.max(1, Math.floor(seconds / 3600))} 小时后`;
   if (days === 1) return "明天";
   if (days === 2) return "后天";
   if (days < 7) return `${days} 天后`;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Desk } from "./components/Desk";
 import { Jump } from "./components/Jump";
 import { Composer, Logo, Mountains, PANEL_STRIP, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
@@ -122,9 +122,11 @@ function reduce(state: State, action: Action): State {
       }
       if (event.kind === "stream") return active ? { ...state, stream: applyDelta(state.stream, event.delta) } : state;
       const sessions = state.sessions.map((session) => (session.id === event.session_id ? { ...session, status: event.status } : session));
-      if (!active) return event.session_id === state.openingId ? { ...state, sessions, bufferedStatus: event.status } : { ...state, sessions };
+      // Kept for the session being opened, which may be the one already on screen, opened again.
+      const bufferedStatus = event.session_id === state.openingId ? event.status : state.bufferedStatus;
+      if (!active) return { ...state, sessions, bufferedStatus };
       const idle = event.status === "idle";
-      return { ...state, sessions, status: event.status, stream: idle ? [] : state.stream, queued: idle ? [] : state.queued };
+      return { ...state, sessions, bufferedStatus, status: event.status, stream: idle ? [] : state.stream, queued: idle ? [] : state.queued };
     }
     case "queued":
       // Said to a 分身 that has since left the screen, it is not shown under another's work.
@@ -174,15 +176,14 @@ if (typeof window !== "undefined") {
  * Switch the page to a theme. Once the page is up, the new one spreads over the old as ink does, from where the
  * pointer last went down, wherever the browser can draw that and the system has not asked for stillness.
  */
-function setTheme(next: "light" | "dark") {
+function setTheme(next: "light" | "dark", spread: boolean) {
   const root = document.documentElement;
   if (root.dataset.theme === next) return;
-  const first = !root.dataset.theme;
   const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const swap = () => {
     root.dataset.theme = next;
   };
-  if (first || still || !("startViewTransition" in document)) return swap();
+  if (!spread || still || !("startViewTransition" in document)) return swap();
   const x = pressed.x || window.innerWidth - 40;
   const y = pressed.y || 40;
   const reach = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
@@ -193,12 +194,16 @@ function setTheme(next: "light" | "dark") {
 }
 
 function useTheme(theme: Settings["theme"] | undefined) {
+  /** Whether the saved theme has been read: until then, and at the reading itself, the page is only being put right. */
+  const read = useRef(false);
   useEffect(() => {
     const system = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => setTheme(theme === "dark" || (theme !== "light" && system.matches) ? "dark" : "light");
-    apply();
-    system.addEventListener("change", apply);
-    return () => system.removeEventListener("change", apply);
+    const apply = (spread: boolean) => setTheme(theme === "dark" || (theme !== "light" && system.matches) ? "dark" : "light", spread);
+    apply(read.current);
+    if (theme !== undefined) read.current = true;
+    const follow = () => apply(true);
+    system.addEventListener("change", follow);
+    return () => system.removeEventListener("change", follow);
   }, [theme]);
 }
 
@@ -210,6 +215,8 @@ export default function App() {
     const key = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        // Not over a dialog that is asking something: what it asks is about the 分身 on screen.
+        if (document.querySelector("dialog[open]:not(.jump)")) return;
         setJumping((open) => !open);
       }
     };
@@ -335,6 +342,16 @@ export default function App() {
   const [peek, setPeek] = useState(false);
   useEffect(() => setPeek(false), [state.activeId]);
   const strip = files.length === 0 && runs.length === 0 && plan.length === 0 && !peek;
+  /** To the 功课 page and the settings, each read again on the way: either may have changed since it was last shown. */
+  const toSchedules = () => {
+    api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
+    dispatch({ type: "page", page: "schedules" });
+  };
+  const toSettings = () => {
+    // A command may have been allowed for good since the page was last shown.
+    api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
+    dispatch({ type: "page", page: "settings" });
+  };
   const banners = (
     <>
         {state.error && (
@@ -363,18 +380,11 @@ export default function App() {
         sessions={state.sessions}
         activeId={state.activeId}
         page={state.page}
-        onSchedules={() => {
-          api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
-          dispatch({ type: "page", page: "schedules" });
-        }}
+        onSchedules={toSchedules}
         onOpen={open}
         onNew={create}
         onNewIn={(workspace, isolated) => api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view }), fail)}
-        onSettings={() => {
-          // Read again: a command may have been allowed for good since the page was last shown.
-          api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
-          dispatch({ type: "page", page: "settings" });
-        }}
+        onSettings={toSettings}
         onSearch={api.searchSessions}
       />
       <main className="main">
@@ -539,7 +549,7 @@ export default function App() {
                 </button>
               )}
             </div>
-            <Desk sessions={state.sessions} schedules={state.schedules} onOpen={open} onSchedules={() => dispatch({ type: "page", page: "schedules" })} />
+            <Desk sessions={state.sessions} schedules={state.schedules} onOpen={open} onSchedules={toSchedules} />
             </div>
           </>
         )}
@@ -549,8 +559,8 @@ export default function App() {
           sessions={state.sessions}
           acts={[
             { id: "new", name: "开辟洞府", hint: "选一个文件夹，化出分身", seal: "辟", run: () => void create() },
-            { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: () => dispatch({ type: "page", page: "schedules" }) },
-            { id: "settings", name: "设置", hint: "功法、禁制、法器、外观", seal: "设", run: () => dispatch({ type: "page", page: "settings" }) },
+            { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: toSchedules },
+            { id: "settings", name: "设置", hint: "功法、禁制、法器、外观", seal: "设", run: toSettings },
           ]}
           onOpen={open}
           onSearch={api.searchSessions}
@@ -558,7 +568,7 @@ export default function App() {
         />
       )}
       {showPanel && (
-        <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} />
+        <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} working={state.status === "running"} />
       )}
     </div>
   );

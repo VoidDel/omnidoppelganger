@@ -8,10 +8,18 @@ export function Hint({ children }: { children: ReactNode }) {
   const body = useRef<HTMLParagraphElement>(null);
   const [open, setOpen] = useState(false);
   const [more, setMore] = useState(false);
-  // Measured while held: whether its words go past the one line they are held to.
+  // Measured while held: whether its words go past the one line they are held to. Measured again whenever
+  // its box changes: when the window is made narrower, and when a dialog it is in, which had no size while it
+  // was shut, is opened.
   useLayoutEffect(() => {
-    if (!open && body.current) setMore(body.current.scrollHeight > body.current.clientHeight + 1);
-  });
+    const element = body.current;
+    if (!element || open) return;
+    const measure = () => setMore(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(element);
+    return () => watch.disconnect();
+  }, [open, children]);
   return (
     <div className="hint-wrap">
       <p ref={body} className={`hint ${open ? "" : "held"}`}>

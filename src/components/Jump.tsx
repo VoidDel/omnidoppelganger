@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionItem } from "../lib/types";
 import { ago } from "../lib/when";
+import { Light } from "./Light";
 
 const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 const homeOf = (session: SessionItem) => session.worktree?.origin ?? session.workspace;
@@ -37,7 +38,9 @@ export function Jump({ sessions, acts, onOpen, onSearch, onClose }: JumpProps) {
   }, []);
   useEffect(() => {
     setAt(0);
-    if (!query.trim()) return setSaid(new Set());
+    // What the last words found says nothing of these: until the search answers, only titles and 洞府 count.
+    setSaid(new Set());
+    if (!query.trim()) return;
     let current = true;
     const timer = setTimeout(() => onSearch(query).then((ids) => current && setSaid(new Set(ids)), () => undefined), 160);
     return () => {
@@ -47,10 +50,18 @@ export function Jump({ sessions, acts, onOpen, onSearch, onClose }: JumpProps) {
   }, [query, onSearch]);
   const words = query.trim().toLowerCase();
   const holds = (text: string) => text.toLowerCase().includes(words);
+  // The pages and acts are few and always listed; the 分身 take the rest of the room.
+  const pages = acts.filter((act) => !words || holds(act.name) || holds(act.hint)).map(({ run: _, ...act }) => ({ kind: "act" as const, ...act }));
   const places: Place[] = [
-    ...sessions.filter((session) => !words || holds(titleOf(session)) || holds(homeOf(session)) || said.has(session.id)).map((session) => ({ kind: "session" as const, session })),
-    ...acts.filter((act) => !words || holds(act.name) || holds(act.hint)).map(({ run: _, ...act }) => ({ kind: "act" as const, ...act })),
-  ].slice(0, 30);
+    ...sessions
+      .filter((session) => !words || holds(titleOf(session)) || holds(homeOf(session)) || said.has(session.id))
+      .slice(0, 30 - pages.length)
+      .map((session) => ({ kind: "session" as const, session })),
+    ...pages,
+  ];
+  useEffect(() => {
+    if (at >= places.length) setAt(Math.max(0, places.length - 1));
+  }, [at, places.length]);
   const go = (place: Place | undefined) => {
     if (!place) return;
     onClose();
@@ -111,6 +122,7 @@ export function Jump({ sessions, acts, onOpen, onSearch, onClose }: JumpProps) {
             {place.kind === "session" ? (
               <>
                 <span className={`row-seal ${place.session.status === "waiting_approval" ? "await" : place.session.status === "running" ? "busy" : ""}`} aria-hidden="true">
+                  {place.session.status === "running" && <Light />}
                   {place.session.status === "waiting_approval" ? "候" : place.session.status === "running" ? "运" : ""}
                 </span>
                 <span className="jump-name">{titleOf(place.session)}</span>

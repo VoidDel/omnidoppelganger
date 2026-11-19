@@ -4,32 +4,38 @@ import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Provider, SessionItem, Status, Todo } from "../lib/types";
 import { ago } from "../lib/when";
+import { Light } from "./Light";
 import { Diff } from "./Transcript";
 
 /** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
 export function Mountains() {
+  // Every drawing has the same frame, so they lie on one another exactly.
+  const frame = { viewBox: "0 0 1200 420", preserveAspectRatio: "xMidYMax slice" } as const;
   return (
-    <svg className="mountains" aria-hidden="true" viewBox="0 0 1200 420" preserveAspectRatio="xMidYMax slice">
-      <defs>
-        <radialGradient id="core-halo">
-          <stop offset="0" stopColor="var(--gold)" stopOpacity="0.5" />
-          <stop offset="1" stopColor="var(--gold)" stopOpacity="0" />
-        </radialGradient>
-        <linearGradient id="mist" x1="0" x2="1">
-          <stop offset="0" stopColor="var(--bg)" stopOpacity="0" />
-          <stop offset="0.5" stopColor="var(--bg)" stopOpacity="0.85" />
-          <stop offset="1" stopColor="var(--bg)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <circle className="halo" cx="860" cy="150" r="120" fill="url(#core-halo)" />
+    // What moves here (the core's light, the mist) is each a layer of its own, moved whole: a shape moved
+    // inside a drawing has the whole drawing painted again at every step, for as long as the page is open.
+    <div className="mountains" aria-hidden="true">
+      <svg className="halo" {...frame}>
+        <defs>
+          <radialGradient id="core-halo">
+            <stop offset="0" stopColor="var(--gold)" stopOpacity="0.5" />
+            <stop offset="1" stopColor="var(--gold)" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+        <circle cx="860" cy="150" r="120" fill="url(#core-halo)" />
+      </svg>
+      <svg {...frame}>
       <circle className="core" cx="860" cy="150" r="46" />
       <path className="far" d="M0 300 L120 210 L210 262 L330 150 L430 236 L520 190 L640 270 L760 170 L880 250 L980 205 L1090 262 L1200 215 L1200 420 L0 420 Z" />
+      </svg>
       {/* Two bands of mist, between the far range and the near ones, drifting slowly the same way at different paces. */}
-      <rect className="mist slow" x="-600" y="236" width="900" height="54" rx="27" fill="url(#mist)" />
-      <rect className="mist fast" x="-500" y="292" width="700" height="40" rx="20" fill="url(#mist)" />
+      <span className="mist slow" />
+      <span className="mist fast" />
+      <svg {...frame}>
       <path className="mid" d="M0 350 L90 292 L190 330 L300 250 L390 312 L500 268 L610 330 L720 262 L830 318 L950 276 L1060 326 L1200 286 L1200 420 L0 420 Z" />
       <path className="near" d="M0 392 L140 340 L260 378 L380 322 L500 372 L640 336 L770 384 L900 344 L1030 388 L1200 352 L1200 420 L0 420 Z" />
-    </svg>
+      </svg>
+    </div>
   );
 }
 
@@ -44,13 +50,22 @@ const DOUBLE = "M0-10A10 10 0 0 0 0 10A5 5 0 0 0 0 0A5 5 0 0 1 0-10Z";
  * waits for a decision.
  */
 export function Mark({ state = "idle", size = 26 }: { state?: "idle" | "working" | "waiting"; size?: number }) {
+  // Each half is a drawing of its own, one on the other, so that the 分身's can be moved whole.
+  const half = (name: string, d: string, shift: number) => (
+    // In a box of the page's own, which is what is moved: a drawing moved by itself is painted again at every step.
+    <span className={name}>
+      <svg width={size} height={size} viewBox="0 0 26 26">
+        <g transform="translate(13 13) rotate(30)">
+          <path d={d} transform={`translate(${shift} 0)`} />
+        </g>
+      </svg>
+    </span>
+  );
   return (
-    <svg className={`mark ${state}`} aria-hidden="true" width={size} height={size} viewBox="0 0 26 26">
-      <g transform="translate(13 13) rotate(30)">
-        <path className="self" d={SELF} />
-        <path className="double" d={DOUBLE} />
-      </g>
-    </svg>
+    <span className={`mark ${state}`} aria-hidden="true" style={{ width: size, height: size, "--unit": `${size / 26}px` } as CSSProperties}>
+      {half("self", SELF, 0.5)}
+      {half("double", DOUBLE, -0.5)}
+    </span>
   );
 }
 
@@ -198,7 +213,7 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
           return (
           <div className={`group ${closed ? "closed" : ""}`} key={workspace}>
             <div className="group-head">
-              <button type="button" className="group-name" title={`${workspace}\n点一下${closed ? "展开" : "收起"}这处洞府的分身`} aria-expanded={!closed} onClick={() => toggleFolded(workspace)}>
+              <button type="button" className="group-name" title={`${workspace}\n点一下${closed ? "展开" : "收起"}这处洞府的分身`} aria-expanded={!closed} disabled={!!found} onClick={() => toggleFolded(workspace)}>
                 <svg className="group-caret" aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 2l3.5 3L3 8" />
                 </svg>
@@ -219,7 +234,7 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
                   className="group-add apart"
                   title={`在 ${baseName(workspace)} 再化一个分身，给它一份独立的工作树（Git worktree）：它改它的，不碰这里的文件，干完再并回`}
                   aria-label={`在 ${baseName(workspace)} 化一个用独立工作树的分身`}
-                  onClick={() => onNewIn(workspace, true)}
+                  onClick={() => (closed && toggleFolded(workspace), onNewIn(workspace, true))}
                 >
                   <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                     <circle cx="4.5" cy="3.5" r="1.7" />
@@ -229,7 +244,7 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
                   </svg>
                 </button>
               )}
-              <button type="button" className="group-add" title={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} aria-label={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} onClick={() => onNewIn(workspace, false)}>
+              <button type="button" className="group-add" title={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} aria-label={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} onClick={() => (closed && toggleFolded(workspace), onNewIn(workspace, false))}>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                   <path d="M8 3v10M3 8h10" />
                 </svg>
@@ -249,6 +264,7 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
                   >
                     {/* How it stands, as a seal: 候 in cinnabar while it waits for 本尊, 运 in jade while it works, a plain ring at rest. */}
                     <span className={`row-seal ${state}`} title={state === "await" ? "候旨：在等本尊定夺" : state === "busy" ? "运功中" : undefined} aria-hidden={state ? undefined : "true"}>
+                      {state === "busy" && <Light />}
                       {state === "await" ? "候" : state === "busy" ? "运" : ""}
                     </span>
                     <span className="row-text">
@@ -874,6 +890,8 @@ export function Composer(props: ComposerProps) {
       </div>
       {/* The frame carries the light round the box: jade and gold going round while the 分身 works, cinnabar held while it waits. */}
       <div className={`composer-frame ${status === "running" ? "working" : status === "waiting_approval" ? "waiting" : ""}`}>
+      {/* Not in 全权托付: there the box keeps its cinnabar edge, which says more. */}
+      {status === "running" && mode !== "bypass" && <Light />}
       <div className={`composer-box ${mode === "bypass" ? "trusted" : ""}`}>
         {/* The box's top edge, to drag: up makes more room to write in, down gives it back to the conversation. */}
         <div
@@ -885,10 +903,17 @@ export function Composer(props: ComposerProps) {
           tabIndex={0}
           onPointerDown={(event) => {
             event.currentTarget.setPointerCapture(event.pointerId);
-            held.current = { y: event.clientY, height };
+            // From the height the box is seen at, which is more than the one it was left at while what is typed needs more.
+            held.current = { y: event.clientY, height: input.current?.offsetHeight ?? height };
             setDragging(true);
           }}
-          onPointerMove={(event) => held.current && setHeight(fitBox(held.current.height + held.current.y - event.clientY))}
+          onPointerMove={(event) => {
+            if (!held.current) return;
+            const next = held.current.height + held.current.y - event.clientY;
+            // A box grown by what is typed in it cannot be dragged smaller than that: nothing would be seen to
+            // change, and it would be left small for the next message without anyone having seen it so.
+            if (next >= held.current.height || held.current.height <= height) setHeight(fitBox(next));
+          }}
           onPointerUp={() => ((held.current = null), setDragging(false))}
           onPointerCancel={() => ((held.current = null), setDragging(false))}
           onDoubleClick={() => setHeight(BOX.initial)}
@@ -1124,7 +1149,6 @@ export function Composer(props: ComposerProps) {
 
 /** The seal on a step of the plan: nothing yet for one to come, 办 for the one in hand, 毕 for one done. */
 const TODO_SEALS: Record<Todo["status"], string> = { pending: "", in_progress: "办", done: "毕" };
-const TODO_STATES: Record<Todo["status"], string> = { pending: "busy", in_progress: "busy", done: "done" };
 
 /** The panel's width while there is nothing in it: a strip that holds its three tabs. */
 export const PANEL_STRIP = 56;
@@ -1212,9 +1236,11 @@ interface SidePanelProps {
   /** Nothing in it to show, so it stands as a strip; a tab pressed there asks for it to open anyway. */
   narrow: boolean;
   onWiden: () => void;
+  /** The 分身 is at work now: the step of the plan it has in hand is lit. */
+  working: boolean;
 }
 
-export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden }: SidePanelProps) {
+export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden, working }: SidePanelProps) {
   const [tab, setTab] = useState<PanelTab>("files");
   const counts: Record<PanelTab, number> = { files: files.length, terminal: runs.length, plan: todos.length };
   // When the first thing comes into a panel that held nothing, it opens on that.
@@ -1229,14 +1255,20 @@ export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden
   // The steps done while the page was watched, for a moment: their ink is drawn through them as it happens.
   const [struck, setStruck] = useState<Set<string>>(new Set());
   const steps = useRef(new Map(todos.map((todo) => [todo.text, todo.status])));
+  const strokes = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
     const now = todos.filter((todo) => todo.status === "done" && steps.current.has(todo.text) && steps.current.get(todo.text) !== "done").map((todo) => todo.text);
     steps.current = new Map(todos.map((todo) => [todo.text, todo.status]));
     if (now.length === 0) return;
     setStruck((was) => new Set([...was, ...now]));
-    const timer = setTimeout(() => setStruck((was) => new Set([...was].filter((text) => !now.includes(text)))), 1600);
-    return () => clearTimeout(timer);
+    // Not taken back when the plan changes again: each stroke ends in its own time.
+    const timer = setTimeout(() => {
+      strokes.current.delete(timer);
+      setStruck((was) => new Set([...was].filter((text) => !now.includes(text))));
+    }, 1600);
+    strokes.current.add(timer);
   }, [todos]);
+  useEffect(() => () => strokes.current.forEach(clearTimeout), []);
   const [dragging, setDragging] = useState(false);
   // Read by the pointer's own events, which can come before the page has drawn again: the state above is for how the edge looks.
   const held = useRef(false);
@@ -1324,7 +1356,9 @@ export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden
           <ol className="todos">
             {todos.map((todo, index) => (
               <li key={index} className={["todo", todo.status, struck.has(todo.text) && "fresh"].filter(Boolean).join(" ")}>
-                <span className={`row-seal ${todo.status === "pending" ? "" : TODO_STATES[todo.status]}`} aria-hidden="true">
+                {/* The step in hand is lit only while the 分身 works: a plan left half done does not glow for good. */}
+                <span className={`row-seal ${todo.status === "done" ? "done" : todo.status === "in_progress" ? (working ? "busy" : "hand") : ""}`} aria-hidden="true">
+                  {todo.status === "in_progress" && working && <Light />}
                   {TODO_SEALS[todo.status]}
                 </span>
                 <span className="sr-only">{todo.status === "done" ? "已办：" : todo.status === "in_progress" ? "正在办：" : "待办："}</span>
