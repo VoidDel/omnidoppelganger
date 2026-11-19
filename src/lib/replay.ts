@@ -12,6 +12,7 @@ export function replayStops(events: Envelope[]): number[] {
       case "user/message":
       case "assistant/message":
       case "tool/result":
+      case "guardian/reviewed":
       case "approval/requested":
       case "approval/resolved":
       case "context/compacted":

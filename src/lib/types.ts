@@ -35,8 +35,9 @@ export type SessionEvent =
   | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode; images?: Image[] } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }
   | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
-  | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string } }
-  | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision } }
+  | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string; expires_at?: string } }
+  | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision; timed_out?: boolean } }
+  | { type: "guardian/reviewed"; data: { tool_use_id: string; model: string; allowed: boolean; reason: string; failed?: boolean; tokens?: Tokens } }
   | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
   | { type: "files/restored"; data: { turn: number; restored: string[]; skipped: string[] } }
   | { type: "turn/end"; data: { turn: number; reason: string; error: string | null } };
@@ -208,6 +209,12 @@ export interface Settings {
   context_windows: Record<string, number>;
   /** Compact at four fifths of each model's own context window, whatever `context_limit` says. */
   context_auto: boolean;
+  /** In 放手施为, have the 护法, a model, judge the commands the rules cannot pass before 本尊 is asked. */
+  guardian: boolean;
+  /** The model the 护法 is, by provider id; a provider not listed uses the session's own model. */
+  guardian_models: Record<string, string>;
+  /** In 放手施为, the seconds a request waits before it is declined by itself; 0 waits for good. */
+  approval_timeout: number;
 }
 
 export interface KeyStatus {

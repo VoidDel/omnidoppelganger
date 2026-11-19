@@ -98,6 +98,12 @@ const mock = await startMock([
   // Left to ask about nothing, in a worktree of its own: a command that always asks runs at once.
   [{ text: "托付了，我直接写。" }, { tool: "run_command", input: { command: "echo trusted > trusted.txt" } }],
   [{ text: "写好了。" }],
+  // In 放手施为 with a 护法: the first command it lets run; the second it leaves to 本尊, who is not there.
+  [{ text: "我写两个文件。" }, { tool: "run_command", input: { command: "echo hi > guarded.txt" } }],
+  [{ text: "ALLOW\n只在洞府里写一个文件。" }],
+  [{ tool: "run_command", input: { command: "echo again > second.txt" } }],
+  [{ text: "ASK\n这一条先问问本尊。" }],
+  [{ text: "第二个没写成，等本尊点头。" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -435,6 +441,27 @@ try {
   const trustedCheckout = readdirSync(join(home, "worktrees")).find((name) => existsSync(join(home, "worktrees", name, "trusted.txt")));
   check(!!trustedCheckout && !(await page.evaluate(`document.body.innerText.includes("请本尊定夺")`)), "left to ask about nothing, a command that writes a file ran without asking, in the worktree");
   check(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).mode !== "bypass", "全权托付 stays with that 分身: it is not what new ones start in");
+
+  // The 护法: in 放手施为, a model judges what the rules cannot pass. What it will not pass is asked, and declined in time.
+  await page.evaluate(`window.__TAURI_INTERNALS__.invoke("get_settings").then((view) => window.__TAURI_INTERNALS__.invoke("save_settings", { settings: { ...view.settings, guardian: true, approval_timeout: 3 } })).then(() => true)`);
+  await page.evaluate(`document.querySelector(".group-add:not(.apart)").click()`);
+  await page.waitFor("a new session in the folder itself", `${title} === "新分身" && !document.querySelector(".main-header .branch")?.textContent.trim().startsWith("odg/")`);
+  await page.evaluate(`${modeButton}.click()`);
+  await page.evaluate(`[...document.querySelectorAll(".mode-option")].find((option) => option.textContent.includes("放手施为")).click()`);
+  await page.waitFor("放手施为", `${modeButton}.textContent.includes("放手施为")`);
+  const guarded = mock.requests.length;
+  await page.type("#composer-input", "写两个文件");
+  await page.enter();
+  await page.waitForText("护法放行：只在洞府里写一个文件。");
+  // The verdict shows a moment before the command it let through has run.
+  for (let waited = 0; !existsSync(join(workspace, "guarded.txt")) && waited < 100; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const review = mock.requests[guarded + 1].body;
+  check(existsSync(join(workspace, "guarded.txt")) && JSON.stringify(review.system).includes("You guard a user's computer") && (review.tools ?? []).length === 0 && JSON.stringify(review.messages).includes("echo hi > guarded.txt"), "the 护法 was shown the command and let it run without asking 本尊");
+  await page.waitForText("护法没有放行：这一条先问问本尊。");
+  check(await page.evaluate(`!!document.querySelector(".sign-countdown")`), "what the 护法 would not pass is put to 本尊, with the time left to answer");
+  await page.waitForText("无人定夺，自动驳回");
+  await page.waitForText("第二个没写成，等本尊点头。");
+  check(!existsSync(join(workspace, "second.txt")), "with nobody answering in time, the request was declined by itself and the 分身 went on without it");
   console.log("Passed.");
 } catch (error) {
   failed = true;

@@ -379,7 +379,7 @@ const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] =
     hint: "各个宗门和它们的密钥，默认分身修哪门功法、推演多深，前情留多长",
     icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
   },
-  { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），发出去的通行符（长期许可）", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
+  { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
   { id: "tools", name: "法器", hint: "天机阁（联网搜索）、技能、身外法器（MCP 服务）", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
   {
     id: "look",
@@ -443,6 +443,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
   const suggestions = [...served.models, ...(chosen?.models ?? []).filter(([id]) => !served.models.some(([listed]) => listed === id))];
   /** The most the limit can be for the model new 分身 use: four fifths of its context window. */
   const ceiling = Math.floor(view.context_window.tokens / 5) * 4;
+  const timeout = useDraft(String(settings.approval_timeout), (value) => {
+    const seconds = Number.parseInt(value, 10);
+    if (Number.isFinite(seconds) && seconds >= 0) onSave({ ...settings, approval_timeout: seconds });
+  });
   const windowKey = `${settings.provider}/${settings.model}`;
   /** Whether the field that corrects the model's window is open, and what is typed in it. */
   const [editingWindow, setEditingWindow] = useState(false);
@@ -683,6 +687,46 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               }}
             />
             <p className="hint">Git 仓库自己的 .git 目录不用填，已经算在内。</p>
+          </div>
+        </section>
+
+        <section>
+          <h2>护法（模型审核）</h2>
+          <label className="check">
+            <input type="checkbox" checked={settings.guardian} onChange={(event) => onSave({ ...settings, guardian: event.target.checked })} />
+            <span>
+              放手施为时，请一位护法先审拿不准的命令
+              <span className="muted">（护法是另一个模型：它放行的直接跑，它不放行的才请本尊定夺）</span>
+            </span>
+          </label>
+          <p className="hint">
+            只管放手施为下规则不放行的命令；别的禁制、改洞府之外的文件、上网、身外法器照旧请示，全权托付不经护法。护法只看得到本尊说过的话、分身动手前说的打算和命令本身，看不到文件和命令输出里的字。
+            它会看走眼，也会被骗，不是保险；每审一次花一两千 token 的灵石，慢一两秒。
+          </p>
+          {settings.guardian && (
+            <div className="field">
+              <label htmlFor="guardian-model">护法的功法（{chosen?.name ?? settings.provider}）</label>
+              <div className="inline model-row">
+                <Combo
+                  id="guardian-model"
+                  value={settings.guardian_models[settings.provider] ?? ""}
+                  options={suggestions.map(([id, name]) => ({ value: id, text: id, note: name === id ? "" : name }))}
+                  editable
+                  mono
+                  placeholder="留空就用分身自己的功法"
+                  onSave={(model) => {
+                    const { [settings.provider]: _, ...others } = settings.guardian_models;
+                    onSave({ ...settings, guardian_models: model ? { ...others, [settings.provider]: model } : others });
+                  }}
+                />
+              </div>
+              <p className="hint">挑一门又快又便宜的。护法和分身用同一个宗门，这里设的是默认宗门的；别的宗门没设时，用分身自己的功法。</p>
+            </div>
+          )}
+          <div className="field">
+            <label htmlFor="approval-timeout">放手施为下，请示等多久（秒）</label>
+            <input id="approval-timeout" className="input mono short" type="number" min={0} step={5} {...timeout} />
+            <p className="hint">过了这个时间没人定夺，就自动驳回，分身绕开那一步接着做，并在回报里说明。填 0 就一直等。别的禁制下一直等。</p>
           </div>
         </section>
 

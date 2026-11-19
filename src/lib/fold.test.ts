@@ -22,6 +22,26 @@ const edit = (id: string, path: string, added: number, removed: number) => [
   result(id, "edit_file", { path, added, removed }),
 ];
 
+describe("the guardian", () => {
+  it("keeps what the 护法 made of a call, when a request runs out, and counts what it spent", () => {
+    const tokens = { input: 900, cached: 0, output: 12 };
+    const events = log(
+      { type: "turn/start", data: { turn: 1 } },
+      user("write it"),
+      said(call("t1", "run_command", { command: "echo hi > a.txt" }), call("t2", "run_command", { command: "git push" })),
+      { type: "guardian/reviewed", data: { tool_use_id: "t1", model: "small", allowed: true, reason: "只写一个文件", tokens } },
+      result("t1", "run_command", { command: "echo hi > a.txt", exit_code: 0 }),
+      { type: "guardian/reviewed", data: { tool_use_id: "t2", model: "small", allowed: false, reason: "要推送" } },
+      { type: "approval/requested", data: { tool_use_id: "t2", tool: "run_command", reason: "command", detail: "git push", expires_at: "2026-11-19T10:00:30.000Z" } },
+      { type: "approval/resolved", data: { tool_use_id: "t2", decision: "deny", timed_out: true } },
+    );
+    const [first, second] = fold(events)[0].items.filter((item): item is ToolItem => item.kind === "tool");
+    expect(first.review).toEqual({ allowed: true, reason: "只写一个文件", model: "small", failed: false });
+    expect([second.review?.allowed, second.approval?.expiresAt, second.approval?.timedOut]).toEqual([false, "2026-11-19T10:00:30.000Z", true]);
+    expect(usage(events).spent).toEqual(tokens);
+  });
+});
+
 describe("counts", () => {
   it("reads tokens in K and M, with a decimal only where it shows the difference", () => {
     expect([999, 1280, 50_000, 102_400, 128_000, 200_000, 262_144].map(shortCount)).toEqual(["999", "1.3K", "50K", "102K", "128K", "200K", "262K"]);

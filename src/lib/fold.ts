@@ -10,7 +10,9 @@ export interface ToolItem {
   input: Record<string, unknown>;
   result?: { content: string; isError: boolean; meta: ToolMeta | null };
   /** `grant` is what allowing for the session covers; without one, the request is approved each time. */
-  approval?: { reason: string; detail: string; grant?: string; decision?: Decision };
+  approval?: { reason: string; detail: string; grant?: string; decision?: Decision; expiresAt?: string; timedOut?: boolean };
+  /** What the 护法 made of the call: let it run, or left it to 本尊; `failed` when it could not be asked. */
+  review?: { allowed: boolean; reason: string; model: string; failed: boolean };
   /** The turn the call belongs to. */
   turn: number;
   /** The user undid this edit. */
@@ -98,12 +100,20 @@ export function fold(events: Envelope[]): Row[] {
       }
       case "approval/requested": {
         const tool = tools.get(event.data.tool_use_id);
-        if (tool) tool.approval = { reason: event.data.reason, detail: event.data.detail, grant: event.data.grant };
+        if (tool) tool.approval = { reason: event.data.reason, detail: event.data.detail, grant: event.data.grant, expiresAt: event.data.expires_at };
         break;
       }
       case "approval/resolved": {
         const tool = tools.get(event.data.tool_use_id);
-        if (tool?.approval) tool.approval.decision = event.data.decision;
+        if (tool?.approval) {
+          tool.approval.decision = event.data.decision;
+          tool.approval.timedOut = !!event.data.timed_out;
+        }
+        break;
+      }
+      case "guardian/reviewed": {
+        const tool = tools.get(event.data.tool_use_id);
+        if (tool) tool.review = { allowed: event.data.allowed, reason: event.data.reason, model: event.data.model, failed: !!event.data.failed };
         break;
       }
       case "tool/result": {
@@ -165,6 +175,9 @@ export function usage(events: Envelope[]): Usage {
     if (event.type === "assistant/message") {
       add(event.data.tokens);
       if (event.data.tokens) context = event.data.tokens.input + event.data.tokens.output;
+    } else if (event.type === "guardian/reviewed") {
+      // The 护法's requests are spent too; they are no part of the conversation.
+      add(event.data.tokens);
     } else if (event.type === "context/compacted") {
       add(event.data.tokens);
       // Only the summary is left, which is what its request wrote.

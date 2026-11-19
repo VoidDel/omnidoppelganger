@@ -1,4 +1,4 @@
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { inFlight, land } from "../lib/flight";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
@@ -123,7 +123,7 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
   const { result } = tool;
   const meta = result?.meta;
   const declined = tool.approval?.decision === "deny";
-  const waiting = declined ? "本尊驳回了" : meta?.refused ? "先谋后动，没有改" : tool.undone ? "本尊已撤回" : result ? "" : "运功中";
+  const waiting = declined ? (tool.approval?.timedOut ? "无人定夺，自动驳回" : "本尊驳回了") : meta?.refused ? "先谋后动，没有改" : tool.undone ? "本尊已撤回" : result ? "" : "运功中";
   switch (tool.name) {
     case "read_file":
       return { verb: "读取", target: text("path"), outcome: waiting || (result!.isError ? "没读到" : `${meta?.lines ?? 0} 行`) };
@@ -266,6 +266,12 @@ function ToolCard({ tool }: { tool: ToolItem }) {
         </span>
         <span className="outcome">{outcome}</span>
       </button>
+      {/* Not 本尊's doing: the 护法 let it run, and says why. */}
+      {tool.review?.allowed && (
+        <div className="did-note" title={`护法是 ${tool.review.model}`}>
+          护法放行{tool.review.reason ? `：${tool.review.reason}` : ""}
+        </div>
+      )}
       {body && open && <div className="did-body">{body}</div>}
     </div>
   );
@@ -329,21 +335,57 @@ interface SignSheetProps {
   onDecide: (toolUseId: string, decision: Decision) => void;
 }
 
+/** The seconds left until `expiresAt`, counted down while the page is open; null when there is no end. */
+function useSecondsLeft(expiresAt: string | undefined, frozen: boolean): number | null {
+  const left = () => (expiresAt ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 1000)) : null);
+  const [seconds, setSeconds] = useState(left);
+  useEffect(() => {
+    if (!expiresAt || frozen) return;
+    setSeconds(left());
+    const timer = setInterval(() => setSeconds(left()), 250);
+    return () => clearInterval(timer);
+  }, [expiresAt, frozen]);
+  return frozen ? null : seconds;
+}
+
 function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
   const approval = tool.approval!;
+  const seconds = useSecondsLeft(approval.expiresAt, frozen);
+  /** Whether the explanation behind the mark after the title is open. */
+  const [explained, setExplained] = useState(false);
   const ask = ASK[approval.reason] ?? ASK.command;
   const oneByOne = approval.reason === "command" && !approval.grant;
   const change = approval.reason === "edit" ? proposed(tool) : null;
+  const why =
+    ask.note +
+    (approval.reason === "command" && mode === "auto" ? "放手施为只自行放行只读、构建、测试类且不碰洞府之外的命令，这条不在其列。" : "") +
+    (oneByOne ? "这条命令带有管道、分号、引号、变量之类的写法，或者会执行任意代码，只能逐条批准。" : "");
   return (
     <div className="sign-sheet">
-      <h2>{ask.title}</h2>
+      <div className="sign-head">
+        <h2>{ask.title}</h2>
+        {/* Why this asks and what allowing it means: a tip behind a mark, shown on hover or focus; a click keeps it open. */}
+        <button type="button" className="sign-why" aria-expanded={explained} aria-label="这条请示的说明" onClick={() => setExplained(!explained)}>
+          <span aria-hidden="true">!</span>
+          <span className="tip" role="tooltip">
+            {why}
+          </span>
+        </button>
+        {/* In the corner, counting down: with nobody answering in time, the request declines itself. */}
+        {seconds !== null && (
+          <span className="sign-countdown" role="timer" title="放手施为下不久等：到时无人定夺，就自动驳回，分身绕开它接着做">
+            <strong>{seconds}</strong> 秒后自动驳回
+          </span>
+        )}
+      </div>
       <div className="sign-detail">{approval.detail}</div>
+      {/* Why it comes to 本尊 at all: the 护法 would not let it pass, or could not be asked. */}
+      {tool.review && !tool.review.allowed && (
+        <p className="sign-review">
+          {tool.review.failed ? `护法没能审这一条（${tool.review.reason}），所以请本尊定夺。` : `护法没有放行${tool.review.reason ? `：${tool.review.reason}` : "。"}`}
+        </p>
+      )}
       {change && <Diff hunk={change} />}
-      <p>
-        {ask.note}
-        {approval.reason === "command" && mode === "auto" && "放手施为只自行放行只读、构建、测试类且不碰洞府之外的命令，这条不在其列。"}
-        {oneByOne && "这条命令带有管道、分号、引号、变量之类的写法，或者会执行任意代码，只能逐条批准。"}
-      </p>
       {frozen && <p className="muted">当时分身停在这里，候本尊定夺。</p>}
       <div className="actions" hidden={frozen}>
         <button type="button" className="button solid" onClick={() => onDecide(tool.id, "allow_once")}>
