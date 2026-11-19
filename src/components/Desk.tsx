@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 import { clock } from "../lib/schedule";
 import type { Schedule, SessionItem } from "../lib/types";
 import { ago, ahead } from "../lib/when";
@@ -42,7 +42,7 @@ export function Desk({ sessions, schedules, onOpen, onSchedules }: DeskProps) {
         <section className="desk-part asking" aria-label="候本尊定夺">
           <h2>候本尊定夺</h2>
           {asking.map((session, at) => (
-            <button type="button" key={session.id} className="desk-item await-slip" style={{ animationDelay: `${at * 70}ms` }} onClick={() => onOpen(session.id)}>
+            <button type="button" key={session.id} className="desk-item await-slip" style={{ "--nth": at } as CSSProperties} onClick={() => onOpen(session.id)}>
               <span className="seal small" aria-hidden="true">
                 候
               </span>
@@ -56,7 +56,7 @@ export function Desk({ sessions, schedules, onOpen, onSchedules }: DeskProps) {
         <section className="desk-part" aria-label="运功中">
           <h2>运功中</h2>
           {working.map((session, at) => (
-            <button type="button" key={session.id} className="desk-item busy" style={{ animationDelay: `${at * 70}ms` }} onClick={() => onOpen(session.id)}>
+            <button type="button" key={session.id} className="desk-item busy" style={{ "--nth": at } as CSSProperties} onClick={() => onOpen(session.id)}>
               <span className="row-seal busy" aria-hidden="true">
                 <Light />运
               </span>
@@ -70,7 +70,7 @@ export function Desk({ sessions, schedules, onOpen, onSchedules }: DeskProps) {
         <section className="desk-part" aria-label="将至的功课">
           <h2>将至的功课</h2>
           {coming.map((schedule, at) => (
-            <button type="button" key={schedule.id} className="desk-item coming" style={{ animationDelay: `${at * 70}ms` }} title={clock(schedule.next!)} onClick={onSchedules}>
+            <button type="button" key={schedule.id} className="desk-item coming" style={{ "--nth": at } as CSSProperties} title={clock(schedule.next!)} onClick={onSchedules}>
               <span className="seal small schedule-seal" aria-hidden="true">
                 课
               </span>
@@ -84,7 +84,7 @@ export function Desk({ sessions, schedules, onOpen, onSchedules }: DeskProps) {
         <section className="desk-part" aria-label="近来的分身">
           <h2>近来的分身</h2>
           {recent.map((session, at) => (
-            <button type="button" key={session.id} className="desk-item" style={{ animationDelay: `${at * 70}ms` }} title={baseName(homeOf(session))} onClick={() => onOpen(session.id)}>
+            <button type="button" key={session.id} className="desk-item" style={{ "--nth": at } as CSSProperties} title={baseName(homeOf(session))} onClick={() => onOpen(session.id)}>
               <span className="row-seal" aria-hidden="true" />
               <span className="desk-title">{titleOf(session)}</span>
               <span className="desk-when">{ago(session.updated_at, now)}</span>

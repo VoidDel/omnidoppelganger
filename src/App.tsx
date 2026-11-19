@@ -41,6 +41,7 @@ type Action =
   | { type: "opened"; view: SessionView }
   | { type: "session"; item: SessionItem }
   | { type: "deleted"; id: string }
+  | { type: "home" }
   | { type: "event"; event: UiEvent }
   | { type: "queued"; id: string; text: string }
   | { type: "page"; page: State["page"] }
@@ -108,6 +109,9 @@ function reduce(state: State, action: Action): State {
       };
       return state.buffer.reduce(appendLog, opened);
     }
+    case "home":
+      // No 分身 on screen: the home screen, with what stands on its desk.
+      return { ...state, activeId: null, openingId: null, buffer: [], bufferedStatus: null, events: [], stream: [], queued: [], status: "idle", page: "chat" };
     case "deleted": {
       const sessions = state.sessions.filter((session) => session.id !== action.id);
       return state.activeId === action.id ? { ...state, sessions, activeId: null, events: [], stream: [], queued: [], status: "idle" } : { ...state, sessions };
@@ -383,6 +387,7 @@ export default function App() {
         sessions={state.sessions}
         activeId={state.activeId}
         page={state.page}
+        onHome={() => dispatch({ type: "home" })}
         onSchedules={toSchedules}
         onOpen={open}
         onNew={create}
@@ -549,7 +554,7 @@ export default function App() {
           <>
             <Mountains />
             <div className="empty">
-            <Logo size={64} />
+            <Logo size={64} alive />
             <h1>选一处洞府，化出分身来干活</h1>
             <p>白纸是本尊的法旨，墨迹是分身的手笔，见黄符朱砂处候本尊定夺。</p>
             {missingKey && <p className="muted">还没有 {defaultProvider?.name} 的密钥，分身出不了关，先到设置里填上。</p>}
@@ -572,6 +577,7 @@ export default function App() {
         <Jump
           sessions={state.sessions}
           acts={[
+            { id: "home", name: "首页", hint: "回到山前：候旨的、运功的、将至的功课", seal: "山", run: () => dispatch({ type: "home" }) },
             { id: "new", name: "开辟洞府", hint: "选一个文件夹，化出分身", seal: "辟", run: () => void create() },
             { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: toSchedules },
             { id: "settings", name: "设置", hint: "功法、禁制、法器、外观", seal: "设", run: toSettings },

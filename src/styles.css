@@ -250,14 +250,32 @@ pre,
   gap: 16px;
 }
 
+/* The name over the door: pressed, it is the way back to the home screen. */
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
   font-size: var(--t-body);
   font-weight: 700;
   letter-spacing: 0.01em;
+  text-align: left;
+  transition: border-color var(--d-quick) ease;
+}
+
+.brand:hover {
+  border-color: var(--line);
+}
+
+.brand .logo {
+  transition: transform var(--d-move) var(--ease-seal);
+}
+
+.brand:hover .logo {
+  transform: rotate(-8deg) scale(1.08);
 }
 
 .sidebar-scroll {
@@ -3374,56 +3392,198 @@ button.select-button svg {
   margin: 0;
 }
 
-/* Far mountains in three washes of ink, with the golden core rising behind them. Home screen only.
-   Several drawings in one frame, one on another, with the mist between them. */
+/* ---------- the home screen's backdrop ---------- */
+
+/* The whole of the home screen, behind its words: the sky, and at its foot the mountains. */
+.scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* The sun is placed and sized by the sky it stands in. */
+  container-type: size;
+}
+
+/* Far mountains in three washes of ink, with the golden core behind them: several drawings in one frame, one
+   on another, with the mist between them. */
 .mountains {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
   height: 46%;
-  overflow: hidden;
-  pointer-events: none;
-  /* The mist is placed by the frame's width, as the drawings are scaled by it. */
-  container-type: inline-size;
+  container-type: size;
+  /* One unit of the drawings' frame, as long on the page as the drawings make it: they are scaled to cover this
+     box, by whichever of its sides asks for more, and set at the middle of its foot. What is not a drawing (the
+     core, the mist) is placed and sized by the same unit, and so stays where the drawings put the mountains. */
+  --u: max(100cqw / 1200, 100cqh / 420);
 }
 
-.mountains svg {
+/* A range of mountains: it rises into place when the screen opens, the far one first. */
+.range {
   position: absolute;
   inset: 0;
+  animation: rise 1500ms var(--ease-out) backwards;
+}
+
+.range.mid {
+  animation-delay: 160ms;
+}
+
+.range.near {
+  animation-delay: 320ms;
+}
+
+.range svg {
+  display: block;
   width: 100%;
   height: 100%;
 }
 
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(26%);
+  }
+}
+
 /* A stroke in the fill's own colour with round joins softens every peak, as a wet brush would. */
-.mountains path {
+.range path {
   stroke-width: 26;
   stroke-linejoin: round;
 }
 
-.mountains .far {
+.range.far path {
   fill: var(--mist-far);
   stroke: var(--mist-far);
 }
 
-.mountains .mid {
+.range.mid path {
   fill: var(--mist-mid);
   stroke: var(--mist-mid);
 }
 
-.mountains .near {
+.range.near path {
   fill: var(--mist-near);
   stroke: var(--mist-near);
 }
 
-.mountains .core {
-  fill: var(--gold);
-  opacity: 0.55;
+/* The 太极 in the sky: a point in the sky's upper corner, which everything of it is centred on, clear of the
+   words and of the desk whatever the window's size. By day it is golden, as the sun; by night pale, as the
+   moon. It comes up to there from behind the far range, after the mountains have risen. */
+.sun {
+  --sun: clamp(60px, 6.5cqw, 100px);
+  --yang: var(--gold);
+  --yin: #f6e7b4;
+  --trigram: color-mix(in srgb, var(--gold) 55%, transparent);
+  position: absolute;
+  right: clamp(124px, 15cqw, 290px);
+  top: clamp(124px, 21cqh, 250px);
+  animation: sunrise 2600ms var(--ease-out) 500ms backwards;
 }
 
-/* The core's light swells and fades, as slowly as breath. */
-.mountains .halo {
+.sun > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  translate: -50% -50%;
+}
+
+.sun svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Its light swells and fades, as slowly as breath. */
+.sun-halo {
+  width: calc(var(--sun) * 3);
+  background: radial-gradient(circle, color-mix(in srgb, var(--yang) 50%, transparent), color-mix(in srgb, var(--yang) 18%, transparent) 40%, transparent 70%);
   animation: swell 7s ease-in-out infinite alternate;
+}
+
+/* The two halves turn about each other, slowly. It is drawn clear: the one thing in the sky that is. */
+.taiji {
+  width: var(--sun);
+  opacity: 0.8;
+  animation: go-round 54s linear infinite reverse;
+}
+
+.taiji .yang {
+  fill: var(--yang);
+}
+
+.taiji .yin {
+  fill: var(--yin);
+}
+
+/* The eight trigrams in a ring about it, turning the other way, more slowly still. */
+.bagua {
+  width: calc(var(--sun) * 3.9);
+  fill: var(--trigram);
+  /* Seen as through mist: out of focus, and fainter the farther out, so that the ring has no hard outer edge. */
+  filter: blur(calc(var(--sun) * 0.018));
+  mask: radial-gradient(circle closest-side, #000 62%, rgb(0 0 0 / 0.45) 94%);
+  animation: go-round 150s linear infinite;
+}
+
+/* From behind the mountains, more than half the sky below where it comes to stand. */
+@keyframes sunrise {
+  from {
+    opacity: 0;
+    transform: translateY(62cqh);
+  }
+}
+
+/* A narrow window: smaller, and close in the corner, without its ring, so that it stays clear of the words. */
+@container (max-width: 860px) {
+  .sun {
+    --sun: 52px;
+    right: 58px;
+    top: 58px;
+  }
+
+  .bagua {
+    display: none;
+  }
+}
+
+/* By night: moon-white for 阳 and the shadow of the moon for 阴, with a cool light about it. */
+:root[data-theme="dark"] .sun {
+  --yang: #e6efe8;
+  --yin: #4c6562;
+  --trigram: color-mix(in srgb, #dfeee6 38%, transparent);
+}
+
+:root[data-theme="dark"] .taiji {
+  opacity: 0.95;
+}
+
+:root[data-theme="dark"] .sun-halo {
+  width: calc(var(--sun) * 3.6);
+  background: radial-gradient(circle, color-mix(in srgb, #dfeee6 34%, transparent), color-mix(in srgb, #dfeee6 12%, transparent) 40%, transparent 68%);
+}
+
+/* Stars: by night only, each brightening and dimming in its own time. */
+.star {
+  display: none;
+  position: absolute;
+  border-radius: 50%;
+  background: #f3f8f2;
+  opacity: 0.2;
+  animation: twinkle 4s ease-in-out infinite alternate;
+}
+
+:root[data-theme="dark"] .star {
+  display: block;
+}
+
+@keyframes twinkle {
+  to {
+    opacity: 0.95;
+  }
 }
 
 @keyframes swell {
@@ -3432,26 +3592,41 @@ button.select-button svg {
   }
 }
 
-/* A band of mist: the page's own colour, thick in its middle and gone at its ends, drifting across. */
-.mountains .mist {
+/* A band of mist: the page's own colour, thick in its middle and gone at its ends, drifting across. It gathers
+   as the mountains settle. */
+.mist {
   position: absolute;
   left: 0;
-  border-radius: 999px;
-  background: linear-gradient(to right, transparent, color-mix(in srgb, var(--bg) 85%, transparent) 50%, transparent);
+  /* Thick at its heart and gone at every edge, above and below as well as at its ends: a band with a straight
+     edge is a stripe, not mist. */
+  background: radial-gradient(ellipse 50% 50% at center, color-mix(in srgb, var(--bg) 94%, transparent) 0, color-mix(in srgb, var(--bg) 60%, transparent) 45%, transparent 100%);
 }
 
-.mountains .mist.slow {
-  bottom: 10.8cqw;
-  width: 75cqw;
-  height: 4.5cqw;
-  animation: drift 64s linear infinite;
+.mist.slow {
+  bottom: calc(112 * var(--u));
+  width: 78cqw;
+  height: calc(86 * var(--u));
+  animation:
+    drift 64s linear -12s infinite,
+    come 2600ms ease 600ms backwards;
 }
 
-.mountains .mist.fast {
-  bottom: 7.3cqw;
-  width: 58cqw;
-  height: 3.3cqw;
-  animation: drift 41s linear -18s infinite;
+.mist.fast {
+  bottom: calc(72 * var(--u));
+  width: 60cqw;
+  height: calc(68 * var(--u));
+  animation:
+    drift 41s linear -27s infinite,
+    come 2600ms ease 800ms backwards;
+}
+
+.mist.low {
+  bottom: calc(18 * var(--u));
+  width: 68cqw;
+  height: calc(64 * var(--u));
+  animation:
+    drift 53s linear -40s infinite,
+    come 2600ms ease 1000ms backwards;
 }
 
 /* From out of sight at the left to out of sight at the right, by its own width. */
@@ -3461,6 +3636,79 @@ button.select-button svg {
   }
   to {
     transform: translateX(190%);
+  }
+}
+
+/* A point of light rising from among the mountains, swaying a little, gone before it is clear of them. */
+.mote-rise {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fffdf2 0 22%, var(--jade) 50%, transparent 72%);
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--jade) 45%, transparent);
+  opacity: 0;
+  animation: ascend 15s linear infinite;
+}
+
+.mote-rise.gold {
+  background: radial-gradient(circle, #fffdf2 0 22%, var(--gold) 50%, transparent 72%);
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--gold) 50%, transparent);
+}
+
+@keyframes ascend {
+  from {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.5);
+  }
+  12% {
+    opacity: 0.9;
+  }
+  70% {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 0;
+    transform: translate(var(--sway), -62cqh) scale(1);
+  }
+}
+
+/* A stroke of light across the sky, as a sword in flight: seen for a breath, then nothing for a long while. It
+   flies along its own length, which is tilted to climb. */
+.streak {
+  position: absolute;
+  left: 0;
+  width: 190px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(to right, transparent, color-mix(in srgb, var(--jade) 70%, transparent) 55%, #fffdf2);
+  filter: drop-shadow(0 0 5px var(--jade));
+  opacity: 0;
+}
+
+.streak.one {
+  top: 30%;
+  rotate: -7deg;
+  animation: fly 23s linear 4s infinite;
+}
+
+.streak.two {
+  top: 16%;
+  rotate: -4deg;
+  animation: fly 37s linear 15s infinite;
+}
+
+@keyframes fly {
+  from,
+  90% {
+    opacity: 0;
+    transform: translateX(-220px);
+  }
+  91%,
+  98% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(110vw);
   }
 }
 
@@ -3675,6 +3923,8 @@ button.select-button svg {
   font-size: var(--t-small);
   font-weight: 700;
   color: var(--ink-2);
+  /* With the first of what stands under it. */
+  animation: ink-in var(--d-arrive) var(--ease-out) 900ms backwards;
 }
 
 /* A way in: a strip of the page's paper, its seal, its name, and at its right where or when. */
@@ -3690,7 +3940,8 @@ button.select-button svg {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  animation: ink-in var(--d-arrive) var(--ease-out) backwards;
+  /* One after another, once the screen's own words are in. */
+  animation: ink-in var(--d-arrive) var(--ease-out) calc(950ms + var(--nth, 0) * 70ms) backwards;
   transition:
     transform var(--d-quick) var(--ease-out),
     border-color var(--d-quick) ease;
@@ -3719,7 +3970,7 @@ button.select-button svg {
   border: 1px solid var(--cinnabar);
   background: var(--talisman);
   color: #1b2a2b;
-  animation: unroll var(--d-arrive) var(--ease-out) backwards;
+  animation: unroll var(--d-arrive) var(--ease-out) calc(950ms + var(--nth, 0) * 70ms) backwards;
 }
 
 .desk-title {
@@ -3754,25 +4005,63 @@ button.select-button svg {
 }
 
 /* The home screen comes in once: the seal is set down, then the words bleed in after it. */
+/* After the mountains have begun to rise. */
 .empty > .logo {
-  animation: stamp var(--d-arrive) var(--ease-seal) backwards;
+  animation: stamp var(--d-arrive) var(--ease-seal) 500ms backwards;
 }
 
 .empty > h1 {
-  animation: ink-in 700ms var(--ease-out) 120ms backwards;
+  animation: ink-in 700ms var(--ease-out) 680ms backwards;
 }
 
 .empty > p,
 .empty > .actions {
-  animation: ink-in 700ms var(--ease-out) 240ms backwards;
+  animation: ink-in 700ms var(--ease-out) 820ms backwards;
 }
 
+/* The mark on the home screen: the plate and each half a drawing of its own, one on another. Now and then the
+   分身's half parts from 本尊's along the line the circle is cut on, stays out a moment, and comes back. */
+.logo.alive {
+  position: relative;
+  display: inline-block;
+}
+
+.logo.alive > span {
+  position: absolute;
+  inset: 0;
+}
+
+.logo.alive svg {
+  display: block;
+}
+
+.logo.alive .double {
+  animation: emerge 9s ease-in-out 2.4s infinite;
+}
+
+@keyframes emerge {
+  from,
+  52%,
+  to {
+    transform: none;
+  }
+  66%,
+  84% {
+    transform: translate(calc(var(--unit) * -2), calc(var(--unit) * -1.15));
+  }
+}
+
+/* Still, for one who has asked for stillness (the rule at the end of the file stops the moving): no points of
+   light or strokes across the sky, which are nothing when they do not move. */
 @media (prefers-reduced-motion: reduce) {
-  .mountains .halo,
-  .mountains .mist,
-  .desk-item,
-  .empty > * {
-    animation: none;
+  .mote-rise,
+  .streak {
+    display: none;
+  }
+
+  /* The stars stand, half lit. */
+  .star {
+    opacity: 0.6;
   }
 }
 

@@ -7,34 +7,139 @@ import { ago } from "../lib/when";
 import { Light } from "./Light";
 import { Diff } from "./Transcript";
 
-/** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
+/** Points of light that rise from among the mountains: where each starts, how large, how long it takes, how far it sways. */
+const MOTES: [x: number, y: number, size: number, seconds: number, delay: number, sway: number, gold: boolean][] = [
+  [6, 10, 4, 13, -2, 14, false],
+  [14, 22, 3, 17, -9, -10, true],
+  [23, 8, 5, 15, -5, 8, false],
+  [31, 30, 3, 19, -13, -16, false],
+  [39, 14, 4, 14, -7, 12, true],
+  [47, 26, 3, 18, -1, -8, false],
+  [55, 9, 5, 16, -11, 18, false],
+  [63, 20, 3, 13, -4, -12, true],
+  [71, 33, 4, 20, -15, 10, false],
+  [80, 12, 3, 15, -8, -14, false],
+  [88, 24, 5, 17, -3, 9, true],
+  [95, 15, 3, 14, -10, -6, false],
+];
+
+/** The stars of the night sky: where each is, how large, how long it takes to brighten, and when it starts. */
+const STARS: [x: number, y: number, size: number, seconds: number, delay: number][] = [
+  [4, 12, 2, 3.4, -1],
+  [11, 30, 1.5, 4.6, -3],
+  [19, 7, 2.5, 5.2, -2],
+  [27, 21, 1.5, 3.8, -4],
+  [36, 40, 2, 4.4, -1.5],
+  [44, 10, 1.5, 5.6, -3.5],
+  [52, 27, 2, 3.2, -0.5],
+  [59, 5, 2.5, 4.8, -2.5],
+  [66, 34, 1.5, 4.2, -4.5],
+  [72, 16, 2, 5.4, -1],
+  [91, 38, 1.5, 3.6, -3],
+  [96, 9, 2, 4.9, -2],
+];
+
+/**
+ * The eight trigrams in the order of the 先天八卦, clockwise from the top (which is south): each as its three
+ * lines from the innermost out, true for a whole line (阳) and false for a broken one (阴).
+ */
+const TRIGRAMS: [name: string, lines: [boolean, boolean, boolean]][] = [
+  ["乾", [true, true, true]],
+  ["巽", [false, true, true]],
+  ["坎", [false, true, false]],
+  ["艮", [false, false, true]],
+  ["坤", [false, false, false]],
+  ["震", [true, false, false]],
+  ["离", [true, false, true]],
+  ["兑", [true, true, false]],
+];
+
+/** The eight trigrams in a ring, drawn round the origin: each line a bar across its radius, the innermost first. */
+function Bagua() {
+  const [wide, thick, gap] = [30, 5, 7];
+  return (
+    <svg viewBox="-100 -100 200 200">
+      {TRIGRAMS.map(([name, lines], at) => (
+        <g key={name} transform={`rotate(${at * 45})`}>
+          {lines.map((whole, row) => {
+            const y = -(62 + row * (thick + 5)) - thick;
+            return whole ? (
+              <rect key={row} x={-wide / 2} y={y} width={wide} height={thick} rx="1" />
+            ) : (
+              <g key={row}>
+                <rect x={-wide / 2} y={y} width={(wide - gap) / 2} height={thick} rx="1" />
+                <rect x={gap / 2} y={y} width={(wide - gap) / 2} height={thick} rx="1" />
+              </g>
+            );
+          })}
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/**
+ * The home screen's backdrop: mountains in three washes of ink under an open sky. In the sky's upper corner
+ * stands the 太极, with the eight trigrams in a ring about it, each turning slowly its own way: golden by day
+ * as the sun is, and by night (the dark theme) pale as the moon, among stars. The
+ * mountains rise into place when the screen opens, and the 太极 comes up from behind them to where it
+ * stands, clear of what is written on the screen. Then mist drifts between the ranges, points of light rise
+ * from the valleys, and now and then a stroke of light crosses the sky, as a sword in flight does. Everything
+ * that moves is a layer of its own, moved or faded whole.
+ */
 export function Mountains() {
   // Every drawing has the same frame, so they lie on one another exactly.
   const frame = { viewBox: "0 0 1200 420", preserveAspectRatio: "xMidYMax slice" } as const;
   return (
-    // What moves here (the core's light, the mist) is each a layer of its own, moved whole: a shape moved
-    // inside a drawing has the whole drawing painted again at every step, for as long as the page is open.
-    <div className="mountains" aria-hidden="true">
-      <svg className="halo" {...frame}>
-        <defs>
-          <radialGradient id="core-halo">
-            <stop offset="0" stopColor="var(--gold)" stopOpacity="0.5" />
-            <stop offset="1" stopColor="var(--gold)" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-        <circle cx="860" cy="150" r="120" fill="url(#core-halo)" />
-      </svg>
-      <svg {...frame}>
-      <circle className="core" cx="860" cy="150" r="46" />
-      <path className="far" d="M0 300 L120 210 L210 262 L330 150 L430 236 L520 190 L640 270 L760 170 L880 250 L980 205 L1090 262 L1200 215 L1200 420 L0 420 Z" />
-      </svg>
-      {/* Two bands of mist, between the far range and the near ones, drifting slowly the same way at different paces. */}
-      <span className="mist slow" />
-      <span className="mist fast" />
-      <svg {...frame}>
-      <path className="mid" d="M0 350 L90 292 L190 330 L300 250 L390 312 L500 268 L610 330 L720 262 L830 318 L950 276 L1060 326 L1200 286 L1200 420 L0 420 Z" />
-      <path className="near" d="M0 392 L140 340 L260 378 L380 322 L500 372 L640 336 L770 384 L900 344 L1030 388 L1200 352 L1200 420 L0 420 Z" />
-      </svg>
+    <div className="scene" aria-hidden="true">
+      {STARS.map(([x, y, size, seconds, delay], at) => (
+        <span key={at} className="star" style={{ left: `${x}%`, top: `${y}%`, width: size, height: size, animationDuration: `${seconds}s`, animationDelay: `${delay}s` }} />
+      ))}
+      <span className="streak one" />
+      <span className="streak two" />
+      {/* Before the mountains, so behind them: it is seen to come up from behind the far range. */}
+      <div className="sun">
+        <span className="sun-halo" />
+        <span className="bagua">
+          <Bagua />
+        </span>
+        {/* The 太极: the circle cut along an S, as the app's own mark is, with a point of each half in the other. */}
+        <span className="taiji">
+          <svg viewBox="-10 -10 20 20">
+            <circle className="yin" r="10" />
+            <path className="yang" d={SELF} />
+            <circle className="yin" cy="-5" r="1.5" />
+            <circle className="yang" cy="5" r="1.5" />
+          </svg>
+        </span>
+      </div>
+      <div className="mountains">
+        <div className="range far">
+          <svg {...frame}>
+            <path d="M0 300 L120 210 L210 262 L330 150 L430 236 L520 190 L640 270 L760 170 L880 250 L980 205 L1090 262 L1200 215 L1200 420 L0 420 Z" />
+          </svg>
+        </div>
+        <span className="mist slow" />
+        <div className="range mid">
+          <svg {...frame}>
+            <path d="M0 350 L90 292 L190 330 L300 250 L390 312 L500 268 L610 330 L720 262 L830 318 L950 276 L1060 326 L1200 286 L1200 420 L0 420 Z" />
+          </svg>
+        </div>
+        <span className="mist fast" />
+        <div className="range near">
+          <svg {...frame}>
+            <path d="M0 392 L140 340 L260 378 L380 322 L500 372 L640 336 L770 384 L900 344 L1030 388 L1200 352 L1200 420 L0 420 Z" />
+          </svg>
+        </div>
+        <span className="mist low" />
+        {MOTES.map(([x, y, size, seconds, delay, sway, gold], at) => (
+          <span
+            key={at}
+            className={`mote-rise ${gold ? "gold" : ""}`}
+            style={{ left: `${x}%`, bottom: `${y}%`, width: size, height: size, "--sway": `${sway}px`, animationDuration: `${seconds}s`, animationDelay: `${delay}s` } as CSSProperties}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -70,7 +175,31 @@ export function Mark({ state = "idle", size = 26 }: { state?: "idle" | "working"
 }
 
 /** The logo: the split circle stamped on a cinnabar seal. Used where the product names itself. */
-export function Logo({ size = 26 }: { size?: number }) {
+export function Logo({ size = 26, alive = false }: { size?: number; alive?: boolean }) {
+  if (alive) {
+    // On the home screen the 分身's half parts from 本尊's and comes back, now and then: what the app does, in
+    // its own mark. The plate and each half are drawings of their own, so the half is moved whole.
+    const half = (name: string, d: string, shift: number) => (
+      <span className={name}>
+        <svg width={size} height={size} viewBox="0 0 26 26">
+          <g transform="translate(13 13) rotate(30) scale(0.74)">
+            <path d={d} transform={`translate(${shift} 0)`} />
+          </g>
+        </svg>
+      </span>
+    );
+    return (
+      <span className="logo alive" aria-hidden="true" style={{ width: size, height: size, "--unit": `${size / 26}px` } as CSSProperties}>
+        <span>
+          <svg width={size} height={size} viewBox="0 0 26 26">
+            <rect className="plate" x="1" y="1" width="24" height="24" rx="5.5" />
+          </svg>
+        </span>
+        {half("self", SELF, 0.7)}
+        {half("double", DOUBLE, -0.7)}
+      </span>
+    );
+  }
   return (
     <svg className="logo" aria-hidden="true" width={size} height={size} viewBox="0 0 26 26">
       <rect className="plate" x="1" y="1" width="24" height="24" rx="5.5" />
@@ -89,6 +218,8 @@ interface SidebarProps {
   activeId: string | null;
   /** What the main area shows: a conversation, or one of the two pages reached from the foot of this list. */
   page: "chat" | "settings" | "schedules";
+  /** Back to the home screen: no 分身 open. */
+  onHome: () => void;
   onSchedules: () => void;
   onOpen: (id: string) => void;
   onNew: () => void;
@@ -132,7 +263,7 @@ function useFolded() {
   return [folded, toggle] as const;
 }
 
-export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
+export function Sidebar({ sessions, activeId, page, onHome, onSchedules, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
   const now = useNow(30_000);
   const [folded, toggleFolded] = useFolded();
   const [query, setQuery] = useState("");
@@ -171,10 +302,11 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
   const waiting = sessions.filter((session) => session.status === "waiting_approval" && !(page === "chat" && session.id === activeId));
   return (
     <nav className="sidebar" aria-label="会话">
-      <div className="brand">
+      {/* The name over the door is the way back to the home screen. */}
+      <button type="button" className="brand" title="回到首页" aria-current={page === "chat" && !activeId ? "page" : undefined} onClick={onHome}>
         <Logo />
         <span>OmniDoppelganger</span>
-      </div>
+      </button>
       <button type="button" className="button primary" onClick={onNew}>
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
           <path d="M8 3v10M3 8h10" />
