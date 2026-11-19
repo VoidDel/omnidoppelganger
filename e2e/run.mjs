@@ -328,9 +328,20 @@ try {
   check(logs().find((events) => events[0].data.id === refork[0].data.id).length === refork.length, "stepping through the replay reached the end, left the log as it was, and gave the message box back");
   // Commands are confined on Linux and macOS only: here the setting says so, and cannot be switched on.
   await page.click("设置");
+  await page.click("禁制");
   await page.waitForText("这个系统上还没有沙箱");
-  const sandbox = await page.evaluate(`(() => { const box = [...document.querySelectorAll(".settings .check input")].find((input) => input.closest("label").textContent.includes("沙箱")); return { disabled: box.disabled, checked: box.checked, paths: document.querySelector("#sandbox-paths").disabled }; })()`);
+  const sandbox = await page.evaluate(`(() => { const box = [...document.querySelectorAll(".settings .check input")].find((input) => input.closest("label").textContent.includes("沙箱")); return { disabled: box.disabled, checked: box.checked, paths: document.querySelector("#sandbox-paths").closest(".field").hidden }; })()`);
   check(sandbox.disabled && !sandbox.checked && sandbox.paths, "the sandbox setting is off and cannot be switched on where the system has none");
+  // A provider is added to the list of keys in a window of its own, and its key is kept.
+  await page.click("功法");
+  await page.waitFor("the list of providers that are set up", `document.querySelectorAll(".key-list li").length === 1 && document.querySelector(".key-list").textContent.includes("环境变量")`);
+  await page.click("新增功法");
+  await page.waitFor("the window that adds one", `document.querySelector("dialog.dialog")?.open`);
+  await page.evaluate(`(() => { const select = document.querySelector("#key-provider"); select.value = "deepseek"; select.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+  await page.type("#key-value", "e2e-deepseek-key-1234");
+  await page.click("保存");
+  await page.waitFor("the provider to join the list", `!document.querySelector("dialog.dialog") && document.querySelectorAll(".key-list li").length === 2`);
+  check(readFileSync(join(home, "credentials.json"), "utf8").includes("e2e-deepseek-key-1234") && !(await page.evaluate(`document.body.innerText`)).includes("e2e-deepseek-key-1234"), "a key added in the window is saved, and the list shows only its ends");
   console.log("Passed.");
 } catch (error) {
   failed = true;

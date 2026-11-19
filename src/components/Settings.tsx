@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MODES } from "../lib/modes";
 import { mcpTool } from "../lib/fold";
 import type { KeyStatus, McpServer, Provider, Settings, SettingsView } from "../lib/types";
@@ -52,65 +52,89 @@ function KeyLine({ provider, status }: { provider: Provider; status: KeyStatus }
   );
 }
 
-interface ProviderRowProps {
-  provider: Provider;
-  status: KeyStatus;
-  settings: Settings;
-  onSave: (settings: Settings) => void;
-  onSaveKey: (provider: string, key: string) => void;
-  onDeleteKey: (provider: string) => void;
+const NO_KEY: KeyStatus = { source: "none", preview: null, plaintext: false };
+
+interface KeyDialogProps {
+  /** The provider whose key and address are set; null to add one of `choices`. */
+  provider: Provider | null;
+  choices: Provider[];
+  view: SettingsView;
+  onSave: (settings: Settings) => unknown;
+  onSaveKey: (provider: string, key: string) => unknown;
+  onClose: () => void;
 }
 
-function ProviderRow({ provider, status, settings, onSave, onSaveKey, onDeleteKey }: ProviderRowProps) {
+/** The window that takes a provider's key and address: to add a provider to the list, or to change one in it. */
+function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyDialogProps) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  // Shown as a modal, which keeps the keyboard inside it and closes on Escape.
+  useEffect(() => dialog.current?.showModal(), []);
+  const { settings } = view;
+  const [picked, setPicked] = useState(provider?.id ?? choices[0]?.id ?? "");
+  const chosen = provider ?? choices.find((choice) => choice.id === picked);
+  const status = view.keys[picked] ?? NO_KEY;
   const [key, setKey] = useState("");
-  const saved = settings.base_urls[provider.id] ?? "";
-  const address = useDraft(saved, (url) => onSave({ ...settings, base_urls: { ...settings.base_urls, [provider.id]: url } }));
-  const saveKey = () => {
-    if (!key.trim()) return;
-    onSaveKey(provider.id, key);
-    setKey("");
+  const [address, setAddress] = useState(settings.base_urls[picked] ?? "");
+  const [wrong, setWrong] = useState<string | null>(null);
+  if (!chosen) return null;
+  const takesAddress = chosen.protocol !== "anthropic";
+  const save = async () => {
+    const url = takesAddress ? address.trim() : "";
+    if (!key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
+    if (takesAddress && !chosen.base_url && !url) return setWrong("这一家没有默认的接口地址，要填上。");
+    // One after the other: each answer carries the whole of the settings, and the last one to arrive is what is shown.
+    if (key.trim()) await onSaveKey(chosen.id, key);
+    if (url !== (settings.base_urls[chosen.id] ?? "")) {
+      const { [chosen.id]: _, ...others } = settings.base_urls;
+      await onSave({ ...settings, base_urls: url ? { ...others, [chosen.id]: url } : others });
+    }
+    onClose();
   };
-  const keyId = `key-${provider.id}`;
-  const urlId = `url-${provider.id}`;
   return (
-    <div className="provider-card">
-      <div className="provider">
-        <div className="who">
-          <strong>{provider.name}</strong>
-          <KeyLine provider={provider} status={status} />
-        </div>
-        {status.source === "saved" && (
-          <button type="button" className="button text" onClick={() => onDeleteKey(provider.id)}>
-            删除密钥
-          </button>
-        )}
-      </div>
-      <div className="provider-fields">
-        <div className="field" style={{ flex: "1 1 260px" }}>
-          <label htmlFor={keyId}>{status.source === "saved" ? "换一个密钥" : "API 密钥"}</label>
-          <div className="inline">
-            <input
-              id={keyId}
+    <dialog ref={dialog} className="dialog" aria-labelledby="key-dialog-title" onClose={onClose}>
+      <form
+        method="dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <h2 id="key-dialog-title">{provider ? `${provider.name} 的密钥` : "新增功法"}</h2>
+        {!provider && (
+          <div className="field">
+            <label htmlFor="key-provider">哪一家</label>
+            <select
+              id="key-provider"
               className="input"
-              type="password"
-              autoComplete="off"
-              placeholder="粘贴密钥"
-              value={key}
-              onChange={(event) => setKey(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && saveKey()}
-            />
-            <button type="button" className="button primary" disabled={!key.trim()} onClick={saveKey}>
-              保存
-            </button>
+              value={picked}
+              onChange={(event) => {
+                setPicked(event.target.value);
+                setAddress(settings.base_urls[event.target.value] ?? "");
+                setWrong(null);
+              }}
+            >
+              {choices.map((choice) => (
+                <option key={choice.id} value={choice.id}>
+                  {choice.name}
+                </option>
+              ))}
+            </select>
           </div>
+        )}
+        <div className="field">
+          <label htmlFor="key-value">{status.source === "saved" ? "换一个密钥（不换就留空）" : "API 密钥"}</label>
+          <input id="key-value" className="input" type="password" autoComplete="off" autoFocus placeholder="粘贴密钥" value={key} onChange={(event) => setKey(event.target.value)} />
+          <p className="hint key-line">
+            <KeyLine provider={chosen} status={status} />
+          </p>
         </div>
-        {provider.protocol !== "anthropic" && (
-          <div className="field" style={{ flex: "1 1 260px" }}>
-            <label htmlFor={urlId}>{provider.base_url ? "接口地址（留空用默认）" : "接口地址（必填）"}</label>
-            <input id={urlId} className="input" placeholder={provider.base_url || "https://example.com/v1"} {...address} />
-            {provider.other_urls.length > 0 && (
+        {takesAddress && (
+          <div className="field">
+            <label htmlFor="key-address">{chosen.base_url ? "接口地址（留空用默认）" : "接口地址（必填）"}</label>
+            <input id="key-address" className="input mono" placeholder={chosen.base_url || "https://example.com/v1"} value={address} onChange={(event) => setAddress(event.target.value)} />
+            {chosen.other_urls.length > 0 && (
               <p className="hint">
-                {provider.other_urls.map(([url, what]) => (
+                {chosen.other_urls.map(([url, what]) => (
                   <span key={url}>
                     {what}：<span className="mono">{url}</span>{" "}
                   </span>
@@ -119,8 +143,141 @@ function ProviderRow({ provider, status, settings, onSave, onSaveKey, onDeleteKe
             )}
           </div>
         )}
+        {wrong && (
+          <p className="hint failed" role="alert">
+            {wrong}
+          </p>
+        )}
+        <div className="actions">
+          <button type="submit" className="button primary">
+            保存
+          </button>
+          <button type="button" className="button text" onClick={onClose}>
+            算了
+          </button>
+        </div>
+      </form>
+    </dialog>
+  );
+}
+
+interface KeyListProps {
+  view: SettingsView;
+  onSave: (settings: Settings) => unknown;
+  onSaveKey: (provider: string, key: string) => unknown;
+  onDeleteKey: (provider: string) => unknown;
+}
+
+/**
+ * The providers that are set up, one to a line: which has a key, and where its requests go. One is added, or
+ * changed, in a window of its own. The provider new 分身 use is always listed, so a missing key shows.
+ */
+function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
+  const { settings } = view;
+  /** The window that is open: for the provider with this id, or `new` to add one. */
+  const [editing, setEditing] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const statusOf = (provider: Provider) => view.keys[provider.id] ?? NO_KEY;
+  const listed = view.providers.filter((provider) => statusOf(provider).source !== "none" || !!settings.base_urls[provider.id] || provider.id === settings.provider);
+  const rest = view.providers.filter((provider) => !listed.includes(provider));
+  /** Take a provider out of the list: its saved key, and the address set for it. A key from the environment is not ours to remove. */
+  const remove = async (provider: Provider) => {
+    setRemoving(null);
+    if (statusOf(provider).source === "saved") await onDeleteKey(provider.id);
+    if (settings.base_urls[provider.id]) {
+      const { [provider.id]: _, ...others } = settings.base_urls;
+      await onSave({ ...settings, base_urls: others });
+    }
+  };
+  return (
+    <section>
+      <div className="section-head">
+        <h2>功法出处</h2>
+        <span className="spacer" />
+        <button type="button" className="button primary compact" disabled={rest.length === 0} title={rest.length === 0 ? "每一家都在列表里了" : "添一家功法出处，填上它的密钥"} onClick={() => setEditing("new")}>
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <path d="M8 3v10M3 8h10" />
+          </svg>
+          新增功法
+        </button>
       </div>
-    </div>
+      <ul className="key-list">
+        {listed.map((provider) => {
+          const status = statusOf(provider);
+          const address = settings.base_urls[provider.id];
+          const removable = status.source === "saved" || !!address;
+          // Where its requests go, when that can be set: Anthropic's address comes from the environment.
+          const shown = provider.protocol === "anthropic" ? "" : address || "默认地址";
+          return (
+            <li key={provider.id}>
+              <div className="key-who">
+                <strong>{provider.name}</strong>
+                {provider.id === settings.provider && <span className="chip busy">新分身在用</span>}
+              </div>
+              <div className={`key-what ${status.source === "none" ? "missing" : ""} ${shown ? "" : "wide"}`}>
+                {status.source === "saved" && <span className="mono">{status.preview}</span>}
+                {status.source === "env" && (
+                  <>
+                    环境变量 <span className="mono">{provider.key_env}</span>
+                  </>
+                )}
+                {status.source === "none" && "未填密钥"}
+              </div>
+              {shown && (
+                <div className="key-where mono" title={address || provider.base_url || undefined}>
+                  {shown}
+                </div>
+              )}
+              {removing === provider.id ? (
+                <span className="undo-confirm">
+                  <button type="button" className="button outline red small" onClick={() => void remove(provider)}>
+                    确认删除
+                  </button>
+                  <button type="button" className="button text small" onClick={() => setRemoving(null)}>
+                    算了
+                  </button>
+                </span>
+              ) : (
+                <span className="key-acts">
+                  <button type="button" className="icon-button" title={`改 ${provider.name} 的密钥或地址`} onClick={() => setEditing(provider.id)}>
+                    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10.6 2.9 13.1 5.4 5.6 12.9 2.6 13.4 3.1 10.4Z" />
+                      <path d="m9.2 4.3 2.5 2.5" />
+                    </svg>
+                    <span className="sr-only">改 {provider.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button danger"
+                    disabled={!removable}
+                    title={removable ? `删掉 ${provider.name} 存着的密钥和改过的地址` : status.source === "env" ? "密钥来自环境变量，这里删不了" : "没有可删的"}
+                    onClick={() => setRemoving(provider.id)}
+                  >
+                    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
+                    </svg>
+                    <span className="sr-only">删除 {provider.name}</span>
+                  </button>
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="muted">
+        密钥存进系统的凭据管理器（Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service），只显示开头和结尾。凭据管理器用不了时，才退回 {view.home} 目录里的明文文件。
+      </p>
+      {editing && (
+        <KeyDialog
+          provider={editing === "new" ? null : (view.providers.find((provider) => provider.id === editing) ?? null)}
+          choices={rest}
+          view={view}
+          onSave={onSave}
+          onSaveKey={onSaveKey}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </section>
   );
 }
 
@@ -159,7 +316,7 @@ function McpSection({ config, servers, onSave, onRefresh }: McpSectionProps) {
       <h2>外来法器（MCP 服务）</h2>
       <div className="field">
         <label htmlFor="mcp-config">服务清单</label>
-        <textarea id="mcp-config" className="input mono config" rows={8} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <textarea id="mcp-config" className="input mono config" rows={5} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
         <p className="hint">
           用各家通用的 mcpServers 写法，MCP 服务说明里给的配置片段可以直接贴进来。本机程序写 command 和 args，远程服务写 url（需要的话加 headers）。保存后立即连接；连上的服务提供的工具，分身每次动用前都要请示。
         </p>
@@ -191,6 +348,31 @@ function McpSection({ config, servers, onSave, onRefresh }: McpSectionProps) {
   );
 }
 
+/** The pages the settings are sorted into: what a 分身 runs on, what it may do, what it can reach, and how the app looks. */
+export type SettingsTab = "model" | "rules" | "tools" | "look";
+
+const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] = [
+  {
+    id: "model",
+    name: "功法",
+    hint: "各家功法出处和它们的密钥，新分身用哪一门，推演多深，前情留多长",
+    icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
+  },
+  { id: "rules", name: "禁制", hint: "分身不问就能做什么，沙箱，已经长期准过的事", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
+  { id: "tools", name: "法器", hint: "联网搜索、技能、外来的 MCP 服务", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
+  {
+    id: "look",
+    name: "外观",
+    hint: "白昼还是玄夜",
+    icon: (
+      <>
+        <circle cx="8" cy="8" r="5.5" />
+        <path d="M8 2.5v11a5.5 5.5 0 0 0 0-11z" fill="currentColor" />
+      </>
+    ),
+  },
+];
+
 interface Props {
   view: SettingsView;
   /** The models a provider serves, asked from the provider itself. */
@@ -198,12 +380,13 @@ interface Props {
   onSaveMcp: (config: string) => Promise<string | null>;
   onRefresh: () => void;
   onRevoke: (workspace: string, grant: string) => void;
-  onSave: (settings: Settings) => void;
-  onSaveKey: (provider: string, key: string) => void;
-  onDeleteKey: (provider: string) => void;
+  onSave: (settings: Settings) => unknown;
+  onSaveKey: (provider: string, key: string) => unknown;
+  onDeleteKey: (provider: string) => unknown;
 }
 
 export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, onSaveMcp, onRefresh, listModels }: Props) {
+  const [tab, setTab] = useState<SettingsTab>("model");
   const grants = Object.entries(view.grants);
   const { settings } = view;
   const chosen = view.providers.find((provider) => provider.id === settings.provider);
@@ -231,12 +414,26 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
     if (Number.isFinite(tokens)) onSave({ ...settings, context_limit: tokens });
   });
   return (
+    <div className="settings-page">
+      <header className="main-header settings-tabs">
+        {TABS.map((item) => (
+          <button type="button" className="tab" key={item.id} aria-pressed={tab === item.id} title={item.hint} onClick={() => setTab(item.id)}>
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              {item.icon}
+            </svg>
+            {item.name}
+          </button>
+        ))}
+      </header>
     <div className="settings">
       <div className="settings-inner">
+        {tab === "model" && (
+          <>
+        <KeyList view={view} onSave={onSave} onSaveKey={onSaveKey} onDeleteKey={onDeleteKey} />
         <section>
-          <h1>功法</h1>
+          <h2>新分身的功法</h2>
           <div className="field">
-            <label htmlFor="default-provider">新分身的功法出处（模型供应商）</label>
+            <label htmlFor="default-provider">出处（模型供应商）</label>
             <select
               id="default-provider"
               className="input"
@@ -255,7 +452,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             </select>
           </div>
           <div className="field">
-            <label htmlFor="default-model">修哪门功法（模型）</label>
+            <label htmlFor="default-model">功法（模型）</label>
             <input id="default-model" className="input mono" list="model-suggestions" placeholder="填写模型 ID" {...model} />
             <datalist id="model-suggestions">
               {suggestions.map(([id, name]) => (
@@ -302,10 +499,13 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             </p>
           </div>
         </section>
-
+          </>
+        )}
+        {tab === "rules" && (
+          <>
         <section>
           <h2>禁制</h2>
-          <fieldset className="papers">
+          <fieldset className="papers pairs">
             <legend>新分身起始的禁制</legend>
             {MODES.map((option) => (
               <label className="paper" key={option.value}>
@@ -335,9 +535,12 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               命令确实要往别处写时，分身会请示出沙箱跑一次，每次都要本尊点头。下一条命令起生效。
             </p>
           ) : (
-            <p className="hint failed">这个系统上还没有沙箱，眼下只有 Linux 和 macOS 有。（{view.sandbox_support.Err}）</p>
+            <p className="hint" title={view.sandbox_support.Err}>
+              这个系统上还没有沙箱，眼下只有 Linux 和 macOS 有。
+            </p>
           )}
-          <div className="field">
+          {/* Nothing to add directories to where nothing is confined. */}
+          <div className="field" hidden={!view.sandbox_support.Ok}>
             <label htmlFor="sandbox-paths">另外准许写入的目录（一行一个）</label>
             <textarea
               id="sandbox-paths"
@@ -376,7 +579,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             </div>
           ))}
         </section>
-
+          </>
+        )}
+        {tab === "tools" && (
+          <>
         <section>
           <h2>联网搜索</h2>
           <div className="field">
@@ -390,7 +596,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             </select>
             <p className="hint">
               搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家功法都能搜。
-              {view.search_ready ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。" : "还没有 GLM 的密钥，所以分身现在不能搜：在下面「功法出处」里填上它就行。"}
+              {view.search_ready ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。" : "还没有 GLM 的密钥，所以分身现在不能搜：到「功法」那一页给 GLM 添上密钥就行。"}
               GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
             </p>
           </div>
@@ -414,26 +620,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
         </section>
 
         <McpSection config={view.mcp_config} servers={view.mcp_servers} onSave={onSaveMcp} onRefresh={onRefresh} />
-
-        <section>
-          <h2>功法出处</h2>
-          {view.providers.map((provider) => (
-            <ProviderRow
-              key={provider.id}
-              provider={provider}
-              status={view.keys[provider.id] ?? { source: "none", preview: null, plaintext: false }}
-              settings={settings}
-              onSave={onSave}
-              onSaveKey={onSaveKey}
-              onDeleteKey={onDeleteKey}
-            />
-          ))}
-          <p className="muted">
-            密钥存进系统的凭据管理器（Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service），不会显示完整内容。凭据管理器用不了时，才退回 {view.home}
-            目录里的明文文件。
-          </p>
-        </section>
-
+          </>
+        )}
+        {tab === "look" && (
+          <>
         <section>
           <h2>外观</h2>
           <fieldset className="papers">
@@ -454,7 +644,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             ))}
           </fieldset>
         </section>
+          </>
+        )}
       </div>
+    </div>
     </div>
   );
 }
