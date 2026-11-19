@@ -188,7 +188,8 @@ async fn run(options: Options) -> Result<bool, String> {
     let tuning = move |model: &str| {
         let settings = tuned.load();
         let window = tuned.context_window(&settings, &tuned_provider, model).tokens;
-        Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort }
+        let (guardian, approval_wait) = (settings.guardian_model(&tuned_provider, model), settings.approval_wait());
+        Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort, guardian, approval_wait }
     };
     let searching = store.clone();
     let confining = store.clone();

@@ -214,11 +214,35 @@ pub enum Event {
         /// existed read it as absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         grant: Option<String>,
+        /// RFC 3339 time at which, with no answer, the request is declined by itself. Set in auto
+        /// mode, where nobody may be there to answer. Since format 12.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<String>,
     },
     #[serde(rename = "approval/resolved")]
     ApprovalResolved {
         tool_use_id: String,
         decision: Decision,
+        /// Nobody answered in time, and the request was declined by itself. Since format 12.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        timed_out: bool,
+    },
+    /// The guardian, a model asked in auto mode about a command the rules
+    /// cannot pass, judged it: allowed it to run, or left it to the user.
+    /// Never sent to the model that works. Since format 12.
+    #[serde(rename = "guardian/reviewed")]
+    GuardianReviewed {
+        tool_use_id: String,
+        /// The model that judged.
+        model: String,
+        allowed: bool,
+        /// Why, in a sentence; or, when the guardian could not be asked, what went wrong.
+        reason: String,
+        /// The guardian could not be asked, so the user is.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<Tokens>,
     },
     #[serde(rename = "tool/result")]
     ToolResult {

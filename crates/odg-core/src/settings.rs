@@ -26,6 +26,8 @@ pub const THEMES: &[&str] = &["system", "light", "dark"];
 /// conversation, so compacting long before the window is full keeps a long
 /// session affordable.
 pub const DEFAULT_CONTEXT_LIMIT: u64 = 200_000;
+/// In auto mode, how many seconds a request for approval waits for an answer before it is declined by itself.
+pub const DEFAULT_APPROVAL_TIMEOUT: u64 = 30;
 /// Below this a summary and one file read would already be past the limit.
 pub const MIN_CONTEXT_LIMIT: u64 = 20_000;
 /// The smallest context window the user can set for a model: one whose four fifths is the lowest limit.
@@ -46,6 +48,10 @@ fn default_provider() -> String {
 
 fn default_context_limit() -> u64 {
     DEFAULT_CONTEXT_LIMIT
+}
+
+fn default_approval_timeout() -> u64 {
+    DEFAULT_APPROVAL_TIMEOUT
 }
 
 fn default_search_engine() -> String {
@@ -98,6 +104,16 @@ pub struct Settings {
     /// know, or one the user knows better. See [`SettingsStore::context_window`].
     #[serde(default)]
     pub context_windows: BTreeMap<String, u64>,
+    /// In auto mode, have the guardian, a model, judge the commands the rules cannot pass before the
+    /// user is asked. See [`crate::agent`].
+    #[serde(default)]
+    pub guardian: bool,
+    /// The model the guardian is, by provider id; a provider not listed uses the session's own model.
+    #[serde(default)]
+    pub guardian_models: BTreeMap<String, String>,
+    /// In auto mode, the seconds a request for approval waits before it is declined by itself; 0 waits for good.
+    #[serde(default = "default_approval_timeout")]
+    pub approval_timeout: u64,
 }
 
 impl Default for Settings {
@@ -116,6 +132,9 @@ impl Default for Settings {
             sandbox: false,
             sandbox_paths: Vec::new(),
             context_windows: BTreeMap::new(),
+            guardian: false,
+            guardian_models: BTreeMap::new(),
+            approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
         }
     }
 }
@@ -144,6 +163,10 @@ impl Settings {
         if !THEMES.contains(&self.theme.as_str()) {
             self.theme = default.theme;
         }
+        self.guardian_models.retain(|provider, model| !provider.is_empty() && !model.trim().is_empty());
+        for model in self.guardian_models.values_mut() {
+            *model = model.trim().to_string();
+        }
         // Asking about nothing is switched on in one session by hand, never set for every new one.
         if self.mode == Mode::Bypass {
             self.mode = default.mode;
@@ -170,6 +193,16 @@ impl Settings {
     /// The limit a session on this model compacts at: the one set here, or
     /// four fifths of the model's context window when that is less, which
     /// leaves room for the answer and for what the next tools return.
+    /// The model the guardian is for a session on `model` of `provider`; `None` while the guardian is off.
+    pub fn guardian_model(&self, provider: &str, model: &str) -> Option<String> {
+        self.guardian.then(|| self.guardian_models.get(provider).cloned().unwrap_or_else(|| model.to_string()))
+    }
+
+    /// How long a request for approval waits in auto mode; `None` for good.
+    pub fn approval_wait(&self) -> Option<std::time::Duration> {
+        (self.approval_timeout > 0).then(|| std::time::Duration::from_secs(self.approval_timeout))
+    }
+
     pub fn context_limit_within(&self, window: u64) -> u64 {
         let ceiling = window / 5 * 4;
         if self.context_auto { ceiling } else { self.context_limit.min(ceiling) }

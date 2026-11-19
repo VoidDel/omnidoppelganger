@@ -99,7 +99,8 @@ impl App {
         let tuning = move |model: &str| {
             let settings = store.load();
             let window = store.context_window(&settings, &provider, model).tokens;
-            Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort }
+            let (guardian, approval_wait) = (settings.guardian_model(&provider, model), settings.approval_wait());
+            Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort, guardian, approval_wait }
         };
         let searching = self.settings.clone();
         let confining = self.settings.clone();

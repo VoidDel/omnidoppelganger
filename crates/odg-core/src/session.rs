@@ -23,9 +23,11 @@ use crate::providers::DEFAULT_PROVIDER;
 /// `skills/listed` event. Format 7 adds the `model/changed` event. Format 8
 /// adds `parent` and `worktree` to the header and the `subagent/started` event.
 /// Format 9 adds `schedule` to the header, and format 10 `fork`. Format 11
-/// adds the `bypass` mode a message can be sent in. A build
+/// adds the `bypass` mode a message can be sent in. Format 12 adds the
+/// `guardian/reviewed` event, `expires_at` on an approval request and
+/// `timed_out` on its answer. A build
 /// from before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 11;
+pub const FORMAT_VERSION: u32 = 12;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -1054,6 +1056,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             reason: "command".into(),
             detail: "ls".into(),
             grant: Some("command".into()),
+            expires_at: None,
         })
         .unwrap();
         assert!(summarize(log.events()).awaiting_approval);
@@ -1076,7 +1079,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         std::thread::sleep(std::time::Duration::from_millis(5));
         let mut second = store.create(Path::new("/b"), "anthropic", "m").unwrap();
         second.append(Event::UserMessage { text: "x".repeat(50), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
-        second.append(Event::ApprovalResolved { tool_use_id: "none".into(), decision: Decision::Deny }).unwrap();
+        second.append(Event::ApprovalResolved { tool_use_id: "none".into(), decision: Decision::Deny, timed_out: false }).unwrap();
 
         let list = store.list();
         assert_eq!(list.len(), 2);
