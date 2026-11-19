@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Desk } from "./components/Desk";
+import { Guard } from "./components/Guard";
 import { Jump } from "./components/Jump";
 import { Composer, Logo, Mountains, PANEL_STRIP, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
 import { ReplayBar, STEP_MS } from "./components/Replay";
@@ -376,6 +377,8 @@ export default function App() {
   );
   return (
     <div className={`app ${showPanel ? "with-panel" : ""}`} style={{ "--panel-width": `${strip ? PANEL_STRIP : panel.width}px` } as React.CSSProperties}>
+      {/* Each part of the window is guarded by itself: one that cannot be drawn leaves the others in use. */}
+      <Guard name="分身列表" className="sidebar">
       <Sidebar
         sessions={state.sessions}
         activeId={state.activeId}
@@ -387,10 +390,12 @@ export default function App() {
         onSettings={toSettings}
         onSearch={api.searchSessions}
       />
+      </Guard>
       <main className="main">
         {/* What went wrong, or went well: under the session's title where there is one, at the top of the page otherwise. */}
         {!(inChat && active) && banners}
         {inSettings && state.settings ? (
+          <Guard name="设置" className="fill" resetKey={state.page}>
           <SettingsPage
             view={state.settings}
             onSave={(settings) => saved(api.saveSettings(settings))}
@@ -409,7 +414,9 @@ export default function App() {
               )
             }
           />
+          </Guard>
         ) : state.page === "schedules" ? (
+          <Guard name="功课" className="fill" resetKey={state.page}>
           <SchedulesPage
             schedules={state.schedules}
             sessions={state.sessions}
@@ -432,8 +439,10 @@ export default function App() {
               )
             }
           />
+          </Guard>
         ) : active ? (
           <>
+            <Guard name="标题栏" className="bar" resetKey={active.id}>
             <SessionHeader
               session={active}
               parent={state.sessions.find((session) => session.id === active.parent)}
@@ -455,6 +464,7 @@ export default function App() {
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
               onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
             />
+            </Guard>
             {banners}
             {rows.length === 0 && state.queued.length === 0 ? (
               <div className="empty">
@@ -468,6 +478,7 @@ export default function App() {
                 </p>
               </div>
             ) : (
+              <Guard name="对话" className="fill" resetKey={active.id}>
               <Transcript
                 key={active.id}
                 rows={rows}
@@ -484,6 +495,7 @@ export default function App() {
                 onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)}
                 onFork={active.parent ? undefined : forkFrom}
               />
+              </Guard>
             )}
             {replay ? (
               <ReplayBar
@@ -501,6 +513,7 @@ export default function App() {
             ) : null}
             {/* Kept while a replay stands in its place, so what was being typed is still there afterwards. */}
             <div style={{ display: replay ? "none" : "contents" }}>
+            <Guard name="输入框" className="under" resetKey={active.id}>
             <Composer
               status={state.status}
               provider={providers.find((known) => known.id === active.provider)}
@@ -529,6 +542,7 @@ export default function App() {
               trustable={!!active.worktree}
               seed={seed}
             />
+            </Guard>
             </div>
           </>
         ) : (
@@ -568,7 +582,9 @@ export default function App() {
         />
       )}
       {showPanel && (
-        <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} working={state.status === "running"} />
+        <Guard name="侧栏" className="panel" resetKey={state.activeId}>
+          <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} working={state.status === "running"} />
+        </Guard>
       )}
     </div>
   );

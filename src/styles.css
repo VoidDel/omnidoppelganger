@@ -4816,6 +4816,100 @@ button.select-button svg {
   }
 }
 
+/* ---------- a part of the page that could not be drawn ---------- */
+
+/* In the part's own place: a note that says so, the ways on from it, and the error for whoever is asked. */
+.broken {
+  min-width: 0;
+  min-height: 0;
+  padding: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-3);
+  overflow: auto;
+}
+
+.broken-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.broken h2 {
+  margin: 0;
+  font-size: var(--t-lead);
+  line-height: 1.4;
+  color: var(--cinnabar-ink);
+}
+
+.broken p {
+  margin: 0;
+  max-width: 40em;
+}
+
+.broken-detail {
+  max-width: 100%;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.broken-detail summary {
+  cursor: pointer;
+}
+
+.broken-detail pre {
+  max-width: 100%;
+  max-height: 240px;
+  margin: var(--s-2) 0;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  color: var(--ink);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Where the part it stands for fills what room there is: a conversation, a page. */
+.broken.fill {
+  flex: 1;
+}
+
+/* Where it stands for the bar across the top, or the box under the conversation: it keeps to its edge. */
+.broken.bar {
+  border-bottom: 1px solid var(--line);
+  padding: var(--s-3) var(--s-5);
+}
+
+.broken.under {
+  border-top: 1px solid var(--line);
+  padding: var(--s-3) var(--s-5);
+}
+
+/* Narrow places: the list, and the side panel. */
+.broken.sidebar,
+.broken.panel {
+  padding: var(--s-4);
+}
+
+.broken.sidebar h2,
+.broken.panel h2 {
+  font-size: var(--t-body);
+}
+
+/* The whole page: in the middle of the window. */
+.broken.whole {
+  height: 100%;
+  justify-content: center;
+  padding: var(--s-5) 10vw;
+}
+
+.broken.whole h2 {
+  font-size: var(--t-title);
+}
+
 /* ---------- for one who has asked the system for stillness ---------- */
 
 /* Nothing moves, whatever rule above says it should and however that rule is written: the lists of names in the
