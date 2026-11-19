@@ -837,6 +837,12 @@ export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProp
     <aside className="panel" aria-label="改动与终端">
       {/* The edge to drag: the panel is as wide as the pointer is far from the window's right side. */}
       <div
+  // Read by the pointer's own events, which can come before the page has drawn again: the state above is for how the edge looks.
+  const held = useRef(false);
+  const hold = (down: boolean) => {
+    held.current = down;
+    setDragging(down);
+  };
         className={`panel-edge ${dragging ? "dragging" : ""}`}
         role="separator"
         aria-orientation="vertical"
@@ -845,11 +851,11 @@ export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProp
         tabIndex={0}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
-          setDragging(true);
+          hold(true);
         }}
-        onPointerMove={(event) => dragging && onResize(fitPanel(window.innerWidth - event.clientX))}
-        onPointerUp={() => setDragging(false)}
-        onPointerCancel={() => setDragging(false)}
+        onPointerMove={(event) => held.current && onResize(fitPanel(window.innerWidth - event.clientX))}
+        onPointerUp={() => hold(false)}
+        onPointerCancel={() => hold(false)}
         onDoubleClick={() => onResize(fitPanel(PANEL_WIDTH.initial))}
         onKeyDown={(event) => {
           // Left widens the panel, right narrows it: the edge moves the way the arrow points.
