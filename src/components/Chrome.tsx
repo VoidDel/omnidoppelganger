@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { launchFrom } from "../lib/flight";
 import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
-import { MODES, modeOf, nextMode } from "../lib/modes";
+import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Provider, SessionItem, Status, Todo } from "../lib/types";
 
 /** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
@@ -193,7 +193,46 @@ const MODE_ICONS: Record<Mode, string> = {
   edit: "M6 4 2 8l4 4M10 4l4 4-4 4",
   plan: "M4 2.5h8v11H4zM6 5.5h4M6 8h4M6 10.5h2.5",
   auto: "M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z",
+  // An open lock: nothing is kept shut.
+  bypass: "M4 7.5h8v6H4zM6 7.5V5a2 2 0 0 1 3.9-.6M8 10v1.2",
 };
+
+/** Said before 全权托付 is switched on, and only switched on when 本尊 stamps it. */
+function BypassDialog({ onConfirm, onClose }: { onConfirm: () => void; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  // The keyboard starts on 算了: Enter alone must not hand everything over.
+  useEffect(() => {
+    dialog.current?.showModal();
+    cancel.current?.focus();
+  }, []);
+  return (
+    <dialog ref={dialog} className="dialog danger" aria-labelledby="bypass-title" onClose={onClose}>
+      <form
+        method="dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onConfirm();
+        }}
+      >
+        <h2 id="bypass-title">全权托付这个分身？</h2>
+        <p>托付之后，分身做什么都不再请示：跑任何命令、改洞府之外的文件、改 .git、上网、动用身外法器，一概自行放行。</p>
+        <p>
+          <strong>Windows 上没有结界保护。</strong>它能删除、改写这台电脑上本尊能动的任何文件，也能把文件内容发到网上。它在独立工作树里改的东西，并回前不会进洞府；但洞府之外的一切不受保护。
+        </p>
+        <p className="muted">只对这个分身生效，不会成为新分身的默认，功课也用不了。随时可以在禁制菜单里换回别的。</p>
+        <div className="actions">
+          <button type="submit" className="button solid">
+            确认托付
+          </button>
+          <button type="button" className="button text" ref={cancel} onClick={onClose}>
+            算了
+          </button>
+        </div>
+      </form>
+    </dialog>
+  );
+}
 
 function ModeIcon({ mode }: { mode: Mode }) {
   return (
@@ -301,8 +340,10 @@ function ModelList({ provider, providerId, model, onPick, listModels }: ModelLis
 const LIMITS = [50_000, 100_000, 200_000, 500_000];
 
 /** The 禁制 button and its menu: what the 分身 may do without asking. */
-function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void }) {
+function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (mode: Mode) => void; trustable: boolean }) {
   const [open, setOpen] = useState(false);
+  /** 全权托付 was picked: the dialog that says what it means is open. */
+  const [confirming, setConfirming] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -313,7 +354,14 @@ function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void
   const current = modeOf(mode);
   return (
     <div className="mode-picker" ref={root} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
-      <button type="button" className="select-button" aria-haspopup="menu" aria-expanded={open} title={`禁制：${current.hint}。Shift+Tab 切换`} onClick={() => setOpen(!open)}>
+      <button
+        type="button"
+        className={`select-button ${mode === "bypass" ? "danger" : ""}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`禁制：${current.hint}。Shift+Tab 切换`}
+        onClick={() => setOpen(!open)}
+      >
         <ModeIcon mode={mode} />
         <span className="label sr-only">禁制</span>
         <span className="value">{current.name}</span>
@@ -349,7 +397,38 @@ function ModePicker({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void
               </svg>
             </button>
           ))}
+          {/* Apart from the four, in cinnabar, and only where a worktree keeps its work off the folder's own files. */}
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={mode === "bypass"}
+            className="mode-option danger"
+            disabled={!trustable}
+            title={trustable ? undefined : "只有独立工作树的分身才能全权托付：在洞府名旁点分支图标化一个"}
+            onClick={() => {
+              setOpen(false);
+              if (mode !== "bypass") setConfirming(true);
+            }}
+          >
+            <ModeIcon mode="bypass" />
+            <span className="mode-text">
+              <span className="name">{BYPASS.name}</span>
+              <span className="hint">{trustable ? BYPASS.hint : "只有独立工作树的分身才能托付"}</span>
+            </span>
+            <svg className="check" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              {mode === "bypass" && <path d="m3 8.5 3.2 3L13 4.5" />}
+            </svg>
+          </button>
         </div>
+      )}
+      {confirming && (
+        <BypassDialog
+          onConfirm={() => {
+            setConfirming(false);
+            onMode("bypass");
+          }}
+          onClose={() => setConfirming(false)}
+        />
       )}
     </div>
   );
@@ -428,24 +507,24 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
           {session.branch}
         </span>
       )}
+        {session.parent && (
+          <button type="button" className="kin-link" title={`这是一个子分身，出自「${parent?.title || "主分身"}」。点这里回到派它出来的分身`} onClick={onOpenParent}>
+            <svg aria-hidden="true" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12.5 13V7.5a2 2 0 0 0-2-2h-7M6.5 2.5l-3 3 3 3" />
+            </svg>
+            子分身
+          </button>
+        )}
+        {session.fork && (
+          <button type="button" className="kin-link" disabled={!source} title={source ? `这是一个分叉，出自「${source.title || "新分身"}」：它的前情抄自那个分身。点这里过去` : "这是一个分叉：它的前情抄自另一个分身，那个分身已经删了"} onClick={onOpenSource}>
+            <svg aria-hidden="true" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 14V9.5M8 9.5C8 6.5 4 7 4 3.5M8 9.5c0-3 4-2.5 4-6M2.5 5 4 3.5 5.5 5M10.5 5 12 3.5 13.5 5" />
+            </svg>
+            分叉
+          </button>
+        )}
       </div>
       </div>
-      {session.parent && (
-        <button type="button" className="kin-link" title={`这是一个子分身，出自「${parent?.title || "主分身"}」。点这里回到派它出来的分身`} onClick={onOpenParent}>
-          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12.5 13V7.5a2 2 0 0 0-2-2h-7M6.5 2.5l-3 3 3 3" />
-          </svg>
-          子分身
-        </button>
-      )}
-      {session.fork && (
-        <button type="button" className="kin-link" disabled={!source} title={source ? `这是一个分叉，出自「${source.title || "新分身"}」：它的前情抄自那个分身。点这里过去` : "这是一个分叉：它的前情抄自另一个分身，那个分身已经删了"} onClick={onOpenSource}>
-          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 14V9.5M8 9.5C8 6.5 4 7 4 3.5M8 9.5c0-3 4-2.5 4-6M2.5 5 4 3.5 5.5 5M10.5 5 12 3.5 13.5 5" />
-          </svg>
-          分叉
-        </button>
-      )}
       <span className="spacer" />
       {deleting ? (
         <span className="undo-confirm">
@@ -562,13 +641,15 @@ interface ComposerProps {
   onCarryOut: (mode: Mode) => void;
   onSend: (text: string, images: Image[]) => void;
   onStop: () => void;
+  /** Whether the session works in a worktree of its own, the only place 全权托付 may be switched on. */
+  trustable: boolean;
   /** Words to put in the box, as when a fork brings back the message it starts before; a new `id` puts them in. */
   seed: { id: number; text: string } | null;
 }
 
 export function Composer(props: ComposerProps) {
   const { status, provider, providerId, model, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
-  const { onLimit, onCompact, onModel, listModels, onMode, onCarryOut, onSend, onStop, seed } = props;
+  const { onLimit, onCompact, onModel, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable } = props;
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const [text, setText] = useState("");
@@ -622,6 +703,9 @@ export function Composer(props: ComposerProps) {
             <span>分身收功候旨，本尊定夺后继续。</span>
           </>
         )}
+        {mode === "bypass" && status === "idle" && !planReady && (
+          <span className="trusted-note">全权托付中：分身什么都不请示。</span>
+        )}
         {status === "idle" && planReady && (
           <>
             <span>计划已呈上。本尊点头，就换个禁制让它动手：</span>
@@ -633,7 +717,7 @@ export function Composer(props: ComposerProps) {
           </>
         )}
       </div>
-      <div className="composer-box">
+      <div className={`composer-box ${mode === "bypass" ? "trusted" : ""}`}>
         {(images.length > 0 || refused) && (
           <div className="attachments">
             {images.map((image, index) => (
@@ -706,7 +790,7 @@ export function Composer(props: ComposerProps) {
               />
             )}
           </Popup>
-          <ModePicker mode={mode} onMode={onMode} />
+          <ModePicker mode={mode} onMode={onMode} trustable={trustable} />
           <Popup
             name="灵石"
             title="灵石：前情占了多少 / 到多少就凝成摘要。点开看累计用量、改上限"

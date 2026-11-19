@@ -90,6 +90,14 @@ const mock = await startMock([
   [{ text: "分叉这边查完了。" }],
   // Asked for by hand from the 灵石 menu: a summary of the conversation.
   [{ text: "<summary>本尊让分身分头去查，子分身查过了。</summary>" }],
+  // A long thought, held while the test looks at it, then the answer.
+  [
+    { thinking: "1. Read the README and the roadmap 2. List the crates and what each owns 3. Run the tests 4. Check the CI config 5. Compare what the docs claim with the code 6. Look at open issues 7. Code drift, docs against reality 8. Maybe check dependency versions and vulnerabilities 9. Look at code smells, large files, complexity", hold: 2500 },
+    { text: "推演完了。" },
+  ],
+  // Left to ask about nothing, in a worktree of its own: a command that always asks runs at once.
+  [{ text: "托付了，我直接写。" }, { tool: "run_command", input: { command: "echo trusted > trusted.txt" } }],
+  [{ text: "写好了。" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -394,6 +402,39 @@ try {
   // Several sessions are named so; the one on the page is the one whose log now ends in a summary.
   const summarized = logs().filter((events) => events.at(-1).type === "context/compacted");
   check(JSON.stringify(summarizing.messages).includes("Summarize it inside <summary>") && summarized.length === 1 && summarized[0].at(-2).type === "turn/end", "the 灵石 menu had the conversation summarized now, between turns");
+  // While the 分身 thinks, its thought is one line that shows the newest words, and stays so.
+  await page.type("#composer-input", "再想想");
+  await page.enter();
+  const live = `(() => { const line = document.querySelector(".thinking-live"); return line && { height: line.getBoundingClientRect().height, full: !!line.querySelector(".tail.full"), end: line.textContent.trim().endsWith("complexity") }; })()`;
+  await page.waitFor("the thought to show", `!!${live}?.full`);
+  const thoughtNow = await page.evaluate(live);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const thoughtLater = await page.evaluate(live);
+  check(thoughtNow.height < 30 && thoughtNow.full && thoughtNow.end && thoughtLater.full, "a long thought is one line, held at its newest words, and stays so");
+  await page.waitForText("推演完了。");
+
+  // 全权托付 is offered only where a worktree keeps the work apart, after saying what it means, and shows in cinnabar.
+  const modeButton = `[...document.querySelectorAll(".composer-row .select-button")].find((button) => button.querySelector(".label")?.textContent === "禁制")`;
+  const bypassOption = `[...document.querySelectorAll(".mode-option.danger")][0]`;
+  await page.evaluate(`${modeButton}.click()`);
+  await page.waitFor("the 禁制 menu", `!!${bypassOption}`);
+  check(await page.evaluate(`${bypassOption}.disabled`), "全权托付 cannot be picked for a 分身 that works in the folder itself");
+  await page.evaluate(`${modeButton}.click()`);
+  await page.evaluate(`document.querySelector(".group-add.apart").click()`);
+  await page.waitFor("a session with a worktree of its own", `document.querySelector(".main-header .branch")?.textContent.trim().startsWith("odg/")`);
+  await page.evaluate(`${modeButton}.click()`);
+  await page.waitFor("全权托付 to be offered", `${bypassOption} && !${bypassOption}.disabled`);
+  await page.evaluate(`${bypassOption}.click()`);
+  await page.waitFor("the dialog that says what it means", `document.querySelector("dialog.dialog.danger")?.open`);
+  check(!(await page.evaluate(`${modeButton}.classList.contains("danger")`)), "nothing is switched on before the dialog is answered");
+  await page.click("确认托付");
+  await page.waitFor("the mode to show in cinnabar", `${modeButton}.classList.contains("danger") && document.querySelector(".composer-box").classList.contains("trusted")`);
+  await page.type("#composer-input", "写个文件");
+  await page.enter();
+  await page.waitForText("写好了。");
+  const trustedCheckout = readdirSync(join(home, "worktrees")).find((name) => existsSync(join(home, "worktrees", name, "trusted.txt")));
+  check(!!trustedCheckout && !(await page.evaluate(`document.body.innerText.includes("请本尊定夺")`)), "left to ask about nothing, a command that writes a file ran without asking, in the worktree");
+  check(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).mode !== "bypass", "全权托付 stays with that 分身: it is not what new ones start in");
   console.log("Passed.");
 } catch (error) {
   failed = true;

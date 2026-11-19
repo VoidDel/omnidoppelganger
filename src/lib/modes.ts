@@ -8,7 +8,13 @@ export const MODES: { value: Mode; name: string; hint: string }[] = [
   { value: "auto", name: "放手施为", hint: "只读、构建、测试类命令自行放行，有风险的才停下请示" },
 ];
 
-export const modeOf = (value: Mode | undefined) => MODES.find((mode) => mode.value === value) ?? MODES[1];
+/**
+ * The fifth, which asks about nothing. It is switched on by hand in one session with a worktree of its own, after
+ * saying what it means: never a default, never a schedule's, never reached by Shift+Tab.
+ */
+export const BYPASS = { value: "bypass" as Mode, name: "全权托付", hint: "什么都不请示：任何命令、洞府之外、.git、上网、身外法器，一概自行放行" };
 
-/** The mode after `value`, for Shift+Tab. */
+export const modeOf = (value: Mode | undefined) => (value === "bypass" ? BYPASS : (MODES.find((mode) => mode.value === value) ?? MODES[1]));
+
+/** The mode after `value`, for Shift+Tab: one of the four, so it never lands on 全权托付; from that, the first. */
 export const nextMode = (value: Mode): Mode => MODES[(MODES.findIndex((mode) => mode.value === value) + 1) % MODES.length].value;

@@ -15,7 +15,14 @@ function events(reply, index) {
     { type: "message_start", message: { id: `msg_${index}`, model: "claude-opus-5-5", usage: { input_tokens: 100 * (index + 1), output_tokens: 1 } } },
   ];
   reply.forEach((block, at) => {
-    if ("text" in block) {
+    if ("thinking" in block) {
+      // Thinking, then a pause before the rest, so the test can look at what the window shows while it thinks.
+      sent.push({ type: "content_block_start", index: at, content_block: { type: "thinking", thinking: "", signature: "" } });
+      sent.push({ type: "content_block_delta", index: at, delta: { type: "thinking_delta", thinking: block.thinking } });
+      sent.push({ type: "content_block_delta", index: at, delta: { type: "signature_delta", signature: "c2ln" } });
+      // Not an event the API sends: where the stand-in waits before going on.
+      sent.push({ hold: block.hold ?? 0 });
+    } else if ("text" in block) {
       sent.push({ type: "content_block_start", index: at, content_block: { type: "text", text: "" } });
       // Two fragments, so the client's joining of fragments is exercised.
       const half = Math.ceil(block.text.length / 2);
@@ -50,7 +57,7 @@ export async function startMock(script) {
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
-    request.on("end", () => {
+    request.on("end", async () => {
       // The models the stand-in says it serves, for the app's model menu.
       if (request.method === "GET" && request.url.startsWith("/v1/models")) {
         lists.count += 1;
@@ -76,7 +83,13 @@ export async function startMock(script) {
         return;
       }
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-      for (const event of events(reply, index)) response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      for (const event of events(reply, index)) {
+        if ("hold" in event) {
+          await new Promise((resolve) => setTimeout(resolve, event.hold));
+          continue;
+        }
+        response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      }
       response.end();
     });
   });

@@ -305,7 +305,9 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
 
 /** What the session-wide button says. A command grant names the prefix it covers, e.g. `command:cargo test`. */
 function alwaysLabel(grant: string, fallback: string): string {
-  return grant.startsWith("command:") ? `之后以「${grant.slice("command:".length)}」开头的命令都准` : fallback;
+  // A command of several is granted command by command, one per line.
+  const commands = grant.split("\n").filter((part) => part.startsWith("command:")).map((part) => `「${part.slice("command:".length)}」`);
+  return commands.length ? `之后以${commands.join("、")}开头的命令都准` : fallback;
 }
 
 /** The change an edit asks to make, drawn like a diff: what goes out, then what comes in. */
@@ -439,6 +441,31 @@ function ItemView({ item, mode, family, frozen, onDecide }: { item: Item; mode: 
   }
 }
 
+/**
+ * What the 分身 is thinking while it thinks: one line, its newest words. Once the line is full, it shows the end
+ * of what was written and lets the start fade out at the left, so the line keeps up without growing.
+ */
+function ThinkingLine({ text }: { text: string }) {
+  const line = useRef<HTMLSpanElement>(null);
+  const words = useRef<HTMLSpanElement>(null);
+  const [full, setFull] = useState(false);
+  // Newlines would wrap in a line that must not; only the last few hundred characters can be seen anyway.
+  const tail = text.slice(-400).replace(/\s+/g, " ").trim();
+  // The words' own width against the line's: once they are held at the end, what they overflow is to the left,
+  // which the line's scroll width does not count, so measuring that would undo the change it made.
+  useLayoutEffect(() => {
+    if (line.current && words.current) setFull(words.current.offsetWidth > line.current.clientWidth);
+  });
+  return (
+    <div className="thinking thinking-live" title={text.slice(-2000)}>
+      <span className="label">推演中：</span>
+      <span ref={line} className={`tail ${full ? "full" : ""}`}>
+        <span ref={words}>{tail}</span>
+      </span>
+    </div>
+  );
+}
+
 function Streaming({ blocks }: { blocks: StreamBlock[] }) {
   return (
     <>
@@ -450,9 +477,7 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
             </Markdown>
           </div>
         ) : block.kind === "thinking" ? (
-          <div key={block.index} className="thinking">
-            推演中：{block.text.slice(-160)}
-          </div>
+          <ThinkingLine key={block.index} text={block.text} />
         ) : (
           <div key={block.index} className="did">
             <div className="did-head">
@@ -512,6 +537,32 @@ function UndoButton({ turn, onUndo }: { turn: number; onUndo: (turn: number) => 
         算了
       </button>
     </span>
+  );
+}
+
+/**
+ * What a message says. It stays pinned over the work it asked for, so a long one is held to two lines until it
+ * is opened, and the way to open it shows only when there is more to see.
+ */
+function SaidText({ text }: { text: string }) {
+  const body = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [more, setMore] = useState(false);
+  // Measured while held: whether its lines go past the two it is held to. Open, it is left as it was found.
+  useLayoutEffect(() => {
+    if (!open && body.current) setMore(body.current.scrollHeight > body.current.clientHeight + 1);
+  });
+  return (
+    <div className="said-body">
+      <div ref={body} className={`said-text ${open ? "open" : "held"}`}>
+        {text}
+      </div>
+      {(more || open) && (
+        <button type="button" className="said-more" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? "收起" : "展开"}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -612,7 +663,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                   {task === "agent" ? "遣" : task === "schedule" ? "课" : row.prompt.steering ? "音" : "令"}
                 </span>
                 {/* A message of pictures alone has no words to show. */}
-                {row.prompt.text && <div className="said-text">{row.prompt.text}</div>}
+                {row.prompt.text && <SaidText text={row.prompt.text} />}
               </div>
               {/* Under the message, at its right: what can be done from it. */}
               {canUndo && (

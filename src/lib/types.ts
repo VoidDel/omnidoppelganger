@@ -3,7 +3,7 @@
 export type Decision = "allow_once" | "allow_session" | "allow_always" | "deny";
 export type Status = "idle" | "running" | "waiting_approval";
 /** What runs without asking: every edit asks, edits run, nothing is edited, or safe commands run too. */
-export type Mode = "manual" | "edit" | "plan" | "auto";
+export type Mode = "manual" | "edit" | "plan" | "auto" | "bypass";
 
 /** A picture attached to a message: its format and its bytes in base64. */
 export interface Image {

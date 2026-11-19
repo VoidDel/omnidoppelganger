@@ -397,8 +397,11 @@ export default function App() {
               <div className="empty">
                 <h1>分身已入驻这处洞府</h1>
                 <p>
-                  吩咐一件事吧。眼下的禁制是「{modeOf(active.mode).name}」：{modeOf(active.mode).hint}。碰这个文件夹之外的东西、改 .git
-                  里的文件，无论哪种禁制都要先请本尊定夺。输入框里按 Shift+Tab 换禁制。
+                  吩咐一件事吧。眼下的禁制是「{modeOf(active.mode).name}」：{modeOf(active.mode).hint}。
+                  {active.mode === "bypass"
+                    ? "它不会停下来请示任何事，碰洞府之外的东西、改 .git 也一样。"
+                    : "碰这个文件夹之外的东西、改 .git 里的文件，无论哪种禁制都要先请本尊定夺。"}
+                  输入框里按 Shift+Tab 换禁制。
                 </p>
               </div>
             ) : (
@@ -459,6 +462,7 @@ export default function App() {
               onSend={send}
               onStop={() => api.cancelTurn(active.id).catch(fail)}
               onCompact={() => api.compactSession(active.id).catch(fail)}
+              trustable={!!active.worktree}
               seed={seed}
             />
             </div>
