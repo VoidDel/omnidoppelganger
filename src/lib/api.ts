@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Decision, Image, Mode, Schedule, SessionItem, SessionView, Settings, SettingsView, UiEvent } from "./types";
+import type { Decision, Image, Mode, Picked, Schedule, SessionItem, SessionView, Settings, SettingsView, UiEvent } from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
@@ -31,7 +32,21 @@ export const api = {
   /** Ids of the sessions whose title, folder, or conversation holds the text. */
   searchSessions: (query: string) => invoke<string[]>("search_sessions", { query }),
   /** Resolves true when the message was queued behind a running turn. */
-  sendMessage: (id: string, text: string, images: Image[] = []) => invoke<boolean>("send_message", { id, text, images }),
+  /** `files` are paths of files to attach: each is read as it is now, and goes with the message. */
+  sendMessage: (id: string, text: string, images: Image[] = [], files: string[] = []) => invoke<boolean>("send_message", { id, text, images, files }),
+  /** What each of these paths is, to attach: a file, a picture, or neither and why. Nothing is sent. */
+  attachFiles: (paths: string[]) => invoke<Picked[]>("attach_files", { paths }),
+  /** Ask for files with the system dialog. Resolves with none when the user closes it. */
+  pickFiles: async (): Promise<string[]> => {
+    const picked = await open({ multiple: true, title: "选要附给分身的文件" });
+    return Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
+  },
+  /** Told as files are dragged over the window (`over` true), leave it, or are dropped on it (with their paths). */
+  onFilesDragged: (handler: (drag: { over: boolean; dropped: string[] }) => void) =>
+    getCurrentWebview().onDragDropEvent((event) => {
+      const { payload } = event;
+      handler({ over: payload.type === "enter" || payload.type === "over", dropped: payload.type === "drop" ? payload.paths : [] });
+    }),
   resolveApproval: (id: string, toolUseId: string, decision: Decision) =>
     invoke<boolean>("resolve_approval", { id, toolUseId, decision }),
   setMode: (id: string, mode: Mode) => invoke<SessionItem>("set_mode", { id, mode }),

@@ -27,7 +27,7 @@ use crate::providers::DEFAULT_PROVIDER;
 /// `guardian/reviewed` event, `expires_at` on an approval request and
 /// `timed_out` on its answer. A build
 /// from before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 12;
+pub const FORMAT_VERSION: u32 = 13;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -397,16 +397,17 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     let mut planning = false;
     for envelope in events {
         match &envelope.event {
-            Event::UserMessage { text: said, mode, images, .. } => {
+            Event::UserMessage { text: said, mode, images, files, .. } => {
                 if (*mode == Mode::Plan) != planning {
                     planning = !planning;
                     pending.push(text(if planning { PLAN_ON } else { PLAN_OFF }));
                 }
-                // Pictures come before the words about them, as the providers advise.
+                // Pictures come before the words about them, as the providers advise, and attached files likewise.
                 // A message of pictures alone has no text block: an empty one is an error to the API.
                 let blocks = images
                     .iter()
                     .map(|image| json!({ "type": "image", "source": { "type": "base64", "media_type": image.media_type, "data": image.data } }))
+                    .chain(files.iter().map(|file| text(&crate::events::attached_text(file))))
                     .chain((!said.is_empty()).then(|| text(said)));
                 for block in blocks {
                     pending.push(block.clone());
@@ -592,7 +593,9 @@ pub fn context_estimate(events: &[Envelope]) -> u64 {
             Event::AssistantMessage { tokens: Some(tokens), .. } => estimate = tokens.input + tokens.output,
             Event::AssistantMessage { content, tokens: None, .. } => estimate += guess(&Value::Array(content.clone()).to_string()),
             // A picture's cost depends on its size and the provider; this is a middling guess until the next count.
-            Event::UserMessage { text, images, .. } => estimate += guess(text) + 1500 * images.len() as u64,
+            Event::UserMessage { text, images, files, .. } => {
+                estimate += guess(text) + 1500 * images.len() as u64 + files.iter().map(|file| guess(&crate::events::attached_text(file))).sum::<u64>()
+            }
             Event::ToolResult { content, .. } => estimate += guess(content),
             _ => {}
         }
@@ -619,8 +622,17 @@ pub fn transcript(events: &[Envelope], max_bytes: usize) -> String {
     for envelope in &events[start..] {
         match &envelope.event {
             Event::ContextCompacted { summary, .. } => parts.push(format!("SUMMARY OF EARLIER WORK:\n{summary}")),
-            Event::UserMessage { text, images, .. } if images.is_empty() => parts.push(format!("USER:\n{text}")),
-            Event::UserMessage { text, images, .. } => parts.push(format!("USER:\n[attached {} image(s), not shown here]\n{text}", images.len())),
+            Event::UserMessage { text, images, files, .. } => {
+                // What was attached is named, not shown: the files are where they were, to be read again.
+                let mut said = String::from("USER:\n");
+                if !images.is_empty() {
+                    said.push_str(&format!("[attached {} image(s), not shown here]\n", images.len()));
+                }
+                if !files.is_empty() {
+                    said.push_str(&format!("[attached files, not shown here: {}]\n", files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>().join(", ")));
+                }
+                parts.push(said + text);
+            }
             Event::AssistantMessage { content, .. } => {
                 for block in content {
                     match block["type"].as_str() {
@@ -684,6 +696,10 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
             .find_map(|envelope| match &envelope.event {
                 // A message of pictures alone is titled as such.
                 Event::UserMessage { text, images, .. } if text.trim().is_empty() && !images.is_empty() => Some("[images]".to_string()),
+                // And one of files alone, by the first of them.
+                Event::UserMessage { text, files, .. } if text.trim().is_empty() && !files.is_empty() => {
+                    Some(std::path::Path::new(&files[0].path).file_name().map_or_else(|| "[files]".to_string(), |name| name.to_string_lossy().into_owned()))
+                }
                 Event::UserMessage { text, .. } => Some(text.split_whitespace().collect::<Vec<_>>().join(" ")),
                 _ => None,
             })
@@ -758,7 +774,7 @@ mod tests {
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "hello".into(), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
+        log.append(Event::UserMessage { text: "hello".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         let id = log.id().to_string();
         let written = log.events().to_vec();
         drop(log);
@@ -799,7 +815,7 @@ mod tests {
 
         let mut reopened = store.open(&id).unwrap();
         assert_eq!(reopened.events().len(), 2);
-        reopened.append(Event::UserMessage { text: "again".into(), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
+        reopened.append(Event::UserMessage { text: "again".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         drop(reopened);
         assert_eq!(store.open(&id).unwrap().events().len(), 3);
     }
@@ -852,10 +868,10 @@ mod tests {
         let thinking = json!({ "type": "thinking", "thinking": "", "signature": "sig" });
         let call = json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a" } });
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "read a".into(), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
+        log.append(Event::UserMessage { text: "read a".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         log.append(assistant(vec![thinking.clone(), call.clone()])).unwrap();
         log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: String::new(), is_error: false, meta: Value::Null }).unwrap();
-        log.append(Event::UserMessage { text: "also b".into(), steering: true, mode: Mode::Edit, images: vec![] }).unwrap();
+        log.append(Event::UserMessage { text: "also b".into(), steering: true, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
 
         let messages = derive_messages(log.events());
         assert_eq!(messages, vec![
@@ -873,7 +889,7 @@ mod tests {
         let (directory, store) = store();
         let mut log = store.create(Path::new("/work/Parser"), "anthropic", "m").unwrap();
         let id = log.id().to_string();
-        log.append(Event::UserMessage { text: "fix the tokenizer".into(), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
+        log.append(Event::UserMessage { text: "fix the tokenizer".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         log.append(assistant(vec![json!({ "type": "text", "text": "The lexer drops a byte." }), json!({ "type": "tool_use", "id": "t", "name": "read_file", "input": { "path": "secret.rs" } })])).unwrap();
         assert_eq!(summarize(log.events()).title, "fix the tokenizer");
         log.append(Event::SessionRenamed { title: "Lexer bug".into() }).unwrap();
@@ -903,7 +919,7 @@ mod tests {
         use crate::llm::Tokens;
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
-        let user = |text: &str, steering| Event::UserMessage { text: text.into(), steering, mode: Mode::Plan, images: vec![] };
+        let user = |text: &str, steering| Event::UserMessage { text: text.into(), steering, mode: Mode::Plan, images: vec![], files: vec![] };
         let counted = |input, output| Event::AssistantMessage {
             content: vec![json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a" } })],
             stop_reason: Some("tool_use".into()),
@@ -946,12 +962,39 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     }
 
     #[test]
+    fn sends_a_messages_files_after_its_images_and_ahead_of_its_text() {
+        use crate::events::{Attached, Image};
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
+        let png = Image { media_type: "image/png".into(), data: "aGVsbG8=".into() };
+        let notes = Attached { path: "/x/notes.md".into(), bytes: 4, content: Some("one\n".into()) };
+        let big = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None };
+        log.append(Event::UserMessage { text: "compare them".into(), steering: false, mode: Mode::Edit, images: vec![png], files: vec![notes.clone(), big.clone()] }).unwrap();
+        let content = derive_messages(log.events())[0]["content"].clone();
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[1], json!({ "type": "text", "text": "<attached_file path=\"/x/notes.md\">\none\n</attached_file>" }));
+        assert!(content[2]["text"].as_str().unwrap().starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">"));
+        assert_eq!(content[3], json!({ "type": "text", "text": "compare them" }));
+        // The log line carries the files; a message without any reads as before.
+        let line = |event: &Event| serde_json::to_value(event).unwrap()["data"].clone();
+        assert_eq!(line(&log.events()[1].event)["files"], json!([{ "path": "/x/notes.md", "bytes": 4, "content": "one\n" }, { "path": "/x/big.log", "bytes": 300_000 }]));
+        // A summary names what was attached without repeating it, and counts it towards the context.
+        assert!(transcript(log.events(), 10_000).contains("[attached files, not shown here: /x/notes.md, /x/big.log]"));
+        assert!(context_estimate(log.events()) > 20);
+        // Files alone: a message of their blocks, titled by the first.
+        let mut alone = store.create(Path::new("/work"), "anthropic", "m").unwrap();
+        alone.append(Event::UserMessage { text: String::new(), steering: false, mode: Mode::Edit, images: vec![], files: vec![notes] }).unwrap();
+        assert_eq!(derive_messages(alone.events())[0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(summarize(alone.events()).title, "notes.md");
+    }
+
+    #[test]
     fn sends_a_messages_images_ahead_of_its_text() {
         use crate::events::Image;
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let png = Image { media_type: "image/png".into(), data: "aGVsbG8=".into() };
-        let shot = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![png.clone()] };
+        let shot = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![png.clone()], files: vec![] };
         log.append(shot("what is wrong here?")).unwrap();
         let block = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGVsbG8=" } });
         assert_eq!(derive_messages(log.events())[0]["content"], json!([block, { "type": "text", "text": "what is wrong here?" }]));
@@ -976,7 +1019,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
 
         // The field is left out of a message without pictures, and read as none when absent.
         let line = |event: &Event| serde_json::to_value(event).unwrap()["data"].clone();
-        assert!(line(&Event::UserMessage { text: "x".into(), steering: false, mode: Mode::Edit, images: vec![] }).get("images").is_none());
+        assert!(line(&Event::UserMessage { text: "x".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).get("images").is_none());
         assert_eq!(line(&shot("x"))["images"][0]["media_type"], "image/png");
     }
 
@@ -986,7 +1029,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let listed = |todos: Value| assistant(vec![json!({ "type": "tool_use", "id": "t", "name": "update_todos", "input": { "todos": todos } })]);
         let result = Event::ToolResult { tool_use_id: "t".into(), tool: "update_todos".into(), content: "ok".into(), is_error: false, meta: Value::Null };
-        log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
+        log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         log.append(listed(json!([{ "text": "read", "status": "pending" }]))).unwrap();
         log.append(result.clone()).unwrap();
         // The latest list counts; one the tool would refuse does not replace it.
@@ -1006,7 +1049,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let says = |text: &str| assistant(vec![json!({ "type": "text", "text": text })]);
-        let user = |text: &str, mode| Event::UserMessage { text: text.into(), steering: false, mode, images: vec![] };
+        let user = |text: &str, mode| Event::UserMessage { text: text.into(), steering: false, mode, images: vec![], files: vec![] };
         for event in [
             user("look first", Mode::Plan),
             says("plan"),
@@ -1044,7 +1087,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
+        log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         log.append(assistant(vec![
             json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": {} }),
             json!({ "type": "tool_use", "id": "t2", "name": "run_command", "input": {} }),
@@ -1075,10 +1118,10 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     fn summarizes_title_and_lists_newest_first() {
         let (_directory, store) = store();
         let mut first = store.create(Path::new("/a"), "anthropic", "m").unwrap();
-        first.append(Event::UserMessage { text: "  fix   the\nparser ".into(), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
+        first.append(Event::UserMessage { text: "  fix   the\nparser ".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let mut second = store.create(Path::new("/b"), "anthropic", "m").unwrap();
-        second.append(Event::UserMessage { text: "x".repeat(50), steering: false, mode: Mode::Edit, images: vec![] }).unwrap();
+        second.append(Event::UserMessage { text: "x".repeat(50), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         second.append(Event::ApprovalResolved { tool_use_id: "none".into(), decision: Decision::Deny, timed_out: false }).unwrap();
 
         let list = store.list();
@@ -1092,7 +1135,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     fn a_fork_starts_as_a_copy_of_the_conversation_up_to_a_turn() {
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/a"), "anthropic", "m").unwrap();
-        let said = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![] };
+        let said = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] };
         let edited = Event::ToolResult { tool_use_id: "t1".into(), tool: "edit_file".into(), content: "ok".into(), is_error: false, meta: json!({ "file": "/a/x.txt", "path": "x.txt", "after": "1-0" }) };
         for event in [
             Event::TurnStart { turn: 1 },

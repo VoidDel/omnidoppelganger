@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::jobs::{Ended, Jobs, Report};
 
 const READ_LINE_LIMIT: usize = 2000;
-const READ_FILE_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const READ_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const LINE_CHARS: usize = 2000;
 /// Every result is replayed in every later request of the session, so one
 /// read must stay far below the context window.

@@ -2714,6 +2714,95 @@ button.did-head:not(:disabled):hover {
   padding: 0;
 }
 
+/* A file to go with the message: a slip with its name and size, where a picture has its thumbnail. */
+.attachment.file,
+.file-chip {
+  max-width: 100%;
+  min-height: 28px;
+  padding: 2px var(--s-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--bg);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-small);
+  color: var(--ink);
+}
+
+/* The button that takes a file off is at the end of its slip, not over its corner as a picture's is: there it would cover the size. */
+.attachment.file button {
+  position: static;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-right: -4px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.attachment.file button:hover {
+  color: var(--cinnabar-ink);
+}
+
+.attachment.file svg,
+.file-chip svg {
+  flex: none;
+  color: var(--gold);
+}
+
+.file-chip-name {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--t-code);
+}
+
+.file-chip-size {
+  flex: none;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* Under a message in the conversation: what was attached to it. */
+.said-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  /* Clear of the paper that shows under the message. */
+  padding-top: 4px;
+}
+
+.said-files .file-chip {
+  background: var(--sheet);
+  border-color: var(--line);
+}
+
+/* Files dragged over the window: the box says it will take them. */
+.composer-box.dropping {
+  border-color: var(--jade);
+  border-style: dashed;
+  background: var(--jade-tint);
+}
+
+.drop-note {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--jade-tint) 92%, transparent);
+  color: var(--jade-tint-ink);
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
 .attachments .refused {
   font-size: var(--t-small);
   color: var(--cinnabar-ink);

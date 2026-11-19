@@ -5,7 +5,7 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
 import { Light } from "./Light";
-import { type Item, type Row, type StreamBlock, type ToolItem, editsFiles, mcpTool, shortCount, undoableTurns } from "../lib/fold";
+import { type Item, type Row, type StreamBlock, type ToolItem, editsFiles, fileSize, mcpTool, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Mode, SessionItem, Status } from "../lib/types";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
@@ -757,7 +757,7 @@ function Queued({ text }: { text: string }) {
         <span className="seal" aria-hidden="true">
           音
         </span>
-        <div className="said-text">{text || "（图）"}</div>
+        <div className="said-text">{text || "（附件）"}</div>
       </div>
       <div className="said-foot">
         <span className="said-meta">传音在途，分身做完这一步就会听到</span>
@@ -875,6 +875,20 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                 {/* A message of pictures alone has no words to show. */}
                 {row.prompt.text && <SaidText text={row.prompt.text} />}
               </div>
+              {/* Under the message: the files that came with it, each by its name. */}
+              {row.prompt.files.length > 0 && (
+                <div className="said-files">
+                  {row.prompt.files.map((file) => (
+                    <span key={file.path} className="file-chip" title={`${file.path}\n${file.inline ? "它的内容随这句话一起给了分身" : "它太大，没有随消息发送：分身自己分段去读"}`}>
+                      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
+                      </svg>
+                      <span className="file-chip-name">{file.path.replace(/^.*[\\/]/, "")}</span>
+                      <span className="file-chip-size">{fileSize(file.bytes)}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
               {/* Under the message, at its right: what can be done from it. */}
               {canUndo && (
                 <div className="said-foot">

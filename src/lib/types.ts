@@ -32,7 +32,7 @@ export type SessionEvent =
   | { type: "instructions/loaded"; data: { path: string; content: string } }
   | { type: "skills/listed"; data: { skills: Skill[] } }
   | { type: "turn/start"; data: { turn: number } }
-  | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode; images?: Image[] } }
+  | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode; images?: Image[]; files?: Attached[] } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }
   | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
   | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string; expires_at?: string } }
@@ -43,6 +43,22 @@ export type SessionEvent =
   | { type: "turn/end"; data: { turn: number; reason: string; error: string | null } };
 
 export type Envelope = { seq: number; ts: string } & SessionEvent;
+
+/** A file the user attached to a message, by where it is on disk, with its text when that went with the message. */
+export interface Attached {
+  path: string;
+  bytes: number;
+  content?: string;
+}
+
+/**
+ * What a path the user picked to attach turned out to be: a file (`inline` when its text will go with the
+ * message; otherwise the 分身 reads it in parts), a picture to send as one, or neither, with why.
+ */
+export type Picked =
+  | { kind: "file"; path: string; name: string; bytes: number; inline: boolean }
+  | { kind: "image"; name: string; image: Image }
+  | { kind: "refused"; name: string; why: "missing" | "directory" | "binary" | "too_large" | "image_too_large" };
 
 export interface DiffHunk {
   old_start: number;

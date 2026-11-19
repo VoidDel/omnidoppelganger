@@ -66,6 +66,14 @@ for (const args of [["init", "--quiet", "--initial-branch", "main"], ["add", "-A
   }
 }
 
+// Files to attach, outside the workspace: a small one, one too large to send with a message, and one that is not text.
+const attachedNotes = join(scratch, "要点.md");
+const attachedLog = join(scratch, "build.log");
+const attachedBinary = join(scratch, "archive.zip");
+writeFileSync(attachedNotes, "# 要点\n先读配置\n");
+writeFileSync(attachedLog, "first line of the log\n" + "x".repeat(120_000) + "\n");
+writeFileSync(attachedBinary, Buffer.from([80, 75, 3, 4, 0, 0, 0, 0]));
+
 // What the stand-in model says: create a file and run a command, then wrap up.
 const mock = await startMock([
   [
@@ -104,6 +112,9 @@ const mock = await startMock([
   [{ tool: "run_command", input: { command: "echo again > second.txt" } }],
   [{ text: "ASK\n这一条先问问本尊。" }],
   [{ text: "第二个没写成，等本尊点头。" }],
+  // With files attached: it reads the large one, which lies outside the workspace, by itself.
+  [{ text: "我看看那份大的。" }, { tool: "read_file", input: { path: attachedLog, limit: 2 } }],
+  [{ text: "两份附件都看过了。" }],
 ]);
 
 const app = spawn(executable, [], {
@@ -467,6 +478,31 @@ try {
   await page.waitForText("无人定夺，自动驳回");
   await page.waitForText("第二个没写成，等本尊点头。");
   check(!existsSync(join(workspace, "second.txt")), "with nobody answering in time, the request was declined by itself and the 分身 went on without it");
+
+  console.log("Files attached to a message");
+  await page.evaluate(`document.querySelector(".group-add:not(.apart)").click()`);
+  await page.waitFor("a new session", `${title} === "新分身"`);
+  // Dropped on the window, as the system tells the page of it.
+  const beforeFiles = mock.requests.length;
+  await page.evaluate(`window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "tauri://drag-drop", payload: { paths: ${JSON.stringify([attachedNotes, attachedLog, attachedBinary])}, position: { x: 600, y: 600 } } }).then(() => true)`);
+  await page.waitFor("the files to be attached", `document.querySelectorAll(".attachment.file").length === 2`);
+  const pending = await page.evaluate(`({ chips: [...document.querySelectorAll(".attachment.file")].map((chip) => chip.textContent), refused: document.querySelector(".attachments .refused")?.textContent ?? "" })`);
+  check(pending.chips[0].includes("要点.md") && pending.chips[1].includes("build.log") && pending.chips[1].includes("分身自读") && !pending.chips[0].includes("分身自读"), "files dropped on the window wait in the box, the large one marked as left for the 分身 to read");
+  check(pending.refused.includes("archive.zip") && pending.refused.includes("不是文本文件"), "a file that is not text is not attached, and the box says why");
+  await page.type("#composer-input", "看看这两份");
+  await page.enter();
+  await page.waitForText("两份附件都看过了。");
+  await page.waitFor("the turn to end", `!document.body.innerText.includes("分身正在运功")`);
+  const [withFiles, afterRead] = mock.requests.slice(beforeFiles).map((request) => request.body);
+  const sentBlocks = withFiles.messages[0].content.map((block) => block.text);
+  check(
+    sentBlocks.length === 3 && sentBlocks[0] === `<attached_file path="${attachedNotes}">\n# 要点\n先读配置\n</attached_file>` && sentBlocks[1].startsWith(`<attached_file path="${attachedLog}" bytes="120023">`) && !sentBlocks[1].includes("first line of the log") && sentBlocks[2] === "看看这两份",
+    "the small file's text went to the model with the message, the large one by its path alone, both ahead of the words",
+  );
+  const readBack = afterRead.messages[afterRead.messages.length - 1].content.find((block) => block.type === "tool_result");
+  check(!readBack.is_error && readBack.content.includes("first line of the log") && !(await page.evaluate(`document.body.innerText.includes("请本尊定夺")`)), "the 分身 read the attached file outside the workspace without asking");
+  check((await page.evaluate(`[...document.querySelectorAll(".said-files .file-chip-name")].map((name) => name.textContent).join()`)) === "要点.md,build.log", "the conversation shows what was attached under the message");
+
   console.log("Passed.");
 } catch (error) {
   failed = true;

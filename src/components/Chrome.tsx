@@ -1,8 +1,9 @@
 import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { api } from "../lib/api";
 import { launchFrom } from "../lib/flight";
-import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
+import { type ChangedFile, type ToolItem, type Usage, fileSize, shortCount } from "../lib/fold";
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
-import type { Image, Mode, Provider, SessionItem, Status, Todo } from "../lib/types";
+import type { Image, Mode, Picked, Provider, SessionItem, Status, Todo } from "../lib/types";
 import { ago } from "../lib/when";
 import { Light } from "./Light";
 import { Diff } from "./Transcript";
@@ -850,6 +851,26 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
 // What a message may carry, as the core checks it: these formats, this many, this large.
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const IMAGES_PER_MESSAGE = 8;
+const FILES_PER_MESSAGE = 10;
+
+/** A file waiting to be sent with the message. */
+type Pending = Extract<Picked, { kind: "file" }>;
+
+/** Why a path could not be attached, in the user's words. */
+const REFUSALS: Record<Extract<Picked, { kind: "refused" }>["why"], (name: string) => string> = {
+  missing: (name) => `「${name}」读不到，可能已经不在了。`,
+  directory: (name) => `「${name}」是个文件夹，只能附文件。要分身看整个文件夹，直接把路径告诉它。`,
+  binary: (name) => `「${name}」不是文本文件，附不了（PDF、Word、压缩包这类眼下还不行）。`,
+  too_large: (name) => `「${name}」超过 10 MB，分身读不了这么大的文件。`,
+  image_too_large: (name) => `「${name}」这张图超过 3.7 MB，太大了，缩小或截小一点再附。`,
+};
+
+/** A sheet of paper with its corner turned: a file. */
+const FILE_ICON = (
+  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
+  </svg>
+);
 // 5 MB of base64 is 3.75 MB of file.
 const IMAGE_BYTES = 3_700_000;
 
@@ -890,7 +911,8 @@ interface ComposerProps {
   onMode: (mode: Mode) => void;
   /** Switch to `mode`, then tell the 分身 to carry out its plan. */
   onCarryOut: (mode: Mode) => void;
-  onSend: (text: string, images: Image[]) => void;
+  /** `files`: the paths of the files attached. */
+  onSend: (text: string, images: Image[], files: string[]) => void;
   onStop: () => void;
   /** Whether the session works in a worktree of its own, the only place 全权托付 may be switched on. */
   trustable: boolean;
@@ -963,34 +985,86 @@ export function Composer(props: ComposerProps) {
     input.current?.focus();
   }, [seed?.id]);
   const [images, setImages] = useState<Image[]>([]);
-  /** Why a picture was not taken, until the next attempt. */
+  /** Files to go with the message, each by its path. */
+  const [files, setFiles] = useState<Pending[]>([]);
+  /** Why something was not taken, until the next attempt. */
   const [refused, setRefused] = useState<string | null>(null);
-  const picker = useRef<HTMLInputElement>(null);
+  /** Files are being dragged over the window: the box shows it will take them. */
+  const [dropping, setDropping] = useState(false);
   const busy = status !== "idle";
-  const empty = !text.trim() && images.length === 0;
+  const empty = !text.trim() && images.length === 0 && files.length === 0;
   const sender = useRef<HTMLButtonElement>(null);
   const submit = () => {
     if (empty) return;
     // The token on the button flies to the message's place in the conversation.
     launchFrom(sender.current);
-    onSend(text, images);
+    onSend(
+      text,
+      images,
+      files.map((file) => file.path),
+    );
     setText("");
     setImages([]);
+    setFiles([]);
     setRefused(null);
   };
-  /** Attach the pictures among `files`, saying why when one cannot be sent. */
-  const attach = async (files: File[]) => {
+  const blind = `${model} 这门功法只认字，看不了图。点左下的功法，换一门能看图的。`;
+  /** Attach the pictures pasted into the box, saying why when one cannot be sent. */
+  const attach = async (pasted: File[]) => {
     setRefused(null);
-    if (vision === false) return setRefused(`${model} 这门功法只认字，看不了图。点左下的功法，换一门能看图的。`);
+    if (vision === false) return setRefused(blind);
     const taken: Image[] = [];
-    for (const file of files) {
-      if (!IMAGE_TYPES.includes(file.type)) setRefused("只能附 PNG、JPEG、GIF、WebP 格式的图。");
+    for (const file of pasted) {
+      if (!IMAGE_TYPES.includes(file.type)) setRefused("只能贴 PNG、JPEG、GIF、WebP 格式的图。");
       else if (file.size > IMAGE_BYTES) setRefused("这张图超过 3.7 MB，太大了，缩小或截小一点再附。");
       else if (images.length + taken.length >= IMAGES_PER_MESSAGE) setRefused(`一次最多附 ${IMAGES_PER_MESSAGE} 张图。`);
       else taken.push({ media_type: file.type, data: await readBase64(file) });
     }
     if (taken.length) setImages((current) => [...current, ...taken].slice(0, IMAGES_PER_MESSAGE));
   };
+  // What the last render knew, for what comes in between renders: files dropped on the window.
+  const known = useRef({ vision, blind });
+  known.current = { vision, blind };
+  /** Take what was picked or dropped: files by their paths, pictures as pictures; say why of whatever is not taken. */
+  const take = (paths: string[]) => {
+    if (paths.length === 0) return;
+    setRefused(null);
+    api.attachFiles(paths).then(
+      (picked) => {
+        const whys: string[] = [];
+        const pictures = picked.filter((one) => one.kind === "image");
+        const papers = picked.filter((one) => one.kind === "file");
+        for (const one of picked) if (one.kind === "refused") whys.push(REFUSALS[one.why](one.name));
+        if (pictures.length > 0 && known.current.vision === false) whys.push(known.current.blind);
+        else if (pictures.length > 0)
+          setImages((current) => {
+            if (current.length + pictures.length > IMAGES_PER_MESSAGE) setRefused(`一次最多附 ${IMAGES_PER_MESSAGE} 张图，多的没有附上。`);
+            return [...current, ...pictures.map((one) => one.image)].slice(0, IMAGES_PER_MESSAGE);
+          });
+        if (papers.length > 0)
+          setFiles((current) => {
+            // The same file picked twice is attached once.
+            const fresh = papers.filter((one, at) => !current.some((had) => had.path === one.path) && papers.findIndex((other) => other.path === one.path) === at);
+            if (current.length + fresh.length > FILES_PER_MESSAGE) setRefused(`一次最多附 ${FILES_PER_MESSAGE} 个文件，多的没有附上。`);
+            return [...current, ...fresh].slice(0, FILES_PER_MESSAGE);
+          });
+        if (whys.length > 0) setRefused(whys.join(""));
+      },
+      (error) => setRefused(`没附上：${String(error)}`),
+    );
+  };
+  const taking = useRef(take);
+  taking.current = take;
+  // Files dragged from the system onto the window are attached where they are dropped.
+  useEffect(() => {
+    const stop = api.onFilesDragged(({ over, dropped }) => {
+      setDropping(over);
+      taking.current(dropped);
+    });
+    return () => {
+      stop.then((unlisten) => unlisten()).catch(() => undefined);
+    };
+  }, []);
   return (
     <div className="composer">
       <div className="composer-status" role="status">
@@ -1024,7 +1098,8 @@ export function Composer(props: ComposerProps) {
       <div className={`composer-frame ${status === "running" ? "working" : status === "waiting_approval" ? "waiting" : ""}`}>
       {/* Not in 全权托付: there the box keeps its cinnabar edge, which says more. */}
       {status === "running" && mode !== "bypass" && <Light />}
-      <div className={`composer-box ${mode === "bypass" ? "trusted" : ""}`}>
+      <div className={`composer-box ${mode === "bypass" ? "trusted" : ""} ${dropping ? "dropping" : ""}`}>
+        {dropping && <div className="drop-note">松手，把文件附给分身</div>}
         {/* The box's top edge, to drag: up makes more room to write in, down gives it back to the conversation. */}
         <div
           className={`composer-grip ${dragging ? "dragging" : ""}`}
@@ -1054,12 +1129,25 @@ export function Composer(props: ComposerProps) {
             if (event.key === "ArrowDown") setHeight(fitBox(height - 24));
           }}
         />
-        {(images.length > 0 || refused) && (
+        {(images.length > 0 || files.length > 0 || refused) && (
           <div className="attachments">
             {images.map((image, index) => (
               <span className="attachment" key={index}>
                 <img src={`data:${image.media_type};base64,${image.data}`} alt={`要附的第 ${index + 1} 张图`} />
                 <button type="button" aria-label={`去掉第 ${index + 1} 张图`} onClick={() => setImages(images.filter((_, at) => at !== index))}>
+                  ×
+                </button>
+              </span>
+            ))}
+            {files.map((file) => (
+              <span className="attachment file" key={file.path} title={`${file.path}\n${file.inline ? "它的内容会随这句话一起发给分身" : "它太大，不随消息发送：分身会自己分段去读，不用请示"}`}>
+                {FILE_ICON}
+                <span className="file-chip-name">{file.name}</span>
+                <span className="file-chip-size">
+                  {fileSize(file.bytes)}
+                  {!file.inline && "，分身自读"}
+                </span>
+                <button type="button" aria-label={`去掉 ${file.name}`} onClick={() => setFiles(files.filter((had) => had.path !== file.path))}>
                   ×
                 </button>
               </span>
@@ -1216,31 +1304,17 @@ export function Composer(props: ComposerProps) {
               </>
             )}
           </Popup>
-          <input
-            ref={picker}
-            type="file"
-            accept={IMAGE_TYPES.join(",")}
-            multiple
-            hidden
-            onChange={(event) => {
-              void attach([...(event.target.files ?? [])]);
-              // The same file can be picked again after being removed.
-              event.target.value = "";
-            }}
-          />
           <button
             type="button"
             className="select-button"
-            disabled={vision === false}
-            title={vision === false ? `${model} 只认字，看不了图` : "附图给分身看，也可以直接把截图粘贴进输入框"}
-            onClick={() => picker.current?.click()}
+            title="附文件或图给分身：文本文件连同内容一起发，太大的由分身自己分段读；附上的文件，分身读它不用请示。也可以把文件拖进窗口，或把截图粘贴进输入框"
+            onClick={() => api.pickFiles().then(take, (error) => setRefused(`没附上：${String(error)}`))}
           >
+            {/* A paperclip. */}
             <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="3" width="12" height="10" rx="1.5" />
-              <circle cx="5.7" cy="6.5" r="1.1" />
-              <path d="m2.5 11.5 3.2-3 2.3 2 2.5-2.7 3 3.2" />
+              <path d="M13 7.4 8 12.4a3 3 0 0 1-4.3-4.2l5.4-5.4a2 2 0 0 1 2.9 2.8L6.7 10.9a1 1 0 0 1-1.5-1.4l4.6-4.6" />
             </svg>
-            <span className="sr-only">附图</span>
+            <span className="sr-only">附件</span>
           </button>
           <span className="spacer" />
           {/* A 令牌, the tablet an order is sent with: 令 on jade for an order, 音 on gold for a word to a 分身 at work.

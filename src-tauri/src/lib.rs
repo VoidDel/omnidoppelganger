@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use odg_core::agent::{Services, Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
-use odg_core::events::{Decision, Envelope, Image, check_images};
+use odg_core::events::{Decision, Envelope, FILES_PER_MESSAGE, Image, Picked, attach, check_images, pick};
 use odg_core::grants::{GrantStore, Grants};
 use odg_core::mcp::{McpHub, ServerStatus};
 use odg_core::policy::Mode;
@@ -315,18 +315,33 @@ async fn open_session(app: State<'_, App>, id: String) -> Result<SessionView, St
 
 /// Returns true when the message was queued behind a running turn.
 #[tauri::command]
-async fn send_message(app: State<'_, App>, id: String, text: String, images: Vec<Image>) -> Result<bool, String> {
+async fn send_message(app: State<'_, App>, id: String, text: String, images: Vec<Image>, files: Vec<String>) -> Result<bool, String> {
     let text = text.trim().to_string();
-    if text.is_empty() && images.is_empty() {
+    if text.is_empty() && images.is_empty() && files.is_empty() {
         return Err("the message is empty".to_string());
     }
     check_images(&images)?;
+    if files.len() > FILES_PER_MESSAGE {
+        return Err(format!("a message takes at most {FILES_PER_MESSAGE} files, not {}", files.len()));
+    }
+    // Read now, as they are when the message is sent: what the model is shown is then in the log, whatever becomes of the files.
+    let files = tokio::task::spawn_blocking(move || {
+        files.iter().map(|path| attach(std::path::Path::new(path)).map_err(|why| format!("{path} cannot be attached: {}", why.replace('_', " ")))).collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     let session = app.live(&id)?;
     let summary = session.summary();
     if !images.is_empty() && vision(&summary.provider, &summary.model) == Some(false) {
         return Err(format!("{} takes text only: remove the images, or start a session on a model that takes them", summary.model));
     }
-    Ok(session.send_with(text, images))
+    Ok(session.send_with(text, images, files))
+}
+
+/// What each path the user picked to attach is: a file, a picture, or neither and why. Nothing is sent yet.
+#[tauri::command]
+async fn attach_files(paths: Vec<String>) -> Result<Vec<Picked>, String> {
+    tokio::task::spawn_blocking(move || paths.iter().map(|path| pick(std::path::Path::new(path))).collect()).await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -573,6 +588,7 @@ pub fn run() {
             list_sessions,
             create_session,
             preset_workspace,
+            attach_files,
             fork_session,
             list_schedules,
             save_schedule,

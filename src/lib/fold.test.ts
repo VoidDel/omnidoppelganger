@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, changedFiles, commandRuns, fold, pendingApproval, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, changedFiles, commandRuns, fileSize, fold, pendingApproval, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -46,6 +46,27 @@ describe("counts", () => {
   it("reads tokens in K and M, with a decimal only where it shows the difference", () => {
     expect([999, 1280, 50_000, 102_400, 128_000, 200_000, 262_144].map(shortCount)).toEqual(["999", "1.3K", "50K", "102K", "128K", "200K", "262K"]);
     expect([1_000_000, 1_048_576, 1_050_000, 12_500_000].map(shortCount)).toEqual(["1M", "1.05M", "1.05M", "13M"]);
+  });
+});
+
+describe("attached files", () => {
+  it("keeps what was attached to a message, and whether its text went with it", () => {
+    const files = [
+      { path: "C:\\x\\notes.md", bytes: 12, content: "one\n" },
+      { path: "C:\\x\\big.log", bytes: 3_400_000 },
+    ];
+    const rows = fold(log({ type: "user/message", data: { text: "compare", steering: false, files } }, user("thanks")));
+    expect(rows.map((row) => row.prompt.files)).toEqual([
+      [
+        { path: "C:\\x\\notes.md", bytes: 12, inline: true },
+        { path: "C:\\x\\big.log", bytes: 3_400_000, inline: false },
+      ],
+      [],
+    ]);
+  });
+
+  it("says a file's size in the unit that suits it", () => {
+    expect([0, 900, 1024, 99_500, 3_400_000].map(fileSize)).toEqual(["0 B", "900 B", "1 KB", "97 KB", "3.2 MB"]);
   });
 });
 

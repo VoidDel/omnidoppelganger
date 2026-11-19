@@ -37,7 +37,8 @@ export interface Row {
   key: string;
   /** The turn the message opened or, for a steering message, joined. */
   turn: number;
-  prompt: { text: string; ts: string; steering: boolean; images: Image[] };
+  /** `files`: what was attached, each with whether its text went with the message. */
+  prompt: { text: string; ts: string; steering: boolean; images: Image[]; files: { path: string; bytes: number; inline: boolean }[] };
   items: Item[];
 }
 
@@ -77,7 +78,15 @@ export function fold(events: Envelope[]): Row[] {
         turn = event.data.turn;
         break;
       case "user/message":
-        rows.push({ key: `row-${event.seq}`, turn, prompt: { text: event.data.text, ts: event.ts, steering: event.data.steering, images: event.data.images ?? [] }, items: [] });
+        rows.push({ key: `row-${event.seq}`, turn, prompt: {
+            text: event.data.text,
+            ts: event.ts,
+            steering: event.data.steering,
+            images: event.data.images ?? [],
+            files: (event.data.files ?? []).map((file) => ({ path: file.path, bytes: file.bytes, inline: file.content !== undefined })),
+          },
+          items: [],
+        });
         break;
       case "files/restored":
         for (const tool of tools.values()) {
@@ -220,6 +229,13 @@ export function applyDelta(blocks: StreamBlock[], delta: StreamDelta): StreamBlo
       break;
   }
   return next;
+}
+
+/** A file's size as it is said: bytes, then KB, then MB with a decimal. */
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export interface ChangedFile {

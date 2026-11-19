@@ -15,7 +15,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::events::{Decision, Envelope, Event, Image, SkillInfo};
+use crate::events::{Attached, Decision, Envelope, Event, Image, SkillInfo};
 use crate::grants::GrantStore;
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::mcp::McpHub;
@@ -94,14 +94,17 @@ pub const SUMMARIZE: &str = "The conversation has grown too long to continue as 
 struct State {
     status: Status,
     cancel: CancellationToken,
-    /// Messages sent while a turn runs, each with its pictures; they join the conversation at the next step.
-    inbox: VecDeque<(String, Vec<Image>)>,
+    /// Messages sent while a turn runs, each with what was attached; they join the conversation at the next step.
+    inbox: VecDeque<Said>,
     approvals: HashMap<String, oneshot::Sender<Decision>>,
     /// Grants the user allowed for the rest of this run of the app.
     grants: HashSet<String>,
     /// What runs without asking; read at every tool call, so a switch applies to the next one.
     mode: Mode,
 }
+
+/// A message as it is sent: its words, its pictures, its attached files.
+type Said = (String, Vec<Image>, Vec<Attached>);
 
 struct Inner<L: Llm> {
     id: String,
@@ -366,15 +369,16 @@ impl<L: Llm> Session<L> {
     /// message is queued and joins at the next step without interrupting the
     /// current one. Returns true when it was queued.
     pub fn send(&self, text: String) -> bool {
-        self.send_with(text, Vec::new())
+        self.send_with(text, Vec::new(), Vec::new())
     }
 
-    /// [`Session::send`] with pictures attached to the message. The caller
-    /// has checked them with [`crate::events::check_images`].
-    pub fn send_with(&self, text: String, images: Vec<Image>) -> bool {
+    /// [`Session::send`] with pictures and files attached to the message. The
+    /// caller has checked the pictures with [`crate::events::check_images`],
+    /// and read each file with [`crate::events::attach`].
+    pub fn send_with(&self, text: String, images: Vec<Image>, files: Vec<Attached>) -> bool {
         let mut state = self.inner.state.lock().unwrap();
         if state.status != Status::Idle {
-            state.inbox.push_back((text, images));
+            state.inbox.push_back((text, images, files));
             return true;
         }
         state.status = Status::Running;
@@ -383,7 +387,7 @@ impl<L: Llm> Session<L> {
         drop(state);
         self.inner.emit_status(Status::Running);
         let inner = self.inner.clone();
-        self.inner.runtime.spawn(async move { inner.run_turns((text, images), cancel).await });
+        self.inner.runtime.spawn(async move { inner.run_turns((text, images, files), cancel).await });
         false
     }
 
@@ -700,7 +704,18 @@ impl<L: Llm> Inner<L> {
     /// last step of a turn, or while a turn is being stopped, opens the next
     /// turn instead of being dropped. The inbox is checked and the status set
     /// under the same lock `send` takes, so no message falls between the two.
-    async fn run_turns(self: Arc<Self>, mut message: (String, Vec<Image>), mut cancel: CancellationToken) {
+    /// Whether the user attached the file at `path` to a message of this conversation.
+    fn attached(&self, path: &str) -> bool {
+        // As the system names each, so that two spellings of one path are one file.
+        let real = |path: &str| std::path::Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+        let wanted = real(path);
+        self.log.lock().unwrap().events().iter().any(|envelope| match &envelope.event {
+            Event::UserMessage { files, .. } => files.iter().any(|file| real(&file.path) == wanted),
+            _ => false,
+        })
+    }
+
+    async fn run_turns(self: Arc<Self>, mut message: Said, mut cancel: CancellationToken) {
         loop {
             self.run_turn(message, &cancel).await;
             let mut state = self.state.lock().unwrap();
@@ -723,11 +738,11 @@ impl<L: Llm> Inner<L> {
         }
     }
 
-    async fn run_turn(&self, (text, images): (String, Vec<Image>), cancel: &CancellationToken) {
+    async fn run_turn(&self, (text, images, files): Said, cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
         let opened = self
             .append(Event::TurnStart { turn })
-            .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images }))
+            .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images, files }))
             .and_then(|()| self.refresh_instructions())
             .and_then(|()| self.refresh_skills());
         let (reason, error) = match opened {
@@ -872,9 +887,9 @@ impl<L: Llm> Inner<L> {
         // The provider refused the last request as too long, and the conversation was compacted for it.
         let mut overflowed = false;
         for _ in 0..MAX_STEPS {
-            let queued: Vec<(String, Vec<Image>)> = self.state.lock().unwrap().inbox.drain(..).collect();
-            for (text, images) in queued {
-                self.append(Event::UserMessage { text, steering: true, mode: self.mode(), images })?;
+            let queued: Vec<Said> = self.state.lock().unwrap().inbox.drain(..).collect();
+            for (text, images, files) in queued {
+                self.append(Event::UserMessage { text, steering: true, mode: self.mode(), images, files })?;
             }
             if cancel.is_cancelled() {
                 return Ok("cancelled");
@@ -978,6 +993,8 @@ impl<L: Llm> Inner<L> {
                 let auto = self.mode() == Mode::Auto;
                 let verdict = match verdict {
                     Verdict::Ask { grant, .. } if grant.as_ref().is_some_and(granted) => Verdict::Allow,
+                    // A file the user attached is read without asking, wherever it is: attaching it said so.
+                    Verdict::Ask { reason: "outside_read", ref detail, .. } if name == "read_file" && self.attached(detail) => Verdict::Allow,
                     Verdict::Ask { reason: "command", detail, grant } if auto && tuning.guardian.is_some() => {
                         let guardian = tuning.guardian.clone().unwrap_or_default();
                         match self.review(&id, &detail, &message.content, &guardian, cancel).await {
@@ -1539,12 +1556,12 @@ mod tests {
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         let mut fixture = fixture(ScriptedLlm::new(vec![says("I see a login form."), says("And a chart.")], Some(gate.clone())));
         let image = |data: &str| Image { media_type: "image/png".into(), data: data.into() };
-        assert!(!fixture.session.send_with("what is this?".into(), vec![image("Zmlyc3Q=")]));
+        assert!(!fixture.session.send_with("what is this?".into(), vec![image("Zmlyc3Q=")], vec![]));
         while fixture.llm.requests.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         // A second picture sent while the first request is in flight joins at the next step.
-        assert!(fixture.session.send_with(String::new(), vec![image("c2Vjb25k")]));
+        assert!(fixture.session.send_with(String::new(), vec![image("c2Vjb25k")], vec![]));
         gate.add_permits(2);
         fixture.idle().await;
 
@@ -1554,6 +1571,31 @@ mod tests {
         // The picture sent alone is a message of that one block.
         assert_eq!(requests[1].messages[2]["content"], json!([block("c2Vjb25k")]));
         assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_the_user_attached_is_read_without_asking_wherever_it_is() {
+        // Two files outside the workspace: one attached to the message, one not.
+        let outside = tempfile::tempdir().unwrap();
+        let notes = outside.path().join("notes.md");
+        let other = outside.path().join("other.md");
+        std::fs::write(&notes, "attached words\n").unwrap();
+        std::fs::write(&other, "private words\n").unwrap();
+        let read = |id: &str, path: &std::path::Path| calls(&[(id, "read_file", json!({ "path": path.to_string_lossy() }))]);
+        let mut fixture = fixture(ScriptedLlm::new(vec![read("t1", &notes), read("t2", &other), says("done")], None));
+        let attached = crate::events::attach(&notes).unwrap();
+        fixture.session.send_with("see the notes".into(), vec![], vec![attached]);
+        // The first read runs by itself; the second, of a file nobody attached, asks.
+        let asked = fixture.approval().await;
+        assert_eq!(fixture.results()[0].0, "t1");
+        assert!(!fixture.results()[0].1 && fixture.results()[0].2.contains("attached words"));
+        assert!(fixture.session.resolve_approval(&asked, Decision::Deny));
+        fixture.idle().await;
+        assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "approval/requested").count(), 1);
+        // The model was shown the file's text with the message, ahead of the words.
+        let requests = fixture.llm.requests.lock().unwrap();
+        let content = &requests[0].messages[0]["content"];
+        assert!(content[0]["text"].as_str().unwrap().contains("attached words") && content[1]["text"] == "see the notes", "{content}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

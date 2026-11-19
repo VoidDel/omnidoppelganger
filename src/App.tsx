@@ -301,10 +301,10 @@ export default function App() {
       fail(error);
     }
   };
-  const send = (text: string, images: Image[] = []) => {
+  const send = (text: string, images: Image[] = [], files: string[] = []) => {
     const id = state.activeId;
     if (!id) return;
-    api.sendMessage(id, text, images).then((queued) => queued && dispatch({ type: "queued", id, text: text.trim() }), fail);
+    api.sendMessage(id, text, images, files).then((queued) => queued && dispatch({ type: "queued", id, text: text.trim() }), fail);
   };
   const decide = (toolUseId: string, decision: Decision) => {
     if (state.activeId) api.resolveApproval(state.activeId, toolUseId, decision).catch(fail);

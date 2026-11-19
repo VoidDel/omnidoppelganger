@@ -1,6 +1,8 @@
 //! Durable session events. Everything a model request contains is derived
 //! from these, so a new model-visible input needs a new event here.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -52,6 +54,131 @@ pub fn check_images(images: &[Image]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A file the user attached to a message, by where it is on disk. Nothing is
+/// copied: the agent reads it where it lies, and is let to without asking,
+/// wherever that is, because the user pointed at it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attached {
+    /// Its absolute path.
+    pub path: String,
+    /// Its size when it was attached.
+    pub bytes: u64,
+    /// Its text as it was then, when it was small enough to send with the
+    /// message: the model has it without reading. Absent for a larger file,
+    /// which the model reads in parts with `read_file`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// The most files one message may carry.
+pub const FILES_PER_MESSAGE: usize = 10;
+/// The largest file whose text goes with the message: about 25,000 tokens of
+/// English and more of Chinese, which is what one read of a file is held to.
+pub const ATTACHED_INLINE_BYTES: u64 = 100_000;
+/// The largest file that can be attached at all: `read_file` reads none larger.
+pub const ATTACHED_BYTES: u64 = crate::tools::READ_FILE_BYTES;
+/// The largest picture read from a file: its base64 text is a third longer, and must fit [`IMAGE_BASE64_BYTES`].
+const IMAGE_FILE_BYTES: u64 = (IMAGE_BASE64_BYTES / 4 * 3) as u64;
+
+/// What a path the user picked turns out to be: a file to attach, a picture
+/// to send as one, or neither, with why in a word the client puts into its
+/// own: `missing`, `directory`, `binary`, `too_large`, `image_too_large`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Picked {
+    /// `inline` when its text will go with the message; otherwise the agent reads it in parts.
+    File { path: String, name: String, bytes: u64, inline: bool },
+    Image { name: String, image: Image },
+    Refused { name: String, why: &'static str },
+}
+
+/// The media type of a picture by its file name's ending; `None` for any other file.
+fn image_type(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// Bytes as base64 text, padded.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let group = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
+        for at in 0..4 {
+            // Three bytes make four characters; a last group of one or two bytes makes two or three, then padding.
+            out.push(if at <= chunk.len() { ALPHABET[(group >> (18 - 6 * at)) as usize & 63] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// A file to attach, read now: its size, and its text when that is short
+/// enough to go with the message. Fails with the word [`Picked::Refused`] carries.
+pub fn attach(path: &Path) -> Result<Attached, &'static str> {
+    if !path.is_absolute() {
+        return Err("missing");
+    }
+    let metadata = std::fs::metadata(path).map_err(|_| "missing")?;
+    if metadata.is_dir() {
+        return Err("directory");
+    }
+    if metadata.len() > ATTACHED_BYTES {
+        return Err("too_large");
+    }
+    let inline = metadata.len() <= ATTACHED_INLINE_BYTES;
+    // The whole of a small file, or the start of a large one: enough to tell text from anything else, as `read_file` does.
+    let bytes = if inline {
+        std::fs::read(path).map_err(|_| "missing")?
+    } else {
+        use std::io::Read;
+        let mut start = vec![0; 8192];
+        let read = std::fs::File::open(path).and_then(|mut file| file.read(&mut start)).map_err(|_| "missing")?;
+        start.truncate(read);
+        start
+    };
+    if bytes.iter().take(8192).any(|byte| *byte == 0) {
+        return Err("binary");
+    }
+    Ok(Attached { path: path.to_string_lossy().into_owned(), bytes: metadata.len(), content: inline.then(|| String::from_utf8_lossy(&bytes).into_owned()) })
+}
+
+/// What a path the user picked is, for the client to show before the message is sent.
+pub fn pick(path: &Path) -> Picked {
+    let name = path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned());
+    if let Some(media_type) = image_type(path) {
+        return match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() && metadata.len() > IMAGE_FILE_BYTES => Picked::Refused { name, why: "image_too_large" },
+            Ok(metadata) if metadata.is_file() => match std::fs::read(path) {
+                Ok(bytes) => Picked::Image { name, image: Image { media_type: media_type.to_string(), data: base64(&bytes) } },
+                Err(_) => Picked::Refused { name, why: "missing" },
+            },
+            Ok(_) => Picked::Refused { name, why: "directory" },
+            Err(_) => Picked::Refused { name, why: "missing" },
+        };
+    }
+    match attach(path) {
+        Ok(file) => Picked::File { path: file.path, name, bytes: file.bytes, inline: file.content.is_some() },
+        Err(why) => Picked::Refused { name, why },
+    }
+}
+
+/// How an attached file is put to the model, ahead of the words sent with it:
+/// its text between tags that name it, or for a large one the way to read it.
+pub fn attached_text(file: &Attached) -> String {
+    match &file.content {
+        Some(content) => format!("<attached_file path=\"{}\">\n{}\n</attached_file>", file.path, content.trim_end_matches('\n')),
+        None => format!(
+            "<attached_file path=\"{}\" bytes=\"{}\">\nThe user attached this file. It is too large to include here: read the parts you need with read_file, which may read this path without asking.\n</attached_file>",
+            file.path, file.bytes
+        ),
+    }
 }
 
 /// A skill as the model is told of it; see [`crate::skills`].
@@ -167,6 +294,10 @@ pub enum Event {
         /// text. Since format 5.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<Image>,
+        /// Files attached to the message, shown to the model after the
+        /// pictures and ahead of the text. Since format 13.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<Attached>,
     },
     /// A complete assistant message. `content` holds the API content blocks
     /// exactly as received: thinking blocks must be replayed unchanged.
@@ -272,4 +403,56 @@ pub enum Event {
         reason: String,
         error: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_picked_path_is_a_file_a_picture_or_refused_with_why() {
+        let directory = tempfile::tempdir().unwrap();
+        let at = |name: &str| directory.path().join(name);
+        let write = |name: &str, bytes: &[u8]| std::fs::write(at(name), bytes).unwrap();
+        write("notes.md", "# 笔记\nline two\n".as_bytes());
+        write("big.log", "x".repeat(ATTACHED_INLINE_BYTES as usize + 1).as_bytes());
+        write("data.bin", &[1, 2, 0, 3]);
+        write("shot.PNG", &[0x89, b'P', b'N', b'G', 0, 1]);
+        std::fs::create_dir(at("folder")).unwrap();
+
+        // A small text file goes with the message, text and all.
+        let small = attach(&at("notes.md")).unwrap();
+        assert_eq!((small.bytes, small.content.as_deref()), (18, Some("# 笔记\nline two\n")));
+        assert_eq!(pick(&at("notes.md")), Picked::File { path: small.path.clone(), name: "notes.md".into(), bytes: 18, inline: true });
+        // A large one is attached by its path alone.
+        let large = attach(&at("big.log")).unwrap();
+        assert_eq!((large.bytes, large.content), (ATTACHED_INLINE_BYTES + 1, None));
+        assert!(matches!(pick(&at("big.log")), Picked::File { inline: false, .. }));
+        // What is not text, is a folder, is not there, or is not a whole path, is refused.
+        assert_eq!(attach(&at("data.bin")), Err("binary"));
+        assert_eq!(attach(&at("folder")), Err("directory"));
+        assert_eq!(attach(&at("gone.txt")), Err("missing"));
+        assert_eq!(attach(Path::new("notes.md")), Err("missing"));
+        assert_eq!(pick(&at("gone.txt")), Picked::Refused { name: "gone.txt".into(), why: "missing" });
+        // A picture, whatever the case of its ending, is read as one, though its bytes are not text.
+        match pick(&at("shot.PNG")) {
+            Picked::Image { name, image } => assert_eq!((name.as_str(), image.media_type.as_str(), image.data.as_str()), ("shot.PNG", "image/png", "iVBORwAB")),
+            other => panic!("{other:?}"),
+        }
+        assert!(check_images(&[Image { media_type: "image/png".into(), data: base64(&[1, 2, 3, 4]) }]).is_ok());
+    }
+
+    #[test]
+    fn base64_pads_what_is_not_a_multiple_of_three() {
+        assert_eq!([base64(b""), base64(b"f"), base64(b"fo"), base64(b"foo"), base64(b"foob")], ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg=="]);
+    }
+
+    #[test]
+    fn an_attached_file_is_put_to_the_model_by_name() {
+        let small = Attached { path: "/x/notes.md".into(), bytes: 9, content: Some("one\ntwo\n".into()) };
+        assert_eq!(attached_text(&small), "<attached_file path=\"/x/notes.md\">\none\ntwo\n</attached_file>");
+        let large = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None };
+        let told = attached_text(&large);
+        assert!(told.starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">") && told.contains("read_file") && told.contains("without asking"), "{told}");
+    }
 }
