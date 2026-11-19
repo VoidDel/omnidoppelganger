@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
+import { Hint } from "./Hint";
 import { mcpTool, shortCount } from "../lib/fold";
 import type { KeyStatus, McpServer, Provider, Settings, SettingsView } from "../lib/types";
 
@@ -9,7 +10,7 @@ const EFFORT_NAMES: Record<string, string> = { low: "练气", medium: "筑基", 
 
 const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
   { value: "light", name: "白昼", hint: "月白底，宜昼", swatches: [["#FBFCFA", "#1B2A2B"], ["#F6E7A8", "#D9BC55"], ["#B8322A", "#B8322A"]] },
-  { value: "dark", name: "玄夜", hint: "玄青底，宜夜", swatches: [["#1A2A2C", "#E6EEEA"], ["#3A3212", "#7D6A1E"], ["#E0584E", "#E0584E"]] },
+  { value: "dark", name: "玄夜", hint: "玄青底，宜夜", swatches: [["#1A2A2C", "#E6EEEA"], ["#ECD88C", "#B8962E"], ["#E0584E", "#E0584E"]] },
   { value: "system", name: "跟随系统", hint: "随系统昼夜更替", swatches: [["#FBFCFA", "#1B2A2B"], ["#1A2A2C", "#E6EEEA"]] },
 ];
 
@@ -133,13 +134,13 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
             <label htmlFor="key-address">{chosen.base_url ? "接口地址（留空用默认）" : "接口地址（必填）"}</label>
             <input id="key-address" className="input mono" placeholder={chosen.base_url || "https://example.com/v1"} value={address} onChange={(event) => setAddress(event.target.value)} />
             {chosen.other_urls.length > 0 && (
-              <p className="hint">
+              <Hint>
                 {chosen.other_urls.map(([url, what]) => (
                   <span key={url}>
                     {what}：<span className="mono">{url}</span>{" "}
                   </span>
                 ))}
-              </p>
+              </Hint>
             )}
           </div>
         )}
@@ -330,9 +331,9 @@ function McpSection({ config, servers, onSave, onRefresh }: McpSectionProps) {
       <div className="field">
         <label htmlFor="mcp-config">服务清单</label>
         <textarea id="mcp-config" className="input mono config" rows={5} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
-        <p className="hint">
+        <Hint>
           用各家通用的 mcpServers 写法，MCP 服务说明里给的配置片段可以直接贴进来。本机程序写 command 和 args，远程服务写 url（需要的话加 headers）。保存后立即连接；连上的服务提供的工具，分身每次动用前都要请示。
-        </p>
+        </Hint>
         {problem && (
           <p className="hint failed" role="alert">
             清单没有保存：{problem}
@@ -502,7 +503,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                 onSave={(id) => onSave({ ...settings, provider: id, model: view.providers.find((provider) => provider.id === id)?.models[0]?.[0] ?? "" })}
               />
             </div>
-            <p className="hint">只列上面已有的宗门。要用别家，先点「新增宗门」把它添进来。</p>
+            <Hint>只列上面已有的宗门。要用别家，先点「新增宗门」把它添进来。</Hint>
           </div>
           <div className="field">
             <label htmlFor="default-model">功法（模型）</label>
@@ -530,7 +531,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                 <span className="sr-only">刷新功法列表</span>
               </button>
             </div>
-            <p className="hint">
+            <Hint>
               {asking
                 ? `正在向 ${chosen?.name ?? settings.provider} 问它有哪些功法……`
                 : served.models.length > 0
@@ -540,7 +541,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                   : keyed === "none"
                     ? "填上这个宗门的密钥后，会自动向它问有哪些功法。眼下可以从内置的几门里选，或直接填模型 ID。"
                     : "可以从列表里选，也可以直接填模型 ID。"}
-            </p>
+            </Hint>
             {/* How much the model itself can hold, and who says so: a fact about the model, so one line, with the way to correct it kept out of sight. */}
             <p className="hint window-line" id="context-window">
               {settings.model} 的上下文窗口：{shortCount(view.context_window.tokens)} token（{WINDOW_SOURCES[view.context_window.source]}）。
@@ -575,7 +576,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                   if (event.key === "Escape") setEditingWindow(false);
                 }}
               />
-              <p className="hint">这是功法自己的硬指标，不是想让对话多长：填得比实际大，请求会被宗门拒掉。留空不改。</p>
+              <Hint>这是功法自己的硬指标，不是想让对话多长：填得比实际大，请求会被宗门拒掉。留空不改。</Hint>
             </div>
           )}
           <fieldset className="field">
@@ -588,9 +589,9 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                 </label>
               ))}
             </div>
-            <p className="hint">
+            <Hint>
               境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。下一次请求起生效。{note}
-            </p>
+            </Hint>
           </fieldset>
         </section>
 
@@ -616,12 +617,12 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                 <input id="context-limit" className="input mono" type="number" min={20000} step={10000} {...limit} />
               </>
             )}
-            <p className="hint">
+            <Hint>
               每次请求都要把整段对话发给模型，对话越长越费灵石。对话到上限，分身会把前情凝成一段摘要，之后只凭摘要接着做。
               {settings.context_auto
                 ? `自动：按每门功法自己的窗口，用到它的八成，${settings.model} 眼下是 ${shortCount(ceiling)}。窗口大的功法前情留得长，也更费灵石。`
                 : "自己定一个数（token，最低 20000），对所有功法都用它；功法装不下这么多时，按它窗口的八成算。"}
-            </p>
+            </Hint>
           </div>
           {/* Said here only when it matters: the model cannot hold as much as the limit asks for. */}
           {!settings.context_auto && settings.context_limit > ceiling && (
@@ -648,7 +649,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               </label>
             ))}
           </fieldset>
-          <p className="hint">已经化出的分身，在输入框下方或按 Shift+Tab 随时换禁制。无论哪种禁制，碰洞府之外的东西、改 .git 里的文件都要请示。</p>
+          <Hint>已经化出的分身，在输入框下方或按 Shift+Tab 随时换禁制。无论哪种禁制，碰洞府之外的东西、改 .git 里的文件都要请示。</Hint>
         </section>
 
         <section>
@@ -661,10 +662,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             </span>
           </label>
           {view.sandbox_support.Ok ? (
-            <p className="hint">
+            <Hint>
               用的是系统自带的 {view.sandbox_support.Ok}。开了之后，命令（连同它启动的一切，比如构建脚本和测试）改不了洞府之外的文件。禁制照旧：该请示的命令还是请示。
               命令确实要往别处写时，分身会请示出结界跑一次，每次都要本尊点头。下一条命令起生效。
-            </p>
+            </Hint>
           ) : (
             <p className="hint" title={view.sandbox_support.Err}>
               这个系统上还布不了结界，眼下只有 Linux 和 macOS 可以。
@@ -686,7 +687,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                 if (paths.join("\n") !== settings.sandbox_paths.join("\n")) onSave({ ...settings, sandbox_paths: paths });
               }}
             />
-            <p className="hint">Git 仓库自己的 .git 目录不用填，已经算在内。</p>
+            <Hint>Git 仓库自己的 .git 目录不用填，已经算在内。</Hint>
           </div>
         </section>
 
@@ -699,10 +700,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               <span className="muted">（护法是另一个模型：它放行的直接跑，它不放行的才请本尊定夺）</span>
             </span>
           </label>
-          <p className="hint">
+          <Hint>
             只管放手施为下规则不放行的命令；别的禁制、改洞府之外的文件、上网、身外法器照旧请示，全权托付不经护法。护法只看得到本尊说过的话、分身动手前说的打算和命令本身，看不到文件和命令输出里的字。
             它会看走眼，也会被骗，不是保险；每审一次花一两千 token 的灵石，慢一两秒。
-          </p>
+          </Hint>
           {settings.guardian && (
             <div className="field">
               <label htmlFor="guardian-model">护法的功法（{chosen?.name ?? settings.provider}）</label>
@@ -720,13 +721,13 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                   }}
                 />
               </div>
-              <p className="hint">挑一门又快又便宜的。护法和分身用同一个宗门，这里设的是默认宗门的；别的宗门没设时，用分身自己的功法。</p>
+              <Hint>挑一门又快又便宜的。护法和分身用同一个宗门，这里设的是默认宗门的；别的宗门没设时，用分身自己的功法。</Hint>
             </div>
           )}
           <div className="field">
             <label htmlFor="approval-timeout">放手施为下，请示等多久（秒）</label>
             <input id="approval-timeout" className="input mono short" type="number" min={0} step={5} {...timeout} />
-            <p className="hint">过了这个时间没人定夺，就自动驳回，分身绕开那一步接着做，并在回报里说明。填 0 就一直等。别的禁制下一直等。</p>
+            <Hint>过了这个时间没人定夺，就自动驳回，分身绕开那一步接着做，并在回报里说明。填 0 就一直等。别的禁制下一直等。</Hint>
           </div>
         </section>
 
@@ -767,11 +768,11 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                 onSave={(engine) => onSave({ ...settings, search_engine: engine })}
               />
             </div>
-            <p className="hint">
+            <Hint>
               搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家功法都能搜。
               {view.search_ready ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。" : "还没有 GLM 的密钥，所以分身现在不能搜：到「功法」那一页给 GLM 添上密钥就行。"}
               GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
-            </p>
+            </Hint>
           </div>
         </section>
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ago } from "./when";
+import { ago, ahead } from "./when";
 
 describe("ago", () => {
   const now = new Date(2026, 10, 19, 15, 30, 0);
@@ -30,5 +30,27 @@ describe("ago", () => {
 
   it("says nothing of what is not a time", () => {
     expect(ago("", now)).toBe("");
+  });
+});
+
+describe("ahead", () => {
+  const now = new Date(2026, 10, 19, 15, 30, 0);
+  const after = (ms: number) => new Date(now.getTime() + ms).toISOString();
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+
+  it("says how long until, in minutes, then hours, within the day", () => {
+    expect(ahead(after(-5 * MINUTE), now)).toBe("马上");
+    expect(ahead(after(30_000), now)).toBe("马上");
+    expect(ahead(after(4 * MINUTE + 10_000), now)).toBe("5 分钟后");
+    expect(ahead(after(3 * HOUR + 10 * MINUTE), now)).toBe("3 小时后");
+  });
+
+  it("goes by the calendar after that", () => {
+    expect(ahead(new Date(2026, 10, 20, 9, 0, 0).toISOString(), now)).toBe("明天");
+    expect(ahead(new Date(2026, 10, 21, 9, 0, 0).toISOString(), now)).toBe("后天");
+    expect(ahead(new Date(2026, 10, 24, 9, 0, 0).toISOString(), now)).toBe("5 天后");
+    expect(ahead(new Date(2026, 11, 3, 9, 0, 0).toISOString(), now)).toBe("12月3日");
+    expect(ahead(new Date(2027, 0, 3, 9, 0, 0).toISOString(), now)).toBe("2027年1月");
   });
 });

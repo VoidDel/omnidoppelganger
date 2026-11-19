@@ -36,6 +36,9 @@
   /* The box the thread is drawn in the middle of, and with it its light, the point it ends in and the rings on it:
      the same two edges for all of them, so that whatever a screen's scale rounds those edges to, their middles agree. */
   --rail-box: 13px;
+  /* The bars across the top of the conversation, the side panel and the settings: one height, so their lower
+     borders make one line across the window, whatever each holds. */
+  --bar: 60px;
   --rail-edge: calc(var(--rail) - 6px);
   --bg: #eff3ef;
   --bg-side: #e3eae5;
@@ -885,8 +888,8 @@ pre,
 }
 
 .main-header {
-  min-height: 60px;
-  padding: 10px 24px;
+  height: var(--bar);
+  padding: 0 24px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
@@ -3080,8 +3083,8 @@ button.select-button svg {
 }
 
 .tabs {
-  min-height: 60px;
-  padding: 8px 12px;
+  height: var(--bar);
+  padding: 0 12px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
@@ -3380,10 +3383,13 @@ button.select-button svg {
   position: relative;
   z-index: 1;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-content: center;
+  /* In the middle while it fits; once it does not, from the top, so nothing is out of reach above. */
+  justify-content: safe center;
   gap: 16px;
   padding: 24px 56px;
   max-width: 1000px;
@@ -3443,6 +3449,349 @@ button.select-button svg {
   opacity: 0.55;
 }
 
+/* The core's light swells and fades, as slowly as breath. */
+.mountains .halo {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: swell 7s ease-in-out infinite alternate;
+}
+
+@keyframes swell {
+  from {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+
+.mountains .mist {
+  opacity: 0.9;
+}
+
+.mountains .mist.slow {
+  animation: drift 64s linear infinite;
+}
+
+.mountains .mist.fast {
+  animation: drift 41s linear -18s infinite;
+}
+
+@keyframes drift {
+  to {
+    transform: translateX(2000px);
+  }
+}
+
+/* ---------- a change of theme: the new one spreads over the old, as ink in water ---------- */
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-new(root) {
+  animation: spread 760ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes spread {
+  from {
+    clip-path: circle(0 at var(--spread-x) var(--spread-y));
+  }
+  to {
+    clip-path: circle(var(--spread-r) at var(--spread-x) var(--spread-y));
+  }
+}
+
+/* ---------- Ctrl+K: the way to go anywhere ---------- */
+
+.jump {
+  width: min(620px, calc(100vw - 48px));
+  max-height: min(560px, calc(100vh - 120px));
+  margin: 12vh auto auto;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow:
+    0 24px 60px -20px rgb(0 0 0 / 0.35),
+    0 0 0 1px color-mix(in srgb, var(--jade) 25%, transparent);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.jump:not([open]) {
+  display: none;
+}
+
+/* It comes down from above the page, and the page behind it goes still and dim. */
+.jump[open] {
+  animation: descend var(--d-move) var(--ease-out);
+}
+
+.jump::backdrop {
+  background: rgb(16 27 29 / 0.38);
+  backdrop-filter: blur(2px);
+}
+
+@keyframes descend {
+  from {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.98);
+  }
+}
+
+.jump-line {
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--ink-2);
+}
+
+.jump-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--t-lead);
+}
+
+.jump kbd {
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.jump-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: var(--s-2);
+  list-style: none;
+  overflow-y: auto;
+}
+
+.jump-place {
+  position: relative;
+  min-height: 44px;
+  padding: 6px var(--s-3);
+  border-radius: var(--r-control);
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  cursor: pointer;
+}
+
+/* The one the arrows are on: a wash of jade, and a stroke down its left. */
+.jump-place.at {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.jump-place.at::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--jade);
+}
+
+.jump-place .row-seal {
+  margin-top: 0;
+  --seal-ground: var(--sheet);
+}
+
+.jump-place.at .row-seal {
+  --seal-ground: var(--jade-tint);
+}
+
+.jump-place .seal.small {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.jump-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jump-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.jump-when {
+  flex: none;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.jump-none {
+  padding: var(--s-4) var(--s-3);
+  color: var(--ink-2);
+}
+
+.jump-keys {
+  margin: 0;
+  padding: var(--s-2) var(--s-4);
+  border-top: 1px solid var(--line);
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jump[open] {
+    animation: none;
+  }
+}
+
+/* ---------- the desk: what stands on the home screen ---------- */
+
+.desk {
+  width: 100%;
+  max-width: 960px;
+  margin-top: var(--s-4);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--s-4) var(--s-5);
+  align-items: start;
+}
+
+.desk-part {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.desk-part h2 {
+  margin: 0 0 var(--s-1);
+  font-size: var(--t-small);
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+/* A way in: a strip of the page's paper, its seal, its name, and at its right where or when. */
+.desk-item {
+  width: 100%;
+  min-height: 42px;
+  padding: 6px var(--s-3) 6px var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  color: var(--ink);
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  animation: ink-in var(--d-arrive) var(--ease-out) backwards;
+  transition:
+    transform var(--d-quick) var(--ease-out),
+    border-color var(--d-quick) ease;
+}
+
+.desk-item:hover {
+  border-color: var(--line-strong);
+  transform: translateX(2px);
+}
+
+.desk-item .row-seal {
+  margin-top: 0;
+}
+
+.desk-item.busy {
+  border-left: 3px solid var(--jade);
+}
+
+.desk-item.coming {
+  border-left: 3px solid var(--gold);
+}
+
+/* Those waiting for 本尊 are slips of the talisman, as at the head of the list; they come in unrolled. */
+.desk-item.await-slip {
+  border: 1px solid var(--cinnabar);
+  background: var(--talisman);
+  color: #1b2a2b;
+  animation: unroll var(--d-arrive) var(--ease-out) backwards;
+}
+
+.desk-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desk-item.await-slip .desk-title {
+  font-weight: 700;
+}
+
+.desk-where,
+.desk-when {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.desk-item.await-slip .desk-where {
+  color: #57533c;
+}
+
+.desk-item.coming .desk-when {
+  color: var(--amber-ink);
+}
+
+/* The home screen comes in once: the seal is set down, then the words bleed in after it. */
+.empty > .logo {
+  animation: stamp var(--d-arrive) var(--ease-seal) backwards;
+}
+
+.empty > h1 {
+  animation: ink-in 700ms var(--ease-out) 120ms backwards;
+}
+
+.empty > p,
+.empty > .actions {
+  animation: ink-in 700ms var(--ease-out) 240ms backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mountains .halo,
+  .mountains .mist,
+  .desk-item,
+  .empty > * {
+    animation: none;
+  }
+}
+
 /* ---------- settings ---------- */
 
 /* The settings: a strip of pages that stays at the top, and under it the page that is open, in one centred column. */
@@ -3450,13 +3799,16 @@ button.select-button svg {
   position: sticky;
   top: 0;
   z-index: 3;
-  min-height: 60px;
-  padding: 10px 24px;
+  height: var(--bar);
+  padding: 0 24px;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
+  display: flex;
+  align-items: center;
 }
 
 .settings-tabs-inner {
+  width: 100%;
   max-width: 760px;
   margin: 0 auto;
   display: flex;
@@ -4044,6 +4396,128 @@ button.select-button svg {
 .schedule.off strong,
 .schedule.off .schedule-task {
   color: var(--ink-2);
+}
+
+/* A 功课 on a card of the page's own paper: its seal and name, what it is to do, when it next comes due. */
+.schedule-card {
+  padding: var(--s-4) var(--s-4) var(--s-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.schedule-card.off {
+  border-left-color: var(--line-strong);
+  background: transparent;
+}
+
+.schedule-card .schedule-head {
+  gap: var(--s-1) var(--s-2);
+}
+
+.schedule-head .icon-button {
+  width: 30px;
+  height: 30px;
+}
+
+.schedule-seal {
+  border: 1px solid var(--gold);
+  background: var(--gold-soft);
+  color: var(--amber-ink);
+}
+
+.schedule.off .schedule-seal {
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.schedule-card .schedule-task {
+  padding-left: 34px;
+}
+
+/* When it next comes due: the time in the 分身's gold, large, and after it how far off that is. */
+.schedule-next {
+  margin: var(--s-1) 0 0 34px;
+  padding-top: var(--s-2);
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+}
+
+.next-label {
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.next-when {
+  font-size: var(--t-lead);
+  font-weight: 700;
+  color: var(--amber-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.next-ahead {
+  padding: 0 var(--s-2);
+  border-radius: 999px;
+  background: var(--gold-soft);
+  color: var(--amber-ink);
+  font-size: var(--t-micro);
+}
+
+.next-none {
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.schedule-card .schedule-facts {
+  margin-left: 34px;
+  font-size: var(--t-micro);
+}
+
+.schedule-card .hint.failed {
+  margin-left: 34px;
+}
+
+/* ---------- an explanation held to its first line ---------- */
+
+.hint-wrap {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.hint-wrap .hint {
+  flex: 1;
+  min-width: 0;
+}
+
+.hint.held {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+}
+
+/* At the end of the line, as the message pinned over its work has: the way to read the rest. */
+.hint-more {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--jade);
+  font-size: var(--t-micro);
+  /* As tall as a line of the explanation beside it, so that the two sit on one line. */
+  line-height: calc(var(--t-small) * 1.7);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .schedule-task {

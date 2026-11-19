@@ -3,6 +3,7 @@ import { MODES, modeOf } from "../lib/modes";
 import { Combo } from "./Combo";
 import { WEEKDAYS, blank, clock, describeWhen, draftOf, scheduleOf, type Draft } from "../lib/schedule";
 import type { Mode, Schedule, SessionItem } from "../lib/types";
+import { ahead } from "../lib/when";
 
 const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 
@@ -183,9 +184,9 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
   const [deleting, setDeleting] = useState<string | null>(null);
   const [wrong, setWrong] = useState<string | null>(null);
   // The times shown ("下次") are read against the clock, so the page looks again as it moves.
-  const [, setBeat] = useState(0);
+  const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const timer = setInterval(() => setBeat((beat) => beat + 1), 30_000);
+    const timer = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(timer);
   }, []);
   const folders = [...new Set(sessions.filter((session) => !session.parent).map((session) => session.worktree?.origin ?? session.workspace))];
@@ -226,8 +227,12 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
                 {form(draft)}
               </div>
             ) : (
-              <div className={`provider-card schedule ${schedule.enabled ? "" : "off"}`} key={schedule.id}>
+              <div className={`schedule-card schedule ${schedule.enabled ? "" : "off"}`} key={schedule.id}>
                 <div className="schedule-head">
+                  {/* 课 in gold while it keeps its hours, grey while it is stopped. */}
+                  <span className="seal schedule-seal" aria-hidden="true">
+                    课
+                  </span>
                   <strong>{schedule.name}</strong>
                   {!schedule.enabled && <span className="chip pending">已停课</span>}
                   <span className="spacer" />
@@ -250,35 +255,63 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
                     </span>
                   ) : (
                     <>
-                      <button type="button" className="button text small" title="不等时辰，现在就化一个分身去办；下次的时辰照旧" onClick={() => act(onRun(schedule.id))}>
-                        现在就办
+                      {/* Pictures, each named in its title and for a screen reader. */}
+                      <button type="button" className="icon-button" title="现在就办：不等时辰，现在就化一个分身去办；下次的时辰照旧" onClick={() => act(onRun(schedule.id))}>
+                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+                          <path d="M5 3.2v9.6L12.6 8z" />
+                        </svg>
+                        <span className="sr-only">现在就办</span>
                       </button>
                       <button
                         type="button"
-                        className="button text small"
-                        title={schedule.enabled ? "先停下，留着不删" : "接着按时辰办"}
+                        className="icon-button"
+                        title={schedule.enabled ? "停课：先停下，留着不删" : "复课：接着按时辰办"}
                         onClick={() => act(onSave({ ...schedule, enabled: !schedule.enabled }))}
                       >
-                        {schedule.enabled ? "停课" : "复课"}
+                        {schedule.enabled ? (
+                          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                            <path d="M5.5 3.5v9M10.5 3.5v9" />
+                          </svg>
+                        ) : (
+                          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.4h-2.4" />
+                          </svg>
+                        )}
+                        <span className="sr-only">{schedule.enabled ? "停课" : "复课"}</span>
                       </button>
-                      <button type="button" className="button text small" onClick={() => setDraft(draftOf(schedule, new Date()))}>
-                        改
+                      <button type="button" className="icon-button" title="改这门功课" onClick={() => setDraft(draftOf(schedule, new Date()))}>
+                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M10.8 2.6l2.6 2.6-7.6 7.6-3.3.7.7-3.3zM9.4 4l2.6 2.6" />
+                        </svg>
+                        <span className="sr-only">改</span>
                       </button>
-                      <button type="button" className="button text small" onClick={() => setDeleting(schedule.id)}>
-                        删除
+                      <button type="button" className="icon-button danger" title="删除这门功课" onClick={() => setDeleting(schedule.id)}>
+                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M2.8 4.2h10.4M6.2 4.2V2.8h3.6v1.4M4.2 4.2l.7 9h6.2l.7-9M6.7 6.7v4.2M9.3 6.7v4.2" />
+                        </svg>
+                        <span className="sr-only">删除</span>
                       </button>
                     </>
                   )}
                 </div>
                 <p className="schedule-task">{schedule.prompt}</p>
+                {/* When it next comes due, large, and how far off that is; or why it will not. */}
+                <div className="schedule-next">
+                  {schedule.next ? (
+                    <>
+                      <span className="next-label">下次</span>
+                      <span className="next-when">{clock(schedule.next)}</span>
+                      <span className="next-ahead">{ahead(schedule.next, now)}</span>
+                    </>
+                  ) : (
+                    <span className="next-none">{schedule.when.kind === "once" && schedule.last ? "办过了，不会再办" : "停着，不会自己开始"}</span>
+                  )}
+                </div>
                 <p className="schedule-facts">
                   <span>{describeWhen(schedule.when)}</span>
                   <span title={schedule.workspace}>洞府 {baseName(schedule.workspace)}</span>
                   <span>禁制「{modeOf(schedule.mode).name}」</span>
                   {schedule.isolated && <span>独立工作树</span>}
-                </p>
-                <p className="schedule-facts">
-                  {schedule.next ? <span>下次：{clock(schedule.next)}</span> : <span>{schedule.when.kind === "once" && schedule.last ? "办过了，不会再办" : "停着，不会自己开始"}</span>}
                   {schedule.last && (
                     <span>
                       上次：{clock(schedule.last.at)}

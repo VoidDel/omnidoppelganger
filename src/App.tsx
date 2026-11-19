@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { Desk } from "./components/Desk";
+import { Jump } from "./components/Jump";
 import { Composer, Logo, Mountains, PANEL_STRIP, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
 import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
@@ -16,6 +18,8 @@ interface State {
   /** The session being opened: its log events are kept until its snapshot arrives. */
   openingId: string | null;
   buffer: Envelope[];
+  /** The last status the session being opened reported while it was being opened: newer than the view that comes back. */
+  bufferedStatus: Status | null;
   events: Envelope[];
   status: Status;
   stream: StreamBlock[];
@@ -48,6 +52,7 @@ const initial: State = {
   sessions: [],
   activeId: null,
   openingId: null,
+  bufferedStatus: null,
   buffer: [],
   events: [],
   status: "idle",
@@ -79,14 +84,18 @@ function reduce(state: State, action: Action): State {
     case "sessions":
       return { ...state, sessions: action.sessions };
     case "opening":
-      return { ...state, openingId: action.id, buffer: [] };
+      return { ...state, openingId: action.id, buffer: [], bufferedStatus: null };
     case "opened": {
-      const { events, ...item } = action.view;
+      const { events, ...view } = action.view;
+      // A status reported while the view was on its way is at least as new as the view: a turn that ended
+      // just after the view was taken would otherwise be shown as running for good.
+      const item = state.openingId === view.id && state.bufferedStatus ? { ...view, status: state.bufferedStatus } : view;
       const opened: State = {
         ...state,
         activeId: item.id,
         openingId: null,
         buffer: [],
+        bufferedStatus: null,
         events,
         status: item.status,
         stream: [],
@@ -113,7 +122,7 @@ function reduce(state: State, action: Action): State {
       }
       if (event.kind === "stream") return active ? { ...state, stream: applyDelta(state.stream, event.delta) } : state;
       const sessions = state.sessions.map((session) => (session.id === event.session_id ? { ...session, status: event.status } : session));
-      if (!active) return { ...state, sessions };
+      if (!active) return event.session_id === state.openingId ? { ...state, sessions, bufferedStatus: event.status } : { ...state, sessions };
       const idle = event.status === "idle";
       return { ...state, sessions, status: event.status, stream: idle ? [] : state.stream, queued: idle ? [] : state.queued };
     }
@@ -155,12 +164,38 @@ function usePanel() {
   return [panel, setPanel] as const;
 }
 
+/** Where the pointer last went down: a change of theme spreads from there. */
+const pressed = { x: 0, y: 0 };
+if (typeof window !== "undefined") {
+  window.addEventListener("pointerdown", (event) => Object.assign(pressed, { x: event.clientX, y: event.clientY }), true);
+}
+
+/**
+ * Switch the page to a theme. Once the page is up, the new one spreads over the old as ink does, from where the
+ * pointer last went down, wherever the browser can draw that and the system has not asked for stillness.
+ */
+function setTheme(next: "light" | "dark") {
+  const root = document.documentElement;
+  if (root.dataset.theme === next) return;
+  const first = !root.dataset.theme;
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const swap = () => {
+    root.dataset.theme = next;
+  };
+  if (first || still || !("startViewTransition" in document)) return swap();
+  const x = pressed.x || window.innerWidth - 40;
+  const y = pressed.y || 40;
+  const reach = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+  root.style.setProperty("--spread-x", `${x}px`);
+  root.style.setProperty("--spread-y", `${y}px`);
+  root.style.setProperty("--spread-r", `${reach}px`);
+  (document as Document & { startViewTransition: (update: () => void) => unknown }).startViewTransition(swap);
+}
+
 function useTheme(theme: Settings["theme"] | undefined) {
   useEffect(() => {
     const system = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      document.documentElement.dataset.theme = theme === "dark" || (theme !== "light" && system.matches) ? "dark" : "light";
-    };
+    const apply = () => setTheme(theme === "dark" || (theme !== "light" && system.matches) ? "dark" : "light");
     apply();
     system.addEventListener("change", apply);
     return () => system.removeEventListener("change", apply);
@@ -169,6 +204,18 @@ function useTheme(theme: Settings["theme"] | undefined) {
 
 export default function App() {
   const [state, dispatch] = useReducer(reduce, initial);
+  /** Whether the Ctrl+K sheet, the way to go anywhere, is open. */
+  const [jumping, setJumping] = useState(false);
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setJumping((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
   const fail = useCallback((error: unknown) => dispatch({ type: "error", error: String(error) }), []);
   const refresh = useCallback(() => api.listSessions().then((sessions) => dispatch({ type: "sessions", sessions }), fail), [fail]);
 
@@ -492,10 +539,24 @@ export default function App() {
                 </button>
               )}
             </div>
+            <Desk sessions={state.sessions} schedules={state.schedules} onOpen={open} onSchedules={() => dispatch({ type: "page", page: "schedules" })} />
             </div>
           </>
         )}
       </main>
+      {jumping && (
+        <Jump
+          sessions={state.sessions}
+          acts={[
+            { id: "new", name: "开辟洞府", hint: "选一个文件夹，化出分身", seal: "辟", run: () => void create() },
+            { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: () => dispatch({ type: "page", page: "schedules" }) },
+            { id: "settings", name: "设置", hint: "功法、禁制、法器、外观", seal: "设", run: () => dispatch({ type: "page", page: "settings" }) },
+          ]}
+          onOpen={open}
+          onSearch={api.searchSessions}
+          onClose={() => setJumping(false)}
+        />
+      )}
       {showPanel && (
         <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} />
       )}
