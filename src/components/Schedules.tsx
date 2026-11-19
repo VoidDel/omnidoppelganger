@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { MODES, modeOf } from "../lib/modes";
+import { Combo } from "./Combo";
 import { WEEKDAYS, blank, clock, describeWhen, draftOf, scheduleOf, type Draft } from "../lib/schedule";
 import type { Mode, Schedule, SessionItem } from "../lib/types";
 
@@ -108,10 +109,16 @@ function Form({ draft, folders, onChange, onPick, onSave, onCancel }: FormProps)
             <label htmlFor="schedule-unit" className="sr-only">
               单位
             </label>
-            <select id="schedule-unit" className="input short" value={draft.unit} onChange={(event) => set({ unit: event.target.value as Draft["unit"] })}>
-              <option value="minutes">分钟</option>
-              <option value="hours">小时</option>
-            </select>
+            <Combo
+              id="schedule-unit"
+              value={draft.unit}
+              options={[
+                { value: "minutes", text: "分钟" },
+                { value: "hours", text: "小时" },
+              ]}
+              editable={false}
+              onSave={(unit) => set({ unit: unit as Draft["unit"] })}
+            />
             <span className="muted">从保存时算起；上一回还没办完，这一回就跳过</span>
           </div>
         )}
@@ -127,13 +134,7 @@ function Form({ draft, folders, onChange, onPick, onSave, onCancel }: FormProps)
       </fieldset>
       <div className="field">
         <label htmlFor="schedule-mode">禁制</label>
-        <select id="schedule-mode" className="input" value={draft.mode} onChange={(event) => set({ mode: event.target.value as Mode })}>
-          {MODES.map((mode) => (
-            <option key={mode.value} value={mode.value}>
-              {mode.name}
-            </option>
-          ))}
-        </select>
+        <Combo id="schedule-mode" value={draft.mode} options={MODES.map((mode) => ({ value: mode.value, text: mode.name }))} editable={false} onSave={(mode) => set({ mode: mode as Mode })} />
         <p className="hint">{modeOf(draft.mode).hint}。到时辰本尊多半不在：要请示的事会一直候旨，等本尊回来定夺。</p>
       </div>
       <label className="check">

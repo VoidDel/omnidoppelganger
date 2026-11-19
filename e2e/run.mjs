@@ -158,7 +158,7 @@ try {
 
   // The edit runs on its own in the default mode; the command waits for the user.
   // The server's tool asks first, whatever the mode; then the command does.
-  await page.waitForText("外来的法器");
+  await page.waitForText("身外法器");
   await page.waitForText("notes · shout");
   await page.click("准这一次");
   await page.waitForText("分身要运行一条命令");
@@ -343,7 +343,10 @@ try {
   check(mock.lists.count === listed + 1, "the refresh button asked the provider for its models again");
   await page.click("新增宗门");
   await page.waitFor("the window that adds one", `document.querySelector("dialog.dialog")?.open`);
-  await page.evaluate(`(() => { const select = document.querySelector("#key-provider"); select.value = "deepseek"; select.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+  await page.evaluate(`document.querySelector("#key-provider").focus()`);
+  await page.waitFor("the 宗门 that can be added", `!!document.querySelector("#key-provider-list")`);
+  await page.evaluate(`[...document.querySelectorAll("#key-provider-list li")].find((item) => item.textContent.includes("DeepSeek")).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))`);
+  await page.waitFor("the pick", `document.querySelector("#key-provider").value === "DeepSeek" && !document.querySelector("#key-provider-list")`);
   await page.type("#key-value", "e2e-deepseek-key-1234");
   await page.click("保存");
   await page.waitFor("the provider to join the list", `!document.querySelector("dialog.dialog") && document.querySelectorAll(".key-list li").length === 2`);

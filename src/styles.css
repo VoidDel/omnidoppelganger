@@ -1421,7 +1421,8 @@ button.select-button svg {
   background: transparent;
   display: grid;
   grid-template-columns: 18px 1fr 16px;
-  align-items: start;
+  /* The picture and the tick sit at the middle of the option, however many lines its words take. */
+  align-items: center;
   gap: 10px;
   text-align: left;
 }
@@ -1430,10 +1431,6 @@ button.select-button svg {
 .mode-option[aria-checked="true"] {
   background: var(--jade-tint);
   color: var(--jade-tint-ink);
-}
-
-.mode-option svg {
-  margin-top: 2px;
 }
 
 .mode-text {
@@ -1830,6 +1827,15 @@ button.select-button svg {
   max-width: none;
   padding-right: 36px;
   text-overflow: ellipsis;
+}
+
+/* In a window it is as wide as the window's other fields; beside a number, as wide as a word. */
+.dialog .combo {
+  width: 100%;
+}
+
+.when-row .combo {
+  width: 112px;
 }
 
 .combo .input[readonly] {

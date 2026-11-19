@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MODES } from "../lib/modes";
+import { Combo } from "./Combo";
 import { mcpTool } from "../lib/fold";
 import type { KeyStatus, McpServer, Provider, Settings, SettingsView } from "../lib/types";
 
@@ -41,113 +42,6 @@ function useDraft(value: string, save: (value: string) => void) {
   };
 }
 
-interface ComboProps {
-  id: string;
-  /** The choice that is saved. */
-  value: string;
-  /** The choices: what each is saved as, the words it is shown by, and a note set beside them in the list. */
-  options: { value: string; text: string; note?: string }[];
-  /** Whether something that is not among the choices can be typed in: a model's id, say. */
-  editable: boolean;
-  /** Set the choices in the face used for code. */
-  mono?: boolean;
-  placeholder?: string;
-  onSave: (value: string) => void;
-}
-
-/**
- * A field with a list under it, one look for every such choice on the page. The list opens with every choice in it,
- * whatever the field holds: the browser's own suggestions show only those matching what is already there, which
- * hides most of them. In a field that can be typed in, typing narrows the list.
- */
-function Combo({ id, value, options, editable, mono, placeholder, onSave }: ComboProps) {
-  const shownFor = (kept: string) => (editable ? kept : (options.find((option) => option.value === kept)?.text ?? kept));
-  const [draft, setDraft] = useState(shownFor(value));
-  useEffect(() => setDraft(shownFor(value)), [value, options.length]);
-  const [open, setOpen] = useState(false);
-  /** Whether the user has typed since the list opened: only then does what is typed narrow it. */
-  const [typed, setTyped] = useState(false);
-  const [at, setAt] = useState(-1);
-  const wanted = draft.trim().toLowerCase();
-  const shown = typed && wanted ? options.filter((option) => option.value.toLowerCase().includes(wanted) || option.text.toLowerCase().includes(wanted)) : options;
-  const close = () => {
-    setOpen(false);
-    setTyped(false);
-    setAt(-1);
-  };
-  const commit = (picked: string) => {
-    close();
-    setDraft(shownFor(picked.trim()));
-    if (picked.trim() !== value) onSave(picked.trim());
-  };
-  return (
-    <div className="combo">
-      <input
-        id={id}
-        className={`input ${mono ? "mono" : ""}`}
-        role="combobox"
-        aria-expanded={open}
-        aria-controls={`${id}-list`}
-        aria-autocomplete={editable ? "list" : "none"}
-        autoComplete="off"
-        readOnly={!editable}
-        placeholder={placeholder}
-        value={draft}
-        onFocus={() => setOpen(true)}
-        onClick={() => setOpen(true)}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          setTyped(true);
-          setOpen(true);
-          setAt(-1);
-        }}
-        // Leaving the field keeps what was typed; picking from the list does not leave it (see the options).
-        onBlur={() => (editable ? commit(draft) : close())}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            setOpen(true);
-            if (shown.length > 0) setAt((now) => (now + (event.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length);
-          }
-          if (event.key === "Enter") {
-            if (open && at >= 0 && shown[at]) commit(shown[at].value);
-            else if (editable) commit(draft);
-          }
-          if (event.key === "Escape" && open) {
-            event.stopPropagation();
-            close();
-            setDraft(shownFor(value));
-          }
-        }}
-      />
-      <svg className="combo-mark" aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-        <path d="m4 6 4 4 4-4" />
-      </svg>
-      {open && (
-        <ul id={`${id}-list`} className="combo-list" role="listbox">
-          {shown.map((option, index) => (
-            <li
-              key={option.value}
-              role="option"
-              aria-selected={option.value === value}
-              className={index === at ? "at" : ""}
-              // Before the field would lose focus, so the pick is not overtaken by what the field holds.
-              onMouseDown={(event) => {
-                event.preventDefault();
-                commit(option.value);
-              }}
-            >
-              <span className={mono ? "mono" : ""}>{option.text}</span>
-              {option.note && <span className="muted">{option.note}</span>}
-            </li>
-          ))}
-          {shown.length === 0 && <li className="none">没有对得上的。照这样填也行，回车保存。</li>}
-        </ul>
-      )}
-    </div>
-  );
-}
-
 function KeyLine({ provider, status }: { provider: Provider; status: KeyStatus }) {
   return (
     <>
@@ -175,7 +69,11 @@ interface KeyDialogProps {
 function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyDialogProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   // Shown as a modal, which keeps the keyboard inside it and closes on Escape.
-  useEffect(() => dialog.current?.showModal(), []);
+  useEffect(() => {
+    dialog.current?.showModal();
+    // The window gives the keyboard to its first field, which would open that field's list. The key is what is typed here.
+    dialog.current?.querySelector<HTMLInputElement>("#key-value")?.focus();
+  }, []);
   const { settings } = view;
   const [picked, setPicked] = useState(provider?.id ?? choices[0]?.id ?? "");
   const chosen = provider ?? choices.find((choice) => choice.id === picked);
@@ -210,22 +108,17 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
         {!provider && (
           <div className="field">
             <label htmlFor="key-provider">哪个宗门</label>
-            <select
+            <Combo
               id="key-provider"
-              className="input"
               value={picked}
-              onChange={(event) => {
-                setPicked(event.target.value);
-                setAddress(settings.base_urls[event.target.value] ?? "");
+              options={choices.map((choice) => ({ value: choice.id, text: choice.name }))}
+              editable={false}
+              onSave={(id) => {
+                setPicked(id);
+                setAddress(settings.base_urls[id] ?? "");
                 setWrong(null);
               }}
-            >
-              {choices.map((choice) => (
-                <option key={choice.id} value={choice.id}>
-                  {choice.name}
-                </option>
-              ))}
-            </select>
+            />
           </div>
         )}
         <div className="field">
@@ -433,7 +326,7 @@ function McpSection({ config, servers, onSave, onRefresh }: McpSectionProps) {
   }, [connecting, onRefresh]);
   return (
     <section>
-      <h2>外来法器（MCP 服务）</h2>
+      <h2>身外法器（MCP 服务）</h2>
       <div className="field">
         <label htmlFor="mcp-config">服务清单</label>
         <textarea id="mcp-config" className="input mono config" rows={5} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
@@ -479,7 +372,7 @@ const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] =
     icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
   },
   { id: "rules", name: "禁制", hint: "分身不问就能做什么，沙箱，已经长期准过的事", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
-  { id: "tools", name: "法器", hint: "联网搜索、技能、外来的 MCP 服务", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
+  { id: "tools", name: "法器", hint: "天机阁（联网搜索）、技能、身外法器（MCP 服务）", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
   {
     id: "look",
     name: "外观",
@@ -725,16 +618,18 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
         {tab === "tools" && (
           <>
         <section>
-          <h2>联网搜索</h2>
+          <h2>天机阁（联网搜索）</h2>
           <div className="field">
-            <label htmlFor="search-engine">用哪家搜</label>
-            <select id="search-engine" className="input" value={settings.search_engine} onChange={(event) => onSave({ ...settings, search_engine: event.target.value })}>
-              {view.search_engines.map(([id, what]) => (
-                <option key={id} value={id}>
-                  {what}
-                </option>
-              ))}
-            </select>
+            <label htmlFor="search-engine">向哪家打探</label>
+            <div className="inline model-row">
+              <Combo
+                id="search-engine"
+                value={settings.search_engine}
+                options={view.search_engines.map(([id, what]) => ({ value: id, text: what }))}
+                editable={false}
+                onSave={(engine) => onSave({ ...settings, search_engine: engine })}
+              />
+            </div>
             <p className="hint">
               搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家功法都能搜。
               {view.search_ready ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。" : "还没有 GLM 的密钥，所以分身现在不能搜：到「功法」那一页给 GLM 添上密钥就行。"}
