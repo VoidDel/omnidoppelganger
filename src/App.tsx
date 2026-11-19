@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
-import { Composer, Logo, Mountains, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
+import { Composer, Logo, Mountains, PANEL_STRIP, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
 import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
@@ -284,6 +284,10 @@ export default function App() {
   const inChat = state.page === "chat";
   const [panel, setPanel] = usePanel();
   const showPanel = inChat && !!active && !panel.hidden;
+  // With nothing in it, the panel stands as a strip, until a tab there is pressed; the next 分身 starts again.
+  const [peek, setPeek] = useState(false);
+  useEffect(() => setPeek(false), [state.activeId]);
+  const strip = files.length === 0 && runs.length === 0 && plan.length === 0 && !peek;
   const banners = (
     <>
         {state.error && (
@@ -307,7 +311,7 @@ export default function App() {
     </>
   );
   return (
-    <div className={`app ${showPanel ? "with-panel" : ""}`} style={{ "--panel-width": `${panel.width}px` } as React.CSSProperties}>
+    <div className={`app ${showPanel ? "with-panel" : ""}`} style={{ "--panel-width": `${strip ? PANEL_STRIP : panel.width}px` } as React.CSSProperties}>
       <Sidebar
         sessions={state.sessions}
         activeId={state.activeId}
@@ -492,7 +496,9 @@ export default function App() {
           </>
         )}
       </main>
-      {showPanel && <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} />}
+      {showPanel && (
+        <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} />
+      )}
     </div>
   );
 }

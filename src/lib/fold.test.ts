@@ -245,9 +245,24 @@ describe("side panel", () => {
       ),
     );
     expect(changedFiles(rows)).toEqual([
-      { path: "b.rs", added: 3, removed: 2 },
-      { path: "a.rs", added: 5, removed: 0 },
+      { path: "b.rs", added: 3, removed: 2, created: false, hunks: [] },
+      { path: "a.rs", added: 5, removed: 0, created: false, hunks: [] },
     ]);
+  });
+
+  it("keeps each edit's change with its file, and whether the 分身 made the file", () => {
+    const hunk = (text: string) => ({ old_start: 1, new_start: 1, lines: [{ kind: "+" as const, text }] });
+    const rows = fold(
+      log(
+        user("edit"),
+        said(call("t1", "write_file", { path: "new.rs" })),
+        result("t1", "write_file", { path: "new.rs", added: 1, removed: 0, created: true, hunk: hunk("fn main() {}") }),
+        said(call("t2", "edit_file", { path: "new.rs" })),
+        result("t2", "edit_file", { path: "new.rs", added: 1, removed: 0, hunk: hunk("// more") }),
+      ),
+    );
+    const [file] = changedFiles(rows);
+    expect([file.created, file.hunks.map((each) => each.lines[0].text)]).toEqual([true, ["fn main() {}", "// more"]]);
   });
 
   it("gathers the 子分身 a delegate call set off, in the order they started", () => {

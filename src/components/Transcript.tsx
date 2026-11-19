@@ -75,7 +75,7 @@ const markdownPlugins = [rehypeHighlight];
 
 const time =(ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-function Diff({ hunk }: { hunk: DiffHunk }) {
+export function Diff({ hunk }: { hunk: DiffHunk }) {
   return (
     <div className="diff">
       {hunk.lines.map((line, index) => (

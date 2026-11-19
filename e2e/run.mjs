@@ -148,6 +148,11 @@ try {
 
   // The side panel widens when its left edge is dragged, and can be put away and brought back as it was.
   const panelWidth = `document.querySelector(".panel")?.getBoundingClientRect().width`;
+  // With nothing in it yet, it stands as a strip; a tab pressed there opens it, and it widens to its width.
+  check(await page.evaluate(`!!document.querySelector(".panel.strip") && ${panelWidth} < 80`), "the side panel stands as a narrow strip while it holds nothing");
+  await page.click("改动");
+  const settled = `Math.abs(${panelWidth} - parseFloat(getComputedStyle(document.querySelector(".app")).getPropertyValue("--panel-width"))) <= 1`;
+  await page.waitFor("the panel to open to its width", `!document.querySelector(".panel.strip") && ${panelWidth} > 200 && ${settled}`);
   const narrow = await page.evaluate(panelWidth);
   const edge = await page.evaluate(`(() => { const box = document.querySelector(".panel-edge").getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + 200 }; })()`);
   await page.drag(edge, { x: edge.x - 120, y: edge.y });

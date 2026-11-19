@@ -1,7 +1,7 @@
 // Folds the session log into what the window draws. The log is the only input,
 // so reopening a session shows exactly what was on screen before.
 
-import type { ContentBlock, Decision, Envelope, Image, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
+import type { ContentBlock, Decision, DiffHunk, Envelope, Image, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
 
 export interface ToolItem {
   kind: "tool";
@@ -226,6 +226,10 @@ export interface ChangedFile {
   path: string;
   added: number;
   removed: number;
+  /** The 分身 made the file, rather than changing one that was there. */
+  created: boolean;
+  /** Each edit's change, in the order they were made. */
+  hunks: DiffHunk[];
 }
 
 /** Files the agent edited in this session, with line counts summed per file, in first-edit order. */
@@ -235,9 +239,10 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
     if (item.kind !== "tool" || !editsFiles(item.name) || !item.result || item.result.isError || item.undone) continue;
     const meta = item.result.meta;
     if (!meta?.path) continue;
-    const file = files.get(meta.path) ?? { path: meta.path, added: 0, removed: 0 };
+    const file = files.get(meta.path) ?? { path: meta.path, added: 0, removed: 0, created: !!meta.created, hunks: [] };
     file.added += meta.added ?? 0;
     file.removed += meta.removed ?? 0;
+    if (meta.hunk) file.hunks.push(meta.hunk);
     files.set(meta.path, file);
   }
   return [...files.values()];

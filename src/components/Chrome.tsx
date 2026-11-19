@@ -4,6 +4,7 @@ import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Provider, SessionItem, Status, Todo } from "../lib/types";
 import { ago } from "../lib/when";
+import { Diff } from "./Transcript";
 
 /** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
 export function Mountains() {
@@ -1106,7 +1107,82 @@ export function Composer(props: ComposerProps) {
   );
 }
 
-const TODO_MARKS: Record<Todo["status"], string> = { pending: "○", in_progress: "▶", done: "✓" };
+/** The seal on a step of the plan: nothing yet for one to come, 办 for the one in hand, 毕 for one done. */
+const TODO_SEALS: Record<Todo["status"], string> = { pending: "", in_progress: "办", done: "毕" };
+const TODO_STATES: Record<Todo["status"], string> = { pending: "busy", in_progress: "busy", done: "done" };
+
+/** The panel's width while there is nothing in it: a strip that holds its three tabs. */
+export const PANEL_STRIP = 56;
+
+type PanelTab = "files" | "terminal" | "plan";
+
+const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
+  {
+    id: "files",
+    name: "改动",
+    title: "改动：分身动过的文件",
+    icon: (
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 1.8h5.2L12 4.6v9.6H4z" />
+        <path d="M9.2 1.8v2.8H12M6.2 8h3.6M8 6.2v3.6M6.2 11.8h3.6" />
+      </svg>
+    ),
+  },
+  {
+    id: "terminal",
+    name: "终端",
+    title: "终端：分身跑过的命令和输出",
+    icon: (
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" />
+        <path d="M4.6 6.2 6.8 8l-2.2 1.8M8.4 10h3" />
+      </svg>
+    ),
+  },
+  {
+    id: "plan",
+    name: "计划",
+    title: "计划：分身列的步骤，做完一步勾一步",
+    icon: (
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M2.2 4.2l1.3 1.3 2.2-2.4M2.2 9.2l1.3 1.3 2.2-2.4M8.2 4.4h5.6M8.2 9.4h5.6M2.6 13.4h2.6M8.2 13.4h5.6" />
+      </svg>
+    ),
+  },
+];
+
+/** A file the 分身 changed: where it is, how much it changed, and, opened, the changes themselves. */
+function FileRow({ file }: { file: ChangedFile }) {
+  const [open, setOpen] = useState(false);
+  const cut = Math.max(file.path.lastIndexOf("/"), file.path.lastIndexOf("\\")) + 1;
+  const total = file.added + file.removed;
+  return (
+    <div className={`file-row ${open ? "open" : ""}`}>
+      <button type="button" className="file-head" aria-expanded={file.hunks.length ? open : undefined} disabled={!file.hunks.length} title={file.path} onClick={() => setOpen(!open)}>
+        <span className="file-where">
+          <span className="file-name">{file.path.slice(cut)}</span>
+          {cut > 0 && <span className="file-dir">{file.path.slice(0, cut - 1)}</span>}
+        </span>
+        {file.created && <span className="chip kin">新</span>}
+        {/* How much went in and how much came out, as a bar of fixed length, then in figures. */}
+        <span className="file-bar" aria-hidden="true">
+          <span className="in" style={{ flexGrow: total ? file.added : 0 }} />
+          <span className="out" style={{ flexGrow: total ? file.removed : 0 }} />
+        </span>
+        <span className="file-count">
+          <span className="in">+{file.added}</span> <span className="out">−{file.removed}</span>
+        </span>
+      </button>
+      {open && (
+        <div className="file-diff">
+          {file.hunks.map((hunk, at) => (
+            <Diff key={at} hunk={hunk} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** The side panel's width in pixels: as the user left it, within what leaves the conversation room. */
 export const PANEL_WIDTH = { initial: 360, least: 260 };
@@ -1118,10 +1194,34 @@ interface SidePanelProps {
   todos: Todo[];
   width: number;
   onResize: (width: number) => void;
+  /** Nothing in it to show, so it stands as a strip; a tab pressed there asks for it to open anyway. */
+  narrow: boolean;
+  onWiden: () => void;
 }
 
-export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProps) {
-  const [tab, setTab] = useState<"files" | "terminal" | "plan">("files");
+export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden }: SidePanelProps) {
+  const [tab, setTab] = useState<PanelTab>("files");
+  const counts: Record<PanelTab, number> = { files: files.length, terminal: runs.length, plan: todos.length };
+  // When the first thing comes into a panel that held nothing, it opens on that.
+  const had = useRef(counts);
+  useEffect(() => {
+    const before = had.current;
+    had.current = counts;
+    if (before.files + before.terminal + before.plan > 0) return;
+    const first = TABS.find((each) => before[each.id] === 0 && counts[each.id] > 0);
+    if (first) setTab(first.id);
+  }, [files.length, runs.length, todos.length]);
+  // The steps done while the page was watched, for a moment: their ink is drawn through them as it happens.
+  const [struck, setStruck] = useState<Set<string>>(new Set());
+  const steps = useRef(new Map(todos.map((todo) => [todo.text, todo.status])));
+  useEffect(() => {
+    const now = todos.filter((todo) => todo.status === "done" && steps.current.has(todo.text) && steps.current.get(todo.text) !== "done").map((todo) => todo.text);
+    steps.current = new Map(todos.map((todo) => [todo.text, todo.status]));
+    if (now.length === 0) return;
+    setStruck((was) => new Set([...was, ...now]));
+    const timer = setTimeout(() => setStruck((was) => new Set([...was].filter((text) => !now.includes(text)))), 1600);
+    return () => clearTimeout(timer);
+  }, [todos]);
   const [dragging, setDragging] = useState(false);
   // Read by the pointer's own events, which can come before the page has drawn again: the state above is for how the edge looks.
   const held = useRef(false);
@@ -1130,6 +1230,32 @@ export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProp
     setDragging(down);
   };
   const done = todos.filter((todo) => todo.status === "done").length;
+  // After every hook: the strip and the panel must call the same ones, in the same order.
+  if (narrow) {
+    return (
+      <aside className="panel strip" aria-label="改动与终端">
+        <div className="strip-tabs">
+          {TABS.map((each) => (
+            <button
+              type="button"
+              key={each.id}
+              className="tab"
+              title={`${each.title}。还是空的，点开看`}
+              onClick={() => {
+                setTab(each.id);
+                onWiden();
+              }}
+            >
+              {each.icon}
+              <span className="sr-only">{each.name}</span>
+            </button>
+          ))}
+        </div>
+        {/* Written down the strip, as on a scroll: why there is nothing here yet. */}
+        <p className="strip-note">分身尚未动手</p>
+      </aside>
+    );
+  }
   return (
     <aside className="panel" aria-label="改动与终端">
       {/* The edge to drag: the panel is as wide as the pointer is far from the window's right side. */}
@@ -1156,58 +1282,61 @@ export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProp
       />
       <div className="tabs">
         {/* Pictures to look at; each one's name is in its title and for a screen reader. */}
-        <button type="button" className="tab" aria-pressed={tab === "files"} title="改动：分身动过的文件" onClick={() => setTab("files")}>
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 1.8h5.2L12 4.6v9.6H4z" />
-            <path d="M9.2 1.8v2.8H12M6.2 8h3.6M8 6.2v3.6M6.2 11.8h3.6" />
-          </svg>
-          <span className="sr-only">改动</span>
-        </button>
-        <button type="button" className="tab" aria-pressed={tab === "terminal"} title="终端：分身跑过的命令和输出" onClick={() => setTab("terminal")}>
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" />
-            <path d="M4.6 6.2 6.8 8l-2.2 1.8M8.4 10h3" />
-          </svg>
-          <span className="sr-only">终端</span>
-        </button>
-        <button type="button" className="tab" aria-pressed={tab === "plan"} title="计划：分身列的步骤，做完一步勾一步" onClick={() => setTab("plan")}>
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.2 4.2l1.3 1.3 2.2-2.4M2.2 9.2l1.3 1.3 2.2-2.4M8.2 4.4h5.6M8.2 9.4h5.6M2.6 13.4h2.6M8.2 13.4h5.6" />
-          </svg>
-          <span className="sr-only">计划 </span>
-          {todos.length > 0 && <span className="count">{`${done}/${todos.length}`}</span>}
-        </button>
+        {TABS.map((each) => (
+          <button type="button" key={each.id} className="tab" aria-pressed={tab === each.id} title={each.title} onClick={() => setTab(each.id)}>
+            {each.icon}
+            <span className="sr-only">{each.id === "plan" ? `${each.name} ` : each.name}</span>
+            {each.id === "plan" && todos.length > 0 && <span className="count">{`${done}/${todos.length}`}</span>}
+          </button>
+        ))}
       </div>
       {tab === "plan" ? (
         <div className="panel-body">
-          <h2>分身的计划</h2>
+          <div className="panel-head">
+            <h2>分身的计划</h2>
+            {todos.length > 0 && (
+              <span className="panel-meta">
+                {done} / {todos.length} 已毕
+              </span>
+            )}
+          </div>
           {todos.length === 0 && <p className="muted">分身还没有列计划。事情分好几步时，它会在这里记下每一步，做完一步勾一步。</p>}
+          {todos.length > 0 && (
+            <div className="plan-progress" aria-hidden="true">
+              <span style={{ width: `${(done / todos.length) * 100}%` }} />
+            </div>
+          )}
           <ol className="todos">
             {todos.map((todo, index) => (
-              <li key={index} className={`todo ${todo.status}`}>
-                <span className="mark" aria-hidden="true">
-                  {TODO_MARKS[todo.status]}
+              <li key={index} className={["todo", todo.status, struck.has(todo.text) && "fresh"].filter(Boolean).join(" ")}>
+                <span className={`row-seal ${todo.status === "pending" ? "" : TODO_STATES[todo.status]}`} aria-hidden="true">
+                  {TODO_SEALS[todo.status]}
                 </span>
                 <span className="sr-only">{todo.status === "done" ? "已办：" : todo.status === "in_progress" ? "正在办：" : "待办："}</span>
-                <span className="text">{todo.text}</span>
+                {/* The words in a line of their own inside the cell, so that a stroke through them is as long as they are. */}
+                <span className="text">
+                  <span className="words">{todo.text}</span>
+                </span>
               </li>
             ))}
           </ol>
         </div>
       ) : tab === "files" ? (
         <div className="panel-body">
-          <h2>分身动过的文件</h2>
+          <div className="panel-head">
+            <h2>分身动过的文件</h2>
+            {files.length > 0 && (
+              <span className="panel-meta">
+                {files.length} 个，<span className="in">+{files.reduce((sum, file) => sum + file.added, 0)}</span> <span className="out">−{files.reduce((sum, file) => sum + file.removed, 0)}</span>
+              </span>
+            )}
+          </div>
           {files.length === 0 && <p className="muted">分身还没有改过文件。</p>}
-          {files.map((file) => (
-            <div className="file-row" key={file.path}>
-              <span className="target" title={file.path}>
-                {file.path}
-              </span>
-              <span className="outcome">
-                加 {file.added} 删 {file.removed}
-              </span>
-            </div>
-          ))}
+          <div className="file-list">
+            {files.map((file) => (
+              <FileRow key={file.path} file={file} />
+            ))}
+          </div>
         </div>
       ) : (
         <div className="panel-body">
