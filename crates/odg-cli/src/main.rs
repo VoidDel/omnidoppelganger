@@ -18,7 +18,7 @@ use odg_core::grants::GrantStore;
 use odg_core::llm::StreamDelta;
 use odg_core::mcp::McpHub;
 use odg_core::policy::Mode;
-use odg_core::providers::{Router, context_window, provider};
+use odg_core::providers::{Router, provider};
 use odg_core::session::SessionStore;
 use odg_core::settings::{self, SettingsStore};
 
@@ -187,7 +187,8 @@ async fn run(options: Options) -> Result<bool, String> {
     let (tuned, tuned_provider) = (store.clone(), provider_id.clone());
     let tuning = move |model: &str| {
         let settings = tuned.load();
-        Tuning { context_limit: settings.context_limit_for(&tuned_provider, model), context_window: context_window(&tuned_provider, model), effort: settings.effort }
+        let window = tuned.context_window(&tuned_provider, model).tokens;
+        Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort }
     };
     let searching = store.clone();
     let confining = store.clone();

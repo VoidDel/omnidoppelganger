@@ -120,20 +120,42 @@ pub fn provider(id: &str) -> Option<&'static Provider> {
 pub const UNKNOWN_CONTEXT_WINDOW: u64 = 128_000;
 
 /// How many tokens a model's context window holds, from each provider's
-/// documentation as of November 2026. A model that is not listed (a newer
-/// one typed in by hand, or anything on a custom service) gets
-/// [`UNKNOWN_CONTEXT_WINDOW`], which is small enough to be safe.
-pub fn context_window(provider: &str, model: &str) -> u64 {
+/// documentation as of November 2026. `None` for a model that is not listed:
+/// a newer one typed in by hand, or anything on a custom service.
+pub fn documented_window(provider: &str, model: &str) -> Option<u64> {
     match (provider, model) {
-        ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => 1_000_000,
-        ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => 1_050_000,
-        ("deepseek", "deepseek-v4-pro" | "deepseek-flash") => 1_000_000,
-        ("moonshot", "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "kimi-k3") => 1_048_576,
-        ("zhipu", "glm-5.3" | "glm-5.2") => 1_000_000,
-        ("zhipu", "glm-4.7") => 200_000,
-        _ => UNKNOWN_CONTEXT_WINDOW,
+        ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => Some(1_000_000),
+        ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(1_050_000),
+        ("deepseek", "deepseek-v4-pro" | "deepseek-flash") => Some(1_000_000),
+        ("moonshot", "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "kimi-k3") => Some(1_048_576),
+        ("zhipu", "glm-5.3" | "glm-5.2") => Some(1_000_000),
+        ("zhipu", "glm-4.7") => Some(200_000),
+        _ => None,
     }
 }
+
+/// [`documented_window`], or for a model that is not listed
+/// [`UNKNOWN_CONTEXT_WINDOW`], which is small enough to be safe. What a
+/// provider says of its own models comes before either: see
+/// [`crate::settings::SettingsStore::context_window`].
+pub fn context_window(provider: &str, model: &str) -> u64 {
+    documented_window(provider, model).unwrap_or(UNKNOWN_CONTEXT_WINDOW)
+}
+
+/// A model as its provider lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub id: String,
+    /// The name to show; the id where the provider gives none.
+    pub name: String,
+    /// How many tokens its context window holds, where the provider says.
+    pub context_window: Option<u64>,
+}
+
+/// The fields a model's context window is listed under: Anthropic's,
+/// DeepSeek's, and Kimi's, the last of which gateways use too. OpenAI's list
+/// has none, and neither has any that Zhipu documents.
+const WINDOW_FIELDS: [&str; 3] = ["max_input_tokens", "context_window", "context_length"];
 
 /// Whether a model takes pictures, from each provider's documentation as of
 /// November 2026: `Some(false)` where it says the model is text-only,
@@ -152,12 +174,13 @@ pub fn vision(provider: &str, model: &str) -> Option<bool> {
     }
 }
 
-/// Ask a provider which models it serves: `(id, display name)`, as the
-/// provider orders them. Every provider here has a list endpoint in the
-/// OpenAI shape, `{"data": [{"id": ...}]}`; Anthropic's adds a display name
-/// and wants its own headers. The list holds whatever the key may use,
-/// which for some providers includes models that are not for chat.
-pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -> Result<Vec<(String, String)>, String> {
+/// Ask a provider which models it serves, as the provider orders them.
+/// Every provider here has a list endpoint in the OpenAI shape,
+/// `{"data": [{"id": ...}]}`; Anthropic's adds a display name and wants its
+/// own headers, and some say how large each model's context window is. The
+/// list holds whatever the key may use, which for some providers includes
+/// models that are not for chat.
+pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -> Result<Vec<Listed>, String> {
     let known = provider(provider_id).ok_or_else(|| format!("there is no provider `{provider_id}`"))?;
     let key = key.map(str::trim).filter(|key| !key.is_empty()).ok_or("no API key is saved for this provider")?;
     let base = base_url.trim_end_matches('/');
@@ -175,14 +198,15 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
         return Err(error.to_string());
     }
     let listed: Value = response.json().await.map_err(|error| format!("the provider's answer is not JSON: {error}"))?;
-    let models: Vec<(String, String)> = listed["data"]
+    let models: Vec<Listed> = listed["data"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
         .filter_map(|model| {
             let id = model["id"].as_str().filter(|id| !id.is_empty())?;
-            Some((id.to_string(), model["display_name"].as_str().unwrap_or(id).to_string()))
+            let context_window = WINDOW_FIELDS.iter().find_map(|field| model[*field].as_u64()).filter(|tokens| *tokens > 0);
+            Some(Listed { id: id.to_string(), name: model["display_name"].as_str().unwrap_or(id).to_string(), context_window })
         })
         .collect();
     if models.is_empty() { Err("the provider listed no models".to_string()) } else { Ok(models) }
@@ -293,6 +317,7 @@ mod tests {
         assert_eq!(context_window("anthropic", "claude-opus-5-5"), 1_000_000);
         assert_eq!(context_window("zhipu", "glm-9"), UNKNOWN_CONTEXT_WINDOW);
         assert_eq!(context_window("custom", "anything"), UNKNOWN_CONTEXT_WINDOW);
+        assert_eq!((documented_window("zhipu", "glm-4.7"), documented_window("zhipu", "glm-5.3-flash")), (Some(200_000), None));
     }
 
     #[tokio::test]
@@ -304,15 +329,20 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
         };
         let (address, requests) = serve(vec![
-            listing(json!({ "data": [{ "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5" }, { "id": "claude-next" }], "has_more": false })),
+            listing(json!({ "data": [{ "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "max_input_tokens": 1_000_000, "max_tokens": 128_000 }, { "id": "claude-next", "max_input_tokens": null }], "has_more": false })),
             listing(json!({ "object": "list", "data": [{ "id": "glm-5.3", "object": "model" }, { "id": "glm-5.3-flash" }, { "object": "model" }] })),
+            // Each provider's own field for the window: DeepSeek's, then Kimi's. Nothing is read from a count of zero.
+            listing(json!({ "data": [{ "id": "deepseek-v4-pro", "context_window": 1_048_576, "max_output_tokens": 393_216 }, { "id": "deepseek-flash", "context_window": 0 }] })),
+            listing(json!({ "data": [{ "id": "kimi-k3", "context_length": 262_144, "supports_image_in": true }] })),
             error(401, r#"{"error":{"message":"bad key","type":"authentication_error"}}"#),
             listing(json!({ "data": [] })),
         ])
         .await;
-        let named = |id: &str, name: &str| (id.to_string(), name.to_string());
-        assert_eq!(list_models("anthropic", &address, Some("sk-ant")).await.unwrap(), [named("claude-opus-5-5", "Claude Opus 5.5"), named("claude-next", "claude-next")]);
-        assert_eq!(list_models("zhipu", &format!("{address}/api/paas/v4/"), Some(" glm-key ")).await.unwrap(), [named("glm-5.3", "glm-5.3"), named("glm-5.3-flash", "glm-5.3-flash")]);
+        let named = |id: &str, name: &str, context_window: Option<u64>| Listed { id: id.to_string(), name: name.to_string(), context_window };
+        assert_eq!(list_models("anthropic", &address, Some("sk-ant")).await.unwrap(), [named("claude-opus-5-5", "Claude Opus 5.5", Some(1_000_000)), named("claude-next", "claude-next", None)]);
+        assert_eq!(list_models("zhipu", &format!("{address}/api/paas/v4/"), Some(" glm-key ")).await.unwrap(), [named("glm-5.3", "glm-5.3", None), named("glm-5.3-flash", "glm-5.3-flash", None)]);
+        assert_eq!(list_models("deepseek", &address, Some("k")).await.unwrap(), [named("deepseek-v4-pro", "deepseek-v4-pro", Some(1_048_576)), named("deepseek-flash", "deepseek-flash", None)]);
+        assert_eq!(list_models("moonshot", &address, Some("k")).await.unwrap(), [named("kimi-k3", "kimi-k3", Some(262_144))]);
         assert_eq!(list_models("deepseek", &address, Some("k")).await.unwrap_err(), "authentication_error: bad key");
         assert_eq!(list_models("openai", &address, Some("k")).await.unwrap_err(), "the provider listed no models");
         // What cannot be asked is said without a request.

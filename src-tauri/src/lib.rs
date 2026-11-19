@@ -13,7 +13,7 @@ use odg_core::events::{Decision, Envelope, Image, check_images};
 use odg_core::grants::{GrantStore, Grants};
 use odg_core::mcp::{McpHub, ServerStatus};
 use odg_core::policy::Mode;
-use odg_core::providers::{PROVIDERS, Provider, Router, context_window, provider, vision};
+use odg_core::providers::{PROVIDERS, Provider, Router, provider, vision};
 use odg_core::schedule::{self, Run, Schedule, ScheduleStore};
 use odg_core::session::{NewSession, SessionStore, SessionSummary};
 use odg_core::worktree::{self, Landed};
@@ -82,6 +82,8 @@ struct SettingsView {
     /// The user's own skills, and the directory they are kept in.
     skills: Vec<odg_core::events::SkillInfo>,
     skills_directory: String,
+    /// The context window of the model new sessions use, and how it is known.
+    context_window: settings::Window,
     /// What confines commands on this system when the user switches that on, or why nothing can.
     sandbox_support: Result<&'static str, String>,
     /// The text of `mcp.json`, and how each server it lists stands.
@@ -91,12 +93,13 @@ struct SettingsView {
 
 impl App {
     fn wrap(&self, log: odg_core::session::SessionLog) -> Result<Session<Router>, String> {
-        let settings = self.settings.clone();
+        let store = self.settings.clone();
         let (_, provider, _) = log.header();
         // The window and the limit follow the model the session is on when the request is made.
         let tuning = move |model: &str| {
-            let settings = settings.load();
-            Tuning { context_limit: settings.context_limit_for(&provider, model), context_window: context_window(&provider, model), effort: settings.effort }
+            let settings = store.load();
+            let window = store.context_window(&provider, model).tokens;
+            Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort }
         };
         let searching = self.settings.clone();
         let confining = self.settings.clone();
@@ -111,10 +114,11 @@ impl App {
     }
 
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
-        let context_limit = self.settings.load().context_limit_for(&summary.provider, &summary.model);
+        let window = self.settings.context_window(&summary.provider, &summary.model).tokens;
+        let context_limit = self.settings.load().context_limit_within(window);
         let branch = odg_core::tools::git_branch(std::path::Path::new(&summary.workspace));
         let vision = vision(&summary.provider, &summary.model);
-        let context_ceiling = context_window(&summary.provider, &summary.model) / 5 * 4;
+        let context_ceiling = window / 5 * 4;
         SessionItem { summary, status, context_limit, context_ceiling, branch, vision }
     }
 
@@ -210,6 +214,10 @@ impl App {
             search_ready: self.settings.search().is_some(),
             skills: odg_core::skills::listing(&odg_core::skills::discover(&[settings::home().join("skills")])),
             skills_directory: settings::home().join("skills").display().to_string(),
+            context_window: {
+                let settings = self.settings.load();
+                self.settings.context_window(&settings.provider, &settings.model)
+            },
             sandbox_support: odg_core::sandbox::support(),
             mcp_config: self.mcp.config_text(),
             mcp_servers: self.mcp.statuses(),
@@ -424,7 +432,10 @@ async fn list_models(app: State<'_, App>, provider: String) -> Result<Vec<(Strin
     let endpoint = app.settings.endpoint(&provider);
     // Anthropic's address comes from the environment, like its client's.
     let base_url = if provider == "anthropic" { anthropic_base_url() } else { endpoint.base_url };
-    odg_core::providers::list_models(&provider, &base_url, endpoint.key.as_deref()).await
+    let models = odg_core::providers::list_models(&provider, &base_url, endpoint.key.as_deref()).await?;
+    // What it said of its models' context windows is kept; a list that cannot be kept is still a list.
+    let _ = app.settings.record_models(&provider, &models);
+    Ok(models.into_iter().map(|model| (model.id, model.name)).collect())
 }
 
 /// Where Anthropic's API is: `ANTHROPIC_BASE_URL`, or the official address.

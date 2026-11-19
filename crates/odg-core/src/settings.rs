@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -17,7 +17,7 @@ use crate::anthropic::DEFAULT_MODEL;
 use crate::fsutil::write_atomically;
 use crate::llm::Endpoint;
 use crate::policy::Mode;
-use crate::providers::{DEFAULT_PROVIDER, PROVIDERS, Protocol, Provider, context_window, provider};
+use crate::providers::{DEFAULT_PROVIDER, Listed, PROVIDERS, Protocol, Provider, UNKNOWN_CONTEXT_WINDOW, documented_window, provider};
 use crate::web::{INTERNATIONAL_ENGINE, SEARCH_ENGINES, SearchConfig};
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -148,8 +148,8 @@ impl Settings {
     /// The limit a session on this model compacts at: the one set here, or
     /// four fifths of the model's context window when that is less, which
     /// leaves room for the answer and for what the next tools return.
-    pub fn context_limit_for(&self, provider: &str, model: &str) -> u64 {
-        self.context_limit.min(context_window(provider, model) / 5 * 4)
+    pub fn context_limit_within(&self, window: u64) -> u64 {
+        self.context_limit.min(window / 5 * 4)
     }
 }
 
@@ -205,15 +205,39 @@ impl Vault for SystemVault {
     }
 }
 
+/// How it is known how many tokens a model's context window holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowSource {
+    /// The provider said so when asked for its models.
+    Provider,
+    /// The provider's documentation said so when this build was made.
+    Documented,
+    /// Nobody said: a size small enough to be safe is assumed.
+    Unknown,
+}
+
+/// A model's context window, and how it is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Window {
+    pub tokens: u64,
+    pub source: WindowSource,
+}
+
+/// Context windows the providers reported, by provider id and model id.
+type Windows = BTreeMap<String, BTreeMap<String, u64>>;
+
 pub struct SettingsStore {
     directory: PathBuf,
     vault: Option<Arc<dyn Vault>>,
+    /// What `models.json` holds, read once: it is asked for at every request.
+    windows: Mutex<Option<Windows>>,
 }
 
 impl SettingsStore {
     /// A store that keeps keys in `credentials.json` under `directory`.
     pub fn new(directory: impl Into<PathBuf>) -> Self {
-        Self { directory: directory.into(), vault: None }
+        Self { directory: directory.into(), vault: None, windows: Mutex::new(None) }
     }
 
     /// The store for this run's home directory, as the desktop app and the
@@ -230,7 +254,7 @@ impl SettingsStore {
 
     /// A store that keeps keys in `vault`, and in `credentials.json` only when the vault fails.
     pub fn with_vault(directory: impl Into<PathBuf>, vault: Arc<dyn Vault>) -> Self {
-        Self { directory: directory.into(), vault: Some(vault) }
+        Self { directory: directory.into(), vault: Some(vault), windows: Mutex::new(None) }
     }
 
     /// Move the keys `credentials.json` holds into the vault, and take each
@@ -249,6 +273,49 @@ impl SettingsStore {
 
     fn settings_path(&self) -> PathBuf {
         self.directory.join("settings.json")
+    }
+
+    /// `models.json`: the context windows the providers reported for their models.
+    fn models_path(&self) -> PathBuf {
+        self.directory.join("models.json")
+    }
+
+    /// Keep what a provider said of its models' context windows, so they are
+    /// known from then on without asking again. Models it gave no size for
+    /// keep whatever was known of them.
+    pub fn record_models(&self, provider: &str, models: &[Listed]) -> std::io::Result<()> {
+        let mut held = self.windows.lock().unwrap();
+        let windows = held.get_or_insert_with(|| self.read_windows());
+        let mut changed = false;
+        for model in models {
+            if let Some(tokens) = model.context_window
+                && windows.entry(provider.to_string()).or_default().insert(model.id.clone(), tokens) != Some(tokens)
+            {
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.directory)?;
+        write_atomically(&self.models_path(), &serde_json::to_vec_pretty(&*windows).map_err(std::io::Error::other)?)
+    }
+
+    fn read_windows(&self) -> Windows {
+        std::fs::read_to_string(self.models_path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    }
+
+    /// How many tokens a model's context window holds: what its provider
+    /// reported when asked for its models, or what its documentation said, or
+    /// when neither is known a size small enough to be safe.
+    pub fn context_window(&self, provider: &str, model: &str) -> Window {
+        let mut held = self.windows.lock().unwrap();
+        let reported = held.get_or_insert_with(|| self.read_windows()).get(provider).and_then(|models| models.get(model)).copied();
+        match (reported, documented_window(provider, model)) {
+            (Some(tokens), _) => Window { tokens, source: WindowSource::Provider },
+            (None, Some(tokens)) => Window { tokens, source: WindowSource::Documented },
+            (None, None) => Window { tokens: UNKNOWN_CONTEXT_WINDOW, source: WindowSource::Unknown },
+        }
     }
 
     /// `credentials.json`: one `<provider>_api_key` field per saved key, so a
@@ -555,6 +622,33 @@ mod tests {
         vault.broken.store(false, std::sync::atomic::Ordering::SeqCst);
         store.migrate_keys();
         assert!(!directory.path().join("credentials.json").exists() && !store.key_status("zhipu").plaintext);
+    }
+
+    #[test]
+    fn a_models_context_window_is_what_its_provider_reported_then_what_is_documented() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(directory.path().join("home"));
+        let listed = |id: &str, context_window: Option<u64>| Listed { id: id.to_string(), name: id.to_string(), context_window };
+        let window = |tokens, source| Window { tokens, source };
+        // Before anything is reported: the documentation, or the safe size for a model it does not list.
+        assert_eq!(store.context_window("zhipu", "glm-4.7"), window(200_000, WindowSource::Documented));
+        assert_eq!(store.context_window("zhipu", "glm-5.3-flash"), window(UNKNOWN_CONTEXT_WINDOW, WindowSource::Unknown));
+
+        // What the provider says comes first, and is kept for the next run. A model it gave no size for keeps what was known.
+        store.record_models("zhipu", &[listed("glm-5.3-flash", Some(256_000)), listed("glm-4.7", Some(128_000)), listed("glm-5.3", None)]).unwrap();
+        assert_eq!(store.context_window("zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
+        assert_eq!(store.context_window("zhipu", "glm-4.7"), window(128_000, WindowSource::Provider));
+        assert_eq!(store.context_window("zhipu", "glm-5.3"), window(1_000_000, WindowSource::Documented));
+        // Another provider's model of the same name is another model.
+        assert_eq!(store.context_window("custom", "glm-5.3-flash").source, WindowSource::Unknown);
+        let again = SettingsStore::new(directory.path().join("home"));
+        assert_eq!(again.context_window("zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
+        again.record_models("zhipu", &[listed("glm-5.3-flash", None)]).unwrap();
+        assert_eq!(again.context_window("zhipu", "glm-5.3-flash").tokens, 256_000);
+
+        // The limit a session compacts at is the one set, or four fifths of the window when that is less.
+        let settings = Settings { context_limit: 200_000, ..Settings::default() };
+        assert_eq!((settings.context_limit_within(1_000_000), settings.context_limit_within(128_000)), (200_000, 102_400));
     }
 
     #[test]
