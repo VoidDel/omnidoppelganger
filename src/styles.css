@@ -28,9 +28,15 @@
   --d-arrive: 520ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-seal: cubic-bezier(0.3, 1.5, 0.5, 1);
-  /* Where the seals of a turn line up, measured from the column's left edge, and where its words start. */
+  /* The thread a turn's seals hang on: the left edge of its one pixel, measured from the column's left edge;
+     and where the turn's words start. Everything on the thread is an odd number of pixels wide and set on whole
+     pixels, with the thread's pixel in its middle: halves round one way for a line and another for a ring. */
   --rail: 21px;
-  --gutter: 43px;
+  --gutter: 44px;
+  /* The box the thread is drawn in the middle of, and with it its light, the point it ends in and the rings on it:
+     the same two edges for all of them, so that whatever a screen's scale rounds those edges to, their middles agree. */
+  --rail-box: 13px;
+  --rail-edge: calc(var(--rail) - 6px);
   --bg: #eff3ef;
   --bg-side: #e3eae5;
   --panel: #f7f9f6;
@@ -276,15 +282,75 @@ pre,
   gap: 4px;
 }
 
+/* The 洞府's name is what puts its 分身 away and brings them back: a small mark before it turns as it does. */
 .group-name {
   flex: 1;
   min-width: 0;
-  padding: 4px 8px;
+  min-height: 26px;
+  padding: 2px var(--s-2) 2px var(--s-1);
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
   font-size: var(--t-micro);
   color: var(--ink-2);
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+.group-name:hover {
+  color: var(--ink);
+}
+
+.group-caret {
+  flex: none;
+  transform: rotate(90deg);
+  transition: transform var(--d-move) var(--ease-out);
+}
+
+.group.closed .group-caret {
+  transform: none;
+}
+
+.group-label {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Put away: how many 分身 are inside, and a point of colour for any at work or waiting. */
+.group-count {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.group-count .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.group-count .dot.await {
+  background: var(--cinnabar);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--cinnabar) 60%, transparent);
+}
+
+.group-count .dot.busy {
+  background: var(--jade);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--jade) 60%, transparent);
+  animation: breathe 1.2s ease-in-out infinite alternate;
+}
+
+/* The 分身 of a 洞府 come out from under its name. */
+.group .row-button.session {
+  animation: unfold var(--d-move) var(--ease-out);
 }
 
 .group-add {
@@ -383,14 +449,15 @@ pre,
   color: var(--cinnabar-ink);
 }
 
+/* At work is jade; work reported back is gold, the 分身's own. Yellow is kept for what waits on 本尊. */
 .chip.busy {
-  background: var(--talisman);
-  color: var(--talisman-ink);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
 }
 
 .chip.done {
-  background: var(--jade-tint);
-  color: var(--jade-tint-ink);
+  background: var(--gold-soft);
+  color: var(--amber-ink);
 }
 
 .chip.failed,
@@ -424,6 +491,278 @@ pre,
   width: 8px;
   border-left: 1px solid var(--line-strong);
   border-bottom: 1px solid var(--line-strong);
+}
+
+/* A 分身 in the list: how it stands as a seal, then its title, and under that when it was last at work. */
+.row-button.session {
+  position: relative;
+  min-height: 52px;
+  padding: 6px var(--s-2) 6px 6px;
+  align-items: flex-start;
+  gap: var(--s-2);
+  transition:
+    background var(--d-quick) ease,
+    border-color var(--d-quick) ease;
+}
+
+.row-button.session.child {
+  min-height: 34px;
+  align-items: center;
+}
+
+/* The one on screen is marked down its left side with a stroke of jade, drawn from its middle outwards. */
+.row-button.session::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--jade);
+  transform: scaleY(0);
+  transition: transform var(--d-move) var(--ease-out);
+}
+
+.row-button.session[aria-current]::after {
+  transform: none;
+}
+
+.row-button.session.await::after {
+  background: var(--cinnabar);
+  transform: none;
+}
+
+.row-seal {
+  position: relative;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  /* Level with the title's line. */
+  margin-top: 4px;
+  border-radius: var(--r-paper);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.row-button.child .row-seal {
+  margin-top: 0;
+}
+
+/* At rest: a small ring, and nothing to read. */
+.row-seal:empty::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -4.5px 0 0 -4.5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+.row-button[aria-current] .row-seal:empty::before {
+  border-color: var(--jade);
+  background: var(--jade);
+}
+
+/* At work: 运 in a jade outline, a ring of jade turning round it. */
+.row-seal.busy {
+  --seal-light: conic-gradient(
+    from var(--turned),
+    color-mix(in srgb, var(--jade) 45%, transparent) 0 40%,
+    var(--jade) 62%,
+    var(--seal-gold) 78%,
+    #fffdf2 84%,
+    var(--jade) 92%,
+    color-mix(in srgb, var(--jade) 45%, transparent) 100%
+  );
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--seal-ground, var(--bg-side)), var(--seal-ground, var(--bg-side))) padding-box,
+    var(--seal-light) border-box;
+  color: var(--jade);
+  animation: circulate 2s linear infinite;
+}
+
+/* The seal is filled with what it lies on, which for the 分身 on screen is its row's paper. */
+.row-button[aria-current] .row-seal {
+  --seal-ground: var(--sheet);
+}
+
+.row-seal.busy::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  padding: 4px;
+  border-radius: calc(var(--r-paper) + 4px);
+  background: var(--seal-light);
+  filter: blur(4px);
+  opacity: 0.85;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Waiting for 本尊: 候 in full cinnabar, glowing and dimming. */
+.row-seal.await {
+  border: 1px solid var(--cinnabar);
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+}
+
+.row-seal.await::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 10px 2px color-mix(in srgb, var(--cinnabar) 70%, transparent);
+  opacity: 0;
+  animation: ember 1.8s ease-in-out infinite alternate;
+}
+
+.row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.row-button.session .row-title {
+  flex: none;
+  line-height: 1.6;
+}
+
+.row-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: var(--t-micro);
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.row-when {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.row-button.busy .row-when {
+  color: var(--jade);
+}
+
+.row-button.await .row-when {
+  color: var(--cinnabar-ink);
+  font-weight: 700;
+}
+
+/* What kind of 分身 it is, said small beside when: no pill, just the word in a hairline. */
+.row-meta .chip.kin {
+  padding: 0 5px;
+  border-radius: var(--r-paper);
+  line-height: 1.35;
+}
+
+/* ---------- at the head of the list: those waiting for 本尊 ---------- */
+
+.awaiting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+/* A slip of the talisman's own yellow paper for each: the request it stands for is on that 分身's page. Lit paper, in the dark too. */
+.await-slip {
+  position: relative;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px var(--s-2);
+  border: 1px solid var(--cinnabar);
+  border-radius: var(--r-paper);
+  background: var(--talisman);
+  color: #1b2a2b;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  box-shadow:
+    inset 0 0 0 2px var(--talisman),
+    inset 0 0 0 3px color-mix(in srgb, var(--cinnabar) 45%, transparent);
+  animation: unroll var(--d-arrive) var(--ease-out) backwards;
+  transition: transform var(--d-quick) var(--ease-out);
+}
+
+.await-slip:hover {
+  transform: translateX(2px);
+}
+
+.await-slip::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 16px 1px color-mix(in srgb, var(--cinnabar) 60%, transparent);
+  opacity: 0;
+  animation: ember 2.2s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+.await-slip .seal {
+  background: #b8322a;
+  color: #ffffff;
+}
+
+.await-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.await-where {
+  flex: 0 1 auto;
+  max-width: 40%;
+  font-size: var(--t-micro);
+  color: #57533c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group-count .dot.busy,
+  .group .row-button.session,
+  .row-seal.busy,
+  .row-seal.await::after,
+  .await-slip,
+  .await-slip::after {
+    animation: none;
+  }
+
+  .row-seal.await::after,
+  .await-slip::after {
+    opacity: 0.6;
+  }
+
+  .row-button.session::after,
+  .group-caret,
+  .await-slip {
+    transition: none;
+  }
 }
 
 /* ---------- buttons ---------- */
@@ -753,8 +1092,12 @@ pre,
 }
 
 .original .seal {
+  /* An odd width, so that the thread under it runs from its very middle. */
+  width: 25px;
+  height: 25px;
+  line-height: 25px;
   /* Level with the first line of the words. */
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .said-text {
@@ -1037,13 +1380,14 @@ pre,
 .thinking::before {
   content: "";
   position: absolute;
-  left: calc(var(--rail) - var(--gutter) - 3.5px);
-  top: 9px;
-  width: 7px;
-  height: 7px;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  background: var(--bg);
+  left: calc(var(--rail-edge) - var(--gutter));
+  top: 6px;
+  /* Over the thread and the light that runs down it. */
+  z-index: 1;
+  width: var(--rail-box);
+  height: var(--rail-box);
+  /* A ring seven pixels across, painted in the middle of the thread's own box. */
+  background: radial-gradient(circle, var(--bg) 0 2.4px, var(--line-strong) 2.9px 3.3px, transparent 3.8px);
 }
 
 .thinking summary {
@@ -1064,10 +1408,9 @@ pre,
 }
 
 .thinking-live::before {
-  border-color: var(--jade);
-  background: var(--jade);
-  box-shadow: 0 0 8px 1px color-mix(in srgb, var(--jade) 70%, transparent);
-  animation: breathe 1.4s ease-in-out infinite alternate;
+  background: radial-gradient(circle, var(--jade) 0 3.3px, transparent 3.8px);
+  filter: drop-shadow(0 0 4px var(--jade));
+  animation: glow 1.4s ease-in-out infinite alternate;
 }
 
 .thinking-live .label {
@@ -1113,17 +1456,17 @@ pre,
 .turn-did::after {
   content: "";
   position: absolute;
-  left: var(--rail);
+  left: var(--rail-edge);
+  width: var(--rail-box);
   /* From under the order's own seal, behind the band that holds it. */
   top: -14px;
   bottom: 0;
   pointer-events: none;
 }
 
+/* One pixel of line down the middle of its box. */
 .turn-did::before {
-  width: 1px;
-  margin-left: -0.5px;
-  background: var(--line);
+  background: linear-gradient(to right, transparent calc(50% - 0.5px), var(--line) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
 }
 
 .turn-did:empty::before {
@@ -1132,16 +1475,20 @@ pre,
 
 /* While the 分身 works, light runs down the thread from the order to where the next act will land. */
 .turn-did::after {
-  width: 3px;
-  margin-left: -1.5px;
-  border-radius: 2px;
-  background: linear-gradient(to bottom, transparent, var(--jade) 40%, #fffdf2 50%, var(--jade) 60%, transparent) 0 -140px / 100% 140px no-repeat;
+  /* Three pixels of light, in the middle of the same box. */
+  background: linear-gradient(to bottom, transparent, var(--jade) 40%, #fffdf2 50%, var(--jade) 60%, transparent) 50% -140px / 3px 140px no-repeat;
   filter: drop-shadow(0 0 4px var(--jade));
   opacity: 0;
 }
 
 .turn-did.live {
   padding-bottom: var(--s-5);
+}
+
+/* While it works the thread ends at the heart of its point of light, not below it. */
+.turn-did.live::before,
+.turn-did.live::after {
+  bottom: 7px;
 }
 
 .turn-did.live::after {
@@ -1163,10 +1510,10 @@ pre,
 
 @keyframes vein {
   from {
-    background-position: 0 -140px;
+    background-position: 50% -140px;
   }
   to {
-    background-position: 0 calc(100% + 140px);
+    background-position: 50% calc(100% + 140px);
   }
 }
 
@@ -1181,16 +1528,24 @@ pre,
 /* Where the thread ends while the 分身 works: a point of light, breathing. */
 .vein-tip {
   position: absolute;
-  left: var(--rail);
+  left: var(--rail-edge);
   bottom: 0;
-  width: 12px;
-  height: 12px;
-  margin-left: -6px;
+  /* Over the thread and the light that runs down it. */
+  z-index: 1;
+  width: var(--rail-box);
+  height: var(--rail-box);
   border-radius: 50%;
   background: radial-gradient(circle, #fffdf2 0 22%, var(--jade) 48%, transparent 72%);
   box-shadow: 0 0 12px 3px color-mix(in srgb, var(--jade) 55%, transparent);
-  animation: breathe 1.2s ease-in-out infinite alternate;
+  /* It glows and dims where it is: made larger and smaller, it would leave the pixels the thread is on. */
+  animation: glow 1.2s ease-in-out infinite alternate;
   pointer-events: none;
+}
+
+@keyframes glow {
+  from {
+    opacity: 0.4;
+  }
 }
 
 @keyframes breathe {
@@ -1246,16 +1601,16 @@ button.did-head:not(:disabled):hover {
 .did .seal {
   position: absolute;
   left: calc(var(--rail) - var(--gutter) - 10px);
-  top: 5px;
+  top: 4px;
   /* Over the thread and the light that runs down it. */
   z-index: 1;
-  width: 20px;
-  height: 20px;
+  width: 21px;
+  height: 21px;
   border: 1px solid var(--line-strong);
   background: var(--bg);
   color: var(--ink-2);
   font-size: 13px;
-  line-height: 18px;
+  line-height: 19px;
 }
 
 /* An act on the world outside the files: a command, an errand, a borrowed instrument. */
@@ -1278,21 +1633,40 @@ button.did-head:not(:disabled):hover {
   color: var(--cinnabar-on);
 }
 
+/* Under way: light goes round the seal's edge, jade leading and gold at its heart, as it does round the box
+   an order is written in; and the same light, out of focus, glows about it. */
 .did.live .seal {
-  border-color: var(--jade);
+  --seal-light: conic-gradient(
+    from var(--turned),
+    color-mix(in srgb, var(--jade) 45%, transparent) 0 40%,
+    var(--jade) 62%,
+    var(--seal-gold) 78%,
+    #fffdf2 84%,
+    var(--jade) 92%,
+    color-mix(in srgb, var(--jade) 45%, transparent) 100%
+  );
+  border-color: transparent;
+  background:
+    linear-gradient(var(--bg), var(--bg)) padding-box,
+    var(--seal-light) border-box;
   color: var(--jade);
+  animation: circulate 2s linear infinite;
 }
 
-/* Under way: a ring of jade turning round the seal, gathering. */
 .did.live .seal::before {
   content: "";
   position: absolute;
-  inset: -5px;
-  border: 1.5px solid transparent;
-  border-top-color: var(--jade);
-  border-right-color: color-mix(in srgb, var(--jade) 35%, transparent);
-  border-radius: 50%;
-  animation: turn 1.1s linear infinite;
+  inset: -4px;
+  padding: 4px;
+  border-radius: calc(var(--r-paper) + 4px);
+  background: var(--seal-light);
+  filter: blur(4px);
+  opacity: 0.85;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
 }
 
 .did-head .verb {
@@ -1487,7 +1861,9 @@ button.did-head:not(:disabled):hover {
 }
 
 .did.fresh.live .seal {
-  animation: gather var(--d-arrive) var(--ease-out) var(--wait) backwards;
+  animation:
+    gather var(--d-arrive) var(--ease-out) var(--wait) backwards,
+    circulate 2s linear infinite;
 }
 
 .did.fresh .did-head > :not(.seal),
@@ -1858,11 +2234,22 @@ button.did-head:not(:disabled):hover {
 
 /* Nothing on the page moves for one who has asked for stillness: what arrives is simply there. */
 @media (prefers-reduced-motion: reduce) {
+  .did.live .seal,
+  .row-seal.busy {
+    border-color: var(--jade);
+    background: var(--bg);
+  }
+
+  .did.live .seal::before,
+  .row-seal.busy::after {
+    display: none;
+  }
+
   .turn-did::after,
   .vein-tip,
   .thinking-live::before,
   .thinking-live .label,
-  .did.live .seal::before,
+  .did.live .seal,
   .did.fresh .seal,
   .did.fresh .seal::after,
   .did.fresh .did-head,

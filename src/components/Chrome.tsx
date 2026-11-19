@@ -3,6 +3,7 @@ import { launchFrom } from "../lib/flight";
 import { type ChangedFile, type ToolItem, type Usage, shortCount } from "../lib/fold";
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Provider, SessionItem, Status, Todo } from "../lib/types";
+import { ago } from "../lib/when";
 
 /** Far mountains in three washes with the golden core behind them: the backdrop of the home screen. */
 export function Mountains() {
@@ -67,7 +68,42 @@ interface SidebarProps {
   onSearch: (query: string) => Promise<string[]>;
 }
 
+/** The time, looked at again every so often, so that what is said of how long ago stays true. */
+function useNow(every: number): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), every);
+    return () => clearInterval(timer);
+  }, [every]);
+  return now;
+}
+
+const FOLDED_KEY = "odg.folded";
+
+/** The 洞府 whose 分身 are put away in the list, as the list was last left. */
+function useFolded() {
+  const [folded, setFolded] = useState<string[]>(() => {
+    try {
+      const kept = JSON.parse(localStorage.getItem(FOLDED_KEY) ?? "[]");
+      return Array.isArray(kept) ? kept.filter((item) => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(FOLDED_KEY, JSON.stringify(folded));
+    } catch {
+      // Storage may be unavailable; every 洞府 then starts out open.
+    }
+  }, [folded]);
+  const toggle = (workspace: string) => setFolded((now) => (now.includes(workspace) ? now.filter((item) => item !== workspace) : [...now, workspace]));
+  return [folded, toggle] as const;
+}
+
 export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
+  const now = useNow(30_000);
+  const [folded, toggleFolded] = useFolded();
   const [query, setQuery] = useState("");
   /** The sessions the search found; null while nothing is searched for. */
   const [found, setFound] = useState<Set<string> | null>(null);
@@ -99,6 +135,9 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
     const rows = [session, ...(open(session.id) ? family(session.id) : [])];
     groups.set(homeOf(session), [...(groups.get(homeOf(session)) ?? []), ...rows]);
   }
+  const titleOf = (session: SessionItem) => session.title || (session.parent ? "子分身" : "新分身");
+  // Those waiting for 本尊 stand at the head of the list wherever they are in it, but for the one already on screen.
+  const waiting = sessions.filter((session) => session.status === "waiting_approval" && !(page === "chat" && session.id === activeId));
   return (
     <nav className="sidebar" aria-label="会话">
       <div className="brand">
@@ -119,14 +158,44 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
           <input id="session-search" className="input" type="search" placeholder="搜标题、洞府、说过的话" value={query} onChange={(event) => setQuery(event.target.value)} />
         </>
       )}
+      {waiting.length > 0 && (
+        <div className="awaiting" role="group" aria-label="候本尊定夺的分身">
+          {waiting.map((session) => (
+            // A slip of the talisman's own paper: the request it stands for is on that 分身's page.
+            <button type="button" key={session.id} className="await-slip" title={`「${titleOf(session)}」在等本尊定夺，点开去看`} onClick={() => onOpen(session.id)}>
+              <span className="seal small" aria-hidden="true">
+                候
+              </span>
+              <span className="await-title">{titleOf(session)}</span>
+              <span className="await-where">{baseName(homeOf(session))}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="sidebar-scroll">
         {found && shown.length === 0 && <p className="muted">没有哪个分身提过这个。</p>}
-        {[...groups].map(([workspace, items]) => (
-          <div className="group" key={workspace}>
+        {[...groups].map(([workspace, items]) => {
+          // A search opens every 洞府 it found something in.
+          const closed = !found && folded.includes(workspace);
+          const asking = items.filter((session) => session.status === "waiting_approval").length;
+          const working = items.filter((session) => session.status === "running").length;
+          return (
+          <div className={`group ${closed ? "closed" : ""}`} key={workspace}>
             <div className="group-head">
-              <div className="group-name" title={workspace}>
-                {baseName(workspace)}
-              </div>
+              <button type="button" className="group-name" title={`${workspace}\n点一下${closed ? "展开" : "收起"}这处洞府的分身`} aria-expanded={!closed} onClick={() => toggleFolded(workspace)}>
+                <svg className="group-caret" aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 2l3.5 3L3 8" />
+                </svg>
+                <span className="group-label">{baseName(workspace)}</span>
+                {/* Put away, the 洞府 still says how many are in it, and whether any is at work or waiting. */}
+                {closed && (
+                  <span className="group-count">
+                    {asking > 0 && <span className="dot await" title={`${asking} 个候旨`} />}
+                    {working > 0 && <span className="dot busy" title={`${working} 个运功中`} />}
+                    {items.length}
+                  </span>
+                )}
+              </button>
               {/* Offered where Git is: a 分身 with a worktree of its own, to work beside the others without touching their files. */}
               {items.some((session) => session.branch) && (
                 <button
@@ -150,25 +219,43 @@ export function Sidebar({ sessions, activeId, page, onSchedules, onOpen, onNew, 
                 </svg>
               </button>
             </div>
-            {items.map((session) => (
-              <button
-                type="button"
-                key={session.id}
-                className={`row-button ${childOf(session) ? "child" : ""}`}
-                aria-current={page === "chat" && session.id === activeId ? "true" : undefined}
-                onClick={() => onOpen(session.id)}
-              >
-                <span className="row-title">{session.title || (childOf(session) ? "子分身" : "新分身")}</span>
-                {session.fork && <span className="chip kin" title="分叉：它的前情抄自另一个分身">分叉</span>}
-                {session.schedule && <span className="chip kin" title={`功课「${session.schedule}」到时辰化出的分身`}>功课</span>}
-                {session.worktree && !childOf(session) && <span className="chip kin" title={`用独立的工作树，分支 ${session.worktree.branch}`}>独立</span>}
-                {!childOf(session) && !open(session.id) && family(session.id).length > 0 && <span className="chip kin" title="它派出过的子分身，点开这个分身就能看到">{family(session.id).length} 子</span>}
-                {session.status === "waiting_approval" && <span className="chip await">候旨</span>}
-                {session.status === "running" && <span className="chip busy">运功中</span>}
-              </button>
-            ))}
+            {!closed &&
+              items.map((session) => {
+                const child = !!childOf(session);
+                const state = session.status === "waiting_approval" ? "await" : session.status === "running" ? "busy" : "";
+                return (
+                  <button
+                    type="button"
+                    key={session.id}
+                    className={`row-button session ${child ? "child" : ""} ${state}`}
+                    aria-current={page === "chat" && session.id === activeId ? "true" : undefined}
+                    onClick={() => onOpen(session.id)}
+                  >
+                    {/* How it stands, as a seal: 候 in cinnabar while it waits for 本尊, 运 in jade while it works, a plain ring at rest. */}
+                    <span className={`row-seal ${state}`} title={state === "await" ? "候旨：在等本尊定夺" : state === "busy" ? "运功中" : undefined} aria-hidden={state ? undefined : "true"}>
+                      {state === "await" ? "候" : state === "busy" ? "运" : ""}
+                    </span>
+                    <span className="row-text">
+                      <span className="row-title">{titleOf(session)}</span>
+                      {/* Under the title, small: when it was last at work, and what kind of 分身 it is. A 子分身 keeps to one line. */}
+                      {!child && (
+                        <span className="row-meta">
+                          <span className="row-when" title={new Date(session.updated_at).toLocaleString()}>
+                            {state === "await" ? "候旨" : state === "busy" ? "运功中" : ago(session.updated_at, now)}
+                          </span>
+                          {session.fork && <span className="chip kin" title="分叉：它的前情抄自另一个分身">分叉</span>}
+                          {session.schedule && <span className="chip kin" title={`功课「${session.schedule}」到时辰化出的分身`}>功课</span>}
+                          {session.worktree && <span className="chip kin" title={`用独立的工作树，分支 ${session.worktree.branch}`}>独立</span>}
+                          {!open(session.id) && family(session.id).length > 0 && <span className="chip kin" title="它派出过的子分身，点开这个分身就能看到">{family(session.id).length} 子</span>}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
           </div>
-        ))}
+          );
+        })}
       </div>
       <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title="功课：到了时辰，自行化出分身去办" onClick={onSchedules}>
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

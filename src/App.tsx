@@ -37,7 +37,7 @@ type Action =
   | { type: "session"; item: SessionItem }
   | { type: "deleted"; id: string }
   | { type: "event"; event: UiEvent }
-  | { type: "queued"; text: string }
+  | { type: "queued"; id: string; text: string }
   | { type: "page"; page: State["page"] }
   | { type: "settings"; settings: SettingsView }
   | { type: "schedules"; schedules: Schedule[] }
@@ -118,7 +118,8 @@ function reduce(state: State, action: Action): State {
       return { ...state, sessions, status: event.status, stream: idle ? [] : state.stream, queued: idle ? [] : state.queued };
     }
     case "queued":
-      return { ...state, queued: [...state.queued, action.text] };
+      // Said to a 分身 that has since left the screen, it is not shown under another's work.
+      return action.id === state.activeId ? { ...state, queued: [...state.queued, action.text] } : state;
     case "page":
       return { ...state, page: action.page };
     case "settings":
@@ -242,8 +243,9 @@ export default function App() {
     }
   };
   const send = (text: string, images: Image[] = []) => {
-    if (!state.activeId) return;
-    api.sendMessage(state.activeId, text, images).then((queued) => queued && dispatch({ type: "queued", text: text.trim() }), fail);
+    const id = state.activeId;
+    if (!id) return;
+    api.sendMessage(id, text, images).then((queued) => queued && dispatch({ type: "queued", id, text: text.trim() }), fail);
   };
   const decide = (toolUseId: string, decision: Decision) => {
     if (state.activeId) api.resolveApproval(state.activeId, toolUseId, decision).catch(fail);
@@ -474,7 +476,7 @@ export default function App() {
             <div className="empty">
             <Logo size={64} />
             <h1>选一处洞府，化出分身来干活</h1>
-            <p>白纸是本尊的法旨，黄符是分身的手笔，见朱砂处候本尊定夺。</p>
+            <p>白纸是本尊的法旨，墨迹是分身的手笔，见黄符朱砂处候本尊定夺。</p>
             {missingKey && <p className="muted">还没有 {defaultProvider?.name} 的密钥，分身出不了关，先到设置里填上。</p>}
             <div className="actions">
               <button type="button" className="button primary" onClick={create}>
