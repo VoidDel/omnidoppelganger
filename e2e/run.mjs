@@ -326,6 +326,11 @@ try {
   await page.click("退出回放");
   await page.waitFor("the message box to come back with what was in it", `!document.querySelector(".replay") && document.querySelector("#composer-input").offsetParent !== null && document.querySelector("#composer-input").value === "接着查"`);
   check(logs().find((events) => events[0].data.id === refork[0].data.id).length === refork.length, "stepping through the replay reached the end, left the log as it was, and gave the message box back");
+  // Commands are confined on Linux and macOS only: here the setting says so, and cannot be switched on.
+  await page.click("设置");
+  await page.waitForText("这个系统上还没有沙箱");
+  const sandbox = await page.evaluate(`(() => { const box = [...document.querySelectorAll(".settings .check input")].find((input) => input.closest("label").textContent.includes("沙箱")); return { disabled: box.disabled, checked: box.checked, paths: document.querySelector("#sandbox-paths").disabled }; })()`);
+  check(sandbox.disabled && !sandbox.checked && sandbox.paths, "the sandbox setting is off and cannot be switched on where the system has none");
   console.log("Passed.");
 } catch (error) {
   failed = true;

@@ -67,6 +67,8 @@ export interface ToolMeta {
   hunk?: DiffHunk | null;
   command?: string;
   exit_code?: number | null;
+  /** Whether the command ran in the sandbox: able to write only under the workspace and the temporary directories. */
+  sandboxed?: boolean;
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
@@ -198,6 +200,10 @@ export interface Settings {
   theme: "system" | "light" | "dark";
   /** Addresses that replace a provider's default, by provider id. */
   base_urls: Record<string, string>;
+  /** Whether the commands a 分身 runs are confined to writing under its workspace, where the system can do that. */
+  sandbox: boolean;
+  /** Directories confined commands may also write under. */
+  sandbox_paths: string[];
 }
 
 export interface KeyStatus {
@@ -229,6 +235,8 @@ export interface SettingsView {
   /** The engines a web search can ask, `[id, what it is]`, and whether a GLM key is saved for searching to work. */
   search_engines: [string, string][];
   search_ready: boolean;
+  /** What confines commands on this system (`Ok`), or why nothing can (`Err`). */
+  sandbox_support: { Ok?: string; Err?: string };
   /** The user's own skills, and the directory they are kept in. */
   skills: Skill[];
   skills_directory: string;

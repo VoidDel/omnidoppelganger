@@ -148,8 +148,10 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       };
     case "run_command": {
       const ended = meta?.stopped === "timed out" ? "超时停止" : meta?.stopped ? "已停止" : meta?.exit_code === 0 ? "成功" : `退出码 ${meta?.exit_code ?? "未知"}`;
-      if (meta?.background) return { verb: "后台运行", target: text("command"), outcome: waiting || `已起，编号 ${meta.job}` };
-      return { verb: "运行", target: text("command"), outcome: waiting || (meta ? ended : "没有运行") };
+      // Said only where it holds: the command could write nowhere but the workspace and the temporary directories.
+      const where = meta?.sandboxed ? "沙箱内，" : "";
+      if (meta?.background) return { verb: "后台运行", target: text("command"), outcome: waiting || `${where}已起，编号 ${meta.job}` };
+      return { verb: "运行", target: text("command"), outcome: waiting || (meta ? where + ended : "没有运行") };
     }
     case "command_output":
     case "stop_command": {
@@ -271,6 +273,11 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
+  unsandboxed: {
+    title: "分身要在沙箱之外运行一条命令，请本尊定夺",
+    note: "设置里开着沙箱，命令本来只能往洞府和临时目录里写。分身说这一条得往别处写，所以要出沙箱跑：准了，它就能改这台机器上本尊能改的任何文件。出沙箱每次都要请示。",
+    always: "",
+  },
   search: {
     title: "分身要联网搜索，请本尊定夺",
     note: "搜索词会发给智谱的搜索服务，每搜一次都要花灵石（基础版约 0.01 元）。",

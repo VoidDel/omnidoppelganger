@@ -321,6 +321,42 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
         </section>
 
         <section>
+          <h2>沙箱</h2>
+          <label className="check">
+            <input type="checkbox" checked={settings.sandbox && !!view.sandbox_support.Ok} disabled={!view.sandbox_support.Ok} onChange={(event) => onSave({ ...settings, sandbox: event.target.checked })} />
+            <span>
+              把分身运行的命令关进沙箱
+              <span className="muted">（命令只能往洞府和临时目录里写；读文件、联网不受限）</span>
+            </span>
+          </label>
+          {view.sandbox_support.Ok ? (
+            <p className="hint">
+              用的是系统自带的 {view.sandbox_support.Ok}。开了之后，命令（连同它启动的一切，比如构建脚本和测试）改不了洞府之外的文件。禁制照旧：该请示的命令还是请示。
+              命令确实要往别处写时，分身会请示出沙箱跑一次，每次都要本尊点头。下一条命令起生效。
+            </p>
+          ) : (
+            <p className="hint failed">这个系统上还没有沙箱，眼下只有 Linux 和 macOS 有。（{view.sandbox_support.Err}）</p>
+          )}
+          <div className="field">
+            <label htmlFor="sandbox-paths">另外准许写入的目录（一行一个）</label>
+            <textarea
+              id="sandbox-paths"
+              className="input area mono"
+              rows={3}
+              disabled={!view.sandbox_support.Ok}
+              placeholder="比如包管理器的缓存目录"
+              key={settings.sandbox_paths.join("\n")}
+              defaultValue={settings.sandbox_paths.join("\n")}
+              onBlur={(event) => {
+                const paths = event.target.value.split("\n").map((line) => line.trim()).filter(Boolean);
+                if (paths.join("\n") !== settings.sandbox_paths.join("\n")) onSave({ ...settings, sandbox_paths: paths });
+              }}
+            />
+            <p className="hint">Git 仓库自己的 .git 目录不用填，已经算在内。</p>
+          </div>
+        </section>
+
+        <section>
           <h2>长期许可</h2>
           {grants.length === 0 && <p className="muted">还没有哪条命令被"永远都准"。审批命令时可以选它，之后同一处洞府里以同样开头的命令不再请示。</p>}
           {grants.map(([workspace, kept]) => (
