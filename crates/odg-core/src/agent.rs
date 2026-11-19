@@ -189,6 +189,7 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
          \n\
          How you work:\n\
          - Read and search before you change code, and keep each change as small as the task allows.\n\
+         - To read, search, or list files, use `read_file`, `search`, and `find_files`, not shell commands: they never wait for the user's approval, and the user sees what you looked at.\n\
          - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
          - For work of several steps, keep a to-do list with `update_todos` and mark items as you go; the user follows it beside the conversation.{delegating}\n\
          - After changing code, verify it when the project gives you a way to: build it, run its tests.\n\
@@ -494,8 +495,13 @@ impl<L: Llm> Inner<L> {
         Ok(())
     }
 
+    /// The mode the next tool call is decided by. Asking about nothing holds only in a worktree of the
+    /// session's own: anywhere else, as in a log left in it and opened where no worktree is, it is auto.
     fn mode(&self) -> Mode {
-        self.state.lock().unwrap().mode
+        match self.state.lock().unwrap().mode {
+            Mode::Bypass if self.worktree.is_none() => Mode::Auto,
+            mode => mode,
+        }
     }
 
     fn model(&self) -> String {
@@ -900,8 +906,12 @@ impl<L: Llm> Inner<L> {
                     self.tool_result(&id, &name, message.to_string(), true, json!({ "refused": true }))?;
                     continue;
                 }
+                // A grant of several commands, one per line, holds when each of them is granted.
+                let granted = |grant: &String| {
+                    grant.lines().all(|part| self.state.lock().unwrap().grants.contains(part) || self.kept.allows(&self.granted_in, part))
+                };
                 if let Verdict::Ask { reason, detail, grant } = verdict
-                    && !grant.as_ref().is_some_and(|grant| self.state.lock().unwrap().grants.contains(grant) || self.kept.allows(&self.granted_in, grant))
+                    && !grant.as_ref().is_some_and(granted)
                 {
                     let (sender, receiver) = oneshot::channel();
                     self.state.lock().unwrap().approvals.insert(id.clone(), sender);
@@ -940,13 +950,13 @@ impl<L: Llm> Inner<L> {
                             continue;
                         }
                         Decision::AllowSession | Decision::AllowAlways => {
-                            if let Some(grant) = grant {
-                                // Kept for good when asked and possible; for this run of the app either
-                                // way, so a grant that could not be written still holds until restart.
-                                if decision == Decision::AllowAlways && GrantStore::keeps(&grant) {
-                                    let _ = self.kept.add(&self.granted_in, &grant);
+                            // Kept for good when asked and possible; for this run of the app either way,
+                            // so a grant that could not be written still holds until restart.
+                            for part in grant.iter().flat_map(|grant| grant.lines()) {
+                                if decision == Decision::AllowAlways && GrantStore::keeps(part) {
+                                    let _ = self.kept.add(&self.granted_in, part);
                                 }
-                                self.state.lock().unwrap().grants.insert(grant);
+                                self.state.lock().unwrap().grants.insert(part.to_string());
                             }
                         }
                         Decision::AllowOnce => {}
@@ -1179,6 +1189,23 @@ mod tests {
         assert!(!results[2].1 && results[2].2.trim() == "ok");
         assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "approval/requested").count(), 2);
         assert_eq!(fixture.end().0, "completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_command_of_several_allowed_for_good_keeps_each_of_them() {
+        let run = |id: &str, command: &str| calls(&[(id, "run_command", json!({ "command": command }))]);
+        let script = vec![run("t1", "echo ok; git status"), says("done"), run("t2", "git status"), says("done")];
+        let mut fixture = fixture(ScriptedLlm::new(script, None));
+        fixture.session.send("run it".into());
+        let asked = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&asked, Decision::AllowAlways));
+        fixture.idle().await;
+        let store = GrantStore::new(fixture._home.path().join("grants.json"));
+        assert!(store.allows(fixture.workspace.path(), "command:echo ok") && store.allows(fixture.workspace.path(), "command:git status"));
+        // One of them on its own needs no approval now.
+        fixture.session.send("again".into());
+        fixture.idle().await;
+        assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "approval/requested").count(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

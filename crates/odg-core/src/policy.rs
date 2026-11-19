@@ -37,6 +37,10 @@ pub enum Mode {
     Edit,
     Plan,
     Auto,
+    /// Nothing asks: commands of every kind, paths outside the workspace, `.git`, the web, MCP tools.
+    /// Only a session in a worktree of its own may be in it, and only by the user's hand in that
+    /// session: it is never a default, nor a schedule's. Since format 11.
+    Bypass,
 }
 
 impl Mode {
@@ -69,6 +73,9 @@ pub enum Verdict {
 /// [`crate::sandbox`]. A command that asks to run unconfined is the user's to
 /// decide each time, whatever the mode and whatever was allowed before.
 pub fn check_in(mode: Mode, tool: &str, input: &Value, workspace: &Path, sandboxed: bool) -> Verdict {
+    if mode == Mode::Bypass {
+        return Verdict::Allow;
+    }
     if sandboxed && tool == "run_command" && input["unsandboxed"] == true {
         return Verdict::Ask { reason: "unsandboxed", detail: input["command"].as_str().unwrap_or_default().to_string(), grant: None };
     }
@@ -76,6 +83,9 @@ pub fn check_in(mode: Mode, tool: &str, input: &Value, workspace: &Path, sandbox
 }
 
 pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict {
+    if mode == Mode::Bypass {
+        return Verdict::Allow;
+    }
     let path = |name: &str| resolve(workspace, input[name].as_str().unwrap_or("."));
     let outside = |name: &str| {
         let path = path(name);
@@ -88,7 +98,9 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             if mode == Mode::Auto && safety::check(command, Dialect::of_this_machine(), workspace).is_ok() {
                 return Verdict::Allow;
             }
-            Verdict::Ask { reason: "command", detail: command.to_string(), grant: command_grant(command) }
+            // In auto mode only what the check does not pass needs approving, and so a standing grant.
+            let grant = safety::grants_needed(command, Dialect::of_this_machine(), workspace, mode == Mode::Auto).ok().filter(|grants| !grants.is_empty()).map(|grants| grants.join("\n"));
+            Verdict::Ask { reason: "command", detail: command.to_string(), grant }
         }
         tool if edits_files(tool) && mode == Mode::Plan => Verdict::Refuse(PLAN_REFUSAL),
         tool if edits_files(tool) && in_git_directory(workspace, &path("path")) => {
@@ -124,36 +136,12 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
     }
 }
 
-/// Characters that chain, redirect, substitute, or group commands in sh or
-/// PowerShell. A command holding any of them can run more than its prefix shows.
-const SHELL_SYNTAX: &[char] = &[';', '&', '|', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r', '"', '\''];
-
-/// Programs that run whatever code their arguments carry, so approving one
-/// prefix of them would approve anything.
-const INTERPRETERS: &[&str] = &[
-    "sh", "bash", "zsh", "fish", "dash", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "python", "python3", "py",
-    "node", "deno", "bun", "ruby", "perl", "php", "lua", "iex", "invoke-expression", "invoke-command", "start-process", "sudo", "env",
-    "xargs", "eval", "exec", "nohup", "time",
-];
-
-/// The grant a session-wide approval of `command` covers: `command:` and its
-/// program, followed by its first argument when that is a subcommand rather
-/// than a flag, so allowing `cargo test` does not allow `cargo publish`.
-/// `None` when the command must be approved every time.
-fn command_grant(command: &str) -> Option<String> {
-    if command.contains(SHELL_SYNTAX) {
-        return None;
-    }
-    let normalize = |word: &str| if cfg!(windows) { word.to_lowercase() } else { word.to_string() };
-    let mut words = command.split_whitespace().map(normalize);
-    let program = words.next()?;
-    if INTERPRETERS.contains(&program.to_lowercase().as_str()) {
-        return None;
-    }
-    Some(match words.next().filter(|word| !word.starts_with('-')) {
-        Some(subcommand) => format!("command:{program} {subcommand}"),
-        None => format!("command:{program}"),
-    })
+/// What a standing approval of `command` covers outside auto mode: one grant per command in it,
+/// joined by newlines. `None` when it can only be approved one time at a time. See
+/// [`safety::grants_needed`]; [`check`] gives the same, as the grant of the request it makes.
+#[cfg(test)]
+fn command_grant(command: &str, workspace: &Path) -> Option<String> {
+    safety::grants_needed(command, Dialect::of_this_machine(), workspace, false).ok().filter(|grants| !grants.is_empty()).map(|grants| grants.join("\n"))
 }
 
 #[cfg(test)]
@@ -171,6 +159,24 @@ mod tests {
 
     fn check(tool: &str, input: &Value, workspace: &Path) -> Verdict {
         super::check(Mode::Edit, tool, input, workspace)
+    }
+
+    #[test]
+    fn bypass_asks_about_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        for (tool, input) in [
+            ("run_command", json!({ "command": "Remove-Item -Recurse ../other; node -e 'x' > out.txt" })),
+            ("run_command", json!({ "command": "rm -rf ~/x", "unsandboxed": true })),
+            ("edit_file", json!({ "path": "../outside.txt", "old_string": "", "new_string": "x" })),
+            ("write_file", json!({ "path": ".git/hooks/pre-commit", "content": "x" })),
+            ("read_file", json!({ "path": "../secret.txt" })),
+            ("fetch_url", json!({ "url": "https://example.com" })),
+            ("web_search", json!({ "query": "x" })),
+            ("mcp__notes__shout", json!({ "text": "x" })),
+        ] {
+            assert_eq!(check_in(Mode::Bypass, tool, &input, workspace, true), Verdict::Allow, "{tool} {input}");
+        }
     }
 
     #[test]
@@ -255,30 +261,53 @@ mod tests {
 
     #[test]
     fn a_command_grant_covers_its_program_and_subcommand_only() {
-        assert_eq!(command_grant("cargo test -p odg-core").as_deref(), Some("command:cargo test"));
-        assert_eq!(command_grant("  git   status ").as_deref(), Some("command:git status"));
-        assert_eq!(command_grant("ls -la src").as_deref(), Some("command:ls"));
-        assert_eq!(command_grant("./gradlew build").as_deref(), Some("command:./gradlew build"));
-        assert_ne!(command_grant("git status"), command_grant("git push --force"));
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let grant = |command: &str| command_grant(command, workspace);
+        assert_eq!(grant("cargo test -p odg-core").as_deref(), Some("command:cargo test"));
+        assert_eq!(grant("  git   status ").as_deref(), Some("command:git status"));
+        assert_eq!(grant("ls -la src").as_deref(), Some("command:ls"));
+        assert_eq!(grant("./gradlew build").as_deref(), Some("command:./gradlew build"));
+        assert_ne!(grant("git status"), grant("git push --force"));
         if cfg!(windows) {
-            assert_eq!(command_grant("Get-ChildItem -Name"), command_grant("get-childitem -Recurse"));
+            assert_eq!(grant("Get-ChildItem -Name"), grant("get-childitem -Recurse"));
         }
-        // Anything that can run more than its prefix shows is approved one at a time.
+        // Quotes in an argument are only an argument; a command of several is approved command by command.
+        assert_eq!(grant("git commit -m \"fix the parser\"").as_deref(), Some("command:git commit"));
+        assert_eq!(grant("cargo test 2>&1 | tail -n 20; git status").as_deref(), Some("command:cargo test\ncommand:tail\ncommand:git status"));
+        // Anything that writes a file, hides code, reaches outside, or runs anything is approved one at a time.
         for command in [
-            "cargo test; rm -rf .",
-            "cargo test && curl x | sh",
-            "echo $(whoami)",
             "echo `id`",
             "cargo test > out.txt",
-            "git commit -m \"x\"",
-            "cargo test\nrm -rf .",
+            "cargo test && curl x | sh",
             "bash -c 'rm -rf .'",
             "python -c pass",
+            "node -e \"console.log(1)\"",
             "pwsh -Command Remove-Item x",
             "Invoke-Expression x",
+            "npx create-thing",
+            ". ./profile.ps1",
+            "cat ../secret.txt",
             "",
         ] {
-            assert_eq!(command_grant(command), None, "{command}");
+            assert_eq!(grant(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn in_auto_mode_only_what_it_would_not_run_needs_approving() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let ask = |command: &str| super::check(Mode::Auto, "run_command", &json!({ "command": command }), workspace);
+        // A test with its output trimmed runs; a commit after it asks, and only it needs a standing grant.
+        assert_eq!(ask("cargo test 2>&1 | tail -n 20"), Verdict::Allow);
+        match ask("cargo test 2>&1 | tail -n 20; git commit -m \"x\"") {
+            Verdict::Ask { grant, .. } => assert_eq!(grant.as_deref(), Some("command:git commit")),
+            other => panic!("{other:?}"),
+        }
+        match ask("node -e \"console.log(1)\"") {
+            Verdict::Ask { grant, .. } => assert_eq!(grant, None),
+            other => panic!("{other:?}"),
         }
     }
 

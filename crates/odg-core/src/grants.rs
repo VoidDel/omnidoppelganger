@@ -3,7 +3,7 @@
 //!
 //! Three kinds of grant can be kept, because each names one thing that stays
 //! the same from one day to the next: a command's, which names a program
-//! and subcommand (see `policy::command_grant`); an MCP tool's, which names
+//! and subcommand (see `safety::grants_needed`); an MCP tool's, which names
 //! that tool; and a web site's, which names its host. So can the grant to
 //! search the web, of which there is one. An approval of edits or of paths outside the workspace
 //! lasts for the session it was given in.

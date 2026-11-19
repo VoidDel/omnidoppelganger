@@ -32,6 +32,15 @@ impl Dialect {
 
 /// `Ok` when `command` can run without asking; otherwise why it cannot.
 pub fn check(command: &str, dialect: Dialect, workspace: &Path) -> Result<(), String> {
+    for segment in &scan(command, dialect, workspace)? {
+        check_segment(segment, dialect)?;
+    }
+    Ok(())
+}
+
+/// The commands in `command`, read the way its shell would split it, after the checks that hold
+/// whatever runs: no output written to a file, no path outside the workspace, no code hidden in it.
+fn scan(command: &str, dialect: Dialect, workspace: &Path) -> Result<Vec<Segment>, String> {
     if command.trim().is_empty() {
         return Err("the command is empty".into());
     }
@@ -39,10 +48,46 @@ pub fn check(command: &str, dialect: Dialect, workspace: &Path) -> Result<(), St
     scanner.code(false)?;
     scanner.end_word()?;
     scanner.end_segment()?;
-    for segment in &scanner.segments {
-        check_segment(segment, dialect)?;
+    Ok(scanner.segments)
+}
+
+/// Programs that run whatever code their arguments carry, or start another program: approving one for
+/// good would approve anything.
+const RUNS_ANYTHING: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "cmd", "powershell", "pwsh", "python", "python3", "py", "node", "deno", "bun", "ruby", "perl", "php",
+    "lua", "iex", "invoke-expression", "invoke-command", "icm", "start-process", "saps", "start", "invoke-item", "ii", "sudo", "env", "xargs",
+    "eval", "exec", "nohup", "time", "source", ".", "call", "npx", "dlx",
+];
+
+/// What a standing approval of `command` has to cover: one grant for each command in it, `command:` and
+/// its program, followed by its first argument when that is a subcommand rather than a flag, so allowing
+/// `cargo test` does not allow `cargo publish`. With `auto`, the commands that auto mode runs without
+/// asking need none. Fails when the command cannot be approved for good: it writes output to a file,
+/// names a path outside the workspace, hides code, or runs a program that runs anything.
+pub fn grants_needed(command: &str, dialect: Dialect, workspace: &Path, auto: bool) -> Result<Vec<String>, String> {
+    let mut grants: Vec<String> = Vec::new();
+    for segment in &scan(command, dialect, workspace)? {
+        let Some((name, rest)) = command_of(segment, dialect)? else { continue };
+        let args: Vec<&str> = rest.iter().map(String::as_str).collect();
+        if auto && check_program(&name, &args, dialect).is_ok() {
+            continue;
+        }
+        if RUNS_ANYTHING.contains(&name.to_lowercase().trim_end_matches(".exe")) {
+            return Err(format!("{name} runs whatever it is given, so it is approved one time at a time"));
+        }
+        let subcommand = args.first().filter(|word| {
+            !word.starts_with('-') && word.chars().next().is_some_and(char::is_alphabetic) && word.chars().all(|c| c.is_alphanumeric() || "-_:.".contains(c))
+        });
+        let subcommand = subcommand.map(|word| if dialect == Dialect::PowerShell { word.to_lowercase() } else { word.to_string() });
+        let grant = match subcommand {
+            Some(subcommand) => format!("command:{name} {subcommand}"),
+            None => format!("command:{name}"),
+        };
+        if !grants.contains(&grant) {
+            grants.push(grant);
+        }
     }
-    Ok(())
+    Ok(grants)
 }
 
 /// One shell word. `text` is what the program receives, quotes removed;
@@ -244,6 +289,13 @@ impl Scanner<'_> {
             match self.peek(0) {
                 None => return Err("an unclosed quote".into()),
                 Some('"') => break,
+                // In PowerShell's double quotes a backtick makes the next character plain text: `n is a
+                // newline, `" a quote, `$ a dollar sign that starts nothing. In sh it substitutes a command.
+                Some('`') if self.dialect == Dialect::PowerShell => {
+                    let escaped = self.peek(1).ok_or("an unclosed quote")?;
+                    text.push(escaped);
+                    self.at += 2;
+                }
                 Some('`') => return Err("a backtick escapes or substitutes what follows".into()),
                 // sh reads \" as a quote inside the string, PowerShell as the string's end.
                 Some('\\') if self.peek(1) == Some('"') => return Err("\\\" inside a string reads differently in each shell".into()),
@@ -299,6 +351,11 @@ impl Scanner<'_> {
     /// and return true.
     fn reject_call(&self) -> Result<bool, String> {
         let bare = &self.word.bare;
+        // A listed .NET member's arguments are text to work on, like a string method's; but a path's
+        // pieces are still paths, since what it puts together is opened next.
+        if pure_static(bare) {
+            return Ok(!bare.to_lowercase().contains("path]::"));
+        }
         let method = bare.rsplit('.').next().filter(|_| bare.contains('.')).filter(|name| !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'));
         if let Some(method) = method {
             let method = method.to_lowercase();
@@ -350,7 +407,7 @@ impl Scanner<'_> {
         if !word.started {
             return Ok(());
         }
-        if word.bare.contains("::") {
+        if word.bare.contains("::") && !pure_static(&word.bare) {
             return Err(format!("{} calls into .NET", word.bare));
         }
         if self.dialect == Dialect::PowerShell && word.bare == "--%" {
@@ -360,7 +417,7 @@ impl Scanner<'_> {
         // `'\\(bin|obj)\\'` is a regular expression, not a network share.
         let pattern = self.dialect == Dialect::PowerShell && self.segment.last().is_some_and(|previous| !previous.quoted && takes_pattern(&previous.bare));
         let string_arg = self.string_args.last() == Some(&self.parens);
-        if !pattern && !string_arg {
+        if !pattern && !string_arg && !looks_like_pattern(&word) {
             check_paths(&word, self.dialect, self.workspace)?;
         }
         self.segment.push(word);
@@ -380,6 +437,44 @@ impl Scanner<'_> {
         }
         Ok(())
     }
+}
+
+/// .NET types whose static members, the ones listed, only compute a value: they read no file, write
+/// none, and start nothing. `*` is every member of the type.
+const PURE_STATICS: &[(&str, &[&str])] = &[
+    ("math", &["*"]),
+    ("regex", &["escape", "unescape", "ismatch", "match", "matches", "replace", "split"]),
+    ("string", &["join", "isnullorempty", "isnullorwhitespace", "format", "concat", "compare", "equals", "empty"]),
+    ("char", &["isdigit", "isletter", "isletterordigit", "iswhitespace", "isupper", "islower", "toupper", "tolower"]),
+    ("int", &["parse", "tryparse", "maxvalue", "minvalue"]),
+    ("int32", &["parse", "tryparse", "maxvalue", "minvalue"]),
+    ("int64", &["parse", "tryparse", "maxvalue", "minvalue"]),
+    ("long", &["parse", "tryparse", "maxvalue", "minvalue"]),
+    ("double", &["parse", "tryparse", "maxvalue", "minvalue"]),
+    ("decimal", &["parse", "tryparse", "round"]),
+    ("convert", &["toint32", "toint64", "todouble", "tostring", "toboolean", "tobase64string", "frombase64string"]),
+    ("timespan", &["fromseconds", "fromminutes", "fromhours", "fromdays", "frommilliseconds", "zero"]),
+    ("datetime", &["now", "utcnow", "today", "parse"]),
+    ("guid", &["newguid", "empty"]),
+    // The path's own text only: none of these looks at the disk.
+    ("io.path", &["getfilename", "getfilenamewithoutextension", "getextension", "getdirectoryname", "combine", "join", "getrelativepath", "ispathrooted", "directoryseparatorchar"]),
+];
+
+/// Whether a word that holds `::` is `[Type]::Member` for a member of [`PURE_STATICS`], and nothing after it.
+fn pure_static(bare: &str) -> bool {
+    let lower = bare.to_lowercase();
+    let Some((type_part, member)) = lower.split_once("]::") else { return false };
+    let Some(name) = type_part.strip_prefix('[') else { return false };
+    let name = name.strip_prefix("system.").unwrap_or(name);
+    let plain = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || c == '_');
+    plain(member) && PURE_STATICS.iter().any(|(kind, members)| *kind == name && (members.contains(&"*") || members.contains(&member)))
+}
+
+/// Whether a quoted word is a regular expression rather than a path: it escapes a character that only a
+/// pattern needs escaped, like the `\(` of `'\.unwrap\(\)'`, which no path is written with.
+fn looks_like_pattern(word: &Word) -> bool {
+    let chars: Vec<char> = word.text.chars().collect();
+    word.quoted && chars.windows(2).any(|pair| pair[0] == '\\' && "()[]{}+^$|?*".contains(pair[1]))
 }
 
 /// PowerShell operators and parameters whose operand is a pattern or a value to compare, never a path.
@@ -424,9 +519,18 @@ fn check_paths(word: &Word, dialect: Dialect, workspace: &Path) -> Result<(), St
 }
 
 fn check_segment(segment: &[Word], dialect: Dialect) -> Result<(), String> {
+    match command_of(segment, dialect)? {
+        Some((name, rest)) => check_program(&name, &rest.iter().map(String::as_str).collect::<Vec<_>>(), dialect),
+        None => Ok(()),
+    }
+}
+
+/// The program a segment runs and its arguments, past assignments and keywords; `None` when it runs
+/// none: a value, a variable, an expression, `break`. Fails when what it runs cannot be told.
+fn command_of(segment: &[Word], dialect: Dialect) -> Result<Option<(String, Vec<String>)>, String> {
     let mut words: Vec<Word> = segment.to_vec();
     loop {
-        let Some(first) = words.first().cloned() else { return Ok(()) };
+        let Some(first) = words.first().cloned() else { return Ok(None) };
         match dialect {
             Dialect::PowerShell => {
                 // `$x = …` and `$x += …`: what follows is checked as its own command. Only
@@ -459,7 +563,7 @@ fn check_segment(segment: &[Word], dialect: Dialect) -> Result<(), String> {
                 let opening = first.text.chars().next().unwrap_or(' ');
                 let member = opening == '.' && first.text.chars().nth(1).is_some_and(|c| c.is_alphabetic() || c == '_');
                 if first.starts_quoted || "$@[+-,!".contains(opening) || opening.is_ascii_digit() || member {
-                    return Ok(());
+                    return Ok(None);
                 }
             }
             Dialect::Posix => {
@@ -473,7 +577,7 @@ fn check_segment(segment: &[Word], dialect: Dialect) -> Result<(), String> {
         }
 
         let name = if dialect == Dialect::PowerShell { first.text.to_lowercase().trim_end_matches(".exe").to_string() } else { first.text.clone() };
-        let rest: Vec<&str> = words[1..].iter().map(|word| word.text.as_str()).collect();
+        let rest: Vec<String> = words[1..].iter().map(|word| word.text.clone()).collect();
         match (dialect, name.as_str()) {
             // Keywords followed by a command: check that command.
             (Dialect::PowerShell, "if" | "elseif" | "else" | "while" | "do" | "for" | "try" | "catch" | "finally" | "switch" | "until")
@@ -482,9 +586,9 @@ fn check_segment(segment: &[Word], dialect: Dialect) -> Result<(), String> {
                 continue;
             }
             (Dialect::PowerShell, "return" | "break" | "continue" | "exit") | (Dialect::Posix, "fi" | "done" | "esac" | "exit" | "return" | "break" | "continue") => {
-                return if rest.iter().all(|word| word.chars().all(|c| c.is_ascii_digit() || c == '$')) { Ok(()) } else { Err(format!("{name} with arguments")) };
+                return if rest.iter().all(|word| word.chars().all(|c| c.is_ascii_digit() || c == '$')) { Ok(None) } else { Err(format!("{name} with arguments")) };
             }
-            _ => return check_program(&name, &rest, dialect),
+            _ => return Ok(Some((name, rest))),
         }
     }
 }
@@ -657,6 +761,14 @@ mod tests {
             r#"(Get-ChildItem -Recurse -Include *.cs -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }) | Select-String -Pattern 'async void' | ForEach-Object { "$($_.Filename):$($_.LineNumber): $($_.Line.Trim())" }"#,
             r#"(Get-ChildItem -Recurse -Include *.cs -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }) | Select-String -Pattern 'catch \(Exception' | Measure-Object | Select-Object -ExpandProperty Count"#,
             r#"(Get-ChildItem -Recurse -Include *.cs -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }) | Select-String -Pattern 'catch \(Exception' -Context 0,2 | ForEach-Object { $next = ($_.Context.PostContext -join ' '); "$($_.Filename):$($_.LineNumber) → $($next.Trim())" } | Select-Object -First 12"#,
+            // From a session in auto mode that asked about each of these, all of them reading: a backtick in a
+            // string, .NET's arithmetic and regex escaping, and patterns in a list.
+            r#"$src = Get-ChildItem crates, apps/desktop/src-tauri -Recurse -Filter *.rs | Where-Object { $_.FullName -notmatch '\\target\\|\\tests\\' }; "src .rs files (excl tests): $($src.Count)"; foreach ($p in @('\.unwrap\(\)', '\.expect\(', 'panic!', 'unsafe', 'todo!', 'unimplemented!', 'FIX ?ME|TODO')) { $sum = ($src | Select-String -Pattern $p -AllMatches | ForEach-Object { $_.Matches.Count } | Measure-Object -Sum).Sum; "{0,-22} {1}" -f $p, ($sum ?? 0) }"#,
+            r#"$src = Get-ChildItem crates -Recurse -Filter *.rs; $src | Group-Object { ($_.FullName -replace [regex]::Escape((Get-Location).Path + '\'), '') -replace '\\src\\.*', '' -replace '\\.*', '' } | ForEach-Object { $unw = ($_.Group | Select-String -Pattern '\.unwrap\(\)' -AllMatches | ForEach-Object { $_.Matches.Count } | Measure-Object -Sum).Sum; [PSCustomObject]@{ Crate = $_.Name; Files = $_.Count; Unwrap = $unw ?? 0 } } | Sort-Object Unwrap -Descending | Format-Table -AutoSize"#,
+            r#"Get-ChildItem -Recurse crates | Where-Object { -not $_.PSIsContainer } | ForEach-Object { "$($_.FullName.Substring(38).PadRight(70)) $([math]::Round($_.Length/1KB,1)) KB" }"#,
+            r#"Select-String -Path "src/format.rs" -Pattern "fn mount_class" -Context 0,30 | ForEach-Object { $_.Context.PostContext -join "`n" }"#,
+            r#"$dirs = "zip","7z"; foreach ($d in $dirs) { $files = Get-ChildItem "crates\$d\src" -Filter *.rs -Recurse; foreach ($f in $files) { $n = 0; foreach ($line in (Get-Content $f.FullName)) { $n++; if ($line -match '\b(unsafe|unwrap\(\))\b') { "$(Split-Path $f -Leaf):$n`: $($line.Trim())" } } } }"#,
+            r#""a `"quoted`" word and a `$dollar""#,
         ] {
             assert!(passes(command, Dialect::PowerShell, workspace), "{command}: {:?}", check(command, Dialect::PowerShell, workspace));
         }
@@ -699,6 +811,18 @@ mod tests {
             "Get-ChildItem | ForEach-Object Delete",
             "(Get-Item x).Delete()",
             "[IO.File]::Delete('x')",
+            // Only the listed members of the listed types compute without touching anything.
+            "[IO.File]::ReadAllText('x')",
+            "[System.IO.File]::WriteAllText('x', 'y')",
+            "[Environment]::GetEnvironmentVariable('ANTHROPIC_API_KEY')",
+            "[IO.Directory]::Delete('x', $true)",
+            "[math]::Round.Invoke(1)",
+            "[regex]::Escape('x').Remove(0)",
+            "Get-Content ([IO.Path]::Combine('C:/', 'secret.txt'))",
+            // Escaped, a dollar sign starts nothing; unescaped inside the same string, a subexpression still runs.
+            "\"`$x $(Remove-Item x)\"",
+            // In sh a backtick in double quotes runs a command.
+            "node -e 'x'",
             "& 'C:/tools/x.exe'",
             ". ./profile.ps1",
             "iex 'Remove-Item x'",

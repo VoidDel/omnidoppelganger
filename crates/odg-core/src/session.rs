@@ -22,9 +22,10 @@ use crate::providers::DEFAULT_PROVIDER;
 /// decision. Format 5 added `images` on a user message. Format 6 adds the
 /// `skills/listed` event. Format 7 adds the `model/changed` event. Format 8
 /// adds `parent` and `worktree` to the header and the `subagent/started` event.
-/// Format 9 adds `schedule` to the header, and format 10 `fork`. A build
+/// Format 9 adds `schedule` to the header, and format 10 `fork`. Format 11
+/// adds the `bypass` mode a message can be sent in. A build
 /// from before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 10;
+pub const FORMAT_VERSION: u32 = 11;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]

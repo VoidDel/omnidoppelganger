@@ -448,6 +448,9 @@ fn anthropic_base_url() -> String {
 #[tauri::command]
 async fn set_mode(app: State<'_, App>, id: String, mode: Mode) -> Result<SessionItem, String> {
     let session = app.live(&id)?;
+    if mode == Mode::Bypass && session.summary().worktree.is_none() {
+        return Err("only a session in a worktree of its own can be left to ask about nothing; start one with the branch button beside the folder".to_string());
+    }
     session.set_mode(mode);
     Ok(app.item(session.summary(), session.status()))
 }

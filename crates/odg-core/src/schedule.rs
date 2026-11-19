@@ -208,6 +208,9 @@ impl ScheduleStore {
             return Err(format!("{} is not a directory", schedule.workspace));
         }
         schedule.when.check()?;
+        if schedule.mode == Mode::Bypass {
+            return Err("a schedule cannot run asking about nothing; that is switched on by hand, in one session".to_string());
+        }
         if schedule.name.is_empty() {
             schedule.name = schedule.prompt.lines().next().unwrap_or_default().chars().take(NAME_CHARS).collect();
         }
@@ -407,6 +410,7 @@ mod tests {
             (Schedule { workspace: directory.path().join("gone").to_string_lossy().into_owned(), ..daily() }, "not a directory"),
             (schedule(&directory, When::Every { minutes: 0 }), "every 1 to"),
             (schedule(&directory, When::Once { at: "2026-11-19T07:00".into() }), "time has passed"),
+            (Schedule { mode: Mode::Bypass, ..daily() }, "asking about nothing"),
         ] {
             let error = store.save(schedule, &now).unwrap_err();
             assert!(error.contains(said), "{error}");

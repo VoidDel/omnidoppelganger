@@ -144,6 +144,10 @@ impl Settings {
         if !THEMES.contains(&self.theme.as_str()) {
             self.theme = default.theme;
         }
+        // Asking about nothing is switched on in one session by hand, never set for every new one.
+        if self.mode == Mode::Bypass {
+            self.mode = default.mode;
+        }
         self.context_limit = self.context_limit.max(MIN_CONTEXT_LIMIT);
         // A window of nothing is one that was cleared; one too small to work in is raised to the smallest that does.
         self.context_windows.retain(|key, tokens| *tokens > 0 && key.split_once('/').is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty()));
