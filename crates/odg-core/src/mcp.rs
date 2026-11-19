@@ -105,6 +105,8 @@ struct LineWire {
     pending: Pending,
     /// The last of what the process wrote to stderr, for explaining a failure.
     stderr: Arc<Mutex<String>>,
+    /// Why the connection ended, once it has: the server closed it, and what it said as it went.
+    closed: Arc<Mutex<Option<String>>>,
     /// Kept so the process ends when the connection is dropped.
     _child: Option<tokio::process::Child>,
 }
@@ -114,7 +116,8 @@ impl LineWire {
         let writer: Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>> = Arc::new(tokio::sync::Mutex::new(Box::new(writer)));
         let pending: Pending = Arc::default();
         let stderr = Arc::new(Mutex::new(String::new()));
-        let (waiting, answering, noted) = (pending.clone(), writer.clone(), stderr.clone());
+        let closed: Arc<Mutex<Option<String>>> = Arc::default();
+        let (waiting, answering, noted, ended) = (pending.clone(), writer.clone(), stderr.clone(), closed.clone());
         tokio::spawn(async move {
             let mut lines = BufReader::new(reader).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -139,11 +142,13 @@ impl LineWire {
             // The stream ended: nobody will answer what is still waiting.
             let tail = noted.lock().unwrap().trim().to_string();
             let why = if tail.is_empty() { "the server closed the connection".to_string() } else { format!("the server closed the connection: {tail}") };
+            // Said first, so a request that arrives after this finds it.
+            *ended.lock().unwrap() = Some(why.clone());
             for (_, sender) in waiting.lock().unwrap().drain() {
                 let _ = sender.send(Err(why.clone()));
             }
         });
-        Self { writer, pending, stderr, _child: child }
+        Self { writer, pending, stderr, closed, _child: child }
     }
 
     async fn send(&self, message: &Value) -> Result<(), String> {
@@ -240,6 +245,14 @@ impl Server {
                     wire.pending.lock().unwrap().insert(id, sender);
                     if let Err(error) = wire.send(&message).await {
                         wire.pending.lock().unwrap().remove(&id);
+                        // A server that has gone cannot be written to. Why it went, and what it said as it
+                        // did, explains more than the failed write; its end is noticed a moment after.
+                        for _ in 0..20 {
+                            if let Some(why) = wire.closed.lock().unwrap().clone() {
+                                return Err(why);
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
                         return Err(error);
                     }
                     receiver.await.unwrap_or_else(|_| Err("the server closed the connection".to_string()))
