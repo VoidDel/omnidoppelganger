@@ -235,6 +235,11 @@ export interface SettingsView {
   /** The engines a web search can ask, `[id, what it is]`, and whether a GLM key is saved for searching to work. */
   search_engines: [string, string][];
   search_ready: boolean;
+  /**
+   * The context window of the model new 分身 use, and how it is known: the provider said so when asked for its
+   * models, its documentation said so when this build was made, or nobody did and a size small enough to be safe is assumed.
+   */
+  context_window: { tokens: number; source: "provider" | "documented" | "unknown" };
   /** What confines commands on this system (`Ok`), or why nothing can (`Err`). */
   sandbox_support: { Ok?: string; Err?: string };
   /** The user's own skills, and the directory they are kept in. */

@@ -40,11 +40,11 @@ export function ReplayBar({ at, count, playing, speed, turn, time, onSeek, onPla
   return (
     <div className="composer">
       <div className="composer-status" role="status">
-        回放中：页面上是这个分身当时的样子，右边的改动、终端、计划也是。看的是记录，什么都不会改动。
+        回溯中：页面上是这个分身当时的样子，右边的改动、终端、计划也是。看的是记录，什么都不会改动。
       </div>
-      <div className="composer-box replay" role="group" aria-label="回放">
+      <div className="composer-box replay" role="group" aria-label="回溯">
         <label htmlFor="replay-at" className="sr-only">
-          回放到第几步
+          回溯到第几步
         </label>
         <input
           id="replay-at"
@@ -90,12 +90,13 @@ export function ReplayBar({ at, count, playing, speed, turn, time, onSeek, onPla
             第 {at + 1} / {count} 步<span className="muted">，第 {turn} 轮，{time}</span>
           </span>
           <span className="spacer" />
-          <button type="button" className="select-button" title="换一档快慢" onClick={() => onSpeed(SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length])}>
-            <span className="label">快慢</span>
-            <span className="value">{speed} 倍</span>
+          <button type="button" className="icon-button replay-speed" title={`快慢：现在 ${speed} 倍，点一下换一档`} onClick={() => onSpeed(SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length])}>
+            <span aria-hidden="true">{speed}x</span>
+            <span className="sr-only">快慢 {speed} 倍</span>
           </button>
-          <button type="button" className="button outline" onClick={onExit}>
-            退出回放
+          <button type="button" className="icon-button" title="退出回溯，回到现在" onClick={onExit}>
+            {icon("M4.6 4.6h6.8v6.8H4.6z", true)}
+            <span className="sr-only">退出回溯</span>
           </button>
         </div>
       </div>

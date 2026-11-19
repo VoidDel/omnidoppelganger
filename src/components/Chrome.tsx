@@ -431,19 +431,19 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
       </div>
       </div>
       {session.parent && (
-        <button type="button" className="kin-link" title="这是一个子分身，回到派它出来的分身" onClick={onOpenParent}>
+        <button type="button" className="kin-link" title={`这是一个子分身，出自「${parent?.title || "主分身"}」。点这里回到派它出来的分身`} onClick={onOpenParent}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12.5 13V7.5a2 2 0 0 0-2-2h-7M6.5 2.5l-3 3 3 3" />
           </svg>
-          子分身，出自「{parent?.title || "主分身"}」
+          子分身
         </button>
       )}
       {session.fork && (
-        <button type="button" className="kin-link" disabled={!source} title={source ? "这是一个分叉：它的前情抄自那个分身。点这里过去" : "这是一个分叉：它的前情抄自另一个分身，那个分身已经删了"} onClick={onOpenSource}>
+        <button type="button" className="kin-link" disabled={!source} title={source ? `这是一个分叉，出自「${source.title || "新分身"}」：它的前情抄自那个分身。点这里过去` : "这是一个分叉：它的前情抄自另一个分身，那个分身已经删了"} onClick={onOpenSource}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M8 14V9.5M8 9.5C8 6.5 4 7 4 3.5M8 9.5c0-3 4-2.5 4-6M2.5 5 4 3.5 5.5 5M10.5 5 12 3.5 13.5 5" />
           </svg>
-          分叉{source ? `，出自「${source.title || "新分身"}」` : ""}
+          分叉
         </button>
       )}
       <span className="spacer" />
@@ -469,12 +469,12 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
               </svg>
               <span className="sr-only">改名</span>
             </button>
-            <button type="button" className="icon-button replay-toggle" aria-pressed={replaying} title={replaying ? "退出回放，回到现在" : "回放：从头一步步看这个分身做过什么"} onClick={onReplay}>
+            <button type="button" className="icon-button replay-toggle" aria-pressed={replaying} title={replaying ? "退出回溯，回到现在" : "回溯：从头一步步看这个分身做过什么"} onClick={onReplay}>
               <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M3.2 5.2A5.5 5.5 0 1 1 2.5 8M3 2.5v2.9h2.9" />
                 <path d="M6.8 5.9 10.3 8 6.8 10.1z" fill="currentColor" />
               </svg>
-              <span className="sr-only">回放</span>
+              <span className="sr-only">回溯</span>
             </button>
             {!session.parent && (
               <button type="button" className="icon-button" title="分叉：另起一个分身，带着这里到现在的全部对话，从这里往别处走。只分对话，洞府里的文件是同一份" onClick={onFork}>
@@ -789,7 +789,7 @@ export function Composer(props: ComposerProps) {
               While the 分身 works the token is away with the order, and shows only when there is a word to send after it. */}
           {(!busy || !empty) && (
             <button type="button" key={busy ? "word" : "order"} ref={sender} className="token-button" disabled={empty} title={busy ? "传音：分身做完这一步就会听到" : "传令（回车）"} onClick={submit}>
-            <svg className={`token ${busy ? "word" : ""}`} aria-hidden="true" width="32" height="40" viewBox="0 0 32 40">
+            <svg className={`token ${busy ? "word" : ""}`} aria-hidden="true" width="26" height="32" viewBox="0 0 32 40">
                 <path className="plate" d="M7 1.5h18l5.5 5.5v21L16 38.5 1.5 28V7Z" />
                 <path className="rim" d="M8.2 4.5h15.6l3.7 3.7v18.3L16 34.8 4.5 26.5V8.2Z" />
                 <circle className="hole" cx="16" cy="8.6" r="1.7" />
@@ -803,7 +803,7 @@ export function Composer(props: ComposerProps) {
           {/* In the token's place while the 分身 works: a token of cinnabar, the order that calls it back. */}
           {busy && (
             <button type="button" className="token-button stop" title="收回分身：停下这一轮" onClick={onStop}>
-              <svg className="token halt" aria-hidden="true" width="32" height="40" viewBox="0 0 32 40">
+              <svg className="token halt" aria-hidden="true" width="26" height="32" viewBox="0 0 32 40">
                 <path className="plate" d="M7 1.5h18l5.5 5.5v21L16 38.5 1.5 28V7Z" />
                 <path className="rim" d="M8.2 4.5h15.6l3.7 3.7v18.3L16 34.8 4.5 26.5V8.2Z" />
                 <circle className="hole" cx="16" cy="8.6" r="1.7" />
@@ -871,21 +871,21 @@ export function SidePanel({ files, runs, todos, width, onResize }: SidePanelProp
       <div className="tabs">
         {/* Pictures to look at; each one's name is in its title and for a screen reader. */}
         <button type="button" className="tab" aria-pressed={tab === "files"} title="改动：分身动过的文件" onClick={() => setTab("files")}>
-          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 1.8h5.2L12 4.6v9.6H4z" />
             <path d="M9.2 1.8v2.8H12M6.2 8h3.6M8 6.2v3.6M6.2 11.8h3.6" />
           </svg>
           <span className="sr-only">改动</span>
         </button>
         <button type="button" className="tab" aria-pressed={tab === "terminal"} title="终端：分身跑过的命令和输出" onClick={() => setTab("terminal")}>
-          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
             <rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" />
             <path d="M4.6 6.2 6.8 8l-2.2 1.8M8.4 10h3" />
           </svg>
           <span className="sr-only">终端</span>
         </button>
         <button type="button" className="tab" aria-pressed={tab === "plan"} title="计划：分身列的步骤，做完一步勾一步" onClick={() => setTab("plan")}>
-          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M2.2 4.2l1.3 1.3 2.2-2.4M2.2 9.2l1.3 1.3 2.2-2.4M8.2 4.4h5.6M8.2 9.4h5.6M2.6 13.4h2.6M8.2 13.4h5.6" />
           </svg>
           <span className="sr-only">计划 </span>

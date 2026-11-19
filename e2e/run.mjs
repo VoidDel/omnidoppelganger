@@ -291,7 +291,7 @@ try {
   await page.waitFor("the session to fork", `${title} === "分头去查" && document.body.innerText.includes("都查完了。")`);
   const before = logs().length;
   await page.click("分叉");
-  await page.waitFor("the fork's own page", `document.querySelector(".kin-link")?.textContent.includes("出自「分头去查」") && document.body.innerText.includes("以上是分叉时带过来的前情")`);
+  await page.waitFor("the fork's own page", `document.querySelector(".kin-link")?.textContent.trim() === "分叉" && document.querySelector(".kin-link").title.includes("出自「分头去查」") && document.body.innerText.includes("以上是分叉时带过来的前情")`);
   const forked = logs().find((events) => events[0].data.fork);
   const source = logs().find((events) => events[0].data.id === forked[0].data.fork.session);
   check(logs().length === before + 1 && forked[0].data.fork.turn === 1 && JSON.stringify(forked.slice(1)) === JSON.stringify(source.slice(1)), "forking a session made a new one whose log begins as a copy of the conversation, event for event");
@@ -311,7 +311,7 @@ try {
   check(refork[0].data.fork.turn === 1 && !refork.some((event) => event.type === "turn/start" && event.data.turn === 2), "a fork from a message holds the turns before it, with the message back in the box");
 
   // A replay shows the session as it stood, a step at a time, in place of the message box, and changes nothing.
-  await page.click("回放");
+  await page.click("回溯");
   await page.waitFor("the replay bar in place of the message box", `!!document.querySelector(".replay") && document.querySelector("#composer-input").offsetParent === null`);
   await page.evaluate(`(() => { const play = document.querySelector(".replay-play"); if (play.textContent.includes("暂停")) play.click(); })()`);
   await page.waitFor("the replay to stop playing", `document.querySelector(".replay-play").textContent.includes("播放")`);
@@ -323,14 +323,14 @@ try {
   check(steps === 4 && started.asked && !started.answered && !started.ended, "the replay's first step shows the first message and nothing the 分身 did after it");
   for (let step = 1; step < steps; step++) await page.click("下一步");
   await page.waitFor("the last step", `${where}.startsWith("第 ${steps} / ") && document.body.innerText.includes("都查完了。")`);
-  await page.click("退出回放");
+  await page.click("退出回溯");
   await page.waitFor("the message box to come back with what was in it", `!document.querySelector(".replay") && document.querySelector("#composer-input").offsetParent !== null && document.querySelector("#composer-input").value === "接着查"`);
   check(logs().find((events) => events[0].data.id === refork[0].data.id).length === refork.length, "stepping through the replay reached the end, left the log as it was, and gave the message box back");
   // Commands are confined on Linux and macOS only: here the setting says so, and cannot be switched on.
   await page.click("设置");
   await page.click("禁制");
-  await page.waitForText("这个系统上还没有沙箱");
-  const sandbox = await page.evaluate(`(() => { const box = [...document.querySelectorAll(".settings .check input")].find((input) => input.closest("label").textContent.includes("沙箱")); return { disabled: box.disabled, checked: box.checked, paths: document.querySelector("#sandbox-paths").closest(".field").hidden }; })()`);
+  await page.waitForText("这个系统上还布不了结界");
+  const sandbox = await page.evaluate(`(() => { const box = [...document.querySelectorAll(".settings .check input")].find((input) => input.closest("label").textContent.includes("结界")); return { disabled: box.disabled, checked: box.checked, paths: document.querySelector("#sandbox-paths").closest(".field").hidden }; })()`);
   check(sandbox.disabled && !sandbox.checked && sandbox.paths, "the sandbox setting is off and cannot be switched on where the system has none");
   // A provider is added to the list of keys in a window of its own, and its key is kept.
   await page.click("功法");
@@ -362,6 +362,9 @@ try {
   const savedModel = () => JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).model;
   for (let waited = 0; savedModel() !== "claude-e2e-small" && waited < 50; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
   check(savedModel() === "claude-e2e-small", "picking a model from the list saves it as the default");
+  // The provider said how large that model's context window is when it listed its models; the page says so, and it is kept.
+  await page.waitFor("the model's context window as the provider reported it", `document.querySelector("#context-window")?.textContent.includes("40 万") && document.querySelector("#context-window").textContent.includes("宗门自己报的")`);
+  check(JSON.parse(readFileSync(join(home, "models.json"), "utf8")).anthropic["claude-e2e-small"] === 400000, "a context window the provider reports is shown with its source, and kept for the next run");
   console.log("Passed.");
 } catch (error) {
   failed = true;

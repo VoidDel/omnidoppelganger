@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
-import { mcpTool } from "../lib/fold";
+import { mcpTool, shortCount } from "../lib/fold";
 import type { KeyStatus, McpServer, Provider, Settings, SettingsView } from "../lib/types";
 
 // The agent's realm (境界): cultivation stages, lowest to highest, for the API's five effort levels.
@@ -299,7 +299,7 @@ const MCP_STATES: Record<McpServer["state"], string> = { connecting: "正在连�
 /** A kept grant as the user reads it: a command's opening words, or an MCP server's tool. */
 function grantLabel(grant: string): string {
   const borrowed = grant.startsWith("mcp:") ? mcpTool(grant.slice("mcp:".length)) : null;
-  if (grant === "search") return "联网搜索";
+  if (grant === "search") return "向天机阁打探（联网搜索）";
   if (grant.startsWith("web:")) return `网站 ${grant.slice("web:".length)}`;
   return borrowed ? `法器 ${borrowed.server} 的 ${borrowed.tool}` : grant.replace(/^command:/, "");
 }
@@ -371,7 +371,7 @@ const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] =
     hint: "各个宗门和它们的密钥，默认分身修哪门功法、推演多深，前情留多长",
     icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
   },
-  { id: "rules", name: "禁制", hint: "分身不问就能做什么，沙箱，已经长期准过的事", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
+  { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），发出去的通行符（长期许可）", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
   { id: "tools", name: "法器", hint: "天机阁（联网搜索）、技能、身外法器（MCP 服务）", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
   {
     id: "look",
@@ -416,7 +416,12 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
     setAsking(true);
     listModels(settings.provider)
       .then(
-        (models) => current && setServed({ models, why: null }),
+        (models) => {
+          if (!current) return;
+          setServed({ models, why: null });
+          // The provider may have said how large its models' context windows are: read what is now known.
+          onRefresh();
+        },
         (error) => current && setServed({ models: [], why: String(error) }),
       )
       .finally(() => current && setAsking(false));
@@ -428,6 +433,8 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
   }, [settings.provider, keyed, listModels, asked]);
   // The provider's own list first; the built-in suggestions it does not name after it.
   const suggestions = [...served.models, ...(chosen?.models ?? []).filter(([id]) => !served.models.some(([listed]) => listed === id))];
+  /** The most the limit can be for the model new 分身 use: four fifths of its context window. */
+  const ceiling = Math.floor(view.context_window.tokens / 5) * 4;
   const limit = useDraft(String(settings.context_limit), (value) => {
     const tokens = Number.parseInt(value, 10);
     if (Number.isFinite(tokens)) onSave({ ...settings, context_limit: tokens });
@@ -531,6 +538,13 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               每次请求都要把整段对话发给模型，对话越长越费灵石。对话到这个数，分身会把前情凝成一段摘要，之后只凭摘要接着做。模型自己装不下这么多时，按它的八成算。最低
               20000。
             </p>
+            {/* How much the model itself can hold, and who says so: the limit above never goes past four fifths of it. */}
+            <p className="hint" id="context-window">
+              {view.context_window.source === "unknown"
+                ? `${settings.model} 的上下文窗口有多大，宗门没报，内置的表里也没有这门功法，先按保守的 ${shortCount(view.context_window.tokens)} 算。`
+                : `${settings.model} 的上下文窗口是 ${shortCount(view.context_window.tokens)} token（${view.context_window.source === "provider" ? "宗门自己报的" : "照宗门文档记的"}）。`}
+              {settings.context_limit > ceiling && `上限最多用到窗口的八成，所以眼下实际是 ${shortCount(ceiling)}。`}
+            </p>
           </div>
         </section>
           </>
@@ -555,22 +569,22 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
         </section>
 
         <section>
-          <h2>沙箱</h2>
+          <h2>结界（沙箱）</h2>
           <label className="check">
             <input type="checkbox" checked={settings.sandbox && !!view.sandbox_support.Ok} disabled={!view.sandbox_support.Ok} onChange={(event) => onSave({ ...settings, sandbox: event.target.checked })} />
             <span>
-              把分身运行的命令关进沙箱
+              给洞府布下结界，把分身运行的命令关在里面
               <span className="muted">（命令只能往洞府和临时目录里写；读文件、联网不受限）</span>
             </span>
           </label>
           {view.sandbox_support.Ok ? (
             <p className="hint">
               用的是系统自带的 {view.sandbox_support.Ok}。开了之后，命令（连同它启动的一切，比如构建脚本和测试）改不了洞府之外的文件。禁制照旧：该请示的命令还是请示。
-              命令确实要往别处写时，分身会请示出沙箱跑一次，每次都要本尊点头。下一条命令起生效。
+              命令确实要往别处写时，分身会请示出结界跑一次，每次都要本尊点头。下一条命令起生效。
             </p>
           ) : (
             <p className="hint" title={view.sandbox_support.Err}>
-              这个系统上还没有沙箱，眼下只有 Linux 和 macOS 有。
+              这个系统上还布不了结界，眼下只有 Linux 和 macOS 可以。
             </p>
           )}
           {/* Nothing to add directories to where nothing is confined. */}
@@ -594,19 +608,19 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
         </section>
 
         <section>
-          <h2>长期许可</h2>
-          {grants.length === 0 && <p className="muted">还没有哪条命令被"永远都准"。审批命令时可以选它，之后同一处洞府里以同样开头的命令不再请示。</p>}
+          <h2>通行符（长期许可）</h2>
+          {grants.length === 0 && <p className="muted">还没有发出过通行符。请示时选"此府永准"，就给那一类命令发了一道：之后同一处洞府里，以同样开头的命令过禁制不再请示。</p>}
           {grants.map(([workspace, kept]) => (
             <div className="provider-card" key={workspace}>
               <div className="who">
                 <strong className="mono">{workspace}</strong>
-                <span className="muted">这处洞府里，以下面这些开头的命令、这些法器、这些网站不再请示</span>
+                <span className="muted">这处洞府里，持通行符的不再请示：以下面这些开头的命令、这些法器、这些网站</span>
               </div>
               {kept.map((grant) => (
                 <div className="provider" key={grant}>
                   <span className="mono">{grantLabel(grant)}</span>
                   <button type="button" className="button text" onClick={() => onRevoke(workspace, grant)}>
-                    撤销
+                    收回
                   </button>
                 </div>
               ))}

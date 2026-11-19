@@ -56,7 +56,8 @@ export async function startMock(script) {
         lists.count += 1;
         const models = [
           { id: "claude-opus-5-5", display_name: "Claude Opus 5.5" },
-          { id: "claude-e2e-small", display_name: "E2E Small" },
+          // Says how large its context window is, as the real list does: the app takes its word over what it assumes.
+          { id: "claude-e2e-small", display_name: "E2E Small", max_input_tokens: 400000 },
         ];
         response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: models, has_more: false }));
         return;

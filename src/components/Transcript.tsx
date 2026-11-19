@@ -149,7 +149,7 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
     case "run_command": {
       const ended = meta?.stopped === "timed out" ? "超时停止" : meta?.stopped ? "已停止" : meta?.exit_code === 0 ? "成功" : `退出码 ${meta?.exit_code ?? "未知"}`;
       // Said only where it holds: the command could write nowhere but the workspace and the temporary directories.
-      const where = meta?.sandboxed ? "沙箱内，" : "";
+      const where = meta?.sandboxed ? "结界内，" : "";
       if (meta?.background) return { verb: "后台运行", target: text("command"), outcome: waiting || `${where}已起，编号 ${meta.job}` };
       return { verb: "运行", target: text("command"), outcome: waiting || (meta ? where + ended : "没有运行") };
     }
@@ -164,7 +164,7 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       };
     }
     case "web_search":
-      return { verb: "联网搜索", target: text("query"), outcome: waiting || (result!.isError ? "没搜成" : `${meta?.results ?? 0} 条`) };
+      return { verb: "问天机阁", target: text("query"), outcome: waiting || (result!.isError ? "没问到" : `${meta?.results ?? 0} 条`) };
     case "fetch_url":
       return { verb: "抓取网页", target: text("url"), outcome: waiting || (result!.isError ? "没取到" : `${shortCount(meta?.characters ?? 0)} 字`) };
     case "load_skill":
@@ -274,14 +274,14 @@ function ToolCard({ tool }: { tool: ToolItem }) {
 const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
   unsandboxed: {
-    title: "分身要在沙箱之外运行一条命令，请本尊定夺",
-    note: "设置里开着沙箱，命令本来只能往洞府和临时目录里写。分身说这一条得往别处写，所以要出沙箱跑：准了，它就能改这台机器上本尊能改的任何文件。出沙箱每次都要请示。",
+    title: "分身要出结界运行一条命令，请本尊定夺",
+    note: "设置里布着结界（沙箱），命令本来只能往洞府和临时目录里写。分身说这一条得往别处写，所以要出结界跑：准了，它就能改这台机器上本尊能改的任何文件。出结界每次都要请示。",
     always: "",
   },
   search: {
-    title: "分身要联网搜索，请本尊定夺",
-    note: "搜索词会发给智谱的搜索服务，每搜一次都要花灵石（基础版约 0.01 元）。",
-    always: "之后搜索都准",
+    title: "分身要向天机阁打探（联网搜索），请本尊定夺",
+    note: "要打探的话会发给智谱的搜索服务，每问一次都要花灵石（基础版约 0.01 元）。",
+    always: "之后打探都准",
   },
   web: {
     title: "分身要上网取一个网页，请本尊定夺",
@@ -353,8 +353,8 @@ function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
           </button>
         )}
         {(approval.grant === "search" || ["command:", "mcp:", "web:"].some((kind) => approval.grant?.startsWith(kind))) && (
-          <button type="button" className="button outline red" title="重启应用之后也算数，可以在设置里撤销" onClick={() => onDecide(tool.id, "allow_always")}>
-            这处洞府里永远都准
+          <button type="button" className="button outline red" title="发一道通行符：重启应用之后也算数，可以在设置的「禁制」里收回" onClick={() => onDecide(tool.id, "allow_always")}>
+            此府永准
           </button>
         )}
         <button type="button" className="button text" onClick={() => onDecide(tool.id, "deny")}>
