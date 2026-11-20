@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, createContext, isValidElement, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { inFlight, land } from "../lib/flight";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
@@ -51,9 +51,10 @@ function useCopy(): [boolean, (text: string) => void] {
 
 /**
  * What the 分身 said, once it has said it: the words, and under them a mark that copies them as they were written,
- * in Markdown, so that pasted elsewhere they keep their lists, tables and code.
+ * in Markdown, so that pasted elsewhere they keep their lists, tables and code. Rendered again only when the words
+ * change: parsing every block of a long conversation each time anything moves is what made the end of a turn stall.
  */
-function ModelText({ text }: { text: string }) {
+const ModelText = memo(function ModelText({ text }: { text: string }) {
   const [copied, copy] = useCopy();
   return (
     <div className="model-text">
@@ -79,7 +80,7 @@ function ModelText({ text }: { text: string }) {
       </div>
     </div>
   );
-}
+});
 
 /** A code block from the model's text, with what it is written in and a button that copies it. */
 function CodeBlock({ children }: { children?: ReactNode }) {

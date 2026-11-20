@@ -1611,6 +1611,8 @@ pre,
   content: "";
   position: absolute;
   inset: 0;
+  /* Moved on a layer of its own, so neither its going down nor its coming back has anything painted again. */
+  will-change: transform;
   /* Three pixels of light, in the middle of the thread's box. */
   background: linear-gradient(to bottom, transparent, var(--jade) 40%, #fffdf2 50%, var(--jade) 60%, transparent) 50% 50% / 3px 140px no-repeat;
   filter: drop-shadow(0 0 4px var(--jade));
@@ -1621,27 +1623,53 @@ pre,
 .turn.closing .vein::after {
   background-image: linear-gradient(to bottom, transparent, var(--gold) 40%, #fffdf2 50%, var(--gold) 60%, transparent);
   filter: drop-shadow(0 0 5px var(--gold));
-  animation: vein 900ms var(--ease-out) reverse both;
+  animation: vein-home 900ms var(--ease-out) both;
 }
 
+/* As the light reaches it, the order glows gold a moment. The glow is drawn once, round a layer of its own, and only
+   its opacity changes: a shadow whose size changed at every step would have the whole band painted again at each. */
 .turn.closing .original {
+  position: relative;
+}
+
+.turn.closing .original::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 6px 6px 26px 4px color-mix(in srgb, var(--gold) 70%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  will-change: opacity;
   animation: homecoming 1400ms ease-out 600ms;
 }
 
+/* Down the thread from under the order to past where it ends, the whole of the light each way: the light is 140px
+   long, so it starts half that above the top and ends half that below the bottom, and no half of it pops in at the
+   top or is left standing at the bottom as it goes round again. */
 @keyframes vein {
   from {
-    transform: translateY(-50%);
+    transform: translateY(calc(-50% - 80px));
   }
   to {
+    transform: translateY(calc(50% + 80px));
+  }
+}
+
+/* Back up the thread and past its top, under the order: the light is 140px long, so it must go half that beyond
+   where its middle meets the top, or its lower half is left standing there until the turn is put by. */
+@keyframes vein-home {
+  from {
     transform: translateY(50%);
+  }
+  to {
+    transform: translateY(calc(-50% - 80px));
   }
 }
 
 @keyframes homecoming {
   20% {
-    box-shadow:
-      6px 6px 0 var(--talisman-under),
-      6px 6px 26px 4px color-mix(in srgb, var(--gold) 70%, transparent);
+    opacity: 1;
   }
 }
 
