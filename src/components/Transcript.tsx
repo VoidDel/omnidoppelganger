@@ -260,6 +260,10 @@ function sealOf(tool: ToolItem): string {
     case "edit_file":
     case "write_file":
       return tool.result?.meta?.created ? "建" : "改";
+    case "delete_file":
+      return "删";
+    case "move_file":
+      return "移";
     case "run_command":
       return "行";
     case "command_output":
@@ -302,8 +306,12 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
   const declined = tool.approval?.decision === "deny";
   const waiting = declined ? (tool.approval?.timedOut ? "无人定夺，自动驳回" : "本尊驳回了") : meta?.refused ? "先谋后动，没有改" : tool.undone ? "本尊已撤回" : result ? "" : "运功中";
   switch (tool.name) {
-    case "read_file":
-      return { verb: "读取", target: text("path"), outcome: waiting || (result!.isError ? "没读到" : `${meta?.lines ?? 0} 行`) };
+    case "read_file": {
+      // A picture is looked at, not read: its kind and size instead of a count of lines.
+      const kind = meta?.picture?.replace("image/", "").toUpperCase();
+      const looked = kind && [kind, meta?.width && meta?.height ? `${meta.width}×${meta.height}` : ""].filter(Boolean).join("，");
+      return { verb: kind ? "看图" : "读取", target: text("path"), outcome: waiting || (result!.isError ? "没读到" : looked || `${meta?.lines ?? 0} 行`) };
+    }
     case "search":
       return {
         verb: "搜索",
@@ -323,6 +331,14 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         target: text("path"),
         outcome: waiting || (result!.isError ? "没改成" : `加 ${meta?.added ?? 0} 行，删 ${meta?.removed ?? 0} 行`),
       };
+    case "delete_file":
+      return {
+        verb: "删除",
+        target: text("path"),
+        outcome: waiting || (result!.isError ? "没删成" : meta?.removed !== undefined ? `删去 ${meta.removed} 行` : fileSize(meta?.bytes ?? 0)),
+      };
+    case "move_file":
+      return { verb: "挪动", target: `${text("path")} → ${text("to")}`, outcome: waiting || (result!.isError ? "没挪成" : "已挪") };
     case "run_command": {
       const ended = meta?.stopped === "timed out" ? "超时停止" : meta?.stopped ? "已停止" : meta?.exit_code === 0 ? "成功" : `退出码 ${meta?.exit_code ?? "未知"}`;
       // Said only where it holds: the command could write nowhere but the workspace and the temporary directories.
@@ -477,7 +493,11 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
   // The file an edit wrote, by where it is: what can be opened from under the act.
-  const written = (editsFiles(tool.name) || tool.name === "generate_image") && result && !result.isError && result.meta?.file ? result.meta.file : null;
+  // A picture it looked at is shown the same way, from where it lies.
+  const written =
+    (editsFiles(tool.name) || tool.name === "generate_image" || (tool.name === "read_file" && !!result?.meta?.picture)) && result && !result.isError && result.meta?.file
+      ? result.meta.file
+      : null;
   // What was handed over, made some other way: each opened from under the act as a written file is.
   const handed = tool.name === "deliver_files" && result && !result.isError && Array.isArray(result.meta?.files) ? result.meta.files : [];
   // A change and a failure are open until closed, even when they come in after the line they belong to; but a
@@ -596,7 +616,10 @@ function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
   const seconds = useSecondsLeft(approval.expiresAt, frozen);
   /** Whether the explanation behind the mark after the title is open. */
   const [explained, setExplained] = useState(false);
-  const ask = ASK[approval.reason] ?? ASK.command;
+  const asked = ASK[approval.reason] ?? ASK.command;
+  // Deleting and moving are asked about as edits are, under their own word.
+  const doing = tool.name === "delete_file" ? "删除" : tool.name === "move_file" ? "挪动" : null;
+  const ask = doing ? { ...asked, title: asked.title.replace("要改", `要${doing}`) } : asked;
   const oneByOne = approval.reason === "command" && !approval.grant;
   const change = approval.reason === "edit" ? proposed(tool) : null;
   const why =

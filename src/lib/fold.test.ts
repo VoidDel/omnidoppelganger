@@ -179,6 +179,43 @@ describe("undo", () => {
     expect([...undoableTurns(rows)]).toEqual([1]);
   });
 
+  it("treats deleting and moving like edits, and marks a move undone by either of its paths", () => {
+    const change = (path: string, after: string | null) => ({ file: `/w/${path}`, path, before: after ? null : "s", after });
+    const deleted: SessionEvent[] = [
+      said(call("d1", "delete_file", { path: "old.rs" })),
+      result("d1", "delete_file", { path: "old.rs", deleted: true, removed: 2, hunk: null, changes: [change("old.rs", null)] }),
+    ];
+    const moved: SessionEvent[] = [
+      said(call("m1", "move_file", { path: "a.rs", to: "lib/a.rs" })),
+      result("m1", "move_file", { path: "a.rs", to: "lib/a.rs", moved: true, file: "/w/lib/a.rs", changes: [change("lib/a.rs", "f"), change("a.rs", null)] }),
+    ];
+    const events = log(turn(1), user("tidy"), ...deleted, ...moved);
+    const rows = fold(events);
+    expect([...undoableTurns(rows)]).toEqual([1]);
+    // A deleted file is listed as gone, with nothing to open; a moved one where it went, saying where from.
+    expect(changedFiles(rows)).toEqual([
+      { path: "old.rs", added: 0, removed: 2, created: false, hunks: [], gone: true },
+      { path: "lib/a.rs", added: 0, removed: 0, created: false, hunks: [], movedFrom: "a.rs", file: "/w/lib/a.rs" },
+    ]);
+    // Neither was made, so neither is a product.
+    expect(products(rows)).toEqual([]);
+    const undone = fold([...events, ...log({ type: "files/restored", data: { turn: 1, restored: ["a.rs"], skipped: [] } })].map((event, index) => ({ ...event, seq: index + 1 })));
+    const tools = undone.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool");
+    expect(tools.map((tool) => [tool.name, !!tool.undone])).toEqual([
+      ["delete_file", false],
+      ["move_file", true],
+    ]);
+  });
+
+  it("lists a file the 分身 wrote and then deleted as gone, and as there again once rewritten", () => {
+    const rows = (...events: SessionEvent[]) => changedFiles(fold(log(turn(1), user("go"), ...events)));
+    const written = [said(call("w1", "write_file", { path: "x.rs" })), result("w1", "write_file", { path: "x.rs", added: 1, removed: 0, created: true, file: "/w/x.rs", after: "f" })];
+    const gone = [said(call("d1", "delete_file", { path: "x.rs" })), result("d1", "delete_file", { path: "x.rs", deleted: true, removed: 1, changes: [] })];
+    const again = [said(call("w2", "write_file", { path: "x.rs" })), result("w2", "write_file", { path: "x.rs", added: 1, removed: 0, created: true, file: "/w/x.rs", after: "g" })];
+    expect(rows(...written, ...gone)[0]).toMatchObject({ created: true, gone: true, file: undefined });
+    expect(rows(...written, ...gone, ...again)[0]).toMatchObject({ gone: undefined, file: "/w/x.rs" });
+  });
+
   it("offers nothing for edits logged before snapshots existed", () => {
     expect(undoableTurns(fold(log(turn(1), user("one"), ...edit("t1", "a.rs", 1, 0)))).size).toBe(0);
   });

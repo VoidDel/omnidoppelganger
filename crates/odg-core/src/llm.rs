@@ -182,3 +182,19 @@ pub trait Llm: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> impl Future<Output = Result<AssistantTurn, LlmError>> + Send;
 }
+
+/// A tool result's words, and the pictures that came with it (`image` blocks): its content is the words alone, or a
+/// list of a text block and the pictures. For a provider that takes no pictures in a tool result, which then sends
+/// them in the user's turn after the results.
+pub fn tool_result_parts(block: &Value) -> (String, Vec<Value>) {
+    match block["content"].as_array() {
+        Some(parts) => {
+            let words: Vec<&str> = parts.iter().filter(|part| part["type"] == "text").filter_map(|part| part["text"].as_str()).collect();
+            (words.join("\n"), parts.iter().filter(|part| part["type"] == "image").cloned().collect())
+        }
+        None => (block["content"].as_str().unwrap_or_default().to_string(), Vec::new()),
+    }
+}
+
+/// What precedes, in the user's turn, the pictures that tool results returned.
+pub const TOOL_PICTURES: &str = "[The pictures the tool results above returned, in their order.]";

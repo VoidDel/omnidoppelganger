@@ -29,9 +29,11 @@ use crate::providers::DEFAULT_PROVIDER;
 /// format 14 a document's kind and parts on an attached file. Format 15 adds
 /// `provider` on `model/changed`, for a move to another provider, and the
 /// `effort/changed` event. Format 16 adds the `files/made` event, and format 17
-/// the `question/asked` and `question/answered` events. A build from before a
-/// format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 17;
+/// the `question/asked` and `question/answered` events. Format 18 adds `images`
+/// on a tool result, and the `delete_file` and `move_file` edits, whose undoing
+/// an older build would not know. A build from before a format refuses its
+/// sessions rather than misread them.
+pub const FORMAT_VERSION: u32 = 18;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -331,6 +333,7 @@ impl SessionLog {
                 content: "The app closed before this tool ran.".to_string(),
                 is_error: true,
                 meta: Value::Null,
+                images: Vec::new(),
             })?);
         }
         appended.push(self.append(Event::TurnEnd { turn, reason: "interrupted".to_string(), error: None })?);
@@ -456,12 +459,18 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 }
                 pending.extend(unanswered.iter().cloned());
             }
-            Event::ToolResult { tool_use_id, content, is_error, .. } => pending.push(json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": if content.is_empty() { "(no output)" } else { content.as_str() },
-                "is_error": is_error,
-            })),
+            Event::ToolResult { tool_use_id, content, is_error, images, .. } => {
+                let words = if content.is_empty() { "(no output)" } else { content.as_str() };
+                // With pictures the content is a list: the words, then each picture. A provider that takes
+                // no pictures in a tool result moves them to the user's turn; see `openai_chat`.
+                let content = if images.is_empty() {
+                    json!(words)
+                } else {
+                    let pictures = images.iter().map(|image| json!({ "type": "image", "source": { "type": "base64", "media_type": image.media_type, "data": image.data } }));
+                    Value::Array(std::iter::once(text(words)).chain(pictures).collect())
+                };
+                pending.push(json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error }));
+            }
             Event::AssistantMessage { content, .. } if !content.is_empty() => {
                 if !pending.is_empty() {
                     messages.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
@@ -682,7 +691,7 @@ pub fn context_estimate(events: &[Envelope]) -> u64 {
             Event::UserMessage { text, images, files, .. } => {
                 estimate += guess(text) + 1500 * images.len() as u64 + files.iter().map(|file| guess(&crate::events::attached_text(file))).sum::<u64>()
             }
-            Event::ToolResult { content, .. } => estimate += guess(content),
+            Event::ToolResult { content, images, .. } => estimate += guess(content) + 1500 * images.len() as u64,
             _ => {}
         }
     }
@@ -988,7 +997,7 @@ mod tests {
         log.append(Event::TurnStart { turn: 1 }).unwrap();
         log.append(Event::UserMessage { text: "read a".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         log.append(assistant(vec![thinking.clone(), call.clone()])).unwrap();
-        log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: String::new(), is_error: false, meta: Value::Null }).unwrap();
+        log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: String::new(), is_error: false, meta: Value::Null, images: Vec::new() }).unwrap();
         log.append(Event::UserMessage { text: "also b".into(), steering: true, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
 
         let messages = derive_messages(log.events());
@@ -1045,7 +1054,7 @@ mod tests {
             usage: json!({}),
             tokens: Some(Tokens { input, cached: 0, output }),
         };
-        let result = |content: &str| Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: content.into(), is_error: false, meta: Value::Null };
+        let result = |content: &str| Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: content.into(), is_error: false, meta: Value::Null, images: Vec::new() };
         log.append(user("read a", false)).unwrap();
         log.append(counted(1000, 50)).unwrap();
         log.append(result(&"x".repeat(300))).unwrap();
@@ -1146,7 +1155,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let listed = |todos: Value| assistant(vec![json!({ "type": "tool_use", "id": "t", "name": "update_todos", "input": { "todos": todos } })]);
-        let result = Event::ToolResult { tool_use_id: "t".into(), tool: "update_todos".into(), content: "ok".into(), is_error: false, meta: Value::Null };
+        let result = Event::ToolResult { tool_use_id: "t".into(), tool: "update_todos".into(), content: "ok".into(), is_error: false, meta: Value::Null, images: Vec::new() };
         log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
         log.append(listed(json!([{ "text": "read", "status": "pending" }]))).unwrap();
         log.append(result.clone()).unwrap();
@@ -1210,7 +1219,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": {} }),
             json!({ "type": "tool_use", "id": "t2", "name": "run_command", "input": {} }),
         ])).unwrap();
-        log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "x".into(), is_error: false, meta: Value::Null }).unwrap();
+        log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "x".into(), is_error: false, meta: Value::Null, images: Vec::new() }).unwrap();
         log.append(Event::ApprovalRequested {
             tool_use_id: "t2".into(),
             tool: "run_command".into(),
@@ -1254,7 +1263,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/a"), "anthropic", "m").unwrap();
         let said = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] };
-        let edited = Event::ToolResult { tool_use_id: "t1".into(), tool: "edit_file".into(), content: "ok".into(), is_error: false, meta: json!({ "file": "/a/x.txt", "path": "x.txt", "after": "1-0" }) };
+        let edited = Event::ToolResult { tool_use_id: "t1".into(), tool: "edit_file".into(), content: "ok".into(), is_error: false, meta: json!({ "file": "/a/x.txt", "path": "x.txt", "after": "1-0" }), images: Vec::new() };
         for event in [
             Event::TurnStart { turn: 1 },
             said("first"),
@@ -1327,5 +1336,23 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         assert_eq!(report(child.events()), ("It is fine.".to_string(), "running".to_string(), None));
         child.append(Event::TurnEnd { turn: 1, reason: "error".into(), error: Some("no key".into()) }).unwrap();
         assert_eq!(report(child.events()), ("It is fine.".to_string(), "error".to_string(), Some("no key".to_string())));
+    }
+
+    #[test]
+    fn a_picture_a_tool_returned_goes_to_the_model_inside_its_result() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
+        log.append(Event::UserMessage { text: "look".into(), steering: false, mode: Mode::Edit, images: Vec::new(), files: Vec::new() }).unwrap();
+        log.append(assistant(vec![json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a.png" } })])).unwrap();
+        let image = crate::events::Image { media_type: "image/png".into(), data: "aGk=".into() };
+        let before = context_estimate(log.events());
+        log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "a.png is a PNG picture.".into(), is_error: false, meta: Value::Null, images: vec![image] }).unwrap();
+        let messages = derive_messages(log.events());
+        assert_eq!(
+            messages.last().unwrap()["content"][0]["content"],
+            json!([{ "type": "text", "text": "a.png is a PNG picture." }, { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } }])
+        );
+        // A picture is counted as one in a message is, not by the length of its base64.
+        assert_eq!(context_estimate(log.events()) - before, "a.png is a PNG picture.".len() as u64 / 3 + 1500);
     }
 }

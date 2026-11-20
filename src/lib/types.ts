@@ -177,6 +177,17 @@ export interface ToolMeta {
   refused?: boolean;
   /** Set on an edit that can be undone: the fingerprint of what it wrote. */
   after?: string;
+  /** For `delete_file` and `move_file`, when they can be undone: each file they changed, as undoing needs it. */
+  changes?: { file: string; path: string; before: string | null; after: string | null }[];
+  /** `delete_file` took the file away; `move_file` moved it, to `to`. */
+  deleted?: boolean;
+  moved?: boolean;
+  to?: string;
+  /** For a picture `read_file` showed the model: its type, its size in bytes, and its width and height when known. */
+  picture?: string;
+  bytes?: number;
+  width?: number | null;
+  height?: number | null;
   /** The subagents a `delegate` call set off, and why each one's turn ended; `session` is null for one that could not start. */
   agents?: { session: string | null; name: string; reason: string }[];
 }

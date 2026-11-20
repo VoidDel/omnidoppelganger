@@ -394,14 +394,16 @@ const RUNNABLE: &[&str] = &[
     "url", "reg", "jar", "appref-ms", "sh", "bash", "zsh", "command", "app", "run", "bin",
 ];
 
-/// Whether `path` is a file this session has to do with: attached to one of its messages, or written, handed over or
-/// left in its workspace by its 分身.
+/// Whether `path` is a file this session has to do with: attached to one of its messages, or written, moved, handed
+/// over or left in its workspace by its 分身, or a picture it looked at.
 /// Only such a file is opened or shown from the conversation: the page cannot name any path at all.
 fn session_file(session: &Session<Router>, path: &str) -> bool {
     session.snapshot().iter().any(|envelope| match &envelope.event {
         Event::UserMessage { files, .. } => files.iter().any(|file| file.path == path),
         Event::ToolResult { tool, is_error: false, meta, .. } => match tool.as_str() {
-            "edit_file" | "write_file" | "generate_image" => meta["file"].as_str() == Some(path),
+            // Written, painted, or moved there; or a picture it looked at, which the conversation shows as it saw it.
+            "edit_file" | "write_file" | "generate_image" | "move_file" => meta["file"].as_str() == Some(path),
+            "read_file" => meta["picture"].is_string() && meta["file"].as_str() == Some(path),
             // What the 分身 handed over, having made it some other way, such as with a script.
             "deliver_files" => meta["files"].as_array().is_some_and(|files| files.iter().any(|file| file.as_str() == Some(path))),
             _ => false,

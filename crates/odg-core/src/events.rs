@@ -88,7 +88,7 @@ pub const ATTACHED_INLINE_BYTES: u64 = 100_000;
 /// The largest file that can be attached at all: `read_file` reads none larger.
 pub const ATTACHED_BYTES: u64 = crate::tools::READ_FILE_BYTES;
 /// The largest picture read from a file: its base64 text is a third longer, and must fit [`IMAGE_BASE64_BYTES`].
-const IMAGE_FILE_BYTES: u64 = (IMAGE_BASE64_BYTES / 4 * 3) as u64;
+pub const IMAGE_FILE_BYTES: u64 = (IMAGE_BASE64_BYTES / 4 * 3) as u64;
 
 /// What a path the user picked turns out to be: a file to attach, a picture
 /// to send as one, or neither, with why in a word the client puts into its
@@ -114,7 +114,7 @@ pub enum Picked {
 }
 
 /// The media type of a picture by its file name's ending; `None` for any other file.
-fn image_type(path: &Path) -> Option<&'static str> {
+pub(crate) fn image_type(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -515,6 +515,9 @@ pub enum Event {
         is_error: bool,
         /// Presentation data for the client (diff hunks, exit code); never sent to the model.
         meta: Value,
+        /// Pictures returned to the model with the text: an image `read_file` read. Since format 18.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
     },
     /// The user undid the agent's edits from `turn` on. The model is told at
     /// its next message. Since format 3.

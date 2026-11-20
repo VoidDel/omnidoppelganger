@@ -1,13 +1,13 @@
 //! Undoing the agent's file edits.
 //!
-//! Before `edit_file` or `write_file` writes, it saves what the file held into the session's
-//! snapshot directory and records the snapshot's name in its result, with a
-//! fingerprint of what it wrote. Undoing from a turn on puts every file those
-//! edits touched back to what it held before the first of them. A file that
-//! no longer holds what the last edit wrote was changed by someone else
-//! since, and is left alone.
+//! Before `edit_file`, `write_file`, `delete_file`, or `move_file` changes a file, it saves what the
+//! file held into the session's snapshot directory and records the snapshot's name in its result,
+//! with a fingerprint of what the file holds after, or that it holds nothing, being gone. Undoing
+//! from a turn on puts every file those edits touched back to what it held before the first of
+//! them, or takes it away if it was not there. A file that no longer holds what the last edit left
+//! was changed by someone else since, and is left alone.
 //!
-//! Only those two tools are covered: what a command changed is not known here.
+//! Only those tools are covered: what a command changed is not known here.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -57,8 +57,26 @@ pub struct FileUndo {
     pub shown: String,
     /// The snapshot to restore; `None` when the agent created the file, which undoing removes.
     pub before: Option<String>,
-    /// The fingerprint of what the agent's last edit wrote.
-    pub after: String,
+    /// The fingerprint of what the agent's last edit left; `None` when it left no file, having deleted or moved it.
+    pub after: Option<String>,
+}
+
+/// The files one edit's result says it changed: those in its `changes`, or the one file of an edit
+/// that changes one. An edit logged before snapshots existed has none, and cannot be undone.
+fn changed(meta: &serde_json::Value) -> Vec<FileUndo> {
+    let one = |change: &serde_json::Value, gone_allowed: bool| {
+        let (file, shown) = (change["file"].as_str()?, change["path"].as_str()?);
+        let after = change["after"].as_str().map(str::to_string);
+        // Of a one-file edit, only a written file is known: one without `after` predates snapshots.
+        if after.is_none() && !gone_allowed {
+            return None;
+        }
+        Some(FileUndo { file: PathBuf::from(file), shown: shown.to_string(), before: change["before"].as_str().map(str::to_string), after })
+    };
+    match meta["changes"].as_array() {
+        Some(changes) => changes.iter().filter_map(|change| one(change, true)).collect(),
+        None => one(meta, false).into_iter().collect(),
+    }
 }
 
 /// The files to restore to undo every edit made in `turn` and later that has
@@ -75,11 +93,7 @@ pub fn plan(events: &[Envelope], turn: u64) -> Vec<FileUndo> {
             Event::TurnStart { turn } => current = *turn,
             Event::FilesRestored { turn: from, restored, .. } => edits.retain(|(turn, edit)| !(turn >= from && restored.contains(&edit.shown))),
             Event::ToolResult { tool, is_error: false, meta, .. } if current > copied && crate::tools::edits_files(tool) => {
-                // An edit logged before snapshots existed has none, and cannot be undone.
-                if let (Some(file), Some(shown), Some(after)) = (meta["file"].as_str(), meta["path"].as_str(), meta["after"].as_str()) {
-                    let before = meta["before"].as_str().map(str::to_string);
-                    edits.push((current, FileUndo { file: PathBuf::from(file), shown: shown.to_string(), before, after: after.to_string() }));
-                }
+                edits.extend(changed(meta).into_iter().map(|edit| (current, edit)));
             }
             _ => {}
         }
@@ -107,10 +121,23 @@ pub struct Outcome {
 pub fn apply(plan: &[FileUndo], snapshots: &Path) -> Outcome {
     let mut outcome = Outcome::default();
     for file in plan {
-        let untouched = std::fs::read(&file.file).is_ok_and(|current| fingerprint(&current) == file.after);
+        let untouched = match (&file.after, std::fs::read(&file.file)) {
+            (Some(after), Ok(current)) => fingerprint(&current) == *after,
+            // Gone, as the agent left it: nobody has put a file there since.
+            (None, Err(error)) => error.kind() == io::ErrorKind::NotFound,
+            _ => false,
+        };
         let done = untouched
             && match &file.before {
-                Some(name) => std::fs::read(snapshots.join(name)).and_then(|bytes| write_atomically(&file.file, &bytes)).is_ok(),
+                Some(name) => std::fs::read(snapshots.join(name))
+                    .and_then(|bytes| {
+                        // A file deleted or moved away may have been the last in its folder, which went with it.
+                        if let Some(parent) = file.file.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        write_atomically(&file.file, &bytes)
+                    })
+                    .is_ok(),
                 None => std::fs::remove_file(&file.file).is_ok(),
             };
         if done { outcome.restored.push(file.shown.clone()) } else { outcome.skipped.push(file.shown.clone()) }

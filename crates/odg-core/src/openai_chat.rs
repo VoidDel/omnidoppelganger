@@ -62,11 +62,20 @@ pub fn chat_messages(system: &str, messages: &[Value]) -> Vec<Value> {
             }
             out.push(assistant);
         } else {
+            // A tool message carries words only: the pictures a tool returned follow in the user's turn.
+            let mut returned: Vec<Value> = Vec::new();
             for block in of("tool_result") {
-                out.push(json!({ "role": "tool", "tool_call_id": block["tool_use_id"], "content": block["content"] }));
+                let (words, pictures) = crate::llm::tool_result_parts(block);
+                out.push(json!({ "role": "tool", "tool_call_id": block["tool_use_id"], "content": words }));
+                returned.extend(pictures);
             }
-            let text: Vec<&str> = of("text").filter_map(|block| block["text"].as_str()).collect();
-            let images: Vec<Value> = of("image")
+            let mut text: Vec<&str> = of("text").filter_map(|block| block["text"].as_str()).collect();
+            if !returned.is_empty() {
+                text.insert(0, crate::llm::TOOL_PICTURES);
+            }
+            let images: Vec<Value> = returned
+                .iter()
+                .chain(of("image"))
                 .map(|block| {
                     let source = &block["source"];
                     let url = format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default());
@@ -544,5 +553,23 @@ mod tests {
         // Without pictures the content stays a plain string.
         let plain = chat_messages("sys", &[json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })]);
         assert_eq!(plain[1], json!({ "role": "user", "content": "hi" }));
+    }
+
+    #[test]
+    fn a_picture_a_tool_returned_follows_the_tool_messages_as_the_users() {
+        let picture = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
+        let read = json!({ "type": "tool_result", "tool_use_id": "c1", "content": [{ "type": "text", "text": "a.png is a PNG picture." }, picture], "is_error": false });
+        let plain = json!({ "type": "tool_result", "tool_use_id": "c2", "content": "ok", "is_error": false });
+        let messages = chat_messages("sys", &[json!({ "role": "user", "content": [read, plain, { "type": "text", "text": "and this" }] })]);
+        // Each tool message has its words alone; the picture comes after them, said to be what they returned.
+        assert_eq!(messages[1], json!({ "role": "tool", "tool_call_id": "c1", "content": "a.png is a PNG picture." }));
+        assert_eq!(messages[2], json!({ "role": "tool", "tool_call_id": "c2", "content": "ok" }));
+        assert_eq!(
+            messages[3],
+            json!({ "role": "user", "content": [
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,aGk=" } },
+                { "type": "text", "text": format!("{}\n\nand this", crate::llm::TOOL_PICTURES) }
+            ] })
+        );
     }
 }

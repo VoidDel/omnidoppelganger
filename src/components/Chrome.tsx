@@ -1933,7 +1933,13 @@ function FileRow({ file, onOpenFile }: { file: ChangedFile; onOpenFile?: (path: 
           <span className="file-name">{file.path.slice(cut)}</span>
           {cut > 0 && <span className="file-dir">{file.path.slice(0, cut - 1)}</span>}
         </span>
-        {file.created && <span className="chip kin">新</span>}
+        {file.created && !file.gone && <span className="chip kin">新</span>}
+        {file.gone && <span className="chip">已删</span>}
+        {file.movedFrom && !file.gone && (
+          <span className="chip" title={`从 ${file.movedFrom} 挪来`}>
+            挪来
+          </span>
+        )}
         {/* How much went in and how much came out, as a bar of fixed length, then in figures. */}
         <span className="file-bar" aria-hidden="true">
           <span className="in" style={{ flexGrow: total ? file.added : 0 }} />

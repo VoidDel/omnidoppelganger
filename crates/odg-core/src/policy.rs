@@ -18,7 +18,7 @@
 //! A tool of an MCP server asks in every mode: what it does is the server's
 //! business, and nothing here can tell a harmless one from another.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -150,14 +150,20 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             Verdict::Ask { reason: "command", detail: command.to_string(), grant }
         }
         tool if edits_files(tool) && mode == Mode::Plan => Verdict::Refuse(PLAN_REFUSAL),
-        tool if edits_files(tool) && in_git_directory(workspace, &path("path")) => {
-            Verdict::Ask { reason: "git_write", detail: path("path").to_string_lossy().into_owned(), grant: None }
+        // An edit is judged by every file it changes: a move by where the file is and where it goes.
+        tool if edits_files(tool) => {
+            let touched: Vec<PathBuf> = if tool == "move_file" { vec![path("path"), path("to")] } else { vec![path("path")] };
+            let detail = touched.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" → ");
+            if touched.iter().any(|path| in_git_directory(workspace, path)) {
+                Verdict::Ask { reason: "git_write", detail, grant: None }
+            } else if touched.iter().any(|path| !inside_workspace(workspace, path)) {
+                ask("outside_write", detail)
+            } else if mode == Mode::Manual {
+                ask("edit", detail)
+            } else {
+                Verdict::Allow
+            }
         }
-        tool if edits_files(tool) => match outside("path") {
-            Some(path) => ask("outside_write", path),
-            None if mode == Mode::Manual => ask("edit", path("path").to_string_lossy().into_owned()),
-            None => Verdict::Allow,
-        },
         "read_file" | "search" | "find_files" => match outside("path") {
             Some(path) => ask("outside_read", path),
             None => Verdict::Allow,
@@ -435,5 +441,22 @@ mod tests {
         std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
         std::os::unix::fs::symlink(workspace.join(".git/hooks"), workspace.join("hooks")).unwrap();
         assert_eq!(reason(check("edit_file", &json!({ "path": "hooks/pre-commit" }), workspace)), Some("git_write"));
+    }
+
+    #[test]
+    fn deleting_and_moving_are_decided_as_edits_of_every_file_they_touch() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        assert_eq!(check("delete_file", &json!({ "path": "a.txt" }), workspace), Verdict::Allow);
+        assert_eq!(check("move_file", &json!({ "path": "a.txt", "to": "b/a.txt" }), workspace), Verdict::Allow);
+        // Out of the workspace at either end, or into .git, it asks; the request shows both ends.
+        let out = check("move_file", &json!({ "path": "a.txt", "to": "../a.txt" }), workspace);
+        assert!(matches!(&out, Verdict::Ask { reason: "outside_write", detail, .. } if detail.ends_with(&(" → ".to_string() + &resolve(workspace, "../a.txt").to_string_lossy()))), "{out:?}");
+        assert_eq!(reason(check("move_file", &json!({ "path": "../a.txt", "to": "a.txt" }), workspace)), Some("outside_write"));
+        assert_eq!(reason(check("delete_file", &json!({ "path": ".git/config" }), workspace)), Some("git_write"));
+        assert_eq!(reason(check("move_file", &json!({ "path": "hook.sh", "to": ".git/hooks/pre-commit" }), workspace)), Some("git_write"));
+        // Asked about every time in 步步请示, and not done at all in 先谋后动.
+        assert_eq!(reason(super::check(Mode::Manual, "delete_file", &json!({ "path": "a.txt" }), workspace)), Some("edit"));
+        assert_eq!(reason(super::check(Mode::Plan, "move_file", &json!({ "path": "a.txt", "to": "b.txt" }), workspace)), Some("refused"));
     }
 }

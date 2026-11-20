@@ -43,9 +43,29 @@ pub fn input_items(messages: &[Value]) -> Vec<Value> {
                 }
             }
         } else {
+            // A call's output carries words only: the pictures tools returned follow it as a message of the user's.
+            let mut returned: Vec<Value> = Vec::new();
+            let flush = |returned: &mut Vec<Value>, items: &mut Vec<Value>| {
+                if returned.is_empty() {
+                    return;
+                }
+                let pictures = returned.drain(..).map(|block| {
+                    let source = &block["source"];
+                    json!({ "type": "input_image", "image_url": format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default()) })
+                });
+                let content: Vec<Value> = std::iter::once(json!({ "type": "input_text", "text": crate::llm::TOOL_PICTURES })).chain(pictures).collect();
+                items.push(json!({ "role": "user", "content": content }));
+            };
             for block in blocks {
+                if block["type"] != "tool_result" {
+                    flush(&mut returned, &mut items);
+                }
                 match block["type"].as_str() {
-                    Some("tool_result") => items.push(json!({ "type": "function_call_output", "call_id": block["tool_use_id"], "output": block["content"] })),
+                    Some("tool_result") => {
+                        let (words, pictures) = crate::llm::tool_result_parts(block);
+                        items.push(json!({ "type": "function_call_output", "call_id": block["tool_use_id"], "output": words }));
+                        returned.extend(pictures);
+                    }
                     Some("text") => items.push(json!({ "role": "user", "content": block["text"] })),
                     // A picture is a message of its own, a list of one part; the text about it follows as the next.
                     Some("image") => {
@@ -56,6 +76,7 @@ pub fn input_items(messages: &[Value]) -> Vec<Value> {
                     _ => {}
                 }
             }
+            flush(&mut returned, &mut items);
         }
     }
     items
@@ -424,5 +445,23 @@ mod tests {
             json!({ "role": "user", "content": [{ "type": "input_image", "image_url": "data:image/jpeg;base64,aGk=" }] }),
             json!({ "role": "user", "content": "what is this?" }),
         ]);
+    }
+
+    #[test]
+    fn a_picture_a_tool_returned_follows_the_outputs_as_the_users() {
+        let picture = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
+        let read = json!({ "type": "tool_result", "tool_use_id": "c1", "content": [{ "type": "text", "text": "a.png is a PNG picture." }, picture], "is_error": false });
+        let plain = json!({ "type": "tool_result", "tool_use_id": "c2", "content": "ok", "is_error": false });
+        let items = input_items(&[json!({ "role": "user", "content": [read, plain, { "type": "text", "text": "and this" }] })]);
+        assert_eq!(items, [
+            json!({ "type": "function_call_output", "call_id": "c1", "output": "a.png is a PNG picture." }),
+            json!({ "type": "function_call_output", "call_id": "c2", "output": "ok" }),
+            json!({ "role": "user", "content": [{ "type": "input_text", "text": crate::llm::TOOL_PICTURES }, { "type": "input_image", "image_url": "data:image/png;base64,aGk=" }] }),
+            json!({ "role": "user", "content": "and this" }),
+        ]);
+        // With nothing after the outputs, the pictures still follow them.
+        let alone = input_items(&[json!({ "role": "user", "content": [json!({ "type": "tool_result", "tool_use_id": "c1", "content": [{ "type": "text", "text": "x" }, { "type": "image", "source": { "type": "base64", "media_type": "image/gif", "data": "aGk=" } }], "is_error": false })] })]);
+        assert_eq!(alone.len(), 2);
+        assert_eq!(alone[1]["content"][1]["image_url"], "data:image/gif;base64,aGk=");
     }
 }

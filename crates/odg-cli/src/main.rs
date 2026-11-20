@@ -100,7 +100,8 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
 fn describe(name: &str, input: &serde_json::Value) -> String {
     let text = |key: &str| input[key].as_str().unwrap_or_default().to_string();
     let subject = match name {
-        "read_file" | "edit_file" | "write_file" => text("path"),
+        "read_file" | "edit_file" | "write_file" | "delete_file" => text("path"),
+        "move_file" => format!("{} → {}", text("path"), text("to")),
         "search" => text("pattern"),
         "find_files" => input["glob"].as_str().or(input["path"].as_str()).unwrap_or(".").to_string(),
         "run_command" => text("command"),
@@ -450,5 +451,6 @@ mod tests {
         assert_eq!(describe("run_command", &json(r#"{"command": "cargo test\n# second line"}"#)), "run_command  cargo test");
         assert_eq!(describe("find_files", &json(r#"{"glob": "**/*.rs"}"#)), "find_files  **/*.rs");
         assert_eq!(describe("update_todos", &json("{}")), "update_todos");
+        assert_eq!(describe("move_file", &json(r#"{"path": "a.txt", "to": "lib/a.txt"}"#)), "move_file  a.txt → lib/a.txt");
     }
 }

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::events::{Choice, Question, QuestionKind, Reply};
+use crate::events::{Choice, Image, Question, QuestionKind, Reply};
 use crate::jobs::{Ended, Jobs, Report};
 
 const READ_LINE_LIMIT: usize = 2000;
@@ -57,6 +57,8 @@ pub struct ToolContext {
     pub runtime: Option<PathBuf>,
     /// Where `generate_image` paints. `None` means painting is not set up.
     pub painter: Option<crate::imagegen::ImageConfig>,
+    /// Whether the model at work can see pictures: `None` when that is not known, and a picture is tried.
+    pub vision: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,15 +68,17 @@ pub struct ToolOutput {
     pub is_error: bool,
     /// Presentation data for the client; never sent to the model.
     pub meta: Value,
+    /// Pictures the model is shown with the text: an image `read_file` read.
+    pub images: Vec<Image>,
 }
 
 impl ToolOutput {
     fn ok(content: impl Into<String>, meta: Value) -> Self {
-        Self { content: content.into(), is_error: false, meta }
+        Self { content: content.into(), is_error: false, meta, images: Vec::new() }
     }
 
     pub fn error(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: true, meta: Value::Null }
+        Self { content: content.into(), is_error: true, meta: Value::Null, images: Vec::new() }
     }
 }
 
@@ -104,7 +108,7 @@ pub fn specs() -> Vec<Value> {
     vec![
         json!({
             "name": "read_file",
-            "description": "Read a text file, or the text of a document: a PDF, Word, Excel, or PowerPoint file. Returns numbered lines. Read a file before editing it. One read returns at most 2000 lines and 100,000 characters; use offset and limit to read the rest.",
+            "description": "Read a text file, or the text of a document: a PDF, Word, Excel, or PowerPoint file. Returns numbered lines. Read a file before editing it. One read returns at most 2000 lines and 100,000 characters; use offset and limit to read the rest. A PNG, JPEG, GIF, or WebP picture is shown to you as a picture, when the model at work can see pictures: use it to look at a screenshot, a chart you drew, or a design to follow.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -176,6 +180,29 @@ pub fn specs() -> Vec<Value> {
                     "content": { "type": "string", "description": "The file's full new contents." }
                 },
                 "required": ["path", "content"]
+            }
+        }),
+        json!({
+            "name": "delete_file",
+            "description": "Delete one file. A copy is kept so the user can undo it with the turn's other changes; use this rather than `rm` or `del` in a command. It takes a file, not a folder.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path, absolute or relative to the workspace." }
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "move_file",
+            "description": "Move or rename one file. The user can undo it with the turn's other changes; use this rather than `mv` or `move` in a command. It will not replace a file already at `to`, and it takes a file, not a folder. Folders it needs at `to` are created.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file to move, absolute or relative to the workspace." },
+                    "to": { "type": "string", "description": "Where it goes, with its name there, absolute or relative to the workspace." }
+                },
+                "required": ["path", "to"]
             }
         }),
         json!({
@@ -659,6 +686,8 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "read_file" => read_file(input, context).await,
         "edit_file" => edit_file(input, context),
         "write_file" => write_file(input, context),
+        "delete_file" => delete_file(input, context),
+        "move_file" => move_file(input, context),
         "search" => search(input, context).await,
         "find_files" => find_files(input, context).await,
         "run_command" => run_command(input, context).await,
@@ -673,7 +702,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "web_search" => match (string_arg(input, "query"), &context.search) {
             (Ok(query), Some(config)) => {
                 let found = crate::web::search(config, query, input, &context.cancel).await;
-                Ok(ToolOutput { content: found.content, is_error: found.is_error, meta: found.meta })
+                Ok(ToolOutput { content: found.content, is_error: found.is_error, meta: found.meta, images: Vec::new() })
             }
             (Ok(_), None) => Err(ToolOutput::error("Web search is not set up: it needs a GLM (Zhipu) API key saved in the settings.")),
             (Err(error), _) => Err(error),
@@ -682,7 +711,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
             Ok(url) => {
                 let offset = usize::try_from(input["offset"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
                 let fetched = crate::web::fetch(url, offset, &context.cancel).await;
-                Ok(ToolOutput { content: fetched.content, is_error: fetched.is_error, meta: fetched.meta })
+                Ok(ToolOutput { content: fetched.content, is_error: fetched.is_error, meta: fetched.meta, images: Vec::new() })
             }
             Err(error) => Err(error),
         },
@@ -694,7 +723,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         other if crate::mcp::split_name(other).is_some() => match &context.mcp {
             Some(hub) => {
                 let result = hub.call(other, input, &context.cancel).await;
-                Ok(ToolOutput { content: result.content, is_error: result.is_error, meta: json!({ "mcp": true }) })
+                Ok(ToolOutput { content: result.content, is_error: result.is_error, meta: json!({ "mcp": true }), images: Vec::new() })
             }
             None => Err(ToolOutput::error(format!("No MCP server is connected, so `{other}` cannot be called."))),
         },
@@ -727,10 +756,23 @@ async fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, T
         let content = format!("[{shown} is {}]\n{content}", read.describe());
         return Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected, "document": read.kind, "parts": read.parts })));
     }
+    let named_picture = crate::events::image_type(&path).is_some();
+    if named_picture && metadata.len() > crate::events::IMAGE_FILE_BYTES {
+        // Not read whole only to be refused: the picture is said to be too large by its size on disk.
+        let megabytes = metadata.len() as f64 / 1_000_000.0;
+        return Err(ToolOutput::error(format!(
+            "{shown} is a picture of {megabytes:.1} MB, too large to be shown (at most {:.1} MB). Make a smaller copy first, for example with Pillow in the document runtime, and read that.",
+            crate::events::IMAGE_FILE_BYTES as f64 / 1_000_000.0
+        )));
+    }
     if metadata.len() > READ_FILE_BYTES {
         return Err(ToolOutput::error(format!("{shown} is {} bytes, over the {READ_FILE_BYTES}-byte limit.", metadata.len())));
     }
     let bytes = std::fs::read(&path).map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?;
+    // A picture by its name, or by its first bytes whatever it is called, when they give its size too.
+    if named_picture || picture(&bytes).is_some_and(|(_, size)| size.is_some()) {
+        return read_picture(&path, &shown, bytes, context);
+    }
     if bytes.iter().take(8192).any(|byte| *byte == 0) {
         return Err(ToolOutput::error(format!("{shown} is a binary file.")));
     }
@@ -856,6 +898,7 @@ async fn add_mcp_server(input: &Value, context: &ToolContext) -> Result<ToolOutp
             ),
             is_error: true,
             meta: meta("failed", &[]),
+            images: Vec::new(),
         }),
         _ => Ok(ToolOutput::ok(format!("Added `{name}` to the user's MCP servers; it is still connecting. Its tools are offered once it is."), meta("connecting", &[]))),
     }
@@ -924,7 +967,176 @@ fn update_todos(input: &Value) -> Result<ToolOutput, ToolOutput> {
 
 /// Whether a tool changes files, and so is decided, snapshotted, and undone like an edit.
 pub fn edits_files(tool: &str) -> bool {
-    matches!(tool, "edit_file" | "write_file")
+    matches!(tool, "edit_file" | "write_file" | "delete_file" | "move_file")
+}
+
+/// The largest file `delete_file` and `move_file` take: a copy of it is kept for undoing.
+const UNDO_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// A file that is there to delete or move, read whole to keep a copy for undoing. Not a folder or a link,
+/// whose undoing a copy of bytes would not do.
+fn whole_file(path: &Path, shown: &str, tool: &str) -> Result<Vec<u8>, ToolOutput> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(ToolOutput::error(format!("{shown} does not exist."))),
+        Err(error) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
+    };
+    if metadata.is_dir() {
+        return Err(ToolOutput::error(format!("{shown} is a folder; `{tool}` takes one file. Do the files in it one by one, or use run_command.")));
+    }
+    if metadata.file_type().is_symlink() {
+        return Err(ToolOutput::error(format!("{shown} is a link; `{tool}` takes a file. Use run_command for a link.")));
+    }
+    if metadata.len() > UNDO_FILE_BYTES {
+        let megabytes = metadata.len().div_ceil(1024 * 1024);
+        return Err(ToolOutput::error(format!("{shown} is {megabytes} MB, too large to keep a copy of for undoing (at most {} MB). Use run_command if it must be done.", UNDO_FILE_BYTES / 1024 / 1024)));
+    }
+    std::fs::read(path).map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))
+}
+
+/// Keep `bytes` for undoing, when the session keeps snapshots: the snapshot's name.
+fn keep(context: &ToolContext, bytes: &[u8], shown: &str) -> Result<Option<String>, ToolOutput> {
+    match &context.snapshots {
+        Some(directory) => crate::undo::save(directory, bytes).map(Some).map_err(|error| ToolOutput::error(format!("Cannot keep a copy of {shown} for undoing: {error}"))),
+        None => Ok(None),
+    }
+}
+
+/// What undoing needs of one file a tool changed: where it is, what it held (a snapshot; none when it was not
+/// there), and what it holds now (a fingerprint; none when it is gone). See [`crate::undo::plan`].
+fn change(path: &Path, shown: &str, before: Option<String>, after: Option<&[u8]>) -> Value {
+    json!({ "file": path.to_string_lossy(), "path": shown, "before": before, "after": after.map(crate::undo::fingerprint) })
+}
+
+fn delete_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let path = resolve(&context.workspace, string_arg(input, "path")?);
+    let shown = display(&context.workspace, &path);
+    let bytes = whole_file(&path, &shown, "delete_file")?;
+    // The copy comes first: what could not be undone is not done.
+    let before = keep(context, &bytes, &shown)?;
+    std::fs::remove_file(&path).map_err(|error| ToolOutput::error(format!("Cannot delete {shown}: {error}")))?;
+    let mut meta = json!({ "path": shown, "deleted": true, "bytes": bytes.len() });
+    // A text file shows what went, as a change that takes every line out.
+    let text = String::from_utf8(bytes).ok().filter(|text| !text.contains('\0'));
+    let summary = match text {
+        Some(text) => {
+            let diff = line_diff(&text.replace("\r\n", "\n"), "");
+            meta["removed"] = json!(diff.removed);
+            meta["hunk"] = json!(diff.hunk);
+            format!("Deleted {shown} ({} lines).", diff.removed)
+        }
+        None => format!("Deleted {shown} ({} bytes).", meta["bytes"]),
+    };
+    if context.snapshots.is_some() {
+        meta["changes"] = json!([change(&path, &shown, before, None)]);
+    }
+    Ok(ToolOutput::ok(summary, meta))
+}
+
+fn move_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let from = resolve(&context.workspace, string_arg(input, "path")?);
+    let to = resolve(&context.workspace, string_arg(input, "to")?);
+    let (shown_from, shown_to) = (display(&context.workspace, &from), display(&context.workspace, &to));
+    if from == to {
+        return Err(ToolOutput::error(format!("{shown_from} is already there.")));
+    }
+    let bytes = whole_file(&from, &shown_from, "move_file")?;
+    // Only a change of case may find the file itself at `to`, on a file system that ignores case.
+    let recased = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
+    match std::fs::symlink_metadata(&to) {
+        Ok(_) if !recased => {
+            return Err(ToolOutput::error(format!("{shown_to} already exists. Delete it first with delete_file if it is to be replaced, or choose another name.")));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(ToolOutput::error(format!("Cannot look at {shown_to}: {error}"))),
+    }
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot create {}: {error}", parent.display())))?;
+    }
+    let before = keep(context, &bytes, &shown_from)?;
+    if std::fs::rename(&from, &to).is_err() {
+        // Across volumes a file cannot be renamed: it is written there and taken away here.
+        crate::fsutil::write_atomically(&to, &bytes).map_err(|error| ToolOutput::error(format!("Cannot write {shown_to}: {error}")))?;
+        if let Err(error) = std::fs::remove_file(&from) {
+            let _ = std::fs::remove_file(&to);
+            return Err(ToolOutput::error(format!("Cannot move {shown_from}: {error}")));
+        }
+    }
+    let mut meta = json!({ "path": shown_from, "to": shown_to, "moved": true, "bytes": bytes.len() });
+    if context.snapshots.is_some() {
+        // Where it is now, to be opened; and for undoing, the file that came and the file that went.
+        meta["file"] = json!(to.to_string_lossy());
+        meta["changes"] = json!([change(&to, &shown_to, None, Some(&bytes)), change(&from, &shown_from, before, None)]);
+    }
+    Ok(ToolOutput::ok(format!("Moved {shown_from} to {shown_to}."), meta))
+}
+
+/// What a picture's first bytes say it is, whatever its name says: its type and, where its header gives them,
+/// its width and height. `None` for anything but PNG, JPEG, GIF, and WebP.
+pub(crate) fn picture(bytes: &[u8]) -> Option<(&'static str, Option<(u32, u32)>)> {
+    let u16_be = |at: usize| bytes.get(at..at + 2).map(|two| u32::from(u16::from_be_bytes([two[0], two[1]])));
+    let u16_le = |at: usize| bytes.get(at..at + 2).map(|two| u32::from(u16::from_le_bytes([two[0], two[1]])));
+    let u24_le = |at: usize| bytes.get(at..at + 3).map(|three| u32::from(three[0]) | u32::from(three[1]) << 8 | u32::from(three[2]) << 16);
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let size = bytes.get(16..24).map(|header| (u32::from_be_bytes([header[0], header[1], header[2], header[3]]), u32::from_be_bytes([header[4], header[5], header[6], header[7]])));
+        return Some(("image/png", size));
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some(("image/gif", u16_le(6).zip(u16_le(8))));
+    }
+    if bytes.len() >= 16 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        let size = match &bytes[12..16] {
+            b"VP8 " => u16_le(26).zip(u16_le(28)).map(|(width, height)| (width & 0x3fff, height & 0x3fff)),
+            b"VP8L" => bytes.get(21..25).map(|bits| {
+                let [b0, b1, b2, b3] = [bits[0], bits[1], bits[2], bits[3]].map(u32::from);
+                (1 + (b0 | (b1 & 0x3f) << 8), 1 + (b1 >> 6 | b2 << 2 | (b3 & 0x0f) << 10))
+            }),
+            b"VP8X" => u24_le(24).zip(u24_le(27)).map(|(width, height)| (width + 1, height + 1)),
+            _ => None,
+        };
+        return Some(("image/webp", size));
+    }
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        // The size is in the first start-of-frame segment; the segments before it are stepped over by their lengths.
+        let mut at = 2;
+        let mut size = None;
+        while at + 4 <= bytes.len() && bytes[at] == 0xff {
+            let marker = bytes[at + 1];
+            if matches!(marker, 0xc0..=0xcf) && !matches!(marker, 0xc4 | 0xc8 | 0xcc) {
+                size = u16_be(at + 7).zip(u16_be(at + 5));
+                break;
+            }
+            match marker {
+                0xff => at += 1,
+                0x01 | 0xd0..=0xd9 => at += 2,
+                _ => at += 2 + u16_be(at + 2)? as usize,
+            }
+        }
+        return Some(("image/jpeg", size));
+    }
+    None
+}
+
+/// A picture `read_file` was asked for: shown to the model, when it can see pictures, with what it is.
+fn read_picture(path: &Path, shown: &str, bytes: Vec<u8>, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let Some((media_type, size)) = picture(&bytes) else {
+        return Err(ToolOutput::error(format!("{shown} is named as a picture but is not a PNG, JPEG, GIF, or WebP one.")));
+    };
+    let kind = media_type.trim_start_matches("image/").to_uppercase();
+    let dimensions = size.map(|(width, height)| format!(", {width}×{height}")).unwrap_or_default();
+    let described = format!("{shown} is a {kind} picture{dimensions}, {} KB", bytes.len().div_ceil(1024));
+    if context.vision == Some(false) {
+        return Err(ToolOutput::error(format!("{described}. The model at work cannot see pictures: ask the user what it shows, or to switch to a model that can.")));
+    }
+    if bytes.len() as u64 > crate::events::IMAGE_FILE_BYTES {
+        let most = crate::events::IMAGE_FILE_BYTES as f64 / 1_000_000.0;
+        return Err(ToolOutput::error(format!("{described}: too large to be shown, which takes at most {most:.1} MB. Make a smaller copy first, for example with Pillow in the document runtime, and read that.")));
+    }
+    let (width, height) = size.unzip();
+    let meta = json!({ "path": shown, "file": path.to_string_lossy(), "picture": media_type, "bytes": bytes.len(), "width": width, "height": height });
+    let image = Image { media_type: media_type.to_string(), data: crate::events::base64(&bytes) };
+    Ok(ToolOutput { content: format!("{described}. It is shown to you here."), is_error: false, meta, images: vec![image] })
 }
 
 /// A text file as it is on disk: `None` when it does not exist.
@@ -1289,6 +1501,7 @@ fn job_report(id: &str, report: Report) -> ToolOutput {
         content,
         is_error: failed,
         meta: json!({ "job": id, "command": report.command, "running": report.ended.is_none(), "stopped": matches!(report.ended, Some(Ended::Stopped)).then_some("stopped"), "exit_code": exit_code, "output": output }),
+        images: Vec::new(),
     }
 }
 
@@ -1387,6 +1600,7 @@ async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput,
             "output": output,
             "sandboxed": sandbox.is_some(),
         }),
+        images: Vec::new(),
     })
 }
 
@@ -1396,7 +1610,7 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None, runtime: None, painter: None };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None, runtime: None, painter: None, vision: Some(true) };
         (directory, context)
     }
 
@@ -1947,5 +2161,106 @@ mod tests {
         assert!(answered(&asked, &[], true, None).starts_with("The user chose not to answer"));
         assert!(answered(&asked, &[reply(&[], " ")], false, None).starts_with("The user chose not to answer"));
         assert!(answered(&asked, &[], false, Some(30)).starts_with("Nobody answered within 30 seconds"));
+    }
+
+    /// The smallest headers of each kind that say what a picture is and how big.
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        bytes.extend(width.to_be_bytes());
+        bytes.extend(height.to_be_bytes());
+        bytes.extend([8, 6, 0, 0, 0]);
+        bytes
+    }
+
+    #[test]
+    fn tells_a_picture_and_its_size_by_its_first_bytes() {
+        assert_eq!(picture(&png(640, 480)), Some(("image/png", Some((640, 480)))));
+        assert_eq!(picture(b"GIF89a\x20\x03\x58\x02rest"), Some(("image/gif", Some((800, 600)))));
+        // A JPEG's size is in its first frame header, after the segments before it.
+        let jpeg = [&[0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0][..], &[0xff, 0xc0, 0, 11, 8, 0x01, 0xe0, 0x02, 0x80, 3][..]].concat();
+        assert_eq!(picture(&jpeg), Some(("image/jpeg", Some((640, 480)))));
+        assert_eq!(picture(&[0xff, 0xd8, 0xff, 0xd9]), Some(("image/jpeg", None)));
+        let webp = |chunk: &[u8], header: &[u8]| [b"RIFF\0\0\0\0WEBP".as_slice(), chunk, &[0; 4], header].concat();
+        // VP8X keeps width and height less one in three bytes each, from the 24th byte.
+        assert_eq!(picture(&webp(b"VP8X", &[0, 0, 0, 0, 0x7f, 0x02, 0, 0xdf, 0x01, 0])), Some(("image/webp", Some((640, 480)))));
+        // VP8L packs them less one in fourteen bits each, from the 21st byte.
+        let (width, height) = (639u32, 479u32);
+        let bits = width | height << 14;
+        assert_eq!(picture(&webp(b"VP8L", &[0x2f, bits as u8, (bits >> 8) as u8, (bits >> 16) as u8, (bits >> 24) as u8])), Some(("image/webp", Some((640, 480)))));
+        assert_eq!(picture(b"plain text"), None);
+    }
+
+    #[tokio::test]
+    async fn shows_a_picture_to_a_model_that_can_see_and_says_why_not_otherwise() {
+        let (directory, context) = context();
+        std::fs::write(directory.path().join("shot.png"), png(2, 3)).unwrap();
+        let read = execute("read_file", &json!({ "path": "shot.png" }), &context).await;
+        assert!(!read.is_error && read.content == "shot.png is a PNG picture, 2×3, 1 KB. It is shown to you here.", "{}", read.content);
+        assert_eq!(read.images, [Image { media_type: "image/png".into(), data: crate::events::base64(&png(2, 3)) }]);
+        assert_eq!((read.meta["picture"].as_str(), read.meta["width"].as_u64(), read.meta["path"].as_str()), (Some("image/png"), Some(2), Some("shot.png")));
+        // What it is, by its bytes: a picture under another name is still one; a text file named as a picture is not.
+        std::fs::write(directory.path().join("shot.bin"), png(2, 3)).unwrap();
+        assert_eq!(execute("read_file", &json!({ "path": "shot.bin" }), &context).await.images.len(), 1);
+        std::fs::write(directory.path().join("fake.jpg"), "not a picture").unwrap();
+        let fake = execute("read_file", &json!({ "path": "fake.jpg" }), &context).await;
+        assert!(fake.is_error && fake.content.contains("is not a PNG, JPEG, GIF, or WebP one"), "{}", fake.content);
+        // A model that cannot see is told what the picture is, and what to do instead.
+        let blind = ToolContext { vision: Some(false), workspace: context.workspace.clone(), cancel: CancellationToken::new(), ..context };
+        let refused = execute("read_file", &json!({ "path": "shot.png" }), &blind).await;
+        assert!(refused.is_error && refused.images.is_empty() && refused.content.contains("2×3") && refused.content.contains("cannot see pictures"), "{}", refused.content);
+        // One too large to send is refused by its size, before it is read.
+        let mut large = png(4000, 4000);
+        large.resize(crate::events::IMAGE_FILE_BYTES as usize + 1, 0);
+        std::fs::write(directory.path().join("large.png"), large).unwrap();
+        let large = execute("read_file", &json!({ "path": "large.png" }), &ToolContext { vision: Some(true), ..blind }).await;
+        assert!(large.is_error && large.content.contains("too large to be shown"), "{}", large.content);
+    }
+
+    #[tokio::test]
+    async fn deletes_and_moves_one_file_keeping_a_copy_to_undo_it() {
+        let (directory, mut context) = context();
+        let workspace = directory.path().join("work");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        context.workspace = workspace.clone();
+        let snapshots = directory.path().join("snapshots");
+        context.snapshots = Some(snapshots.clone());
+        std::fs::write(workspace.join("old.txt"), "one\ntwo\n").unwrap();
+        let deleted = execute("delete_file", &json!({ "path": "old.txt" }), &context).await;
+        assert!(!deleted.is_error && deleted.content == "Deleted old.txt (2 lines).", "{}", deleted.content);
+        assert!(!workspace.join("old.txt").exists());
+        // What went is shown as lines taken out, and kept for undoing; the file is not there to open.
+        assert_eq!((deleted.meta["deleted"].as_bool(), deleted.meta["removed"].as_u64(), deleted.meta["file"].is_null()), (Some(true), Some(2), true));
+        let change = &deleted.meta["changes"][0];
+        assert_eq!((change["path"].as_str(), change["after"].is_null()), (Some("old.txt"), true));
+        assert_eq!(std::fs::read(snapshots.join(change["before"].as_str().unwrap())).unwrap(), b"one\ntwo\n");
+        // A file that is not text is deleted all the same, by its bytes.
+        std::fs::write(workspace.join("blob.bin"), [0u8, 1, 2]).unwrap();
+        assert_eq!(execute("delete_file", &json!({ "path": "blob.bin" }), &context).await.content, "Deleted blob.bin (3 bytes).");
+
+        std::fs::write(workspace.join("a.txt"), "moved\n").unwrap();
+        let moved = execute("move_file", &json!({ "path": "a.txt", "to": "lib/deep/b.txt" }), &context).await;
+        assert!(!moved.is_error && moved.content == "Moved a.txt to lib/deep/b.txt.", "{}", moved.content);
+        assert!(!workspace.join("a.txt").exists());
+        assert_eq!(std::fs::read_to_string(workspace.join("lib/deep/b.txt")).unwrap(), "moved\n");
+        // For undoing: the file that came, and the file that went.
+        let changes: Vec<(&str, bool, bool)> = moved.meta["changes"].as_array().unwrap().iter().map(|change| (change["path"].as_str().unwrap(), change["before"].is_null(), change["after"].is_null())).collect();
+        assert_eq!(changes, [("lib/deep/b.txt", true, false), ("a.txt", false, true)]);
+        assert_eq!(moved.meta["to"], "lib/deep/b.txt");
+
+        // What it will not do.
+        std::fs::write(workspace.join("c.txt"), "c").unwrap();
+        let refused = |input: Value| {
+            let context = &context;
+            async move { execute(input["tool"].as_str().unwrap(), &input, context).await }
+        };
+        let taken = refused(json!({ "tool": "move_file", "path": "c.txt", "to": "lib/deep/b.txt" })).await;
+        assert!(taken.is_error && taken.content.contains("lib/deep/b.txt already exists"), "{}", taken.content);
+        assert!(workspace.join("c.txt").exists());
+        let folder = refused(json!({ "tool": "delete_file", "path": "src" })).await;
+        assert!(folder.is_error && folder.content.contains("is a folder"), "{}", folder.content);
+        let missing = refused(json!({ "tool": "delete_file", "path": "gone.txt" })).await;
+        assert!(missing.is_error && missing.content.contains("does not exist"), "{}", missing.content);
+        let same = refused(json!({ "tool": "move_file", "path": "c.txt", "to": "./c.txt" })).await;
+        assert!(same.is_error && same.content.contains("already there"), "{}", same.content);
     }
 }

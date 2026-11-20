@@ -670,6 +670,7 @@ impl<L: Llm> Inner<L> {
             sandbox: self.sandbox_now(),
             runtime: self.documents.clone(),
             painter: self.painter_config(),
+            vision: providers::vision(&self.provider(), &self.model()),
         }
     }
 
@@ -718,8 +719,14 @@ impl<L: Llm> Inner<L> {
         specs
     }
 
+    /// Log what a tool returned, pictures included.
+    fn tool_output(&self, tool_use_id: &str, tool: &str, output: ToolOutput) -> Result<(), String> {
+        let ToolOutput { content, is_error, meta, images } = output;
+        self.append(Event::ToolResult { tool_use_id: tool_use_id.to_string(), tool: tool.to_string(), content, is_error, meta, images })
+    }
+
     fn tool_result(&self, tool_use_id: &str, tool: &str, content: String, is_error: bool, meta: Value) -> Result<(), String> {
-        self.append(Event::ToolResult { tool_use_id: tool_use_id.to_string(), tool: tool.to_string(), content, is_error, meta })
+        self.append(Event::ToolResult { tool_use_id: tool_use_id.to_string(), tool: tool.to_string(), content, is_error, meta, images: Vec::new() })
     }
 
     /// Start a subagent: a session of its own in this workspace, on this
@@ -782,7 +789,7 @@ impl<L: Llm> Inner<L> {
         let answers = if answers.iter().all(Reply::is_empty) { Vec::new() } else { answers };
         self.append(Event::QuestionAnswered { tool_use_id: tool_use_id.to_string(), answers: answers.clone(), declined, timed_out })?;
         let content = tools::answered(&questions, &answers, declined, timed_out.then(|| wait.map_or(0, |wait| wait.as_secs())));
-        Ok(Some(ToolOutput { content, is_error: false, meta: Value::Null }))
+        Ok(Some(ToolOutput { content, is_error: false, meta: Value::Null, images: Vec::new() }))
     }
 
     async fn delegate(&self, tool_use_id: &str, input: &Value, cancel: &CancellationToken) -> Result<ToolOutput, String> {
@@ -850,7 +857,7 @@ impl<L: Llm> Inner<L> {
                 }
             }
         }
-        Ok(ToolOutput { content: parts.join("\n\n"), is_error: finished == 0, meta: json!({ "agents": agents }) })
+        Ok(ToolOutput { content: parts.join("\n\n"), is_error: finished == 0, meta: json!({ "agents": agents }), images: Vec::new() })
     }
 
     /// Run turns until no message is waiting. A message that arrives after the
@@ -1193,7 +1200,7 @@ impl<L: Llm> Inner<L> {
                             continue;
                         }
                         let output = tools::execute(later_name, later_input, &self.tool_context(cancel)).await;
-                        self.tool_result(later_id, later_name, output.content, output.is_error, output.meta)?;
+                        self.tool_output(later_id, later_name, output)?;
                         ran_early.insert(later_id.clone());
                     }
                     let (decision, timed_out) = tokio::select! {
@@ -1240,7 +1247,7 @@ impl<L: Llm> Inner<L> {
                     },
                     _ => tools::execute(&name, &input, &self.tool_context(cancel)).await,
                 };
-                self.tool_result(&id, &name, output.content, output.is_error, output.meta)?;
+                self.tool_output(&id, &name, output)?;
             }
         }
         Ok("step_limit")
@@ -2149,6 +2156,60 @@ mod tests {
         fixture.idle().await;
         assert_eq!(fixture.end().0, "error");
         assert_eq!(fixture.llm.requests.lock().unwrap().len(), 8);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn undoing_a_turn_brings_back_what_it_deleted_and_moved() {
+        let script = vec![
+            calls(&[("t1", "delete_file", json!({ "path": "gone.txt" })), ("t2", "move_file", json!({ "path": "a.txt", "to": "lib/b.txt" }))]),
+            says("tidied"),
+            says("understood"),
+        ];
+        let mut fixture = fixture(ScriptedLlm::new(script, None));
+        let file = |name: &str| fixture.workspace.path().join(name);
+        let (gone, a, b) = (file("gone.txt"), file("a.txt"), file("lib/b.txt"));
+        std::fs::write(&gone, "keep me\n").unwrap();
+        std::fs::write(&a, "move me\n").unwrap();
+        // In 府内自便 both run without asking, as edits in the workspace do.
+        fixture.session.send("tidy up".into());
+        fixture.idle().await;
+        assert!(!fixture.kinds().contains(&"approval/requested".to_string()));
+        assert!(!gone.exists() && !a.exists() && std::fs::read_to_string(&b).unwrap() == "move me\n");
+
+        let outcome = fixture.session.undo(1).unwrap();
+        assert_eq!(outcome, undo::Outcome { restored: vec!["gone.txt".into(), "lib/b.txt".into(), "a.txt".into()], skipped: vec![] });
+        assert_eq!(std::fs::read_to_string(&gone).unwrap(), "keep me\n");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "move me\n");
+        assert!(!b.exists());
+        // Undone once, nothing is left to undo.
+        assert_eq!(fixture.session.undo(1).unwrap_err(), "turn 1 and those after it have no edits to undo");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deleted_file_put_back_by_someone_else_is_left_alone() {
+        let mut fixture = fixture(ScriptedLlm::new(vec![calls(&[("t1", "delete_file", json!({ "path": "x.txt" }))]), says("deleted")], None));
+        let x = fixture.workspace.path().join("x.txt");
+        std::fs::write(&x, "agent's\n").unwrap();
+        fixture.session.send("delete it".into());
+        fixture.idle().await;
+        std::fs::write(&x, "mine\n").unwrap();
+        assert_eq!(fixture.session.undo(1).unwrap(), undo::Outcome { restored: vec![], skipped: vec!["x.txt".into()] });
+        assert_eq!(std::fs::read_to_string(&x).unwrap(), "mine\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_picture_read_from_a_file_reaches_the_model_and_the_log() {
+        let mut fixture = fixture(ScriptedLlm::new(vec![calls(&[("t1", "read_file", json!({ "path": "shot.png" }))]), says("a red square")], None));
+        let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR"[..], &1u32.to_be_bytes(), &1u32.to_be_bytes(), &[8, 6, 0, 0, 0]].concat();
+        std::fs::write(fixture.workspace.path().join("shot.png"), &png).unwrap();
+        fixture.session.send("what is in shot.png?".into());
+        fixture.idle().await;
+        let data = crate::events::base64(&png);
+        assert!(fixture.session.snapshot().iter().any(|envelope| matches!(&envelope.event, Event::ToolResult { images, .. } if images.len() == 1 && images[0].data == data)));
+        let requests = fixture.llm.requests.lock().unwrap();
+        let result = &requests[1].messages.last().unwrap()["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["content"][1], json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": data } }));
     }
 
     #[tokio::test(flavor = "multi_thread")]

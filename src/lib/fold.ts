@@ -62,7 +62,10 @@ export function mcpTool(name: string): { server: string; tool: string } | null {
 }
 
 /** Whether a tool changes files: its result carries a diff and can be undone. */
-export const editsFiles = (name: string) => name === "edit_file" || name === "write_file";
+export const editsFiles = (name: string) => name === "edit_file" || name === "write_file" || name === "delete_file" || name === "move_file";
+
+/** The paths, as shown, of the files an edit changed: a move changes two. */
+const touched = (tool: ToolItem) => [tool.result?.meta?.path, tool.result?.meta?.to].filter((path): path is string => !!path);
 
 function blockItem(block: ContentBlock, turn: number): Item | null {
   switch (block.type) {
@@ -109,7 +112,7 @@ export function fold(events: Envelope[]): Row[] {
         break;
       case "files/restored":
         for (const tool of tools.values()) {
-          if (tool.turn >= event.data.turn && editsFiles(tool.name) && event.data.restored.includes(tool.result?.meta?.path ?? "")) tool.undone = true;
+          if (tool.turn >= event.data.turn && editsFiles(tool.name) && touched(tool).some((path) => event.data.restored.includes(path))) tool.undone = true;
         }
         current()?.items.push({ kind: "restored", turn: event.data.turn, restored: event.data.restored, skipped: event.data.skipped });
         break;
@@ -298,6 +301,10 @@ export interface ChangedFile {
   file?: string;
   /** Each edit's change, in the order they were made. */
   hunks: DiffHunk[];
+  /** The 分身 deleted it, or moved it away, last: it is not there to open. */
+  gone?: boolean;
+  /** It came here by a move, from this path. */
+  movedFrom?: string;
 }
 
 /** Files the agent edited in this session, with line counts summed per file, in first-edit order. */
@@ -307,8 +314,21 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
     if (item.kind !== "tool" || !editsFiles(item.name) || !item.result || item.result.isError || item.undone) continue;
     const meta = item.result.meta;
     if (!meta?.path) continue;
-    const file = files.get(meta.path) ?? { path: meta.path, added: 0, removed: 0, created: !!meta.created, hunks: [], file: meta.file };
-    file.file ??= meta.file;
+    const entry = (path: string): ChangedFile => files.get(path) ?? { path, added: 0, removed: 0, created: false, hunks: [] };
+    if (item.name === "move_file" && meta.to) {
+      // Where it went is the row that counts; where it was, if already listed, is now empty.
+      const left = files.get(meta.path);
+      if (left) Object.assign(left, { gone: true, file: undefined });
+      const arrived = entry(meta.to);
+      Object.assign(arrived, { movedFrom: left?.movedFrom ?? meta.path, gone: undefined, file: meta.file ?? arrived.file });
+      files.set(meta.to, arrived);
+      continue;
+    }
+    const file = entry(meta.path);
+    if (!files.has(meta.path)) file.created = !!meta.created;
+    // Gone if deleted last; written again, it is back.
+    file.gone = item.name === "delete_file" || undefined;
+    file.file = file.gone ? undefined : (meta.file ?? file.file);
     file.added += meta.added ?? 0;
     file.removed += meta.removed ?? 0;
     if (meta.hunk) file.hunks.push(meta.hunk);
@@ -321,7 +341,8 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
 function toldOf(item: ToolItem): string[] {
   const meta = item.result?.meta;
   if (item.name === "deliver_files") return Array.isArray(meta?.files) ? meta.files : [];
-  return (editsFiles(item.name) || item.name === "generate_image") && meta?.file ? [meta.file] : [];
+  // Written or painted; a file only moved or deleted was not made.
+  return (item.name === "edit_file" || item.name === "write_file" || item.name === "generate_image") && meta?.file ? [meta.file] : [];
 }
 
 /** A file the 分身 made for 本尊: painted with `generate_image`, handed over with `deliver_files`, or found in the workspace when its turn ended. */
@@ -347,7 +368,8 @@ export function products(rows: Row[]): Product[] {
 }
 
 /** An edit the user can still undo: it succeeded, has a snapshot, and was not undone. */
-const undoable = (item: Item) => item.kind === "tool" && editsFiles(item.name) && !!item.result && !item.result.isError && !!item.result.meta?.after && !item.undone;
+const undoable = (item: Item) =>
+  item.kind === "tool" && editsFiles(item.name) && !!item.result && !item.result.isError && !!(item.result.meta?.after || item.result.meta?.changes?.length) && !item.undone;
 
 /**
  * The turns from which undoing would restore something: each turn that has
