@@ -73,11 +73,11 @@
   --mist-near: #b4c8bf;
   /* Two hands. What is written with a brush (headings, seals, the words on a talisman) is LXGW WenKai Lite, a
      regular-script face. What is read (the conversation, labels, everything a control says) is the system's own
-     Chinese sans, which holds at small sizes, with Atkinson Hyperlegible for Latin letters and figures: the
-     proportional sibling of the face code is set in. */
+     Chinese sans, which holds at small sizes; its Latin letters and figures are its own too, so a name like
+     "GLM-4.5" is in one face throughout. Code is Atkinson Hyperlegible Mono. */
   --brush: "LXGW WenKai Lite", "STKaiti", "KaiTi", serif;
   --han: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
-  --text: "ODG Latin", var(--han), system-ui, sans-serif;
+  --text: var(--han), system-ui, sans-serif;
   --mono: "Atkinson Hyperlegible Mono", var(--han), ui-monospace, Consolas, monospace;
   color-scheme: light;
 }
@@ -117,24 +117,6 @@
   --mist-mid: #1a2f33;
   --mist-near: #20393d;
   color-scheme: dark;
-}
-
-/* The Latin face, held to letters and ASCII marks. Figures are the Chinese face's own, which have no stroke through
-   the nought; quotes, dashes and the ellipsis stay full width. */
-@font-face {
-  font-family: "ODG Latin";
-  font-weight: 400;
-  font-display: swap;
-  src: url("../node_modules/@fontsource/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-400-normal.woff2") format("woff2");
-  unicode-range: U+0020-002F, U+003A-007E, U+00A0-00FF;
-}
-
-@font-face {
-  font-family: "ODG Latin";
-  font-weight: 700;
-  font-display: swap;
-  src: url("../node_modules/@fontsource/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-700-normal.woff2") format("woff2");
-  unicode-range: U+0020-002F, U+003A-007E, U+00A0-00FF;
 }
 
 * {
@@ -4457,7 +4439,7 @@ button.select-button svg {
 .combo {
   position: relative;
   flex: none;
-  width: 360px;
+  width: 440px;
   max-width: 100%;
 }
 
@@ -4499,7 +4481,10 @@ button.select-button svg {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  right: 0;
+  /* As wide as the field at least, and wider where a choice needs it: a model's id and its name on one line. */
+  min-width: 100%;
+  width: max-content;
+  max-width: min(680px, calc(100vw - 48px));
   z-index: 20;
   max-height: 320px;
   margin: 0;
@@ -4965,7 +4950,8 @@ button.select-button svg {
 .input {
   min-height: 36px;
   width: 100%;
-  max-width: 360px;
+  /* As wide as a field with a list, so a column of fields has one right edge. */
+  max-width: 440px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-control);
@@ -5177,9 +5163,11 @@ button.select-button svg {
 
 /* ---------- 功课: the tasks set to start by themselves ---------- */
 
+/* What a page is for, under its title: a measure of about fifty characters, counted in the square of a Chinese one
+   (an em), not in the width of a figure, which is half of it. */
 .settings .lead {
   margin: 0;
-  max-width: 60ch;
+  max-width: 52em;
   color: var(--ink-2);
 }
 
