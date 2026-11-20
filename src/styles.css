@@ -2808,6 +2808,7 @@ button.did-head:not(:disabled):hover {
 }
 
 .attachment img {
+  display: block;
   width: 64px;
   height: 64px;
   object-fit: cover;
@@ -2815,7 +2816,7 @@ button.did-head:not(:disabled):hover {
   border-radius: var(--r-paper);
 }
 
-.attachment button {
+.attachment > button:not(.shot) {
   position: absolute;
   top: -6px;
   right: -6px;
@@ -2930,10 +2931,129 @@ button.did-head:not(:disabled):hover {
 }
 
 .shots img {
+  display: block;
   max-width: 100%;
   max-height: 180px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-paper);
+}
+
+/* A picture that opens at full size when pressed: the picture itself is the button. */
+.shot {
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-paper);
+  background: none;
+  cursor: zoom-in;
+  max-width: 100%;
+}
+
+.shot:hover img {
+  border-color: var(--jade);
+}
+
+.shot:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
+}
+
+/* ---------- a picture seen at full size ---------- */
+
+/* Over the whole window, the page dimmed under it; the picture as large as the window lets it be, never larger
+   than it is, on the page's own paper edge. */
+.viewer {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 48px 72px;
+  border: 0;
+  background: transparent;
+  display: none;
+  place-items: center;
+  overflow: hidden;
+}
+
+.viewer[open] {
+  display: grid;
+}
+
+.viewer:focus {
+  outline: none;
+}
+
+.viewer::backdrop {
+  background: rgb(10 18 20 / 0.82);
+}
+
+.viewer img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.35);
+  cursor: auto;
+  animation: come var(--d-move) var(--ease-out);
+}
+
+.viewer-close,
+.viewer-step {
+  position: fixed;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 0.25);
+  border-radius: 50%;
+  background: rgb(10 18 20 / 0.55);
+  color: #f2f6f3;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.viewer-close:hover,
+.viewer-step:hover {
+  background: rgb(10 18 20 / 0.8);
+  border-color: rgb(255 255 255 / 0.5);
+}
+
+.viewer-close:focus-visible,
+.viewer-step:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
+}
+
+.viewer-close {
+  top: 16px;
+  right: 16px;
+}
+
+.viewer-step {
+  top: 50%;
+  translate: 0 -50%;
+}
+
+.viewer-step.back {
+  left: 16px;
+}
+
+.viewer-step.next {
+  right: 16px;
+}
+
+.viewer-count {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  translate: -50% 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgb(10 18 20 / 0.55);
+  color: #f2f6f3;
+  font-size: var(--t-small);
 }
 
 .main-header .spacer {

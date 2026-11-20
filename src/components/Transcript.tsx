@@ -6,7 +6,8 @@ import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
 import { Light } from "./Light";
 import { type Item, type Row, type StreamBlock, type ToolItem, documentLabel, editsFiles, fileSize, mcpTool, shortCount, undoableTurns } from "../lib/fold";
-import type { Decision, DiffHunk, Mode, SessionItem, Status } from "../lib/types";
+import type { Decision, DiffHunk, Image, Mode, SessionItem, Status } from "../lib/types";
+import { Viewer, imageSource } from "./Viewer";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
 
@@ -845,6 +846,8 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
   useLayoutEffect(() => {
     seen.current = count;
   });
+  /** The pictures of a message being looked at full size, and which of them. */
+  const [viewing, setViewing] = useState<{ images: Image[]; at: number } | null>(null);
   /** For a moment after the 分身 finishes: the light on the turn's thread goes back up to the order. */
   const [closing, setClosing] = useState(false);
   const was = useRef(status);
@@ -909,7 +912,9 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
               {row.prompt.images.length > 0 && (
                 <div className="shots">
                   {row.prompt.images.map((image, at) => (
-                    <img key={at} src={`data:${image.media_type};base64,${image.data}`} alt={`本尊附的第 ${at + 1} 张图`} />
+                    <button key={at} type="button" className="shot" title="点开看大图" onClick={() => setViewing({ images: row.prompt.images, at })}>
+                      <img src={imageSource(image)} alt={`本尊附的第 ${at + 1} 张图`} />
+                    </button>
                   ))}
                 </div>
               )}
@@ -1002,6 +1007,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
           </div>
         </section>
       )}
+      {viewing && <Viewer images={viewing.images} at={viewing.at} whose="本尊附的" onClose={() => setViewing(null)} />}
     </div>
     </Live.Provider>
   );

@@ -8,6 +8,7 @@ import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Picked, Provider, SessionItem, Status, Todo } from "../lib/types";
 import { ago } from "../lib/when";
 import { Info } from "./Hint";
+import { Viewer, imageSource } from "./Viewer";
 import { Light } from "./Light";
 import { Diff } from "./Transcript";
 
@@ -1180,6 +1181,8 @@ export function Composer(props: ComposerProps) {
     input.current?.focus();
   }, [seed?.id]);
   const [images, setImages] = useState<Image[]>([]);
+  /** Which of the pictures to go with the message is being looked at full size. */
+  const [viewing, setViewing] = useState<number | null>(null);
   /** Files to go with the message, each by its path. */
   const [files, setFiles] = useState<Pending[]>([]);
   /** Why something was not taken, until the next attempt. */
@@ -1414,11 +1417,14 @@ export function Composer(props: ComposerProps) {
             if (event.key === "ArrowDown") setHeight(fitBox(height - 24));
           }}
         />
+        {viewing !== null && images.length > 0 && <Viewer images={images} at={viewing} whose="要附的" onClose={() => setViewing(null)} />}
         {(images.length > 0 || files.length > 0 || refused) && (
           <div className="attachments">
             {images.map((image, index) => (
               <span className="attachment" key={index}>
-                <img src={`data:${image.media_type};base64,${image.data}`} alt={`要附的第 ${index + 1} 张图`} />
+                <button type="button" className="shot" title="点开看大图" onClick={() => setViewing(index)}>
+                  <img src={imageSource(image)} alt={`要附的第 ${index + 1} 张图`} />
+                </button>
                 <button type="button" aria-label={`去掉第 ${index + 1} 张图`} onClick={() => setImages(images.filter((_, at) => at !== index))}>
                   ×
                 </button>
