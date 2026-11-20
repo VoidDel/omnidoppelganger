@@ -2332,8 +2332,11 @@ button.did-head:not(:disabled):hover {
 
 /* The frame carries the light round the box while the 分身 works (see "light going round an edge"), and a
    cinnabar glow while it waits. */
+/* A layer of its own, so that the light under its edge stays under it; and that layer above the conversation
+   (its pinned message, the empty page's words), since the menus that open from the box stand up over them. */
 .composer-frame {
   position: relative;
+  z-index: 4;
   isolation: isolate;
   border-radius: var(--r-control);
 }
@@ -2907,6 +2910,12 @@ button.select-button svg {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* Each option as tall as its words: a long list scrolls, rather than squeezing its options until their second
+   lines run into the next. (A min-height of their own takes away the floor a flex item otherwise has.) */
+.menu-scroll > * {
+  flex-shrink: 0;
 }
 
 .mode-option.plain {
