@@ -31,21 +31,63 @@ function Link({ href, children }: { href?: string; children?: ReactNode }) {
   );
 }
 
+/** Put `text` on the clipboard; `copied` is true for a moment after, for the button to say so. */
+function useCopy(): [boolean, (text: string) => void] {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text).then(
+      () => {
+        setCopied(true);
+        window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setCopied(false), 1500);
+      },
+      (error) => console.error(error),
+    );
+  };
+  return [copied, copy];
+}
+
+/**
+ * What the 分身 said, once it has said it: the words, and under them a mark that copies them as they were written,
+ * in Markdown, so that pasted elsewhere they keep their lists, tables and code.
+ */
+function ModelText({ text }: { text: string }) {
+  const [copied, copy] = useCopy();
+  return (
+    <div className="model-text">
+      <div className="prose">
+        <Markdown components={markdownParts} remarkPlugins={markdownSyntax} rehypePlugins={markdownPlugins}>
+          {text}
+        </Markdown>
+      </div>
+      <div className="said-tools">
+        <button type="button" className={`said-copy ${copied ? "done" : ""}`} title={copied ? "已复制" : "复制这段（Markdown）"} onClick={() => copy(text)}>
+          {copied ? (
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m3 8.5 3.2 3L13 4.5" />
+            </svg>
+          ) : (
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" />
+              <path d="M10.5 5.5V3.7a1.2 1.2 0 0 0-1.2-1.2H3.7a1.2 1.2 0 0 0-1.2 1.2v5.6a1.2 1.2 0 0 0 1.2 1.2h1.8" />
+            </svg>
+          )}
+          <span className="sr-only">{copied ? "已复制" : "复制这段"}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** A code block from the model's text, with what it is written in and a button that copies it. */
 function CodeBlock({ children }: { children?: ReactNode }) {
   const block = useRef<HTMLPreElement>(null);
   // The fence's own word for the language, which the highlighter leaves on the code as a class.
   const written = isValidElement<{ className?: string }>(children) ? /language-([\w+#.-]+)/.exec(children.props.className ?? "")?.[1] : undefined;
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(block.current?.textContent ?? "").then(
-      () => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      },
-      (error) => console.error(error),
-    );
-  };
+  const [copied, copyText] = useCopy();
+  const copy = () => copyText(block.current?.textContent ?? "");
   return (
     <div className="code-block">
       <div className="code-tools">
@@ -287,8 +329,9 @@ function DelegateCard({ tool, family }: { tool: ToolItem; family: Family }) {
   return (
     <div className={`did delegate ${weigh(tool)} ${fresh.className}`} style={fresh.style}>
       <div className="did-head">
+        {/* While it is under way its edge is the light going round, as every act's is: the seal has no border of its own then. */}
         <span className="seal" aria-hidden="true">
-          遣
+          {weigh(tool) === "live" && <Light />}遣
         </span>
         <span className="verb">派出子分身</span>
         <span className="target">{agents.length} 个，各办一件</span>
@@ -525,13 +568,7 @@ function notice(reason: string, error: string | null): string {
 function ItemView({ item, mode, family, frozen, onDecide }: { item: Item; mode: Mode; family: Family; frozen: boolean; onDecide: (toolUseId: string, decision: Decision) => void }) {
   switch (item.kind) {
     case "text":
-      return (
-        <div className="prose">
-          <Markdown components={markdownParts} remarkPlugins={markdownSyntax} rehypePlugins={markdownPlugins}>
-            {item.text}
-          </Markdown>
-        </div>
-      );
+      return <ModelText text={item.text} />;
     case "thinking":
       return (
         <details className="thinking">

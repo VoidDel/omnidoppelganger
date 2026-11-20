@@ -1225,18 +1225,56 @@ pre,
   line-height: 1.8;
 }
 
+/* Under what the 分身 said, the mark that copies it: quiet until the words are pointed at, and answering when used. */
+.said-tools {
+  display: flex;
+  margin: 2px 0 0 -4px;
+}
+
+.said-copy {
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  background: none;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  opacity: 0.45;
+  cursor: pointer;
+  transition:
+    opacity var(--d-quick) var(--ease-out),
+    color var(--d-quick) var(--ease-out),
+    background-color var(--d-quick) var(--ease-out);
+}
+
+.model-text:hover .said-copy,
+.said-copy:focus-visible,
+.said-copy.done {
+  opacity: 1;
+}
+
+.said-copy:hover {
+  color: var(--ink);
+  background: var(--control);
+}
+
+.said-copy.done {
+  color: var(--jade);
+}
+
+.said-copy:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 1px;
+}
+
 .prose > :first-child {
   margin-top: 0;
 }
 
 .prose > :last-child {
   margin-bottom: 0;
-}
-
-/* Lines of words keep to a measure the eye can come back along, however wide the window is made.
-   Code and tables are not read that way, and take the column's width. */
-.prose :is(p, ul, ol, blockquote, h1, h2, h3, h4) {
-  max-width: 44em;
 }
 
 .prose p,
@@ -1717,11 +1755,9 @@ button.did-head:not(:disabled):hover {
 /* ---------- light going round an edge ---------- */
 
 /* Two layers under the words of what they light (see Light.tsx). `edge` is the thing's own box with the light
-   turning in it, covered but for a hair's breadth round its rim; `aura` is the same light a little larger and
-   out of focus. What turns is one square of gradient, turned whole by the compositor: nothing is laid out or
+   turning in it, covered but for a hair's breadth round its rim. What turns is one square of gradient, turned whole by the compositor: nothing is laid out or
    painted again as it goes round, so it costs next to nothing however long the 分身 works. A gradient whose
    angle is animated looks the same and has the page painted afresh at every step. */
-.aura,
 .edge {
   position: absolute;
   z-index: -1;
@@ -1735,16 +1771,6 @@ button.did-head:not(:disabled):hover {
   --light-rest: color-mix(in srgb, var(--jade) 45%, var(--seal-ground, var(--bg)));
 }
 
-.aura {
-  inset: -5px;
-  z-index: -2;
-  border-radius: 6px;
-  filter: blur(4px);
-  opacity: 0.85;
-  --light-rest: transparent;
-}
-
-.aura::before,
 .edge::before {
   content: "";
   position: absolute;
@@ -2425,16 +2451,6 @@ button.did-head:not(:disabled):hover {
 
 .composer-frame > .edge::after {
   display: none;
-}
-
-.composer-frame > .aura {
-  inset: -3px;
-  border-radius: calc(var(--r-control) + 3px);
-  filter: blur(9px);
-  opacity: 0.6;
-  --light-side: 140%;
-  --light-time: 4.5s;
-  animation: come var(--d-arrive) ease backwards;
 }
 
 @keyframes come {
@@ -3678,12 +3694,10 @@ button.select-button svg {
   text-wrap: balance;
 }
 
-.empty p {
-  max-width: 40em;
-}
-
+/* The same measure as a page's lead: about fifty characters to the line. */
 .empty p {
   margin: 0;
+  max-width: 52em;
 }
 
 /* ---------- the home screen's backdrop ---------- */
@@ -6044,11 +6058,7 @@ button.select-button svg {
     transition: none !important;
   }
 
-  /* A seal or a box at work: a plain edge of jade, no light going round and no glow. */
-  .aura {
-    display: none;
-  }
-
+  /* A seal or a box at work: a plain edge of jade, no light going round. */
   .edge::before {
     background: var(--jade);
   }
