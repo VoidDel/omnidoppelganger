@@ -1,10 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { BUILTINS, NEEDS, launchLine, parseServers, withServer, type Builtin, type ServerEntry } from "../lib/mcp";
 import type { McpServer } from "../lib/types";
 import { Hint } from "./Hint";
 
 const STATES: Record<McpServer["state"], string> = { connecting: "正在连接", ready: "已连上", failed: "没连上" };
+
+/**
+ * A lamp beside a 法器's name, for how it stands at a glance: jade once connected, gold breathing while it
+ * connects, cinnabar when it would not, and dark while it is off. Its words are there for a reader and on hover.
+ */
+function Lamp({ on, server, builtin }: { on: boolean; server: McpServer | undefined; builtin?: Builtin }) {
+  const state = !on ? "off" : (server?.state ?? "connecting");
+  // Why it did not connect is told here, on hover, rather than across the card.
+  const said =
+    state === "off"
+      ? "没启用"
+      : state === "failed"
+        ? `没连上：${failure(server?.error ?? "", builtin)}${server?.error ? `\n\n${server.error}` : ""}`
+        : state === "ready"
+          ? `已连上，${server?.tools.length ?? 0} 个工具${server?.tools.length ? `：\n${server.tools.join("\n")}` : ""}`
+          : STATES[state];
+  return <span className={`mcp-lamp ${state}`} role="img" aria-label={said} title={said} />;
+}
 
 /** Why a server did not connect, in the user's words where it is something they can put right. */
 function failure(error: string, builtin?: Builtin): string {
@@ -16,14 +34,13 @@ function failure(error: string, builtin?: Builtin): string {
   return error;
 }
 
-/** How a server stands, under its name: connecting, its tools, or why it did not connect, with the reason as given on hover. */
-function Status({ server, builtin }: { server: McpServer | undefined; builtin?: Builtin }) {
-  if (!server) return null;
+/** How a server stands, under its name: connecting, or its tools. Why one did not connect is on its lamp. */
+function Status({ server }: { server: McpServer | undefined }) {
+  if (!server || server.state === "failed") return null;
   return (
-    <p className={`mcp-status ${server.state}`} title={server.error ?? (server.tools.length ? server.tools.join("\n") : undefined)}>
+    <p className={`mcp-status ${server.state}`} title={server.tools.length ? server.tools.join("\n") : undefined}>
       {STATES[server.state]}
       {server.state === "ready" && `，${server.tools.length} 个工具`}
-      {server.error && `：${failure(server.error, builtin)}`}
     </p>
   );
 }
@@ -38,10 +55,79 @@ interface CardProps {
   onSwitch: (on: boolean, key?: string) => Promise<string | null>;
 }
 
+interface KeyDialogProps {
+  builtin: Builtin;
+  /** What it asks for. */
+  secret: NonNullable<Builtin["key"]>;
+  held: boolean;
+  onSwitch: CardProps["onSwitch"];
+  onClose: () => void;
+}
+
+/**
+ * The window that asks for the secret a 法器 needs before it is switched on. Nothing is written until it is filled
+ * and confirmed; closed, the switch goes back off.
+ */
+function KeyDialog({ builtin, secret, held, onSwitch, onClose }: KeyDialogProps) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [key, setKey] = useState("");
+  const [wrong, setWrong] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  // Shown as a modal, which keeps the keyboard inside it and closes on Escape.
+  useEffect(() => {
+    dialog.current?.showModal();
+  }, []);
+  const id = `mcp-key-${builtin.id}`;
+  return (
+    <dialog ref={dialog} className="dialog" aria-labelledby={`${id}-title`} onClose={onClose}>
+      <form
+        method="dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!key.trim()) return setWrong(`先把 ${secret.label}粘贴进来。`);
+          setSaving(true);
+          onSwitch(true, key.trim()).then((error) => {
+            setSaving(false);
+            if (error) return setWrong(error);
+            dialog.current?.close();
+          });
+        }}
+      >
+        <h2 id={`${id}-title`}>启用 {builtin.name}</h2>
+        <p className="lead">它要一个 {secret.label}才能用。</p>
+        <div className="field">
+          <label htmlFor={id}>{secret.label}</label>
+          <input id={id} className="input mono" type="password" autoFocus autoComplete="off" placeholder={secret.placeholder} value={key} onChange={(event) => setKey(event.target.value)} />
+          <p className="hint">
+            {secret.help}
+            {secret.where && (
+              <button type="button" className="button text small" title={secret.where} onClick={() => api.openExternal(secret.where!).catch((error) => console.error(error))}>
+                去生成一个
+              </button>
+            )}
+          </p>
+        </div>
+        {wrong && (
+          <p className="hint failed" role="alert">
+            {wrong}
+          </p>
+        )}
+        <div className="actions">
+          <button type="submit" className="button primary" disabled={held || saving}>
+            {saving ? "正在启用…" : "启用"}
+          </button>
+          <button type="button" className="button text" onClick={() => dialog.current?.close()}>
+            算了
+          </button>
+        </div>
+      </form>
+    </dialog>
+  );
+}
+
 /** One 法器 that comes with the app: what it does, how it runs, and the switch that puts it in the list. */
 function Card({ builtin, home, on, server, held, onSwitch }: CardProps) {
   const [asking, setAsking] = useState(false);
-  const [key, setKey] = useState("");
   const [wrong, setWrong] = useState<string | null>(null);
   const shown: ServerEntry = builtin.entry(home, "…");
   const lit = on && server?.state === "ready";
@@ -64,48 +150,29 @@ function Card({ builtin, home, on, server, held, onSwitch }: CardProps) {
             说明
           </button>
         </div>
-        <p className="mcp-summary">{builtin.summary}</p>
-        <p className="mcp-launch mono">{launchLine(shown)}</p>
-        {on && <Status server={server} builtin={builtin} />}
+        <p className="mcp-summary" title={builtin.summary}>
+          {builtin.summary}
+        </p>
+        <p className="mcp-launch mono" title={launchLine(shown)}>
+          {launchLine(shown)}
+        </p>
+        {on && <Status server={server} />}
         {wrong && (
           <p className="hint failed" role="alert">
             {wrong}
           </p>
         )}
-        {asking && builtin.key && (
-          <form
-            className="mcp-key"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!key.trim()) return;
-              onSwitch(true, key.trim()).then((error) => {
-                setWrong(error);
-                if (!error) {
-                  setAsking(false);
-                  setKey("");
-                }
-              });
-            }}
-          >
-            <label htmlFor={`mcp-key-${builtin.id}`}>{builtin.key.label}</label>
-            <div className="inline wide">
-              <input id={`mcp-key-${builtin.id}`} className="input mono" type="password" autoFocus autoComplete="off" placeholder={builtin.key.placeholder} value={key} onChange={(event) => setKey(event.target.value)} />
-              <button type="submit" className="button primary small" disabled={!key.trim() || held}>
-                启用
-              </button>
-              <button type="button" className="button text small" onClick={() => setAsking(false)}>
-                算了
-              </button>
-            </div>
-            <Hint>{builtin.key.help}</Hint>
-          </form>
-        )}
       </div>
-      <label className="mcp-switch" title={held ? "下面的清单还有没保存的改动，先保存或撤销" : on ? `停用 ${builtin.name}` : `启用 ${builtin.name}`}>
-        <input type="checkbox" role="switch" checked={on || asking} disabled={held} onChange={(event) => (asking ? setAsking(false) : flip(event.target.checked))} />
-        <span className="track" aria-hidden="true" />
-        <span className="sr-only">{on ? "停用" : "启用"} {builtin.name}</span>
-      </label>
+      {asking && builtin.key && <KeyDialog builtin={builtin} secret={builtin.key} held={held} onSwitch={onSwitch} onClose={() => setAsking(false)} />}
+      {/* At the card's right: how it stands, then the switch that changes it. */}
+      <div className="mcp-side">
+        <Lamp on={on} server={server} builtin={builtin} />
+        <label className="mcp-switch" title={held ? "下面的清单还有没保存的改动，先保存或撤销" : on ? `停用 ${builtin.name}` : `启用 ${builtin.name}`}>
+          <input type="checkbox" role="switch" checked={on || asking} disabled={held} onChange={(event) => (asking ? setAsking(false) : flip(event.target.checked))} />
+          <span className="track" aria-hidden="true" />
+          <span className="sr-only">{on ? "停用" : "启用"} {builtin.name}</span>
+        </label>
+      </div>
     </div>
   );
 }
@@ -140,6 +207,9 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
   const unreadable = typeof listed.error === "string" ? (listed.error as string) : null;
   const names = unreadable ? [] : Object.keys(listed);
   const own = names.filter((name) => !BUILTINS.some((builtin) => builtin.id === name));
+  const entries = unreadable ? {} : (listed as Record<string, ServerEntry>);
+  /** Whether a server in the list is in use: one switched off by `disabled` is kept there, and not. */
+  const working = (name: string) => names.includes(name) && !entries[name]?.disabled;
   const dirty = draft !== config;
   const save = (text: string) => {
     setSaving(true);
@@ -153,12 +223,19 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
     if (typeof next !== "string") return Promise.resolve(`下面的清单读不懂，先把它改好：${next.error}`);
     return save(next);
   };
+  /** One of the user's own, switched off or on again: its entry stays as written, with or without the flag. */
+  const switchOwn = (name: string, on: boolean) => {
+    const { disabled: _, ...entry } = entries[name] ?? {};
+    const next = withServer(config, name, on ? entry : { ...entry, disabled: true });
+    if (typeof next !== "string") return;
+    void save(next);
+  };
   const card = (builtin: Builtin) => (
     <Card
       key={builtin.id}
       builtin={builtin}
       home={home}
-      on={names.includes(builtin.id)}
+      on={working(builtin.id)}
       server={servers.find((server) => server.name === builtin.id)}
       held={saving || dirty || !!unreadable}
       onSwitch={(on, key) => switchTo(builtin, on, key)}
@@ -190,20 +267,37 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
           <h2>自定义法器</h2>
           {own.length > 0 && (
             <div className="mcp-list">
-              {own.map((name) => (
-                <div className="mcp-card on" key={name}>
-                  <span className={`seal mcp-seal ${servers.find((server) => server.name === name)?.state === "ready" ? "lit" : ""}`} aria-hidden="true">
-                    器
-                  </span>
-                  <div className="mcp-body">
-                    <div className="mcp-head">
-                      <strong className="mono">{name}</strong>
+              {own.map((name) => {
+                const on = working(name);
+                const server = servers.find((one) => one.name === name);
+                return (
+                  <div className={`mcp-card ${on ? "on" : ""} ${on && server?.state === "failed" ? "failed" : ""}`} key={name}>
+                    <span className={`seal mcp-seal ${on && server?.state === "ready" ? "lit" : ""}`} aria-hidden="true">
+                      器
+                    </span>
+                    <div className="mcp-body">
+                      <div className="mcp-head">
+                        <strong className="mono">{name}</strong>
+                      </div>
+                      <p className="mcp-launch mono" title={launchLine(entries[name] ?? {})}>
+                        {launchLine(entries[name] ?? {})}
+                      </p>
+                      {on && <Status server={server} />}
                     </div>
-                    <p className="mcp-launch mono">{launchLine((listed as Record<string, ServerEntry>)[name] ?? {})}</p>
-                    <Status server={servers.find((server) => server.name === name)} />
+                    <div className="mcp-side">
+                      <Lamp on={on} server={server} />
+                      {/* Off keeps it in the list, ready to be switched on again; to be rid of it, take it out of the list below. */}
+                      <label className="mcp-switch" title={saving || dirty ? "下面的清单还有没保存的改动，先保存或撤销" : on ? `停用 ${name}：留在清单里，不再连接` : `启用 ${name}`}>
+                        <input type="checkbox" role="switch" checked={on} disabled={saving || dirty} onChange={(event) => switchOwn(name, event.target.checked)} />
+                        <span className="track" aria-hidden="true" />
+                        <span className="sr-only">
+                          {on ? "停用" : "启用"} {name}
+                        </span>
+                      </label>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
           <div className="field">

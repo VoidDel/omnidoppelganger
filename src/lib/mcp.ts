@@ -8,6 +8,8 @@ export interface ServerEntry {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  /** Switched off: kept in the list, not connected to. */
+  disabled?: boolean;
 }
 
 export interface Builtin {
@@ -23,7 +25,7 @@ export interface Builtin {
   /** What has to be installed for it to start: Node.js for `npx`, uv for `uvx`. */
   needs?: "node" | "uv";
   /** A secret it needs, asked for when it is switched on. */
-  key?: { label: string; placeholder: string; help: string };
+  key?: { label: string; placeholder: string; help: string; /** The page where one is made. */ where?: string };
   /** Where to read about it. */
   site: string;
   /** Its entry, for a home folder (where it keeps what it keeps) and the key it was given. */
@@ -80,6 +82,7 @@ export const BUILTINS: Builtin[] = [
       label: "GitHub 个人访问令牌",
       placeholder: "github_pat_… 或 ghp_…",
       help: "在 GitHub 的 Settings → Developer settings → Personal access tokens 里生成，只给它要用的仓库和权限。令牌和清单一起存在 mcp.json 里，是明文。",
+      where: "https://github.com/settings/personal-access-tokens/new",
     },
     site: "https://github.com/github/github-mcp-server",
     entry: (_, key) => ({ url: "https://api.githubcopilot.com/mcp/", headers: { Authorization: `Bearer ${key}` } }),

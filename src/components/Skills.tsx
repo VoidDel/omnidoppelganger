@@ -47,9 +47,11 @@ function Card({ skill, held, onChange }: CardProps) {
           <span className="mcp-runs mono">/{skill.name}</span>
           {skill.edited && <span className="chip pending">改过</span>}
         </div>
-        <p className="mcp-summary">{skill.description}</p>
+        <p className="mcp-summary" title={skill.description}>
+          {skill.description}
+        </p>
         {skill.installed && (
-          <p className="mcp-launch mono" title="收在这里，对所有分身生效">
+          <p className="mcp-launch mono" title={`收在这里，对所有分身生效：${skill.directory}`}>
             {skill.directory}
           </p>
         )}

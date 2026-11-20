@@ -5042,9 +5042,12 @@ button.select-button svg {
 
 /* ---------- the 法器 page ---------- */
 
+/* Two to a row where the page is wide enough, one where it is not. */
 .mcp-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  /* Cards side by side stand as tall as each other, though one says more. */
+  align-items: stretch;
   gap: var(--s-2);
   margin-top: var(--s-3);
 }
@@ -5056,8 +5059,8 @@ button.select-button svg {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
-  gap: var(--s-3);
-  padding: var(--s-3) var(--s-4);
+  gap: var(--s-2);
+  padding: 10px var(--s-3);
   border: 1px solid var(--line);
   border-left: 3px solid var(--line-strong);
   border-radius: var(--r-paper);
@@ -5077,7 +5080,11 @@ button.select-button svg {
 
 /* Grey while it is off or connecting, gold once it is connected. */
 .mcp-seal {
-  margin-top: 2px;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  font-size: 13px;
+  line-height: 18px;
   border: 1px solid var(--line-strong);
   background: transparent;
   color: var(--ink-2);
@@ -5094,9 +5101,10 @@ button.select-button svg {
 }
 
 .mcp-body {
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .mcp-head {
@@ -5107,8 +5115,45 @@ button.select-button svg {
 }
 
 .mcp-head strong {
-  font-size: var(--t-lead);
+  font-size: var(--t-body);
   overflow-wrap: anywhere;
+}
+
+/* How a 法器 stands, as a lamp: jade with a glow when connected, gold breathing while connecting, cinnabar when
+   it would not, a dark ring while off. The breath fades the lamp whole, which costs nothing to draw. */
+.mcp-lamp {
+  flex: none;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  background: transparent;
+}
+
+.mcp-lamp.ready {
+  border-color: var(--jade);
+  background: var(--jade);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--jade) 22%, transparent);
+}
+
+.mcp-lamp.connecting {
+  border-color: var(--gold);
+  background: var(--gold);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold) 25%, transparent);
+  animation: lamp-breathe 1.2s ease-in-out infinite alternate;
+}
+
+.mcp-lamp.failed {
+  border-color: var(--cinnabar);
+  background: var(--cinnabar);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cinnabar) 20%, transparent);
+}
+
+@keyframes lamp-breathe {
+  to {
+    opacity: 0.35;
+  }
 }
 
 .mcp-runs {
@@ -5117,22 +5162,41 @@ button.select-button svg {
 }
 
 .mcp-head .button.small {
-  min-height: 26px;
-  padding: 0 4px;
-  font-size: var(--t-small);
+  min-height: 22px;
+  padding: 0 2px;
+  font-size: var(--t-micro);
 }
 
+/* A link-like button at the end of a dialog's hint, set in the line rather than standing taller than it. */
+.dialog .hint .button.text {
+  min-height: 0;
+  padding: 0;
+  margin-left: 6px;
+  font-size: inherit;
+  display: inline;
+  vertical-align: baseline;
+}
+
+/* What it is for, in two lines at most: the rest is on hover. */
 .mcp-summary {
   margin: 0;
-  max-width: 62ch;
+  font-size: var(--t-small);
+  line-height: 1.55;
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
-/* How it is started or reached, as one would type it. */
+/* How it is started or reached, as one would type it, on one line: the rest is on hover. */
 .mcp-launch {
   margin: 0;
   font-size: var(--t-micro);
   color: var(--ink-2);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mcp-status {
@@ -5146,19 +5210,16 @@ button.select-button svg {
   color: var(--jade);
 }
 
-.mcp-status.failed {
-  color: var(--cinnabar);
-}
-
-.mcp-key {
+/* The card's right: the lamp, then the switch, on the line of the name. */
+.mcp-side {
   display: flex;
-  flex-direction: column;
-  gap: var(--s-1);
-  margin-top: var(--s-2);
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
 }
 
-.mcp-key label {
-  font-size: var(--t-small);
+.mcp-side .mcp-switch {
+  margin-top: 0;
 }
 
 /* The switch: the box itself, unseen, laid over a track whose knob slides across, jade when it is on. */
@@ -5182,9 +5243,9 @@ button.select-button svg {
 
 .mcp-switch .track {
   position: relative;
-  width: 38px;
-  height: 22px;
-  border-radius: 11px;
+  width: 34px;
+  height: 20px;
+  border-radius: 10px;
   background: var(--line-strong);
   transition: background-color var(--d-quick) ease;
 }
@@ -5194,8 +5255,8 @@ button.select-button svg {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--sheet);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
@@ -5212,7 +5273,7 @@ button.select-button svg {
 }
 
 .mcp-switch input:checked + .track::after {
-  translate: 16px 0;
+  translate: 14px 0;
 }
 
 .mcp-switch input:disabled + .track {
