@@ -620,7 +620,7 @@ async fn add_mcp_server(input: &Value, context: &ToolContext) -> Result<ToolOutp
         input[field].as_object().map(|object| object.iter().map(|(key, value)| (key.clone(), value.as_str().map_or_else(|| value.to_string(), str::to_string))).collect()).unwrap_or_default()
     };
     let args: Vec<String> = input["args"].as_array().map(|args| args.iter().map(|arg| arg.as_str().map_or_else(|| arg.to_string(), str::to_string)).collect()).unwrap_or_default();
-    let server = crate::mcp::ServerConfig { command: text("command"), args, env: pairs("env"), url: text("url"), headers: pairs("headers") };
+    let server = crate::mcp::ServerConfig { command: text("command"), args, env: pairs("env"), url: text("url"), headers: pairs("headers"), disabled: false };
     hub.add(name, &server, input["replace"].as_bool().unwrap_or(false)).map_err(|why| ToolOutput::error(format!("The server was not added: {why}.")))?;
     let status = hub.settled(name, crate::mcp::START_TIMEOUT + Duration::from_secs(5), &context.cancel).await;
     let meta = |state: &str, tools: &[String]| json!({ "server": name, "state": state, "tools": tools });

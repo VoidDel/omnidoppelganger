@@ -57,6 +57,10 @@ pub struct ServerConfig {
     /// Headers sent with every HTTP request, such as `Authorization`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// Switched off by the user: kept in the list, and not connected to. The
+    /// field other clients write for the same, so their lists read the same here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
 }
 
 /// Read the text of `mcp.json`: `{"mcpServers": {"<name>": {...}}}`. Empty text holds no servers.
@@ -435,19 +439,42 @@ pub fn split_name(name: &str) -> Option<(&str, &str)> {
     name.strip_prefix("mcp__")?.split_once("__")
 }
 
+/// A server in the hub: what it was started from, which attempt at connecting is its own, and how it stands.
+struct Entry {
+    config: ServerConfig,
+    attempt: u64,
+    slot: Slot,
+}
+
 /// Every configured server, connected in the background and shared by all sessions.
 pub struct McpHub {
     path: PathBuf,
     runtime: tokio::runtime::Handle,
-    slots: Arc<Mutex<BTreeMap<String, Slot>>>,
-    /// Bumped at every reload, so a connection that finishes late for an old configuration is dropped.
-    generation: Arc<AtomicU64>,
+    slots: Arc<Mutex<BTreeMap<String, Entry>>>,
+    /// Numbers each attempt at connecting, so one that finishes after its server was dropped or started again is let go.
+    attempts: Arc<AtomicU64>,
 }
 
 impl McpHub {
     /// A hub for the servers listed in the file at `path`. Nothing connects until [`McpHub::reload`].
     pub fn new(path: impl Into<PathBuf>, runtime: tokio::runtime::Handle) -> Self {
-        Self { path: path.into(), runtime, slots: Arc::default(), generation: Arc::default() }
+        Self { path: path.into(), runtime, slots: Arc::default(), attempts: Arc::default() }
+    }
+
+    /// Connect to `name` in the background, in place of whatever stood under that name.
+    fn start(&self, name: &str, config: ServerConfig) {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        self.slots.lock().unwrap().insert(name.to_string(), Entry { config: config.clone(), attempt, slot: Slot::Connecting });
+        let (slots, name) = (self.slots.clone(), name.to_string());
+        self.runtime.spawn(async move {
+            let slot = match Server::connect(&config).await {
+                Ok(server) => Slot::Ready(Arc::new(server)),
+                Err(error) => Slot::Failed(error),
+            };
+            if let Some(entry) = slots.lock().unwrap().get_mut(&name).filter(|entry| entry.attempt == attempt) {
+                entry.slot = slot;
+            }
+        });
     }
 
     /// The configuration file's text, or an empty server list when there is none yet.
@@ -455,22 +482,25 @@ impl McpHub {
         std::fs::read_to_string(&self.path).unwrap_or_else(|_| "{\n  \"mcpServers\": {}\n}\n".to_string())
     }
 
-    /// Drop every connection and connect to what the file now lists. Returns at once; servers connect in the background.
+    /// Bring the connections in line with what the file now lists: a server whose entry is unchanged is left as it
+    /// stands, connected, connecting or failed; one new or changed is connected afresh, and one gone or switched off
+    /// is dropped, which ends it if it was started as a process. Returns at once; servers connect in the background.
     pub fn reload(&self) {
-        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let servers = parse_config(&std::fs::read_to_string(&self.path).unwrap_or_default()).unwrap_or_default();
-        *self.slots.lock().unwrap() = servers.keys().map(|name| (name.clone(), Slot::Connecting)).collect();
+        // One switched off stays in the list, and is neither connected to nor shown as standing anywhere.
+        let servers: BTreeMap<String, ServerConfig> =
+            parse_config(&std::fs::read_to_string(&self.path).unwrap_or_default()).unwrap_or_default().into_iter().filter(|(_, config)| !config.disabled).collect();
+        let dropped: Vec<Entry> = {
+            let mut slots = self.slots.lock().unwrap();
+            let gone: Vec<String> = slots.iter().filter(|(name, entry)| servers.get(*name) != Some(&entry.config)).map(|(name, _)| name.clone()).collect();
+            gone.iter().filter_map(|name| slots.remove(name)).collect()
+        };
+        // Dropped outside the lock: ending a process need not hold up the others.
+        drop(dropped);
+        let standing: Vec<String> = self.slots.lock().unwrap().keys().cloned().collect();
         for (name, config) in servers {
-            let (slots, current) = (self.slots.clone(), self.generation.clone());
-            self.runtime.spawn(async move {
-                let slot = match Server::connect(&config).await {
-                    Ok(server) => Slot::Ready(Arc::new(server)),
-                    Err(error) => Slot::Failed(error),
-                };
-                if current.load(Ordering::SeqCst) == generation {
-                    slots.lock().unwrap().insert(name, slot);
-                }
-            });
+            if !standing.contains(&name) {
+                self.start(&name, config);
+            }
         }
     }
 
@@ -513,18 +543,11 @@ impl McpHub {
             std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         }
         write_atomically(&self.path, text.as_bytes()).map_err(|error| error.to_string())?;
-        let generation = self.generation.load(Ordering::SeqCst);
-        self.slots.lock().unwrap().insert(name.to_string(), Slot::Connecting);
-        let (slots, current, name) = (self.slots.clone(), self.generation.clone(), name.to_string());
-        self.runtime.spawn(async move {
-            let slot = match Server::connect(&config).await {
-                Ok(server) => Slot::Ready(Arc::new(server)),
-                Err(error) => Slot::Failed(error),
-            };
-            if current.load(Ordering::SeqCst) == generation {
-                slots.lock().unwrap().insert(name, slot);
-            }
-        });
+        if config.disabled {
+            self.slots.lock().unwrap().remove(name);
+        } else {
+            self.start(name, config);
+        }
         Ok(())
     }
 
@@ -547,8 +570,8 @@ impl McpHub {
         let slots = self.slots.lock().unwrap();
         slots
             .iter()
-            .map(|(name, slot)| {
-                let (state, error, tools) = match slot {
+            .map(|(name, entry)| {
+                let (state, error, tools) = match &entry.slot {
                     Slot::Connecting => ("connecting", None, Vec::new()),
                     Slot::Ready(server) => ("ready", None, server.tools.iter().map(|tool| tool.name.clone()).collect()),
                     Slot::Failed(error) => ("failed", Some(error.clone()), Vec::new()),
@@ -562,8 +585,8 @@ impl McpHub {
     pub fn specs(&self) -> Vec<Value> {
         let slots = self.slots.lock().unwrap();
         let mut specs = Vec::new();
-        for (name, slot) in slots.iter() {
-            let Slot::Ready(server) = slot else { continue };
+        for (name, entry) in slots.iter() {
+            let Slot::Ready(server) = &entry.slot else { continue };
             for tool in &server.tools {
                 let description = format!("[From the MCP server `{name}`] {}", tool.description);
                 specs.push(json!({ "name": exposed_name(name, &tool.name), "description": description, "input_schema": tool.input_schema }));
@@ -576,8 +599,8 @@ impl McpHub {
     pub async fn call(&self, name: &str, input: &Value, cancel: &CancellationToken) -> CallResult {
         let found = {
             let slots = self.slots.lock().unwrap();
-            slots.iter().find_map(|(server_name, slot)| {
-                let Slot::Ready(server) = slot else { return None };
+            slots.iter().find_map(|(server_name, entry)| {
+                let Slot::Ready(server) = &entry.slot else { return None };
                 server.tools.iter().find(|tool| exposed_name(server_name, &tool.name) == name).map(|tool| (server.clone(), tool.name.clone()))
             })
         };
@@ -590,13 +613,13 @@ impl McpHub {
     /// Put a connected server in place directly, for tests.
     #[cfg(test)]
     pub fn insert(&self, name: &str, server: Server) {
-        self.slots.lock().unwrap().insert(name.to_string(), Slot::Ready(Arc::new(server)));
+        self.slots.lock().unwrap().insert(name.to_string(), Entry { config: ServerConfig::default(), attempt: 0, slot: Slot::Ready(Arc::new(server)) });
     }
 
     /// Drop every connection, which ends the servers started as processes.
     pub fn shutdown(&self) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        self.slots.lock().unwrap().clear();
+        let dropped = std::mem::take(&mut *self.slots.lock().unwrap());
+        drop(dropped);
     }
 }
 
@@ -666,6 +689,46 @@ mod tests {
         assert_eq!(exposed_name("s", &"x".repeat(100)).len(), 64);
         assert_eq!(split_name("mcp__files__read_file"), Some(("files", "read_file")));
         assert_eq!(split_name("read_file"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keeps_a_server_switched_off_in_the_list_without_connecting_to_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mcp.json");
+        std::fs::write(&path, r#"{ "mcpServers": { "on": { "url": "http://127.0.0.1:9/mcp" }, "off": { "command": "odg-no-such-program", "disabled": true } } }"#).unwrap();
+        let servers = parse_config(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(servers["off"].disabled && !servers["on"].disabled);
+        // Written out again, the flag is kept where it is set and left out where it is not.
+        assert_eq!(serde_json::to_value(&servers["off"]).unwrap(), json!({ "command": "odg-no-such-program", "disabled": true }));
+        assert_eq!(serde_json::to_value(&servers["on"]).unwrap(), json!({ "url": "http://127.0.0.1:9/mcp" }));
+        let hub = McpHub::new(&path, tokio::runtime::Handle::current());
+        hub.reload();
+        assert_eq!(hub.statuses().iter().map(|status| status.name.as_str()).collect::<Vec<_>>(), ["on"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn saving_the_list_reconnects_only_the_servers_whose_entries_changed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mcp.json");
+        let entry = |args: &str| format!(r#"{{ "command": "odg-no-such-program", "args": ["{args}"] }}"#);
+        let list = |servers: &[(&str, String)]| format!(r#"{{ "mcpServers": {{ {} }} }}"#, servers.iter().map(|(name, entry)| format!(r#""{name}": {entry}"#)).collect::<Vec<_>>().join(", "));
+        std::fs::write(&path, list(&[("kept", entry("a")), ("changed", entry("a")), ("switched", entry("a")), ("removed", entry("a"))])).unwrap();
+        let hub = McpHub::new(&path, tokio::runtime::Handle::current());
+        hub.reload();
+        for name in ["kept", "changed", "switched", "removed"] {
+            hub.settled(name, Duration::from_secs(20), &CancellationToken::new()).await.unwrap();
+        }
+        let attempt = |name: &str| hub.slots.lock().unwrap().get(name).map(|entry| entry.attempt);
+        let before = attempt("kept");
+        let switched_off = r#"{ "command": "odg-no-such-program", "args": ["a"], "disabled": true }"#.to_string();
+        hub.save_config(&list(&[("kept", entry("a")), ("changed", entry("b")), ("switched", switched_off), ("new", entry("a"))])).unwrap();
+        // The one left as it was keeps its connection; the changed and the new are connected afresh.
+        assert_eq!(attempt("kept"), before);
+        assert!(attempt("changed") > before && attempt("new") > before);
+        // The one switched off and the one taken out are let go.
+        assert_eq!(hub.statuses().iter().map(|status| status.name.as_str()).collect::<Vec<_>>(), ["changed", "kept", "new"]);
+        let status = hub.settled("changed", Duration::from_secs(20), &CancellationToken::new()).await.unwrap();
+        assert_eq!(status.state, "failed");
     }
 
     #[tokio::test(flavor = "multi_thread")]
