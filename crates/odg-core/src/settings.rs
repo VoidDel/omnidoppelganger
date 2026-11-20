@@ -59,6 +59,14 @@ fn default_approval_timeout() -> u64 {
     DEFAULT_APPROVAL_TIMEOUT
 }
 
+fn default_context_auto() -> bool {
+    true
+}
+
+fn default_guardian() -> bool {
+    true
+}
+
 fn default_search_engine() -> String {
     SEARCH_ENGINES[0].0.to_string()
 }
@@ -84,7 +92,9 @@ pub struct Settings {
     pub context_limit: u64,
     /// Compact at four fifths of each model's own context window, whatever
     /// `context_limit` says: as much of the conversation as the model holds.
-    #[serde(default)]
+    /// On unless a figure is set; settings saved before it was on by default
+    /// keep what they say.
+    #[serde(default = "default_context_auto")]
     pub context_auto: bool,
     /// Which of Zhipu's search engines `web_search` asks; see [`SEARCH_ENGINES`].
     #[serde(default = "default_search_engine")]
@@ -115,8 +125,9 @@ pub struct Settings {
     #[serde(default)]
     pub context_windows: BTreeMap<String, u64>,
     /// In auto mode, have the guardian, a model, judge the commands the rules cannot pass before the
-    /// user is asked. See [`crate::agent`].
-    #[serde(default)]
+    /// user is asked. See [`crate::agent`]. On unless switched off; settings saved before it was on by
+    /// default keep what they say.
+    #[serde(default = "default_guardian")]
     pub guardian: bool,
     /// The model the guardian is, by provider id; a provider not listed uses the session's own model.
     #[serde(default)]
@@ -135,7 +146,7 @@ impl Default for Settings {
             effort: "high".to_string(),
             mode: Mode::Edit,
             context_limit: DEFAULT_CONTEXT_LIMIT,
-            context_auto: false,
+            context_auto: true,
             search_engine: default_search_engine(),
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
@@ -143,7 +154,7 @@ impl Default for Settings {
             sandbox: false,
             sandbox_paths: Vec::new(),
             context_windows: BTreeMap::new(),
-            guardian: false,
+            guardian: true,
             guardian_models: BTreeMap::new(),
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
         }
@@ -874,11 +885,18 @@ mod tests {
         assert_eq!(again.context_window(&plain, "zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
 
         // The limit a session compacts at is the one set, or four fifths of the window when that is less.
-        let settings = Settings { context_limit: 200_000, ..Settings::default() };
+        let settings = Settings { context_limit: 200_000, context_auto: false, ..Settings::default() };
         assert_eq!((settings.context_limit_within(1_000_000), settings.context_limit_within(128_000)), (200_000, 102_400));
         // Set to follow the model, it is four fifths of the window whatever limit is set.
         let auto = Settings { context_auto: true, ..settings };
         assert_eq!((auto.context_limit_within(1_000_000), auto.context_limit_within(128_000)), (800_000, 102_400));
+        // Which is how it starts, with the guardian on; a file saved before either was on by default keeps what it says.
+        let fresh = Settings::default();
+        assert!(fresh.context_auto && fresh.guardian);
+        let missing: Settings = serde_json::from_str(r#"{"model": "m", "effort": "high", "theme": "system"}"#).unwrap();
+        assert!(missing.context_auto && missing.guardian);
+        let kept: Settings = serde_json::from_str(r#"{"model": "m", "effort": "high", "theme": "system", "context_auto": false, "guardian": false}"#).unwrap();
+        assert!(!kept.context_auto && !kept.guardian);
     }
 
     #[test]
