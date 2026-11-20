@@ -934,7 +934,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                 </span>
               </div>
               {/* The message, laid out as the 分身's own cards are: its seal first, then the words. */}
-              <div className={`original ${last && status === "running" ? "working" : ""}`} title={`${who ?? "本尊"}，${time(row.prompt.ts)}`}>
+              <div className="original" title={`${who ?? "本尊"}，${time(row.prompt.ts)}`}>
                 <span className="seal" aria-hidden="true">
                   {task === "agent" ? "遣" : task === "schedule" ? "课" : row.prompt.steering ? "音" : "令"}
                 </span>

@@ -1158,7 +1158,6 @@ pre,
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  transition: box-shadow 240ms ease;
 }
 
 .original .seal {
@@ -1197,10 +1196,6 @@ pre,
   line-height: 14px;
   color: var(--ink-2);
   white-space: nowrap;
-}
-
-.original.working {
-  box-shadow: 10px 10px 0 var(--talisman-under);
 }
 
 .original.queued {
