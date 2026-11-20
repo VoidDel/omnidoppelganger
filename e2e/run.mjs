@@ -553,6 +553,16 @@ try {
   await pressed("Escape");
   await page.waitFor("the / menu to be put away", `!document.querySelector(".slash-menu")`);
 
+  // A right click keeps the webview's own menu away, but for a field (cut and paste) and words picked out (copy).
+  const menuKept = (selector) => page.evaluate(`(() => { const target = document.querySelector(${JSON.stringify(selector)}); const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }); target.dispatchEvent(event); return !event.defaultPrevented; })()`);
+  await page.evaluate(`window.getSelection().removeAllRanges()`);
+  const onPage = await menuKept(".sidebar");
+  const inField = await menuKept("#composer-input");
+  await page.evaluate(`(() => { const range = document.createRange(); range.selectNodeContents(document.querySelector(".prose")); const picked = window.getSelection(); picked.removeAllRanges(); picked.addRange(range); })()`);
+  const onPicked = await menuKept(".prose");
+  await page.evaluate(`window.getSelection().removeAllRanges()`);
+  check(!onPage && inField && onPicked, "a right click shows no browser menu on the page, but keeps it in a field and over words picked out");
+
   console.log("Passed.");
 } catch (error) {
   failed = true;
