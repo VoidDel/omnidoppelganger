@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
-import { Hint } from "./Hint";
+import { Info } from "./Hint";
 import { EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { mcpTool, shortCount } from "../lib/fold";
 import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
@@ -139,9 +139,11 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
           </div>
         )}
         <div className="field">
-          <label htmlFor="key-name">名字</label>
+          <div className="label-line">
+            <label htmlFor="key-name">名字</label>
+            <Info>在宗门列表和心法菜单里显示的名字。同一种宗门加了几个时，靠它分清；不填就用「{kind.name}」{target === kind.id ? "" : "加上编号"}。</Info>
+          </div>
           <input id="key-name" className="input" placeholder={kind.name} value={name} onChange={(event) => setName(event.target.value)} />
-          <Hint>在宗门列表和心法菜单里显示的名字。同一种宗门加了几个时，靠它分清；不填就用「{kind.name}」{target === kind.id ? "" : "加上编号"}。</Hint>
         </div>
         <div className="field">
           <label htmlFor="key-value">{status.source === "saved" ? "换一个密钥（不换就留空）" : "API 密钥"}</label>
@@ -160,15 +162,15 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
               value={address}
               onChange={(event) => setAddress(event.target.value)}
             />
-            {kind.protocol === "anthropic" && !kind.base_url && <Hint>填到 /v1 之前为止，请求会发到「地址/v1/messages」，和 ANTHROPIC_BASE_URL 的写法一样。</Hint>}
+            {kind.protocol === "anthropic" && !kind.base_url && <p className="hint">填到 /v1 之前为止，请求会发到「地址/v1/messages」，和 ANTHROPIC_BASE_URL 的写法一样。</p>}
             {kind.other_urls.length > 0 && (
-              <Hint>
+              <p className="hint">
                 {kind.other_urls.map(([url, what]) => (
                   <span key={url}>
                     {what}：<span className="mono">{url}</span>{" "}
                   </span>
                 ))}
-              </Hint>
+              </p>
             )}
           </div>
         )}
@@ -228,7 +230,12 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
   return (
     <section>
       <div className="section-head">
-        <h2>宗门</h2>
+        <h2>
+          宗门
+          <Info>
+            宗门是模型供应商。密钥存进系统的凭据管理器（Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service），只显示开头和结尾；凭据管理器用不了时，才退回 {view.home} 目录里的明文文件。
+          </Info>
+        </h2>
         <span className="spacer" />
         <button type="button" className="button primary compact" title="添一个宗门（模型供应商），填上它的密钥；同一种可以加好几个" onClick={() => setEditing("new")}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -304,9 +311,6 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
           );
         })}
       </ul>
-      <p className="muted">
-        密钥存进系统的凭据管理器（Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service），只显示开头和结尾。凭据管理器用不了时，才退回 {view.home} 目录里的明文文件。
-      </p>
       {editing && (
         <KeyDialog
           provider={editing === "new" ? null : (view.providers.find((provider) => provider.id === editing) ?? null)}
@@ -456,10 +460,15 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
           <>
         <KeyList view={view} onSave={onSave} onSaveKey={onSaveKey} onAdd={onAddProvider} onRemove={onRemoveProvider} />
         <section>
-          <h2>默认分身</h2>
-          <p className="muted">新化出的分身照这里的来。已经化出的不受影响，要换心法在它输入框下方换。</p>
+          <h2>
+            默认分身
+            <Info>新化出的分身照这里的来。已经化出的不受影响，要换心法在它输入框下方换。</Info>
+          </h2>
           <div className="field">
-            <label htmlFor="default-provider">宗门（模型供应商）</label>
+            <div className="label-line">
+              <label htmlFor="default-provider">宗门（模型供应商）</label>
+              <Info>只列上面已有的宗门。要用别家，先点「新增宗门」把它添进来。</Info>
+            </div>
             <div className="inline model-row">
               {/* Only the 宗门 in the list above: one that is not set up could not answer. */}
               <Combo
@@ -470,10 +479,12 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 onSave={(id) => onSave({ ...settings, provider: id, model: view.providers.find((provider) => provider.id === id)?.models[0]?.[0] ?? "" })}
               />
             </div>
-            <Hint>只列上面已有的宗门。要用别家，先点「新增宗门」把它添进来。</Hint>
           </div>
           <div className="field">
-            <label htmlFor="default-model">心法（模型）</label>
+            <div className="label-line">
+              <label htmlFor="default-model">心法（模型）</label>
+              <Info>可以从列表里选，也可以直接填模型 ID。列表是向这个宗门问来的；问不到时，用内置的几门。</Info>
+            </div>
             <div className="inline model-row">
               <Combo
                 id="default-model"
@@ -498,17 +509,18 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 <span className="sr-only">刷新心法列表</span>
               </button>
             </div>
-            <Hint>
-              {asking
-                ? `正在向 ${chosen?.name ?? settings.provider} 问它有哪些心法……`
-                : served.models.length > 0
-                ? `已向 ${chosen?.name ?? settings.provider} 问到它提供的 ${served.models.length} 门心法，可以从列表里选，也可以直接填。`
-                : served.why
-                  ? `没能向 ${chosen?.name ?? settings.provider} 问到心法列表（${served.why}），先用内置的几门，也可以直接填模型 ID。`
-                  : keyed === "none"
-                    ? "填上这个宗门的密钥后，会自动向它问有哪些心法。眼下可以从内置的几门里选，或直接填模型 ID。"
-                    : "可以从列表里选，也可以直接填模型 ID。"}
-            </Hint>
+            {/* How asking the provider for its models stands: said in a line, since it is what the list above holds. */}
+            {(asking || served.models.length > 0 || served.why || keyed === "none") && (
+              <p className="hint">
+                {asking
+                  ? `正在向 ${chosen?.name ?? settings.provider} 问它有哪些心法……`
+                  : served.models.length > 0
+                    ? `已向 ${chosen?.name ?? settings.provider} 问到它提供的 ${served.models.length} 门心法。`
+                    : served.why
+                      ? `没能向 ${chosen?.name ?? settings.provider} 问到心法列表（${served.why}），先用内置的几门，也可以直接填模型 ID。`
+                      : "这个宗门还没填密钥，问不到它的心法列表：先用内置的几门，或直接填模型 ID。"}
+              </p>
+            )}
             {/* How much the model itself can hold, and who says so: a fact about the model, so one line, with the way to correct it kept out of sight. */}
             <p className="hint window-line" id="context-window">
               {settings.model} 的上下文窗口：{shortCount(view.context_window.tokens)} token（{WINDOW_SOURCES[view.context_window.source]}）。
@@ -526,7 +538,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
           </div>
           {editingWindow && (
             <div className="field">
-              <label htmlFor="context-window-set">这门心法一次最多能装多少（token）</label>
+              <div className="label-line">
+                <label htmlFor="context-window-set">这门心法一次最多能装多少（token）</label>
+                <Info>这是心法自己的硬指标，不是想让对话多长：填得比实际大，请求会被宗门拒掉。留空不改。</Info>
+              </div>
               <input
                 id="context-window-set"
                 className="input mono"
@@ -543,11 +558,13 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                   if (event.key === "Escape") setEditingWindow(false);
                 }}
               />
-              <Hint>这是心法自己的硬指标，不是想让对话多长：填得比实际大，请求会被宗门拒掉。留空不改。</Hint>
             </div>
           )}
           <fieldset className="field">
-            <legend>境界</legend>
+            <legend>
+              境界
+              <Info>境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。这是新分身的默认，下一次请求起生效；单个分身可以在输入框下方另换境界，换过的就不再跟着这里。</Info>
+            </legend>
             <div className="realms">
               {view.efforts.map((effort) => (
                 <label className="realm" key={effort}>
@@ -556,16 +573,23 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 </label>
               ))}
             </div>
-            <Hint>
-              境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。这是新分身的默认，下一次请求起生效；单个分身可以在输入框下方另换境界，换过的就不再跟着这里。{note}
-            </Hint>
+            {/* What this provider makes of the realms, where it does not take all five: it changes what a pick does. */}
+            {note && <p className="hint">{note}</p>}
           </fieldset>
         </section>
 
         <section>
           <h2>灵石</h2>
           <div className="field">
-            <span className="field-label" id="context-limit-label">前情上限</span>
+            <div className="label-line">
+              <span className="field-label" id="context-limit-label">
+                前情上限
+              </span>
+              <Info>
+                每次请求都要把整段对话发给模型，对话越长越费灵石。对话到上限，分身会把前情凝成一段摘要，之后只凭摘要接着做。「自动」按每门心法自己的窗口，用到它的八成：窗口大的心法前情留得长，也更费灵石。「自己定」是一个数（token，最低
+                20000），对所有心法都用它；心法装不下这么多时，按它窗口的八成算。
+              </Info>
+            </div>
             <div className="kinds" role="radiogroup" aria-labelledby="context-limit-label">
               <label className="kind">
                 <input type="radio" name="context-limit-kind" checked={settings.context_auto} onChange={() => onSave({ ...settings, context_auto: true })} />
@@ -584,12 +608,12 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 <input id="context-limit" className="input mono" type="number" min={20000} step={10000} {...limit} />
               </>
             )}
-            <Hint>
-              每次请求都要把整段对话发给模型，对话越长越费灵石。对话到上限，分身会把前情凝成一段摘要，之后只凭摘要接着做。
-              {settings.context_auto
-                ? `自动：按每门心法自己的窗口，用到它的八成，${settings.model} 眼下是 ${shortCount(ceiling)}。窗口大的心法前情留得长，也更费灵石。`
-                : "自己定一个数（token，最低 20000），对所有心法都用它；心法装不下这么多时，按它窗口的八成算。"}
-            </Hint>
+            {/* What 自动 comes to for the model in use: the figure that the field would otherwise show. */}
+            {settings.context_auto && (
+              <p className="hint">
+                按每门心法自己的窗口，用到它的八成，{settings.model} 眼下是 {shortCount(ceiling)}。
+              </p>
+            )}
           </div>
           {/* Said here only when it matters: the model cannot hold as much as the limit asks for. */}
           {!settings.context_auto && settings.context_limit > ceiling && (
@@ -603,7 +627,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
         {tab === "rules" && (
           <>
         <section>
-          <h2>禁制</h2>
+          <h2>
+            禁制
+            <Info>已经化出的分身，在输入框下方或按 Shift+Tab 随时换禁制。无论哪种禁制，碰洞府之外的东西、改 .git 里的文件都要请示。</Info>
+          </h2>
           <fieldset className="papers pairs">
             <legend>新分身起始的禁制</legend>
             {MODES.map((option) => (
@@ -616,31 +643,33 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
               </label>
             ))}
           </fieldset>
-          <Hint>已经化出的分身，在输入框下方或按 Shift+Tab 随时换禁制。无论哪种禁制，碰洞府之外的东西、改 .git 里的文件都要请示。</Hint>
         </section>
 
         <section>
           <h2>结界（沙箱）</h2>
-          <label className="check">
-            <input type="checkbox" checked={settings.sandbox && !!view.sandbox_support.Ok} disabled={!view.sandbox_support.Ok} onChange={(event) => onSave({ ...settings, sandbox: event.target.checked })} />
-            <span>
-              给洞府布下结界，把分身运行的命令关在里面
-              <span className="muted">（命令只能往洞府和临时目录里写；读文件、联网不受限）</span>
-            </span>
-          </label>
-          {view.sandbox_support.Ok ? (
-            <Hint>
-              用的是系统自带的 {view.sandbox_support.Ok}。开了之后，命令（连同它启动的一切，比如构建脚本和测试）改不了洞府之外的文件。禁制照旧：该请示的命令还是请示。
-              命令确实要往别处写时，分身会请示出结界跑一次，每次都要本尊点头。下一条命令起生效。
-            </Hint>
-          ) : (
+          <div className="label-line">
+            <label className="check">
+              <input type="checkbox" checked={settings.sandbox && !!view.sandbox_support.Ok} disabled={!view.sandbox_support.Ok} onChange={(event) => onSave({ ...settings, sandbox: event.target.checked })} />
+              <span>给洞府布下结界，把分身运行的命令关在里面</span>
+            </label>
+            <Info>
+              <p>命令只能往洞府和临时目录里写；读文件、联网不受限。连同它启动的一切，比如构建脚本和测试，都改不了洞府之外的文件。</p>
+              <p>禁制照旧：该请示的命令还是请示。命令确实要往别处写时，分身会请示出结界跑一次，每次都要本尊点头。下一条命令起生效。</p>
+              {view.sandbox_support.Ok && <p>用的是系统自带的 {view.sandbox_support.Ok}。</p>}
+            </Info>
+          </div>
+          {/* Why the box cannot be ticked, where it cannot: that is how things stand, so it is said in the open. */}
+          {!view.sandbox_support.Ok && (
             <p className="hint" title={view.sandbox_support.Err}>
               这个系统上还布不了结界，眼下只有 Linux 和 macOS 可以。
             </p>
           )}
           {/* Nothing to add directories to where nothing is confined. */}
           <div className="field" hidden={!view.sandbox_support.Ok}>
-            <label htmlFor="sandbox-paths">另外准许写入的目录（一行一个）</label>
+            <div className="label-line">
+              <label htmlFor="sandbox-paths">另外准许写入的目录（一行一个）</label>
+              <Info>结界之外还准命令写的地方，比如包管理器的缓存目录。Git 仓库自己的 .git 目录不用填，已经算在内。</Info>
+            </div>
             <textarea
               id="sandbox-paths"
               className="input area mono"
@@ -654,26 +683,27 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 if (paths.join("\n") !== settings.sandbox_paths.join("\n")) onSave({ ...settings, sandbox_paths: paths });
               }}
             />
-            <Hint>Git 仓库自己的 .git 目录不用填，已经算在内。</Hint>
           </div>
         </section>
 
         <section>
           <h2>护法（模型审核）</h2>
-          <label className="check">
-            <input type="checkbox" checked={settings.guardian} onChange={(event) => onSave({ ...settings, guardian: event.target.checked })} />
-            <span>
-              放手施为时，请一位护法先审拿不准的命令
-              <span className="muted">（护法是另一个模型：它放行的直接跑，它不放行的才请本尊定夺）</span>
-            </span>
-          </label>
-          <Hint>
-            只管放手施为下规则不放行的命令；别的禁制、改洞府之外的文件、上网、身外法器照旧请示，全权托付不经护法。护法只看得到本尊说过的话、分身动手前说的打算和命令本身，看不到文件和命令输出里的字。
-            它会看走眼，也会被骗，不是保险；每审一次花一两千 token 的灵石，慢一两秒。
-          </Hint>
+          <div className="label-line">
+            <label className="check">
+              <input type="checkbox" checked={settings.guardian} onChange={(event) => onSave({ ...settings, guardian: event.target.checked })} />
+              <span>放手施为时，请一位护法先审拿不准的命令</span>
+            </label>
+            <Info>
+              <p>护法是另一个模型：它放行的直接跑，它不放行的才请本尊定夺。只管放手施为下规则不放行的命令；别的禁制、改洞府之外的文件、上网、身外法器照旧请示，全权托付不经护法。</p>
+              <p>护法只看得到本尊说过的话、分身动手前说的打算和命令本身，看不到文件和命令输出里的字。它会看走眼，也会被骗，不是保险；每审一次花一两千 token 的灵石，慢一两秒。</p>
+            </Info>
+          </div>
           {settings.guardian && (
             <div className="field">
-              <label htmlFor="guardian-model">护法的心法（{chosen?.name ?? settings.provider}）</label>
+              <div className="label-line">
+                <label htmlFor="guardian-model">护法的心法（{chosen?.name ?? settings.provider}）</label>
+                <Info>挑一门又快又便宜的。护法和分身用同一个宗门，这里设的是默认宗门的；别的宗门没设时，用分身自己的心法。</Info>
+              </div>
               <div className="inline model-row">
                 <Combo
                   id="guardian-model"
@@ -688,13 +718,14 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                   }}
                 />
               </div>
-              <Hint>挑一门又快又便宜的。护法和分身用同一个宗门，这里设的是默认宗门的；别的宗门没设时，用分身自己的心法。</Hint>
             </div>
           )}
           <div className="field">
-            <label htmlFor="approval-timeout">放手施为下，请示等多久（秒）</label>
+            <div className="label-line">
+              <label htmlFor="approval-timeout">放手施为下，请示等多久（秒）</label>
+              <Info>过了这个时间没人定夺，就自动驳回，分身绕开那一步接着做，并在回报里说明。填 0 就一直等。别的禁制下一直等。</Info>
+            </div>
             <input id="approval-timeout" className="input mono short" type="number" min={0} step={5} {...timeout} />
-            <Hint>过了这个时间没人定夺，就自动驳回，分身绕开那一步接着做，并在回报里说明。填 0 就一直等。别的禁制下一直等。</Hint>
           </div>
         </section>
 
@@ -725,7 +756,12 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
         <section>
           <h2>天机阁（联网搜索）</h2>
           <div className="field">
-            <label htmlFor="search-engine">向哪家打探</label>
+            <div className="label-line">
+              <label htmlFor="search-engine">向哪家打探</label>
+              <Info>
+                搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家心法都能搜；每次搜索前要请示，按次花灵石。GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
+              </Info>
+            </div>
             <div className="inline model-row">
               <Combo
                 id="search-engine"
@@ -735,13 +771,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 onSave={(engine) => onSave({ ...settings, search_engine: engine })}
               />
             </div>
-            <Hint>
-              搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家心法都能搜。
-              {view.search_ready
-                ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。"
-                : "还没有 GLM 的密钥，所以分身现在不能这样搜：到「心法」那一页给 GLM 添上密钥就行，或者到侧栏的「法器」里启用 Exa，它不用密钥。"}
-              GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
-            </Hint>
+            {/* Searching does not work yet: said in the open, with what puts it right. */}
+            {!view.search_ready && (
+              <p className="hint missing">还没有 GLM 的密钥，分身现在搜不了。到「心法」那一页给 GLM 添上密钥，或者到侧栏的「法器」里启用 Exa，它不用密钥。</p>
+            )}
           </div>
         </section>
           </>

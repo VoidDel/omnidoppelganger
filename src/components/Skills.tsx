@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import type { ListedSkill, SkillsView } from "../lib/types";
 import { FormDialog, Row } from "./FormDialog";
-import { Hint } from "./Hint";
+import { Info } from "./Hint";
 
 /** How each 秘籍 that comes with the app is called and sealed. */
 const LOOKS: Record<string, { title: string; seal: string }> = {
@@ -378,8 +378,10 @@ export function SkillsPage({ onChanged }: { onChanged: () => void }) {
         </section>
 
         <section>
-          <h2>内置秘籍</h2>
-          <Hint>随程序带来的，默认都不收入。打开就写进你的秘籍目录，对所有分身生效，下一轮起列给分身；关掉就收起。收入后可以照自己的习惯改它，改过的关掉前会先问。</Hint>
+          <h2>
+            内置秘籍
+            <Info>随程序带来的，默认都不收入。打开就写进你的秘籍目录，对所有分身生效，下一轮起列给分身；关掉就收起。收入后可以照自己的习惯改它，改过的关掉前会先问。</Info>
+          </h2>
           <div className="mcp-list">
             {builtIn.map((skill) => (
               <Card key={skill.name} skill={skill} held={saving} onChange={change} />
@@ -389,7 +391,14 @@ export function SkillsPage({ onChanged }: { onChanged: () => void }) {
 
         <section>
           <div className="section-head">
-            <h2>自己的秘籍</h2>
+            <h2>
+              自己的秘籍
+              <Info label="怎么写一部秘籍">
+                每部秘籍是一个文件夹，里面一份 SKILL.md，开头用 --- 围起来写上 name 和 description，后面是做事说明；说明里提到的脚本、模板放在同一个文件夹里。放在{" "}
+                <span className="mono">{view?.folder ?? "~/.odg/skills"}</span> 的对所有分身生效；放在某处洞府的 <span className="mono">.odg/skills</span>{" "}
+                里的只对那处洞府生效，重名时以洞府里的为准。
+              </Info>
+            </h2>
             <button type="button" className="button outline small" disabled={saving} onClick={() => setAdding({})}>
               ＋ 添加秘籍
             </button>
@@ -402,14 +411,6 @@ export function SkillsPage({ onChanged }: { onChanged: () => void }) {
           </div>
         </section>
 
-        <section>
-          <h2>怎么写一部秘籍</h2>
-          <p className="muted">
-            每部秘籍是一个文件夹，里面一份 SKILL.md，开头用 --- 围起来写上 name 和 description，后面是做事说明；说明里提到的脚本、模板放在同一个文件夹里。放在{" "}
-            <span className="mono">{view?.folder ?? "~/.odg/skills"}</span> 的对所有分身生效；放在某处洞府的 <span className="mono">.odg/skills</span>{" "}
-            里的只对那处洞府生效，重名时以洞府里的为准。
-          </p>
-        </section>
       </div>
       {adding && (
         <SkillDialog

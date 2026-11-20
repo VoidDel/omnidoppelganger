@@ -1,35 +1,108 @@
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+
+/** Where the note stands: at the mark's left edge or held inside the window, under the mark or over it. */
+interface Place {
+  left: number;
+  top?: number;
+  bottom?: number;
+}
+
+/** The gap between the mark and its note, and between the note and the window's edge. */
+const GAP = 8;
+const EDGE = 12;
 
 /**
- * A field's explanation, held to its first line until it is opened: the line says what the field is for, and
- * the rest is there for whoever wants it. The way to open it shows only when there is more to see.
+ * What a label or a heading means, for whoever wants to know: an ⓘ beside it, and the words in a note that shows
+ * while the mark is pointed at or has the keyboard, and stays when it is pressed. What must be seen to use the
+ * page (how something stands, what to do next) is not put here.
  */
-export function Hint({ children }: { children: ReactNode }) {
-  const body = useRef<HTMLParagraphElement>(null);
-  const [open, setOpen] = useState(false);
-  const [more, setMore] = useState(false);
-  // Measured while held: whether its words go past the one line they are held to. Measured again whenever
-  // its box changes: when the window is made narrower, and when a dialog it is in, which had no size while it
-  // was shut, is opened.
+export function Info({ children, label = "说明" }: { children: ReactNode; label?: string }) {
+  const mark = useRef<HTMLButtonElement>(null);
+  const note = useRef<HTMLSpanElement>(null);
+  const id = useId();
+  /** Shown because the mark is pointed at or focused; kept because it was pressed. */
+  const [shown, setShown] = useState(false);
+  const [kept, setKept] = useState(false);
+  const [place, setPlace] = useState<Place | null>(null);
+  const leaving = useRef<number | undefined>(undefined);
+  const open = shown || kept;
+  const show = () => {
+    window.clearTimeout(leaving.current);
+    setShown(true);
+  };
+  // A moment's grace, so the pointer can cross from the mark to the note to read or select it.
+  const hide = () => {
+    window.clearTimeout(leaving.current);
+    leaving.current = window.setTimeout(() => setShown(false), 120);
+  };
+  const shut = () => {
+    window.clearTimeout(leaving.current);
+    setShown(false);
+    setKept(false);
+  };
+  // Placed once it has a size: under the mark, or over it where there is no room under; never off the window's side.
   useLayoutEffect(() => {
-    const element = body.current;
-    if (!element || open) return;
-    const measure = () => setMore(element.scrollHeight > element.clientHeight + 1);
-    measure();
-    const watch = new ResizeObserver(measure);
-    watch.observe(element);
-    return () => watch.disconnect();
+    if (!open || !mark.current || !note.current) return setPlace(null);
+    const at = mark.current.getBoundingClientRect();
+    const size = note.current.getBoundingClientRect();
+    const left = Math.max(EDGE, Math.min(at.left - EDGE, window.innerWidth - size.width - EDGE));
+    const under = at.bottom + GAP + size.height + EDGE <= window.innerHeight;
+    setPlace(under || at.top - GAP - size.height < EDGE ? { left, top: at.bottom + GAP } : { left, bottom: window.innerHeight - at.top + GAP });
   }, [open, children]);
+  // It stands where the mark was when it opened: when the page moves under it, or something else is pressed, it goes.
+  useEffect(() => {
+    if (!open) return;
+    const away = (event: Event) => {
+      if (event.target instanceof Node && (mark.current?.contains(event.target) || note.current?.contains(event.target))) return;
+      shut();
+    };
+    window.addEventListener("scroll", away, true);
+    window.addEventListener("pointerdown", away, true);
+    window.addEventListener("resize", shut);
+    return () => {
+      window.removeEventListener("scroll", away, true);
+      window.removeEventListener("pointerdown", away, true);
+      window.removeEventListener("resize", shut);
+    };
+  }, [open]);
+  useEffect(() => () => window.clearTimeout(leaving.current), []);
   return (
-    <div className="hint-wrap">
-      <p ref={body} className={`hint ${open ? "" : "held"}`}>
-        {children}
-      </p>
-      {(more || open) && (
-        <button type="button" className="hint-more" aria-expanded={open} onClick={() => setOpen(!open)}>
-          {open ? "收起" : "展开"}
-        </button>
+    <span className="info" onMouseEnter={show} onMouseLeave={hide}>
+      <button
+        ref={mark}
+        type="button"
+        className="info-mark"
+        aria-label={label}
+        aria-expanded={open}
+        aria-describedby={open ? id : undefined}
+        onFocus={show}
+        onBlur={shut}
+        onClick={(event) => {
+          // Beside a label or in a form, pressing it is asking what the thing is, never the form's own action.
+          event.preventDefault();
+          event.stopPropagation();
+          setKept((now) => !now);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && open) {
+            // The note is what Escape puts away: not the window the mark may be in.
+            event.preventDefault();
+            event.stopPropagation();
+            shut();
+          }
+        }}
+      >
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+          <circle cx="8" cy="8" r="6.4" />
+          <path d="M8 7.3v3.9" />
+          <circle cx="8" cy="4.9" r="0.55" fill="currentColor" stroke="none" />
+        </svg>
+      </button>
+      {open && (
+        <span ref={note} id={id} role="tooltip" className="info-note" style={place ?? { left: 0, top: 0, visibility: "hidden" }}>
+          {children}
+        </span>
       )}
-    </div>
+    </span>
   );
 }

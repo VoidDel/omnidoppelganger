@@ -93,7 +93,7 @@ pnpm tauri build
 - 朱丝栏的奏折是候本尊定夺的事，朱砂只在这里和印上出现。
 - 青玉色是传令，朱砂色是批准，两种动作不共用一种颜色。
 
-文字统一用[霞鹜文楷 轻便版](https://github.com/lxgw/LxgwWenKai-Lite)（LXGW WenKai Lite，SIL OFL 1.1 许可），标题和印用它的粗体；代码用 Atkinson Hyperlegible Mono。两款字体都随应用打包，不依赖系统字体。
+文字分两种手笔。标题、印章、黄符上的字是“写上去的”，用[霞鹜文楷 轻便版](https://github.com/lxgw/LxgwWenKai-Lite)（LXGW WenKai Lite，SIL OFL 1.1 许可）；对话、标签和控件上的字是“读的”，中文用系统自带的黑体（苹方、微软雅黑、思源黑体），小字号下清楚，西文字母用 Atkinson Hyperlegible Next，代码用同一家族的 Atkinson Hyperlegible Mono。文楷和两款 Atkinson 随应用打包；中文黑体用系统的，不增加体积。
 
 ## 结构
 

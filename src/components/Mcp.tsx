@@ -18,7 +18,7 @@ import {
 } from "../lib/mcp";
 import type { McpServer } from "../lib/types";
 import { FormDialog, Pairs, Row, Segmented } from "./FormDialog";
-import { Hint } from "./Hint";
+import { Info } from "./Hint";
 
 const STATES: Record<McpServer["state"], string> = { connecting: "正在连接", ready: "已连上", failed: "没连上" };
 
@@ -503,14 +503,18 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
         </section>
 
         <section>
-          <h2>远程法器</h2>
-          <Hint>连到网上的服务，这台电脑上不用装东西。分身用它们时，要查的内容会发给这些服务。</Hint>
+          <h2>
+            远程法器
+            <Info>连到网上的服务，这台电脑上不用装东西。分身用它们时，要查的内容会发给这些服务。</Info>
+          </h2>
           <div className="mcp-list">{BUILTINS.filter((builtin) => builtin.runs === "remote").map(card)}</div>
         </section>
 
         <section>
-          <h2>本机法器</h2>
-          <Hint>在这台电脑上启动的程序，要先装好 Node.js 或 uv。第一次启用时要先下载，可能要等一两分钟。</Hint>
+          <h2>
+            本机法器
+            <Info>在这台电脑上启动的程序，要先装好 Node.js 或 uv。第一次启用时要先下载，可能要等一两分钟。</Info>
+          </h2>
           <div className="mcp-list">{BUILTINS.filter((builtin) => builtin.runs === "local").map(card)}</div>
         </section>
 
@@ -569,12 +573,14 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
           <details className="raw-config" open={unreadable || dirty ? true : undefined}>
             <summary>直接改 mcp.json</summary>
             <div className="field">
-              <label htmlFor="mcp-config">服务清单（mcp.json）</label>
+              <div className="label-line">
+                <label htmlFor="mcp-config">服务清单（mcp.json）</label>
+                <Info>
+                  用各家通用的 mcpServers 写法，MCP 服务说明里给的配置片段可以直接贴进来：本机程序写 command 和 args，远程服务写 url（需要的话加
+                  headers）。上面启用的法器也写在这份清单里。保存后立即连接。
+                </Info>
+              </div>
               <textarea id="mcp-config" className="input mono config" rows={8} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
-              <Hint>
-                用各家通用的 mcpServers 写法，MCP 服务说明里给的配置片段可以直接贴进来：本机程序写 command 和 args，远程服务写 url（需要的话加
-                headers）。上面启用的法器也写在这份清单里。保存后立即连接。
-              </Hint>
               {unreadable && !dirty && (
                 <p className="hint failed" role="alert">
                   这份清单读不懂：{unreadable}。改好之前，上面的开关先停着。

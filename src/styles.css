@@ -6,12 +6,12 @@
 :root {
   /* Type: six sizes for everything written, and one for code. Seals and tokens are drawn to their boxes, not set on this scale. */
   --t-micro: 12px;
-  --t-small: 14px;
-  --t-body: 16px;
-  --t-lead: 18px;
-  --t-title: 22px;
-  --t-display: 44px;
-  --t-code: 13.5px;
+  --t-small: 13px;
+  --t-body: 14px;
+  --t-lead: 16px;
+  --t-title: 21px;
+  --t-display: 38px;
+  --t-code: 13px;
   /* Corners: paper is cut nearly square, controls are rounded to the hand. */
   --r-paper: 2px;
   --r-control: 6px;
@@ -37,7 +37,7 @@
   --rail-box: 13px;
   /* The bars across the top of the conversation, the side panel and the settings: one height, so their lower
      borders make one line across the window, whatever each holds. */
-  --bar: 60px;
+  --bar: 52px;
   --rail-edge: calc(var(--rail) - 6px);
   --bg: #eff3ef;
   --bg-side: #e3eae5;
@@ -71,9 +71,14 @@
   --mist-far: #dce6e0;
   --mist-mid: #c9d8d0;
   --mist-near: #b4c8bf;
-  /* One family for everything written: LXGW WenKai Lite, a regular-script face. Headings and seals use its bold. */
-  --text: "LXGW WenKai Lite", "STKaiti", "KaiTi", serif;
-  --mono: "Atkinson Hyperlegible Mono", "LXGW WenKai Lite", ui-monospace, Consolas, monospace;
+  /* Two hands. What is written with a brush (headings, seals, the words on a talisman) is LXGW WenKai Lite, a
+     regular-script face. What is read (the conversation, labels, everything a control says) is the system's own
+     Chinese sans, which holds at small sizes, with Atkinson Hyperlegible for Latin letters and figures: the
+     proportional sibling of the face code is set in. */
+  --brush: "LXGW WenKai Lite", "STKaiti", "KaiTi", serif;
+  --han: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
+  --text: "ODG Latin", var(--han), system-ui, sans-serif;
+  --mono: "Atkinson Hyperlegible Mono", var(--han), ui-monospace, Consolas, monospace;
   color-scheme: light;
 }
 
@@ -114,6 +119,24 @@
   color-scheme: dark;
 }
 
+/* The Latin face, held to letters and ASCII marks. Figures are the Chinese face's own, which have no stroke through
+   the nought; quotes, dashes and the ellipsis stay full width. */
+@font-face {
+  font-family: "ODG Latin";
+  font-weight: 400;
+  font-display: swap;
+  src: url("../node_modules/@fontsource/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0020-002F, U+003A-007E, U+00A0-00FF;
+}
+
+@font-face {
+  font-family: "ODG Latin";
+  font-weight: 700;
+  font-display: swap;
+  src: url("../node_modules/@fontsource/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-700-normal.woff2") format("woff2");
+  unicode-range: U+0020-002F, U+003A-007E, U+00A0-00FF;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -130,7 +153,7 @@ body {
   color: var(--ink);
   font-family: var(--text);
   font-size: var(--t-body);
-  line-height: 1.7;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -214,7 +237,7 @@ pre,
   border-radius: var(--r-paper);
   background: var(--cinnabar);
   color: var(--cinnabar-on);
-  font-family: var(--text);
+  font-family: var(--brush);
   font-size: 16px;
   font-weight: 700;
   line-height: 24px;
@@ -233,11 +256,11 @@ pre,
 .app {
   height: 100%;
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 236px minmax(0, 1fr);
 }
 
 .app.with-panel {
-  grid-template-columns: 248px minmax(0, 1fr) var(--panel-width, 360px);
+  grid-template-columns: 236px minmax(0, 1fr) var(--panel-width, 360px);
 }
 
 .sidebar {
@@ -274,11 +297,12 @@ pre,
 }
 
 .sidebar-foot .row-button {
-  min-height: 40px;
+  min-height: 34px;
 }
 
 /* The name over the door: pressed, it is the way back to the home screen. */
 .brand {
+  font-family: var(--brush);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -451,7 +475,7 @@ pre,
 }
 
 .row-button {
-  min-height: 44px;
+  min-height: 36px;
   width: 100%;
   text-align: left;
   border: 1px solid transparent;
@@ -470,7 +494,7 @@ pre,
 .row-button[aria-current] {
   border-color: var(--line-strong);
   background: var(--sheet);
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .row-title {
@@ -795,12 +819,12 @@ pre,
 /* ---------- buttons ---------- */
 
 .button {
-  min-height: 44px;
+  min-height: 36px;
   padding: 0 18px;
   border: 1px solid transparent;
   border-radius: var(--r-control);
   background: transparent;
-  font-weight: 700;
+  font-weight: 500;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -833,7 +857,7 @@ pre,
 }
 
 .select-button {
-  min-height: 44px;
+  min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: var(--r-control);
@@ -965,6 +989,8 @@ pre,
 
 .main-header h1 {
   margin: 0;
+  /* The session's title, brushed on like the label of a scroll. */
+  font-family: var(--brush);
   font-size: var(--t-lead);
   font-weight: 700;
   line-height: 1.35;
@@ -1319,16 +1345,18 @@ pre,
   top: 0;
   right: 0;
   display: flex;
+  /* The language keeps the corner; the copy button, which shows only when pointed at, comes in beside it. */
+  flex-direction: row-reverse;
   align-items: center;
   gap: var(--s-1);
-  padding: 2px var(--s-1) 0 var(--s-2);
+  padding: 4px var(--s-2) 0 var(--s-2);
   font-size: var(--t-micro);
   color: var(--ink-2);
 }
 
 .code-tools .lang {
   font-family: var(--mono);
-  padding-right: var(--s-1);
+  padding-right: 2px;
 }
 
 /* The copy button shows when the block is pointed at or focused. */
@@ -2171,7 +2199,7 @@ button.did-head:not(:disabled):hover {
 
 .sign-sheet h2 {
   margin: 0;
-  font-family: var(--text);
+  font-family: var(--brush);
   font-size: var(--t-title);
   font-weight: 700;
   line-height: 1.3;
@@ -2693,7 +2721,7 @@ button.did-head:not(:disabled):hover {
 
 .token text {
   fill: var(--jade-ink);
-  font-family: var(--text);
+  font-family: var(--brush);
   font-size: 15px;
   font-weight: 700;
 }
@@ -2894,6 +2922,7 @@ button.did-head:not(:disabled):hover {
 .main-header .title-input {
   min-height: 36px;
   max-width: 320px;
+  font-family: var(--brush);
   font-weight: 700;
 }
 
@@ -3129,7 +3158,7 @@ button.select-button svg {
 }
 
 .mode-option {
-  min-height: 44px;
+  min-height: 36px;
   padding: 8px 10px;
   border: 0;
   border-radius: var(--r-paper);
@@ -3354,7 +3383,7 @@ button.select-button svg {
 }
 
 .tab {
-  min-height: 44px;
+  min-height: 36px;
   min-width: 44px;
   padding: 0 12px;
   border: 0;
@@ -3405,6 +3434,7 @@ button.select-button svg {
 }
 
 .panel-body h2 {
+  font-family: var(--brush);
   margin: 0;
   font-size: var(--t-body);
   font-weight: 700;
@@ -3659,7 +3689,7 @@ button.select-button svg {
 
 .empty h1 {
   margin: 0;
-  font-family: var(--text);
+  font-family: var(--brush);
   font-size: var(--t-display);
   font-weight: 700;
   line-height: 1.25;
@@ -4094,7 +4124,7 @@ button.select-button svg {
 
 .jump-place {
   position: relative;
-  min-height: 44px;
+  min-height: 36px;
   padding: 6px var(--s-3);
   border-radius: var(--r-control);
   display: flex;
@@ -4201,6 +4231,7 @@ button.select-button svg {
 }
 
 .desk-part h2 {
+  font-family: var(--brush);
   margin: 0 0 var(--s-1);
   font-size: var(--t-small);
   font-weight: 700;
@@ -4372,7 +4403,7 @@ button.select-button svg {
 }
 
 .settings-tabs .tab {
-  min-height: 40px;
+  min-height: 34px;
   font-size: var(--t-body);
 }
 
@@ -4397,7 +4428,7 @@ button.select-button svg {
 
 .settings h1 {
   margin: 0;
-  font-family: var(--text);
+  font-family: var(--brush);
   font-size: var(--t-title);
   font-weight: 700;
   line-height: 1.3;
@@ -4405,7 +4436,7 @@ button.select-button svg {
 
 .settings h2 {
   margin: 0;
-  font-family: var(--text);
+  font-family: var(--brush);
   font-size: var(--t-title);
   font-weight: 700;
   line-height: 1.3;
@@ -4536,7 +4567,7 @@ button.select-button svg {
 
 /* A field's name over controls that are not one input, so it labels them as a group. */
 .field-label {
-  font-weight: 700;
+  font-weight: 500;
 }
 
 /* A word in a line of text that does something: it reads as part of the line. */
@@ -4609,7 +4640,8 @@ button.select-button svg {
   grid-column: span 2;
 }
 
-.key-what.missing {
+.key-what.missing,
+.settings .hint.missing {
   color: var(--cinnabar-ink);
 }
 
@@ -4648,6 +4680,7 @@ button.select-button svg {
 }
 
 .dialog h2 {
+  font-family: var(--brush);
   margin: 0;
   font-size: var(--t-title);
   line-height: 1.3;
@@ -4705,11 +4738,11 @@ button.select-button svg {
 }
 
 .form-row-label {
-  min-height: 44px;
+  min-height: 36px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .form-row-field {
@@ -4893,10 +4926,11 @@ button.select-button svg {
   gap: 6px;
 }
 
+/* A field's name: in ink, at the weight of what is read. The headings over the fields are what is bold. */
 .field label,
 .field legend {
   padding: 0;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .field .hint,
@@ -4929,7 +4963,7 @@ button.select-button svg {
 }
 
 .input {
-  min-height: 44px;
+  min-height: 36px;
   width: 100%;
   max-width: 360px;
   padding: 0 12px;
@@ -4990,7 +5024,7 @@ button.select-button svg {
 }
 
 .realm .name {
-  font-family: var(--text);
+  font-family: var(--brush);
   font-size: var(--t-lead);
   line-height: 1.2;
   color: var(--ink-2);
@@ -5278,7 +5312,7 @@ button.select-button svg {
    would not connect. */
 /* The first line of a card, which the seal, the name and the switch all sit on, centred or on its baseline. */
 .mcp-card {
-  --mcp-line: 28px;
+  --mcp-line: 26px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
@@ -5518,39 +5552,89 @@ button.select-button svg {
   outline-offset: 2px;
 }
 
-/* ---------- an explanation held to its first line ---------- */
+/* ---------- what a label means, behind an ⓘ ---------- */
 
-.hint-wrap {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--s-2);
-  min-width: 0;
+/* The mark sits on the line of the words it explains, a little after them. */
+.info {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
-.hint-wrap .hint {
-  flex: 1;
-  min-width: 0;
-}
-
-.hint.held {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  overflow: hidden;
-}
-
-/* At the end of the line, as the message pinned over its work has: the way to read the rest. */
-.hint-more {
-  flex: none;
+.info-mark {
+  position: relative;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
+  border-radius: 50%;
   background: none;
+  color: var(--ink-2);
+  display: inline-grid;
+  place-items: center;
+  cursor: help;
+  transition: color var(--d-quick) var(--ease-out);
+}
+
+/* Easier to land on than it looks. */
+.info-mark::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+
+.info-mark:hover,
+.info-mark:focus-visible,
+.info-mark[aria-expanded="true"] {
   color: var(--jade);
-  font-size: var(--t-micro);
-  /* As tall as a line of the explanation beside it, so that the two sit on one line. */
-  line-height: calc(var(--t-small) * 1.7);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+}
+
+.info-mark:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
+}
+
+/* The note: a slip of the same paper as a window, small, set where the mark is and not in the page's flow. */
+.info-note {
+  position: fixed;
+  z-index: 60;
+  width: max-content;
+  max-width: min(380px, calc(100vw - 24px));
+  padding: 10px 14px;
+  border: 1px solid var(--ink);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: 4px 4px 0 var(--talisman-under);
+  font-family: var(--text);
+  font-size: var(--t-small);
+  font-weight: 400;
+  line-height: 1.7;
+  letter-spacing: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: auto;
+}
+
+.info-note p {
+  margin: 0;
+}
+
+.info-note p + p {
+  margin-top: 6px;
+}
+
+/* A label, or a choice with its box, and the mark that explains it, on one line. */
+.label-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.label-line > .info {
+  flex: none;
 }
 
 .schedule-task {
@@ -5686,7 +5770,7 @@ button.select-button svg {
 
 .papers legend {
   padding: 0 0 10px;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .paper {
@@ -5852,7 +5936,7 @@ button.select-button svg {
 
 @media (max-width: 1100px) {
   .app.with-panel {
-    grid-template-columns: 248px minmax(0, 1fr);
+    grid-template-columns: 236px minmax(0, 1fr);
   }
 
   .app.with-panel .panel {

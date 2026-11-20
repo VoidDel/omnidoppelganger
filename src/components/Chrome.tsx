@@ -7,6 +7,7 @@ import { type ChangedFile, type ToolItem, type Usage, documentLabel, fileSize, s
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Picked, Provider, SessionItem, Status, Todo } from "../lib/types";
 import { ago } from "../lib/when";
+import { Info } from "./Hint";
 import { Light } from "./Light";
 import { Diff } from "./Transcript";
 
@@ -646,7 +647,10 @@ function ModelList({ providers, keyed, providerId, model, onPick, listModels }: 
         </div>
       )}
       <div className="mode-menu-head">
-        <span>{name(showing)} 的心法</span>
+        <span>
+          {name(showing)} 的心法
+          <Info>换了之后，这个分身接下来的话由新心法来答，前情照旧带着。列表是向这个宗门问来的，问不到时列内置的几门。</Info>
+        </span>
         <span>{asked.state === "asking" ? "正在问它有哪些…" : asked.state === "told" ? `它报了 ${asked.models.length} 门` : "没问到，先列内置的"}</span>
       </div>
       {asked.state === "failed" && <p className="menu-note">{asked.why}</p>}
@@ -663,11 +667,8 @@ function ModelList({ providers, keyed, providerId, model, onPick, listModels }: 
         ))}
         {shown.length === 0 && <p className="menu-note">{asked.state === "asking" ? "正在问…" : "没有对得上的。"}</p>}
       </div>
-      <p className="menu-note">
-        {home
-          ? "换了之后，这个分身接下来的话由新心法来答，前情照旧带着。"
-          : `换到 ${name(showing)} 之后，前情照旧带着；只是前面那家的推演过程不带过去，别家读不了它。`}
-      </p>
+      {/* Moving to another provider leaves something behind: that is said in the open. Within one, nothing is lost. */}
+      {!home && <p className="menu-note">换到 {name(showing)} 之后，前情照旧带着；只是前面那家的推演过程不带过去，别家读不了它。</p>}
     </>
   );
 }
