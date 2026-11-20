@@ -109,8 +109,14 @@ export interface ToolMeta {
   url?: string;
   title?: string | null;
   characters?: number;
-  /** The skill `load_skill` read. */
+  /** The skill `load_skill` read, or `install_skill` installed: where to, and for whom. */
   skill?: string;
+  directory?: string;
+  scope?: "project" | "user";
+  /** The MCP server `add_mcp_server` added, how it stands, and the tools it offers. */
+  server?: string;
+  state?: "ready" | "failed" | "connecting";
+  tools?: string[];
   /** The call went to a tool of an MCP server. */
   mcp?: boolean;
   /** The to-do list `update_todos` recorded. */

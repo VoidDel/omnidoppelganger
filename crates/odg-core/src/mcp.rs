@@ -33,7 +33,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a server started as a program has to answer its first requests: `npx` and `uvx` download the
 /// server the first time it is started, which takes longer than reaching one over HTTP.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
+pub const START_TIMEOUT: Duration = Duration::from_secs(120);
 const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// A tool result is replayed in every later request, like a file read.
 const RESULT_CHARS: usize = 100_000;
@@ -485,6 +485,64 @@ impl McpHub {
         Ok(())
     }
 
+    /// Put one server in the list, under `name` (in place of one already
+    /// there only with `replace`), and connect to it alone: the others stay
+    /// connected as they are. The rest of the file is kept as it was, though
+    /// written out again; a file that cannot be read is not written over.
+    pub fn add(&self, name: &str, server: &ServerConfig, replace: bool) -> Result<(), String> {
+        let text = std::fs::read_to_string(&self.path).unwrap_or_default();
+        let mut file: Value = if text.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&text).map_err(|error| format!("the server list in {} is not valid JSON ({error}); the user can mend it on the 法器 page", self.path.display()))?
+        };
+        if !file.is_object() {
+            return Err(format!("the server list in {} is not a JSON object; the user can mend it on the 法器 page", self.path.display()));
+        }
+        if !file["mcpServers"].is_object() {
+            file["mcpServers"] = json!({});
+        }
+        if file["mcpServers"].get(name).is_some() && !replace {
+            return Err(format!("a server named `{name}` is already in the list; pass `replace` to put this one in its place"));
+        }
+        file["mcpServers"][name] = serde_json::to_value(server).map_err(|error| error.to_string())?;
+        let text = format!("{}\n", serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?);
+        // The whole list, checked as it will be read: the name, and a command or an address.
+        let config = parse_config(&text)?.remove(name).ok_or_else(|| format!("`{name}` is not in the list it was put in"))?;
+        if let Some(directory) = self.path.parent() {
+            std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        }
+        write_atomically(&self.path, text.as_bytes()).map_err(|error| error.to_string())?;
+        let generation = self.generation.load(Ordering::SeqCst);
+        self.slots.lock().unwrap().insert(name.to_string(), Slot::Connecting);
+        let (slots, current, name) = (self.slots.clone(), self.generation.clone(), name.to_string());
+        self.runtime.spawn(async move {
+            let slot = match Server::connect(&config).await {
+                Ok(server) => Slot::Ready(Arc::new(server)),
+                Err(error) => Slot::Failed(error),
+            };
+            if current.load(Ordering::SeqCst) == generation {
+                slots.lock().unwrap().insert(name, slot);
+            }
+        });
+        Ok(())
+    }
+
+    /// How the server `name` stands once it is no longer connecting: waited for up to `limit`, or until `cancel`.
+    pub async fn settled(&self, name: &str, limit: Duration, cancel: &CancellationToken) -> Option<ServerStatus> {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            let status = self.statuses().into_iter().find(|status| status.name == name);
+            if status.as_ref().is_none_or(|status| status.state != "connecting") || tokio::time::Instant::now() >= deadline || cancel.is_cancelled() {
+                return status;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(250)) => {}
+                () = cancel.cancelled() => {}
+            }
+        }
+    }
+
     pub fn statuses(&self) -> Vec<ServerStatus> {
         let slots = self.slots.lock().unwrap();
         slots
@@ -608,6 +666,38 @@ mod tests {
         assert_eq!(exposed_name("s", &"x".repeat(100)).len(), 64);
         assert_eq!(split_name("mcp__files__read_file"), Some(("files", "read_file")));
         assert_eq!(split_name("read_file"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn adds_a_server_to_the_list_and_connects_to_it_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mcp.json");
+        std::fs::write(&path, r#"{ "note": "mine", "mcpServers": { "kept": { "url": "http://127.0.0.1:9/mcp" } } }"#).unwrap();
+        let hub = McpHub::new(&path, tokio::runtime::Handle::current());
+        hub.reload();
+        let missing = ServerConfig { command: Some("odg-no-such-program".into()), args: vec!["--stdio".into()], ..Default::default() };
+        hub.add("broken", &missing, false).unwrap();
+        // It is connected to at once, and says how it went.
+        let status = hub.settled("broken", Duration::from_secs(20), &CancellationToken::new()).await.unwrap();
+        assert_eq!(status.state, "failed");
+        assert!(status.error.unwrap_or_default().contains("cannot start"));
+        // The list keeps what it held, and the server the user had is still there.
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(file["note"], "mine");
+        assert_eq!(file["mcpServers"]["broken"], json!({ "command": "odg-no-such-program", "args": ["--stdio"] }));
+        assert!(file["mcpServers"]["kept"].is_object() && hub.statuses().iter().any(|status| status.name == "kept"));
+        // Not over one already there, unless asked to; and nothing the list could not hold is written.
+        assert!(hub.add("broken", &missing, false).unwrap_err().contains("replace"));
+        hub.add("broken", &ServerConfig { url: Some("https://example.com/mcp".into()), ..Default::default() }, true).unwrap();
+        assert!(hub.add("bad name", &missing, false).is_err());
+        assert!(hub.add("both", &ServerConfig { command: Some("x".into()), url: Some("https://x".into()), ..Default::default() }, false).is_err());
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(file["mcpServers"].as_object().unwrap().keys().collect::<Vec<_>>(), ["broken", "kept"]);
+        assert_eq!(file["mcpServers"]["broken"], json!({ "url": "https://example.com/mcp" }));
+        // A list that cannot be read is not written over.
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(hub.add("other", &missing, false).unwrap_err().contains("法器"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
     }
 
     #[tokio::test]

@@ -228,8 +228,14 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
         Origin::Agent => SUBAGENT,
         Origin::Schedule => SCHEDULED,
     };
-    general + told + &project + &offered
+    general + EXTENDING + told + &project + &offered
 }
+
+/// How the agent is to add to what it can do when the user asks: by this app's own ways, not another's.
+const EXTENDING: &str = "\n\nWhen the user asks you to add a skill or an MCP server:\n\
+     - A skill is a folder holding SKILL.md, which opens with a block between `---` lines giving `name` and a one-line `description`, then the instructions; files it refers to sit beside it. This project's skills are in `.odg/skills` in the workspace; the user's, for every session, in the `skills` folder of OmniDoppelganger's home (`~/.odg/skills` unless moved). Install an existing skill with `install_skill`; write a new one with your file tools.\n\
+     - MCP servers are the user's list in OmniDoppelganger, on its 法器 page. Add one with `add_mcp_server`, giving the configuration its documentation gives. Do not edit the list's file yourself.\n\
+     - Do not follow another app's ways for either (a `.claude`, `.cursor`, or `.vscode` folder): this app does not read them.";
 
 impl<L: Llm> Session<L> {
     /// Wrap a stored log. A turn that a crash left open is closed first. The

@@ -58,7 +58,8 @@ pub enum Verdict {
     /// Not run and not asked about: the tool gets this message as an error result.
     Refuse(&'static str),
     Ask {
-        /// The rule that asked: `command`, `unsandboxed`, `edit`, `mcp`, `web`, `search`, `outside_read`, `outside_write`, or `git_write`.
+        /// The rule that asked: `command`, `unsandboxed`, `edit`, `mcp`, `web`, `search`, `outside_read`, `outside_write`,
+        /// `git_write`, `install_skill`, or `add_mcp_server`.
         reason: &'static str,
         /// The command or path shown to the user.
         detail: String,
@@ -73,6 +74,9 @@ pub enum Verdict {
 /// [`crate::sandbox`]. A command that asks to run unconfined is the user's to
 /// decide each time, whatever the mode and whatever was allowed before.
 pub fn check_in(mode: Mode, tool: &str, input: &Value, workspace: &Path, sandboxed: bool) -> Verdict {
+    if let Some(verdict) = installing(mode, tool, input) {
+        return verdict;
+    }
     if mode == Mode::Bypass {
         return Verdict::Allow;
     }
@@ -82,7 +86,36 @@ pub fn check_in(mode: Mode, tool: &str, input: &Value, workspace: &Path, sandbox
     check(mode, tool, input, workspace)
 }
 
+/// What the agent installs adds to what every later turn can do: a skill's
+/// instructions, which it will follow, or an MCP server, a program it can
+/// have run. So it is the user's to decide each time, whatever the mode, and
+/// in plan mode it is not done. The user is shown all of it: where a skill
+/// comes from and where it goes, and the whole of a server's entry.
+fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
+    let detail = match tool {
+        "install_skill" => {
+            let path = input["path"].as_str().filter(|path| !path.is_empty()).map(|path| format!("  ({path})")).unwrap_or_default();
+            let into = if input["scope"] == "user" { "~/.odg/skills" } else { ".odg/skills" };
+            format!("{}{path}\n→ {into}", input["source"].as_str().unwrap_or_default())
+        }
+        "add_mcp_server" => {
+            let entry: serde_json::Map<String, Value> =
+                ["command", "args", "env", "url", "headers"].iter().filter(|field| !input[**field].is_null()).map(|field| (field.to_string(), input[*field].clone())).collect();
+            let name = input["name"].as_str().unwrap_or_default();
+            serde_json::to_string_pretty(&serde_json::json!({ name: entry })).unwrap_or_default()
+        }
+        _ => return None,
+    };
+    if mode == Mode::Plan {
+        return Some(Verdict::Refuse("Nothing is installed in plan mode. Put the installation in the plan, for the user to carry out."));
+    }
+    Some(Verdict::Ask { reason: if tool == "install_skill" { "install_skill" } else { "add_mcp_server" }, detail, grant: None })
+}
+
 pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict {
+    if let Some(verdict) = installing(mode, tool, input) {
+        return verdict;
+    }
     if mode == Mode::Bypass {
         return Verdict::Allow;
     }
@@ -177,6 +210,27 @@ mod tests {
         ] {
             assert_eq!(check_in(Mode::Bypass, tool, &input, workspace, true), Verdict::Allow, "{tool} {input}");
         }
+    }
+
+    #[test]
+    fn installing_asks_every_time_in_every_mode_and_shows_all_of_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let skill = json!({ "source": "https://github.com/anthropics/skills", "path": "skills/pdf", "scope": "user" });
+        let server = json!({ "name": "notes", "command": "npx", "args": ["-y", "notes-mcp"], "env": { "TOKEN": "abc" }, "replace": true });
+        for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Bypass] {
+            let asked = check_in(mode, "install_skill", &skill, workspace, false);
+            assert_eq!(asked, Verdict::Ask { reason: "install_skill", detail: "https://github.com/anthropics/skills  (skills/pdf)\n→ ~/.odg/skills".into(), grant: None }, "{mode:?}");
+            let Verdict::Ask { reason, detail, grant } = check_in(mode, "add_mcp_server", &server, workspace, false) else { panic!("{mode:?} did not ask") };
+            assert_eq!((reason, grant), ("add_mcp_server", None));
+            // The entry as it will be written, its secrets too, for the user to see; not the flag that only says how.
+            let shown: Value = serde_json::from_str(&detail).unwrap();
+            assert_eq!(shown, json!({ "notes": { "command": "npx", "args": ["-y", "notes-mcp"], "env": { "TOKEN": "abc" } } }));
+        }
+        assert_eq!(reason(check_in(Mode::Plan, "install_skill", &json!({ "source": "./x" }), workspace, false)), Some("refused"));
+        assert_eq!(reason(check_in(Mode::Plan, "add_mcp_server", &server, workspace, false)), Some("refused"));
+        let project = check_in(Mode::Edit, "install_skill", &json!({ "source": "D:\\skills\\pdf" }), workspace, false);
+        assert!(matches!(project, Verdict::Ask { ref detail, .. } if detail == "D:\\skills\\pdf\n→ .odg/skills"), "{project:?}");
     }
 
     #[test]

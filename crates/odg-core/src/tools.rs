@@ -245,6 +245,37 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "install_skill",
+            "description": "Install a skill for OmniDoppelganger: a folder holding SKILL.md, from a folder on this computer or from a Git repository (a GitHub address may point into one: https://github.com/<owner>/<repo>/tree/<branch>/<folder>). The user is asked first. With `scope` project it goes in this workspace's .odg/skills, for this project; with user, in the user's skills directory, for every session. It can be read with `load_skill` at once, and is listed from the next turn. To make a new skill instead, write its SKILL.md yourself in one of those places.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "source": { "type": "string", "description": "A folder on this computer (absolute or relative to the workspace), or a Git repository's address." },
+                    "path": { "type": "string", "description": "The folder within `source` that holds SKILL.md, when it is not at the top. A source holding several skills names them when this is missing." },
+                    "scope": { "type": "string", "enum": ["project", "user"], "description": "Default project." },
+                    "replace": { "type": "boolean", "description": "Put it in place of an installed skill of the same name. Default false." }
+                },
+                "required": ["source"]
+            }
+        }),
+        json!({
+            "name": "add_mcp_server",
+            "description": "Add an MCP server to the user's list in OmniDoppelganger (its 法器), as the server's documentation gives its configuration: a program to start (`command`, `args`, `env`) or an address (`url`, `headers`). The user is asked first and sees all of it. It is connected to at once, and this returns its tools, which you are offered from your next step on, each call asking the user. Never edit the list's file yourself, or follow another app's way of adding servers. Put a key or token in `env` or `headers` only when the user gave it to you.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "A short name: letters, digits, `-` and `_`. Its tools are named after it." },
+                    "command": { "type": "string", "description": "The program to start, such as npx or uvx." },
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the program." },
+                    "url": { "type": "string", "description": "The http(s) address of a server reached over the network, instead of a command." },
+                    "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Headers sent to the address, such as Authorization." },
+                    "replace": { "type": "boolean", "description": "Put it in place of a server of the same name. Default false." }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
             "name": "stop_command",
             "description": "Stop a background command and the processes it started. Returns what it printed last.",
             "input_schema": {
@@ -419,6 +450,8 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "command_output" => command_output(input, context).await,
         "stop_command" => stop_command(input, context).await,
         "update_todos" => update_todos(input),
+        "install_skill" => install_skill(input, context).await,
+        "add_mcp_server" => add_mcp_server(input, context).await,
         "web_search" => match (string_arg(input, "query"), &context.search) {
             (Ok(query), Some(config)) => {
                 let found = crate::web::search(config, query, input, &context.cancel).await;
@@ -485,6 +518,130 @@ async fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, T
     }
     let (content, lines, selected) = numbered(&String::from_utf8_lossy(&bytes), input, &shown);
     Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected })))
+}
+
+/// Remove a folder and all in it, though some files in it are read-only, as
+/// Git leaves its objects on Windows, where that stops a plain removal.
+fn remove_tree(root: &Path) {
+    let mut walk = vec![root.to_path_buf()];
+    while let Some(directory) = walk.pop() {
+        for entry in std::fs::read_dir(&directory).into_iter().flatten().filter_map(Result::ok) {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                walk.push(entry.path());
+            } else if let Ok(metadata) = entry.metadata() {
+                let mut permissions = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = std::fs::set_permissions(entry.path(), permissions);
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Fetch a Git repository's latest commit into a folder of its own, for a skill to be installed from.
+async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &CancellationToken) -> Result<(), String> {
+    let mut command = tokio::process::Command::new("git");
+    command.args(["clone", "--depth", "1", "--quiet"]);
+    if let Some(branch) = branch {
+        command.args(["--branch", branch]);
+    }
+    // Nobody is at a terminal to give a password: a repository that wants one fails at once rather than waits.
+    command.arg(url).arg(into).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let output = tokio::select! {
+        output = tokio::time::timeout(Duration::from_secs(180), command.output()) => output,
+        () = cancel.cancelled() => return Err("The download was cancelled.".to_string()),
+    };
+    match output {
+        Ok(Ok(output)) if output.status.success() => Ok(()),
+        Ok(Ok(output)) => Err(format!("`git clone {url}` failed: {}", String::from_utf8_lossy(&output.stderr).trim())),
+        Ok(Err(error)) => Err(format!("Cannot run git ({error}): it must be installed to install a skill from a repository.")),
+        Err(_) => Err(format!("`git clone {url}` took more than three minutes and was stopped.")),
+    }
+}
+
+/// Install a skill from a folder or a Git repository; see [`crate::skills::install`].
+async fn install_skill(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let source = string_arg(input, "source")?.trim().to_string();
+    let within = input["path"].as_str().map(str::trim).filter(|path| !path.is_empty()).map(str::to_string);
+    let replace = input["replace"].as_bool().unwrap_or(false);
+    let project = context.workspace.join(".odg").join("skills");
+    let user = input["scope"] == "user";
+    let into = if user {
+        context.skills.iter().find(|root| **root != project).cloned().ok_or_else(|| ToolOutput::error("There is no skills directory for every session here: install it for this project instead."))?
+    } else {
+        project
+    };
+    // From Git, the repository is fetched into a folder of its own, read from there, and taken away after.
+    let fetched = match crate::skills::git_source(&source) {
+        Some((url, branch, folder)) => {
+            let temporary = std::env::temp_dir().join(format!("odg-skill-{}", uuid::Uuid::now_v7()));
+            if let Err(error) = clone(&url, branch.as_deref(), &temporary, &context.cancel).await {
+                remove_tree(&temporary);
+                return Err(ToolOutput::error(error));
+            }
+            Some((temporary, folder))
+        }
+        None => None,
+    };
+    let top = match &fetched {
+        Some((temporary, folder)) => folder.as_ref().map_or_else(|| temporary.clone(), |folder| temporary.join(folder)),
+        None => resolve(&context.workspace, &source),
+    };
+    let from = within.map_or_else(|| top.clone(), |within| top.join(within));
+    let target = into.clone();
+    let installed = tokio::task::spawn_blocking(move || crate::skills::install(&from, &target, replace)).await;
+    if let Some((temporary, _)) = &fetched {
+        remove_tree(temporary);
+    }
+    let skill = match installed {
+        Ok(Ok(skill)) => skill,
+        Ok(Err(why)) => return Err(ToolOutput::error(why)),
+        Err(error) => return Err(ToolOutput::error(format!("The install stopped: {error}"))),
+    };
+    let directory = display(&context.workspace, &skill.directory);
+    Ok(ToolOutput::ok(
+        format!("Installed the skill `{}` ({}) in {directory}. Read it now with load_skill if the task calls for it; it is listed in your instructions from the next turn on.", skill.name, skill.description),
+        json!({ "skill": skill.name, "directory": directory, "scope": if user { "user" } else { "project" } }),
+    ))
+}
+
+/// Add an MCP server to the user's list and connect to it; see [`crate::mcp::McpHub::add`].
+async fn add_mcp_server(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let Some(hub) = &context.mcp else {
+        return Err(ToolOutput::error("MCP servers cannot be added here."));
+    };
+    let name = string_arg(input, "name")?.trim();
+    let text = |field: &str| input[field].as_str().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string);
+    // Values of `env` and `headers` are strings to the server; a number or a flag given is written as its text.
+    let pairs = |field: &str| -> std::collections::BTreeMap<String, String> {
+        input[field].as_object().map(|object| object.iter().map(|(key, value)| (key.clone(), value.as_str().map_or_else(|| value.to_string(), str::to_string))).collect()).unwrap_or_default()
+    };
+    let args: Vec<String> = input["args"].as_array().map(|args| args.iter().map(|arg| arg.as_str().map_or_else(|| arg.to_string(), str::to_string)).collect()).unwrap_or_default();
+    let server = crate::mcp::ServerConfig { command: text("command"), args, env: pairs("env"), url: text("url"), headers: pairs("headers") };
+    hub.add(name, &server, input["replace"].as_bool().unwrap_or(false)).map_err(|why| ToolOutput::error(format!("The server was not added: {why}.")))?;
+    let status = hub.settled(name, crate::mcp::START_TIMEOUT + Duration::from_secs(5), &context.cancel).await;
+    let meta = |state: &str, tools: &[String]| json!({ "server": name, "state": state, "tools": tools });
+    match status {
+        Some(status) if status.state == "ready" => Ok(ToolOutput::ok(
+            format!(
+                "Added `{name}` to the user's MCP servers, and it is connected. Its tools, offered from your next step on as mcp__{name}__<tool>, each call asking the user first: {}.",
+                if status.tools.is_empty() { "none".to_string() } else { status.tools.join(", ") }
+            ),
+            meta("ready", &status.tools),
+        )),
+        Some(status) if status.state == "failed" => Err(ToolOutput {
+            content: format!(
+                "`{name}` was added to the list, but it did not connect: {}. Mend the entry and add it again with `replace`, or tell the user, who can switch it off on the 法器 page.",
+                status.error.unwrap_or_default()
+            ),
+            is_error: true,
+            meta: meta("failed", &[]),
+        }),
+        _ => Ok(ToolOutput::ok(format!("Added `{name}` to the user's MCP servers; it is still connecting. Its tools are offered once it is."), meta("connecting", &[]))),
+    }
 }
 
 /// The lines of `text` that `read_file`'s offset and limit ask for, each with
@@ -1024,6 +1181,67 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None };
         (directory, context)
+    }
+
+    #[tokio::test]
+    async fn installs_a_skill_from_a_folder_or_a_repository() {
+        let (directory, mut context) = context();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let user = elsewhere.path().join("user-skills");
+        context.skills = vec![user.clone(), directory.path().join(".odg/skills")];
+        // A skill in a folder, for this project.
+        let made = elsewhere.path().join("made/release");
+        std::fs::create_dir_all(&made).unwrap();
+        std::fs::write(made.join("SKILL.md"), "---\nname: release\ndescription: How to cut a release.\n---\nTag it.\n").unwrap();
+        let done = execute("install_skill", &json!({ "source": made.to_string_lossy() }), &context).await;
+        assert!(!done.is_error && done.content.starts_with("Installed the skill `release` (How to cut a release.)"), "{}", done.content);
+        assert_eq!((done.meta["scope"].as_str(), done.meta["directory"].as_str()), (Some("project"), Some(".odg/skills/release")));
+        assert!(crate::skills::load(&context.skills, "release").unwrap().starts_with("Tag it."));
+
+        // From a Git repository, a folder in it, for every session.
+        let repository = elsewhere.path().join("skills.git");
+        std::fs::create_dir_all(repository.join("skills/pdf")).unwrap();
+        std::fs::write(repository.join("skills/pdf/SKILL.md"), "---\nname: pdf\ndescription: Work with PDFs.\n---\nSplit them.\n").unwrap();
+        for args in [&["init", "--quiet"][..], &["add", "-A"], &["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "--quiet", "-m", "skills"]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repository).args(args).status().unwrap().success());
+        }
+        let cloned = execute("install_skill", &json!({ "source": repository.to_string_lossy(), "path": "skills/pdf", "scope": "user" }), &context).await;
+        assert!(!cloned.is_error, "{}", cloned.content);
+        assert!(user.join("pdf/SKILL.md").is_file() && !user.join("pdf/.git").exists());
+        // Not naming the folder, the repository's skills are named; and nothing is left of the copies fetched.
+        let missed = execute("install_skill", &json!({ "source": repository.to_string_lossy() }), &context).await;
+        assert!(missed.is_error && missed.content.contains("skills/pdf") && missed.content.contains("`path`"), "{}", missed.content);
+        let left = std::fs::read_dir(std::env::temp_dir()).unwrap().filter_map(Result::ok).filter(|entry| entry.file_name().to_string_lossy().starts_with("odg-skill-")).count();
+        assert_eq!(left, 0, "a fetched repository was left in the temporary directory");
+        // Again, not over what is there.
+        assert!(execute("install_skill", &json!({ "source": made.to_string_lossy() }), &context).await.content.contains("replace"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn adds_an_mcp_server_and_says_what_it_offers() {
+        let (directory, mut context) = context();
+        let hub = Arc::new(crate::mcp::McpHub::new(directory.path().join("home/mcp.json"), tokio::runtime::Handle::current()));
+        context.mcp = Some(hub.clone());
+        // Neither a command nor an address: nothing is added.
+        let empty = execute("add_mcp_server", &json!({ "name": "notes" }), &context).await;
+        assert!(empty.is_error && empty.content.starts_with("The server was not added"), "{}", empty.content);
+        // One that cannot start is added and says why it did not connect.
+        let broken = execute("add_mcp_server", &json!({ "name": "broken", "command": "odg-no-such-program" }), &context).await;
+        assert!(broken.is_error && broken.content.contains("did not connect") && broken.content.contains("`replace`"), "{}", broken.content);
+        assert_eq!(broken.meta["state"], "failed");
+        // One that starts is connected, and its tools are named. The stand-in server needs only Node.
+        let node = std::process::Command::new("node").arg("--version").output().is_ok_and(|output| output.status.success());
+        if node {
+            let server = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../e2e/mcp-server.mjs");
+            let added = execute("add_mcp_server", &json!({ "name": "notes", "command": "node", "args": [server.to_string_lossy()], "env": { "LEVEL": 2 } }), &context).await;
+            assert!(!added.is_error && added.content.contains("mcp__notes__<tool>") && added.content.ends_with(": shout."), "{}", added.content);
+            assert_eq!(added.meta["tools"], json!(["shout"]));
+            let listed: Value = serde_json::from_str(&std::fs::read_to_string(directory.path().join("home/mcp.json")).unwrap()).unwrap();
+            assert_eq!(listed["mcpServers"]["notes"]["env"], json!({ "LEVEL": "2" }));
+            assert!(hub.specs().iter().any(|spec| spec["name"] == "mcp__notes__shout"));
+        }
+        context.mcp = None;
+        assert!(execute("add_mcp_server", &json!({ "name": "x", "url": "https://x" }), &context).await.content.contains("cannot be added here"));
     }
 
     #[tokio::test]

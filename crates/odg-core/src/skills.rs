@@ -95,9 +95,156 @@ pub fn load(roots: &[PathBuf], name: &str) -> Result<String, String> {
     Ok(body)
 }
 
+/// The most a skill installed may hold: instructions and the scripts and references beside them, not a project.
+const INSTALL_FILES: usize = 2_000;
+const INSTALL_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Where a skill is to come from when it is fetched with Git: the address to
+/// clone, the branch, and the folder in the repository. A GitHub address to a
+/// folder (`https://github.com/<owner>/<repo>/tree/<branch>/<folder>`) is
+/// taken apart; any other is cloned as it is. `None` for what is not a Git
+/// address, which is a folder on this computer.
+pub fn git_source(source: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let remote = ["https://", "http://", "git@", "ssh://"].iter().any(|start| source.starts_with(start)) || source.ends_with(".git");
+    if !remote {
+        return None;
+    }
+    if let Some(rest) = source.strip_prefix("https://github.com/") {
+        let parts: Vec<&str> = rest.trim_end_matches('/').splitn(5, '/').collect();
+        if let [owner, repository, "tree", branch, rest @ ..] = parts.as_slice() {
+            let folder = rest.first().map(|folder| folder.to_string()).filter(|folder| !folder.is_empty());
+            return Some((format!("https://github.com/{owner}/{}.git", repository.trim_end_matches(".git")), Some(branch.to_string()), folder));
+        }
+    }
+    Some((source.to_string(), None, None))
+}
+
+/// The folders below `root`, at most three down, that hold a `SKILL.md`, relative to it: to name when `root` does not hold one itself.
+fn skills_within(root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut walk = vec![(root.to_path_buf(), 0)];
+    while let Some((directory, depth)) = walk.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else { continue };
+        for entry in entries.filter_map(Result::ok).filter(|entry| entry.path().is_dir() && entry.file_name() != ".git") {
+            if entry.path().join(FILE_NAME).is_file() {
+                found.push(entry.path().strip_prefix(root).unwrap_or(&entry.path()).to_string_lossy().replace('\\', "/"));
+            } else if depth < 2 {
+                walk.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Copy the skill in `source` (a folder holding `SKILL.md`) into the skills
+/// directory `into`, in a folder named for the skill. A skill of that name
+/// already there is put in its place only with `replace`. What is copied
+/// goes in whole or not at all.
+pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, String> {
+    let Some((skill, _)) = read(source) else {
+        let within = skills_within(source);
+        return Err(if within.is_empty() {
+            format!("There is no {FILE_NAME} in {}, nor in the folders below it: it is not a skill.", source.display())
+        } else {
+            format!("There is no {FILE_NAME} at the top of {}. Skills in the folders below it: {}. Pass the one wanted as `path`.", source.display(), within.join(", "))
+        });
+    };
+    // The folder takes the skill's name, in the characters any file system allows.
+    let folder: String = skill.name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect::<String>().trim_matches('-').to_string();
+    if folder.is_empty() {
+        return Err(format!("The skill's name `{}` gives no folder name.", skill.name));
+    }
+    let destination = into.join(&folder);
+    if destination.exists() && !replace {
+        return Err(format!("A skill is already installed at {}. Pass `replace` to put this one in its place.", destination.display()));
+    }
+    // What to copy, counted before anything is written.
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut bytes = 0u64;
+    let mut walk = vec![source.to_path_buf()];
+    while let Some(directory) = walk.pop() {
+        for entry in std::fs::read_dir(&directory).map_err(|error| format!("Cannot read {}: {error}", directory.display()))?.filter_map(Result::ok) {
+            let (path, kind) = (entry.path(), entry.file_type().map_err(|error| error.to_string())?);
+            if entry.file_name() == ".git" || kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                walk.push(path);
+            } else {
+                bytes += entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+                files.push(path);
+            }
+            if files.len() > INSTALL_FILES || bytes > INSTALL_BYTES {
+                return Err(format!("{} holds more than a skill does ({INSTALL_FILES} files or {} MB): it is not installed.", source.display(), INSTALL_BYTES / 1024 / 1024));
+            }
+        }
+    }
+    std::fs::create_dir_all(into).map_err(|error| format!("Cannot make {}: {error}", into.display()))?;
+    let staging = into.join(format!(".installing-{folder}"));
+    let _ = std::fs::remove_dir_all(&staging);
+    let copied = files.iter().try_for_each(|file| {
+        let target = staging.join(file.strip_prefix(source).map_err(|error| error.to_string())?);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        std::fs::copy(file, &target).map(|_| ()).map_err(|error| format!("Cannot copy {}: {error}", file.display()))
+    });
+    let placed = copied.and_then(|()| {
+        if destination.exists() {
+            std::fs::remove_dir_all(&destination).map_err(|error| format!("Cannot take away the skill at {}: {error}", destination.display()))?;
+        }
+        std::fs::rename(&staging, &destination).map_err(|error| format!("Cannot put the skill in {}: {error}", destination.display()))
+    });
+    if let Err(error) = placed {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    Ok(Skill { directory: destination, ..skill })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installs_a_skill_whole_by_its_name_and_says_where_one_is_in_a_bigger_folder() {
+        let directory = tempfile::tempdir().unwrap();
+        let (source, into) = (directory.path().join("downloaded"), directory.path().join("skills"));
+        skill(&source.join("skills"), "pdf", "---\nname: pdf tools\ndescription: Work with PDFs.\n---\nUse the script.\n");
+        std::fs::create_dir_all(source.join("skills/pdf/scripts")).unwrap();
+        std::fs::write(source.join("skills/pdf/scripts/split.py"), "print('split')\n").unwrap();
+        std::fs::create_dir_all(source.join("skills/pdf/.git")).unwrap();
+        std::fs::write(source.join("skills/pdf/.git/HEAD"), "ref").unwrap();
+
+        // A folder that holds skills but is not one names them.
+        let missed = install(&source, &into, false).unwrap_err();
+        assert!(missed.contains("skills/pdf") && missed.contains("`path`"), "{missed}");
+        // The skill goes in a folder named for it, scripts and all, its Git folder left behind.
+        let installed = install(&source.join("skills/pdf"), &into, false).unwrap();
+        assert_eq!((installed.name.as_str(), installed.directory.clone()), ("pdf tools", into.join("pdf-tools")));
+        assert!(into.join("pdf-tools/scripts/split.py").is_file() && !into.join("pdf-tools/.git").exists());
+        assert_eq!(discover(std::slice::from_ref(&into))[0].name, "pdf tools");
+        // Not over one already there, unless asked to.
+        assert!(install(&source.join("skills/pdf"), &into, false).unwrap_err().contains("replace"));
+        std::fs::write(source.join("skills/pdf/SKILL.md"), "---\nname: pdf tools\ndescription: Better.\n---\nNew.\n").unwrap();
+        install(&source.join("skills/pdf"), &into, true).unwrap();
+        assert_eq!(discover(std::slice::from_ref(&into))[0].description, "Better.");
+        assert!(std::fs::read_dir(&into).unwrap().count() == 1, "nothing is left half installed");
+        assert!(install(&directory.path().join("empty"), &into, false).unwrap_err().contains("not a skill"));
+    }
+
+    #[test]
+    fn takes_a_github_address_to_a_folder_apart() {
+        assert_eq!(
+            git_source("https://github.com/anthropics/skills/tree/main/skills/pdf"),
+            Some(("https://github.com/anthropics/skills.git".into(), Some("main".into()), Some("skills/pdf".into())))
+        );
+        assert_eq!(git_source("https://gitee.com/me/skill.git"), Some(("https://gitee.com/me/skill.git".into(), None, None)));
+        assert_eq!(git_source("git@github.com:me/skill.git"), Some(("git@github.com:me/skill.git".into(), None, None)));
+        assert_eq!(git_source("D:\\skills\\pdf"), None);
+        assert_eq!(git_source("../skills/pdf"), None);
+    }
 
     fn skill(root: &Path, folder: &str, text: &str) {
         std::fs::create_dir_all(root.join(folder)).unwrap();

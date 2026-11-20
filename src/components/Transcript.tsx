@@ -161,6 +161,10 @@ function sealOf(tool: ToolItem): string {
       return "遣";
     case "load_skill":
       return "技";
+    case "install_skill":
+      return "习";
+    case "add_mcp_server":
+      return "纳";
     case "fetch_url":
       return "网";
     case "web_search":
@@ -223,6 +227,20 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       return { verb: "抓取网页", target: text("url"), outcome: waiting || (result!.isError ? "没取到" : `${shortCount(meta?.characters ?? 0)} 字`) };
     case "load_skill":
       return { verb: "研读技能", target: text("name"), outcome: waiting || (result!.isError ? "没有这门技能" : "已读") };
+    case "install_skill":
+      return {
+        verb: "习得技能",
+        target: text("path") ? `${text("source")}  ${text("path")}` : text("source"),
+        outcome: waiting || (result!.isError ? "没装成" : `「${meta?.skill ?? ""}」装给${meta?.scope === "user" ? "所有分身" : "这处洞府"}`),
+      };
+    case "add_mcp_server":
+      return {
+        verb: "收纳法器",
+        target: text("name"),
+        outcome:
+          waiting ||
+          (meta?.state === "ready" ? `已连上，${meta.tools?.length ?? 0} 个工具` : meta?.state === "failed" ? "加进清单了，没连上" : meta?.state === "connecting" ? "加进清单了，正在连接" : "没加成"),
+      };
     case "update_todos": {
       const list = meta?.todos ?? [];
       const current = list.find((todo) => todo.status === "in_progress")?.text ?? "";
@@ -362,8 +380,18 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
   },
   mcp: {
     title: "分身要动用一件身外法器（MCP 工具），请本尊定夺",
-    note: "这件法器来自你在设置里接入的 MCP 服务，它具体做什么由那个服务决定，所以无论哪种禁制都要先请示。",
+    note: "这件法器来自你在「法器」里接入的 MCP 服务，它具体做什么由那个服务决定，所以无论哪种禁制都要先请示。",
     always: "之后这件法器都准",
+  },
+  install_skill: {
+    title: "分身要装一门技能，请本尊定夺",
+    note: "技能是一份做事说明，装上以后分身遇到对得上的事会照着做；里面也可能带着脚本。下面是从哪里装、装到哪里：.odg/skills 只对这处洞府生效，~/.odg/skills 对所有分身生效。从网上的仓库装时会先下载下来。无论哪种禁制，每次都要请示。",
+    always: "",
+  },
+  add_mcp_server: {
+    title: "分身要添一件身外法器（MCP 服务），请本尊定夺",
+    note: "准了之后它就写进「法器」的清单并马上连接：本机的会在这台电脑上启动下面的程序，远程的会连到下面的地址，此后每个分身都能用它的工具（每次动用仍要请示）。下面是要写进清单的全部内容，密钥也在其中，看清了再准。无论哪种禁制，每次都要请示。",
+    always: "",
   },
   edit: { title: "分身要改一个文件，请本尊定夺", note: "眼下的禁制是步步请示，每次改文件都先请示。整文件写入时，下面是它要写进去的全部内容。", always: "之后改文件都准" },
   outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
