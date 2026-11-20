@@ -6,8 +6,9 @@ import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Light } from "./Light";
+import { QuestionSheet, useSecondsLeft } from "./Questions";
 import { type Item, type Row, type StreamBlock, type ToolItem, documentLabel, editsFiles, fileSize, mcpTool, shortCount, undoableTurns } from "../lib/fold";
-import type { Decision, DiffHunk, Image, Mode, SessionItem, Status } from "../lib/types";
+import type { Decision, DiffHunk, Image, Mode, Reply, SessionItem, Status } from "../lib/types";
 import { Viewer, imageSource } from "./Viewer";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
@@ -285,6 +286,8 @@ function sealOf(tool: ToolItem): string {
       return "网";
     case "web_search":
       return "询";
+    case "ask_user":
+      return "问";
     default:
       // A tool of an MCP server: an instrument borrowed from outside.
       return mcpTool(tool.name) ? "器" : "术";
@@ -378,6 +381,8 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
           waiting ||
           (meta?.state === "ready" ? `已连上，${meta.tools?.length ?? 0} 个工具` : meta?.state === "failed" ? "加进清单了，没连上" : meta?.state === "connecting" ? "加进清单了，正在连接" : "没加成"),
       };
+    case "ask_user":
+      return { verb: "请教本尊", target: "", outcome: waiting || (result!.isError ? "没问成" : "已答") };
     case "update_todos": {
       const list = meta?.todos ?? [];
       const current = list.find((todo) => todo.status === "in_progress")?.text ?? "";
@@ -586,19 +591,6 @@ interface SignSheetProps {
   onDecide: (toolUseId: string, decision: Decision) => void;
 }
 
-/** The seconds left until `expiresAt`, counted down while the page is open; null when there is no end. */
-function useSecondsLeft(expiresAt: string | undefined, frozen: boolean): number | null {
-  const left = () => (expiresAt ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 1000)) : null);
-  const [seconds, setSeconds] = useState(left);
-  useEffect(() => {
-    if (!expiresAt || frozen) return;
-    setSeconds(left());
-    const timer = setInterval(() => setSeconds(left()), 250);
-    return () => clearInterval(timer);
-  }, [expiresAt, frozen]);
-  return frozen ? null : seconds;
-}
-
 function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
   const approval = tool.approval!;
   const seconds = useSecondsLeft(approval.expiresAt, frozen);
@@ -679,7 +671,16 @@ function notice(reason: string, error: string | null): string {
   }
 }
 
-function ItemView({ item, mode, family, frozen, onDecide }: { item: Item; mode: Mode; family: Family; frozen: boolean; onDecide: (toolUseId: string, decision: Decision) => void }) {
+interface ItemViewProps {
+  item: Item;
+  mode: Mode;
+  family: Family;
+  frozen: boolean;
+  onDecide: (toolUseId: string, decision: Decision) => void;
+  onAnswer: (toolUseId: string, answers: Reply[] | null) => void;
+}
+
+function ItemView({ item, mode, family, frozen, onDecide, onAnswer }: ItemViewProps) {
   switch (item.kind) {
     case "text":
       return <ModelText text={item.text} />;
@@ -691,6 +692,8 @@ function ItemView({ item, mode, family, frozen, onDecide }: { item: Item; mode: 
         </details>
       );
     case "tool":
+      // What the 分身 asked 本尊: the form while it waits, the answers after.
+      if (item.question) return <QuestionSheet tool={item} frozen={frozen} onAnswer={onAnswer} />;
       if (item.approval && !item.approval.decision && !item.result) return <SignSheet tool={item} mode={mode} frozen={frozen} onDecide={onDecide} />;
       return item.name === "delegate" ? <DelegateCard tool={item} family={family} /> : <ToolCard tool={item} />;
     case "fallback":
@@ -814,7 +817,7 @@ const FOLD = 4;
 type Part = { kind: "item"; item: Item; key: string } | { kind: "act"; tool: ToolItem } | { kind: "fold"; tools: ToolItem[] };
 
 /** Whether a tool call is shown as a line: not a request waiting for 本尊, and not a party of 子分身. */
-const isLine = (item: Item): boolean => item.kind === "tool" && item.name !== "delegate" && !(item.approval && !item.approval.decision && !item.result);
+const isLine = (item: Item): boolean => item.kind === "tool" && item.name !== "delegate" && !item.question && !(item.approval && !item.approval.decision && !item.result);
 
 /** Whether an act only looked, and is done: such acts, several in a row, fold under one line. */
 const looked = (tool: ToolItem) => weigh(tool) === "quiet" && !voided(tool);
@@ -895,6 +898,8 @@ interface Props {
   frozen: boolean;
   onOpen: (id: string) => void;
   onDecide: (toolUseId: string, decision: Decision) => void;
+  /** Answer the questions the 分身 asked: one reply each, or `null` to leave them to it. */
+  onAnswer: (toolUseId: string, answers: Reply[] | null) => void;
   /** Undo the 分身's file edits from this turn on. */
   onUndo: (turn: number) => void;
   /** Start a fork that goes on from before this turn, with the turn's message to send again or change. Absent where a fork cannot be made. */
@@ -968,7 +973,7 @@ function Queued({ text }: { text: string }) {
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onUndo, onFork, onOpenFile, onPicture }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture }: Props) {
   const family = { sessions, onOpen };
   const undoable = undoableTurns(rows, copied);
   /** Where a fork's own conversation begins: said once, between what it copied and what it did itself. */
@@ -1147,7 +1152,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                   // Named for the act it starts with, which stays as the fold grows.
                   <Folded key={`fold-${part.tools[0].id}`} tools={part.tools} />
                 ) : (
-                  <ItemView key={part.key} item={part.item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} />
+                  <ItemView key={part.key} item={part.item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} onAnswer={onAnswer} />
                 ),
               )}
               {last && <Streaming blocks={stream} />}

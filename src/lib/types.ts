@@ -18,6 +18,21 @@ export interface Tokens {
   output: number;
 }
 
+/** One question the 分身 puts to 本尊 with `ask_user`: answered by one option, any of them, or in words. */
+export interface Question {
+  /** A few words naming it, on its tab. */
+  header: string;
+  question: string;
+  kind: "single" | "multiple" | "text";
+  options?: { label: string; description?: string }[];
+}
+
+/** 本尊's answer to one question: the labels chosen, and anything written. Both empty when left unanswered. */
+export interface Reply {
+  chosen?: string[];
+  text?: string;
+}
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string }
@@ -38,6 +53,8 @@ export type SessionEvent =
   | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
   | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string; expires_at?: string } }
   | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision; timed_out?: boolean } }
+  | { type: "question/asked"; data: { tool_use_id: string; questions: Question[]; expires_at?: string } }
+  | { type: "question/answered"; data: { tool_use_id: string; answers?: Reply[]; declined?: boolean; timed_out?: boolean } }
   | { type: "guardian/reviewed"; data: { tool_use_id: string; model: string; allowed: boolean; reason: string; verdict?: string; failed?: boolean; tokens?: Tokens } }
   | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
   | { type: "files/restored"; data: { turn: number; restored: string[]; skipped: string[] } }

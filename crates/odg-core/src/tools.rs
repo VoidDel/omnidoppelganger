@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::events::{Choice, Question, QuestionKind, Reply};
 use crate::jobs::{Ended, Jobs, Report};
 
 const READ_LINE_LIMIT: usize = 2000;
@@ -451,6 +452,123 @@ pub fn delegate_tasks(input: &Value) -> Result<Vec<(String, String)>, String> {
             Ok((name, task.to_string()))
         })
         .collect()
+}
+
+/// The name of the tool that asks the user questions. The agent loop runs it, since it waits on the user.
+pub const ASK_USER: &str = "ask_user";
+/// The most questions one `ask_user` call asks, and the most options a question offers.
+pub const QUESTIONS: usize = 4;
+pub const OPTIONS: usize = 6;
+
+/// The definition of `ask_user`. A subagent is not offered it: it reports to the agent that set it off.
+pub fn ask_user_spec() -> Value {
+    json!({
+        "name": ASK_USER,
+        "description": format!("Ask the user one or more questions and wait for the answers, shown as a form with one tab per question. Use it when you cannot go on well without the user's decision: choosing between approaches that differ in what the user gets, a preference only they can state, or something missing from the request that you cannot find out yourself. Do not use it for what you can learn by looking, nor to ask leave for something you were already asked to do. Each question is answered by choosing one option (`single`), any number of them (`multiple`), or in words (`text`); a question with options may also be answered in words, so do not add an \"other\" option. Put the option you recommend first, with \"(推荐)\" after its label. Ask everything you need in one call, at most {QUESTIONS} questions with 2 to {OPTIONS} options each. The user may leave a question unanswered or not answer at all, and in auto mode nobody may be there: then decide yourself, taking the cautious reading, and say which you chose."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "description": "The questions, in the order they are shown.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "header": { "type": "string", "description": "A few words naming the question, shown on its tab; at most 12 characters." },
+                            "question": { "type": "string", "description": "The whole question, standing on its own, in the language the user writes in." },
+                            "kind": { "type": "string", "enum": ["single", "multiple", "text"], "description": "One option, any of them, or an answer in words. Without it, `single` when there are options and `text` when there are none." },
+                            "options": {
+                                "type": "array",
+                                "description": "For `single` and `multiple`: what may be chosen.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string", "description": "The option in a few words." },
+                                        "description": { "type": "string", "description": "What choosing it means, if the label does not say." }
+                                    },
+                                    "required": ["label"]
+                                }
+                            }
+                        },
+                        "required": ["question"]
+                    }
+                }
+            },
+            "required": ["questions"]
+        }
+    })
+}
+
+/// The questions `ask_user` was given, checked and tidied: a header for each, a kind, and options
+/// that are there and distinct where the kind needs them.
+pub fn questions(input: &Value) -> Result<Vec<Question>, String> {
+    let given = input["questions"].as_array().filter(|questions| !questions.is_empty()).ok_or("`questions` is required and must be a list of at least one question.")?;
+    if given.len() > QUESTIONS {
+        return Err(format!("{} questions are too many for one call; ask {QUESTIONS} or fewer.", given.len()));
+    }
+    let words = |value: &Value| value.as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+    given
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let number = index + 1;
+            let question = entry["question"].as_str().map(str::trim).filter(|question| !question.is_empty()).ok_or(format!("Question {number} has no `question`."))?.to_string();
+            let header: String = words(&entry["header"]).chars().take(12).collect();
+            let header = if header.is_empty() { format!("问题 {number}") } else { header };
+            let listed = entry["options"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let kind = match entry["kind"].as_str() {
+                Some("single") => QuestionKind::Single,
+                Some("multiple") => QuestionKind::Multiple,
+                Some("text") => QuestionKind::Text,
+                None if listed.is_empty() => QuestionKind::Text,
+                None => QuestionKind::Single,
+                Some(other) => return Err(format!("Question {number} has kind `{other}`; give `single`, `multiple`, or `text`.")),
+            };
+            if kind == QuestionKind::Text {
+                return Ok(Question { header, question, kind, options: Vec::new() });
+            }
+            if !(2..=OPTIONS).contains(&listed.len()) {
+                return Err(format!("Question {number} offers {} options; give 2 to {OPTIONS}, or make it a `text` question.", listed.len()));
+            }
+            let mut options: Vec<Choice> = Vec::new();
+            for option in listed {
+                let label = words(&option["label"]);
+                if label.is_empty() {
+                    return Err(format!("An option of question {number} has no `label`."));
+                }
+                if options.iter().any(|known| known.label == label) {
+                    return Err(format!("Question {number} offers `{label}` twice."));
+                }
+                options.push(Choice { label, description: option["description"].as_str().unwrap_or_default().trim().to_string() });
+            }
+            Ok(Question { header, question, kind, options })
+        })
+        .collect()
+}
+
+/// What the agent is told came of its questions: each answer under its question, or why there are none.
+pub fn answered(questions: &[Question], answers: &[Reply], declined: bool, timed_out: Option<u64>) -> String {
+    if let Some(seconds) = timed_out {
+        return format!("Nobody answered within {seconds} seconds. Decide yourself, taking the cautious reading, and say in your reply what you chose for each question and why.");
+    }
+    if declined || answers.iter().all(Reply::is_empty) {
+        return "The user chose not to answer and leaves it to you. Decide yourself, and say in your reply what you chose for each question.".to_string();
+    }
+    let mut told = String::from("The user answered:");
+    for (index, question) in questions.iter().enumerate() {
+        let reply = answers.get(index).cloned().unwrap_or_default();
+        told.push_str(&format!("\n{}. {}\n", index + 1, question.question));
+        let text = reply.text.trim();
+        let answer = match (reply.chosen.is_empty(), text.is_empty()) {
+            (true, true) => "(left unanswered: decide this one yourself, and say what you chose)".to_string(),
+            (false, true) => reply.chosen.join("; "),
+            (true, false) if question.kind == QuestionKind::Text => text.to_string(),
+            (true, false) => format!("None of the options. In their own words: {text}"),
+            (false, false) => format!("{}. And in their own words: {text}", reply.chosen.join("; ")),
+        };
+        told.push_str(&format!("   → {answer}"));
+    }
+    told
 }
 
 /// Resolve a tool's path argument against the workspace, folding `.` and `..` without touching the disk.
@@ -1779,5 +1897,55 @@ mod tests {
         assert!(in_git_directory(workspace, &resolve(workspace, "vendor/lib/.GIT/config")));
         assert!(!in_git_directory(workspace, &resolve(workspace, "src/.gitignore")));
         assert!(!in_git_directory(workspace, &resolve(workspace, "src/new/file.rs")));
+    }
+
+    #[test]
+    fn questions_are_checked_and_tidied_before_the_user_sees_them() {
+        let asked = questions(&json!({ "questions": [
+            { "header": "  一个很长很长很长的标签名字啊  ", "question": " 用哪个？ ", "options": [{ "label": " 方案  一 ", "description": " 改得少 " }, { "label": "方案二" }] },
+            { "question": "哪些要测？", "kind": "multiple", "options": [{ "label": "解析" }, { "label": "渲染" }, { "label": "导出" }] },
+            { "question": "还有什么？" }
+        ] }))
+        .unwrap();
+        // A header cut to fit its tab, or made up; the kind from the options when it is not given.
+        assert_eq!(asked.iter().map(|question| (question.header.as_str(), question.kind)).collect::<Vec<_>>(), [("一个很长很长很长的标签名", QuestionKind::Single), ("问题 2", QuestionKind::Multiple), ("问题 3", QuestionKind::Text)]);
+        assert_eq!((asked[0].question.as_str(), asked[0].options[0].label.as_str(), asked[0].options[0].description.as_str()), ("用哪个？", "方案 一", "改得少"));
+        // A text question takes no options, even if some were given.
+        let text = questions(&json!({ "questions": [{ "question": "说说？", "kind": "text", "options": [{ "label": "a" }, { "label": "b" }] }] })).unwrap();
+        assert!(text[0].options.is_empty());
+
+        let refused = |input: Value| questions(&input).unwrap_err();
+        assert!(refused(json!({})).contains("`questions` is required"));
+        assert!(refused(json!({ "questions": [] })).contains("`questions` is required"));
+        assert!(refused(json!({ "questions": vec![json!({ "question": "?" }); 5] })).contains("5 questions are too many"));
+        assert!(refused(json!({ "questions": [{ "question": " " }] })).contains("Question 1 has no `question`"));
+        assert!(refused(json!({ "questions": [{ "question": "?", "kind": "rank" }] })).contains("kind `rank`"));
+        assert!(refused(json!({ "questions": [{ "question": "?", "kind": "single" }] })).contains("offers 0 options"));
+        assert!(refused(json!({ "questions": [{ "question": "?", "options": vec![json!({ "label": "x" }); 7] }] })).contains("offers 7 options"));
+        assert!(refused(json!({ "questions": [{ "question": "?", "options": [{ "label": "a" }, { "label": "" }] }] })).contains("has no `label`"));
+        assert!(refused(json!({ "questions": [{ "question": "?", "options": [{ "label": "a" }, { "label": " a " }] }] })).contains("offers `a` twice"));
+    }
+
+    #[test]
+    fn the_agent_is_told_each_answer_under_its_question() {
+        let asked = questions(&json!({ "questions": [
+            { "question": "用哪个？", "options": [{ "label": "一" }, { "label": "二" }] },
+            { "question": "哪些要测？", "kind": "multiple", "options": [{ "label": "解析" }, { "label": "渲染" }] },
+            { "question": "还有什么？" },
+            { "question": "叫什么？", "options": [{ "label": "甲" }, { "label": "乙" }] }
+        ] }))
+        .unwrap();
+        let reply = |chosen: &[&str], text: &str| Reply { chosen: chosen.iter().map(|label| label.to_string()).collect(), text: text.to_string() };
+        let told = answered(&asked, &[reply(&["一"], ""), reply(&["解析", "渲染"], "先测解析"), reply(&[], "别动接口"), reply(&[], "")], false, None);
+        assert_eq!(
+            told,
+            "The user answered:\n1. 用哪个？\n   → 一\n2. 哪些要测？\n   → 解析; 渲染. And in their own words: 先测解析\n3. 还有什么？\n   → 别动接口\n4. 叫什么？\n   → (left unanswered: decide this one yourself, and say what you chose)"
+        );
+        // Words in place of an option.
+        assert!(answered(&asked[..1], &[reply(&[], "都不要")], false, None).ends_with("→ None of the options. In their own words: 都不要"));
+        // Nothing answered, left to the agent, or nobody there in time.
+        assert!(answered(&asked, &[], true, None).starts_with("The user chose not to answer"));
+        assert!(answered(&asked, &[reply(&[], " ")], false, None).starts_with("The user chose not to answer"));
+        assert!(answered(&asked, &[], false, Some(30)).starts_with("Nobody answered within 30 seconds"));
     }
 }

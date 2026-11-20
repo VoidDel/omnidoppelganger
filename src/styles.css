@@ -2420,6 +2420,237 @@ button.did-head:not(:disabled):hover {
   }
 }
 
+/* ---------- questions the 分身 puts to 本尊 (ask_user) ---------- */
+
+/* The same yellow sheet as a request for leave: the work stops here too until 本尊 answers. A tab for each question
+   when there are several, its options as slips of white, and a field for 本尊's own words. */
+.ask-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--cinnabar-soft);
+}
+
+.ask-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: -1px;
+  padding: 5px var(--s-3);
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--r-control) var(--r-control) 0 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ask-tab:hover {
+  color: var(--ink);
+}
+
+.ask-tab.on {
+  border-color: var(--cinnabar-soft);
+  background: var(--sheet);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.ask-tab:focus-visible {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: -2px;
+}
+
+/* Its number, and once it is answered a tick in jade. */
+.ask-tab-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: var(--t-micro);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ask-tab.done .ask-tab-mark {
+  border-color: var(--jade);
+  background: var(--jade);
+  color: var(--jade-ink);
+}
+
+.ask-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.sign-sheet .ask-question {
+  font-weight: 700;
+  font-size: var(--t-lead);
+  line-height: 1.5;
+}
+
+.ask-hint {
+  margin-left: var(--s-2);
+  font-size: var(--t-small);
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.ask-options {
+  display: grid;
+  gap: 6px;
+}
+
+/* One option: its mark, its name, and under the name what choosing it means. */
+.ask-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  column-gap: 10px;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  cursor: pointer;
+  transition: border-color var(--d-quick) ease, box-shadow var(--d-quick) ease;
+}
+
+.ask-option:hover {
+  border-color: var(--cinnabar-soft);
+}
+
+.ask-option.on {
+  border-color: var(--cinnabar);
+  box-shadow: inset 0 0 0 1px var(--cinnabar);
+}
+
+.ask-option:has(input:focus-visible) {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: 1px;
+}
+
+.ask-option input[type="radio"],
+.ask-option input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--cinnabar);
+}
+
+.ask-label {
+  font-weight: 700;
+}
+
+.ask-description {
+  grid-column: 2;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+/* 其他 or 补充: the name, and the field taking the rest of the line. */
+.ask-option.ask-other {
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  cursor: text;
+}
+
+.ask-other-gap {
+  width: 13px;
+}
+
+.ask-other-text,
+.ask-text {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+.ask-other-text {
+  padding: 3px var(--s-2);
+}
+
+.ask-text {
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-color: var(--line-strong);
+  background: var(--sheet);
+  resize: vertical;
+}
+
+.ask-other-text:focus,
+.ask-text:focus {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: -1px;
+}
+
+/* Once the questions are over: what was asked and what 本尊 said, kept quietly in the thread. */
+.asked {
+  display: grid;
+  gap: var(--s-2);
+  padding: 10px var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.asked-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.asked-seal {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-paper);
+  background: var(--jade);
+  color: var(--jade-ink);
+  font-family: var(--brush);
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+.asked-whole {
+  margin-left: auto;
+}
+
+.asked-list {
+  margin: 0;
+  display: grid;
+  gap: var(--s-2);
+}
+
+.asked-item dt {
+  color: var(--ink-2);
+}
+
+.asked-header {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: var(--t-micro);
+}
+
+.asked-item dd {
+  margin: 2px 0 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.asked-item dd.muted {
+  font-weight: 400;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

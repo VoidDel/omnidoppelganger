@@ -270,6 +270,52 @@ pub enum Decision {
     Deny,
 }
 
+/// One question of an `ask_user` call, as the user is shown it. Since format 17.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Question {
+    /// A few words naming the question, on its tab.
+    pub header: String,
+    pub question: String,
+    pub kind: QuestionKind,
+    /// What may be chosen; none for a question answered in words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<Choice>,
+}
+
+/// How a question is answered: one option, any of them, or in the user's own words. A question with
+/// options may be answered in words as well, under "其他".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionKind {
+    Single,
+    Multiple,
+    Text,
+}
+
+/// An option of a question: what it is called and, if it needs it, what it means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Choice {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// The user's answer to one question: the labels chosen, and anything written. Both empty when it was
+/// left unanswered.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+impl Reply {
+    pub fn is_empty(&self) -> bool {
+        self.chosen.is_empty() && self.text.trim().is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum Event {
@@ -412,6 +458,29 @@ pub enum Event {
         tool_use_id: String,
         decision: Decision,
         /// Nobody answered in time, and the request was declined by itself. Since format 12.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        timed_out: bool,
+    },
+    /// The agent asked the user questions with `ask_user`, and waits for the answers. Since format 17.
+    #[serde(rename = "question/asked")]
+    QuestionAsked {
+        tool_use_id: String,
+        questions: Vec<Question>,
+        /// RFC 3339 time at which, with no answer, the agent goes on deciding for itself. Set in
+        /// auto and bypass mode, where nobody may be there to answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<String>,
+    },
+    /// What came of the questions: an answer to each, in their order; or none, when the user would
+    /// rather the agent decided, or nobody answered in time. Since format 17.
+    #[serde(rename = "question/answered")]
+    QuestionAnswered {
+        tool_use_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        answers: Vec<Reply>,
+        /// The user chose not to answer: the agent decides.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        declined: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         timed_out: bool,
     },

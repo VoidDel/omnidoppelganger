@@ -15,7 +15,7 @@ import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, ty
 import { modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
 import type { SlashCommand } from "./lib/slash";
-import type { Decision, Envelope, Image, Mode, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
+import type { Decision, Envelope, Image, Mode, Reply, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
 /** What "/init" hands the 分身: learn the project, and write down what a 分身 needs to know of it. */
 const INIT_TASK =
@@ -332,6 +332,9 @@ export default function App() {
   const decide = (toolUseId: string, decision: Decision) => {
     if (state.activeId) api.resolveApproval(state.activeId, toolUseId, decision).catch(fail);
   };
+  const answer = (toolUseId: string, answers: Reply[] | null) => {
+    if (state.activeId) api.answerQuestions(state.activeId, toolUseId, answers).catch(fail);
+  };
   /** Switch the active session's mode; resolves once the session has it, so a message sent after records it. */
   const switchMode = (mode: Mode) =>
     state.activeId ? api.setMode(state.activeId, mode).then((item) => dispatch({ type: "session", item })) : Promise.resolve();
@@ -625,6 +628,7 @@ export default function App() {
                 frozen={!!replay}
                 onOpen={open}
                 onDecide={decide}
+                onAnswer={answer}
                 onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)}
                 onFork={active.parent ? undefined : forkFrom}
                 onOpenFile={openFile}

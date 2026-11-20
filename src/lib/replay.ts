@@ -15,6 +15,8 @@ export function replayStops(events: Envelope[]): number[] {
       case "guardian/reviewed":
       case "approval/requested":
       case "approval/resolved":
+      case "question/asked":
+      case "question/answered":
       case "context/compacted":
       case "files/restored":
       case "files/made":

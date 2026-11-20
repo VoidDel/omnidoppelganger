@@ -15,7 +15,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::events::{Attached, Decision, Envelope, Event, Image, SkillInfo};
+use crate::events::{Attached, Decision, Envelope, Event, Image, Reply, SkillInfo};
 use crate::grants::GrantStore;
 use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::mcp::McpHub;
@@ -104,6 +104,8 @@ struct State {
     /// Messages sent while a turn runs, each with what was attached; they join the conversation at the next step.
     inbox: VecDeque<Said>,
     approvals: HashMap<String, oneshot::Sender<Decision>>,
+    /// Questions `ask_user` waits on the user's answers to; `None` when the user would rather the agent decided.
+    questions: HashMap<String, oneshot::Sender<Option<Vec<Reply>>>>,
     /// Grants the user allowed for the rest of this run of the app.
     grants: HashSet<String>,
     /// What runs without asking; read at every tool call, so a switch applies to the next one.
@@ -337,6 +339,7 @@ impl<L: Llm> Session<L> {
                     cancel: CancellationToken::new(),
                     inbox: VecDeque::new(),
                     approvals: HashMap::new(),
+                    questions: HashMap::new(),
                     grants: HashSet::new(),
                     mode,
                 }),
@@ -472,6 +475,13 @@ impl<L: Llm> Session<L> {
     pub fn resolve_approval(&self, tool_use_id: &str, decision: Decision) -> bool {
         let sender = self.inner.state.lock().unwrap().approvals.remove(tool_use_id);
         sender.is_some_and(|sender| sender.send(decision).is_ok())
+    }
+
+    /// Answer the questions an `ask_user` call is waiting on: a reply to each, in their order, or `None` to
+    /// leave it to the agent. Returns false when nothing was waiting for it.
+    pub fn answer_questions(&self, tool_use_id: &str, answers: Option<Vec<Reply>>) -> bool {
+        let sender = self.inner.state.lock().unwrap().questions.remove(tool_use_id);
+        sender.is_some_and(|sender| sender.send(answers).is_ok())
     }
 
     /// Undo the agent's edits made in `turn` and every later one: each file
@@ -691,8 +701,10 @@ impl<L: Llm> Inner<L> {
     fn tool_specs(&self) -> Vec<Value> {
         let mut specs = tools::specs();
         // Subagents do not set off subagents of their own.
+        // Nor do they ask the user: they report to the agent that set them off.
         if self.parent.is_none() {
             specs.push(tools::delegate_spec());
+            specs.push(tools::ask_user_spec());
         }
         if self.search_config().is_some() {
             specs.push(tools::search_spec());
@@ -737,6 +749,42 @@ impl<L: Llm> Inner<L> {
 
     /// Run `delegate`: set off a subagent for each task, wait until all have
     /// finished, and hand back what each reported. Stopping this turn stops them.
+    /// Put the agent's questions to the user and wait for the answers: for good where the user is
+    /// taken to be there, for `approval_wait` in auto and bypass mode, where nobody may be. `None` when
+    /// the turn was stopped meanwhile.
+    async fn ask_user(&self, tool_use_id: &str, input: &Value, tuning: &Tuning, cancel: &CancellationToken) -> Result<Option<ToolOutput>, String> {
+        if self.parent.is_some() {
+            return Ok(Some(ToolOutput::error("A subagent cannot ask the user. Decide yourself, and say in your report what you decided and why.")));
+        }
+        let questions = match tools::questions(input) {
+            Ok(questions) => questions,
+            Err(message) => return Ok(Some(ToolOutput::error(message))),
+        };
+        let (sender, receiver) = oneshot::channel();
+        self.state.lock().unwrap().questions.insert(tool_use_id.to_string(), sender);
+        let wait = tuning.approval_wait.filter(|_| matches!(self.mode(), Mode::Auto | Mode::Bypass));
+        let expires_at = wait.map(|wait| (chrono::Utc::now() + wait).to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        self.append(Event::QuestionAsked { tool_use_id: tool_use_id.to_string(), questions: questions.clone(), expires_at })?;
+        self.set_status(Status::WaitingApproval);
+        let (answers, timed_out) = tokio::select! {
+            answers = receiver => (answers.unwrap_or(None), false),
+            () = cancel.cancelled() => return Ok(None),
+            () = async { match wait { Some(wait) => tokio::time::sleep(wait).await, None => std::future::pending().await } } => (None, true),
+        };
+        if timed_out {
+            // An answer arriving now finds nothing waiting for it.
+            self.state.lock().unwrap().questions.remove(tool_use_id);
+        }
+        self.set_status(Status::Running);
+        let declined = answers.is_none() && !timed_out;
+        let mut answers = answers.unwrap_or_default();
+        answers.resize(questions.len(), Reply::default());
+        let answers = if answers.iter().all(Reply::is_empty) { Vec::new() } else { answers };
+        self.append(Event::QuestionAnswered { tool_use_id: tool_use_id.to_string(), answers: answers.clone(), declined, timed_out })?;
+        let content = tools::answered(&questions, &answers, declined, timed_out.then(|| wait.map_or(0, |wait| wait.as_secs())));
+        Ok(Some(ToolOutput { content, is_error: false, meta: Value::Null }))
+    }
+
     async fn delegate(&self, tool_use_id: &str, input: &Value, cancel: &CancellationToken) -> Result<ToolOutput, String> {
         if self.parent.is_some() {
             return Ok(ToolOutput::error("A subagent cannot delegate. Do the task yourself."));
@@ -825,6 +873,7 @@ impl<L: Llm> Inner<L> {
             self.run_turn(message, &cancel).await;
             let mut state = self.state.lock().unwrap();
             state.approvals.clear();
+            state.questions.clear();
             let Some(next) = state.inbox.pop_front() else {
                 state.status = Status::Idle;
                 drop(state);
@@ -1182,8 +1231,15 @@ impl<L: Llm> Inner<L> {
                         Decision::AllowOnce => {}
                     }
                 }
-                // `delegate` starts sessions, which only the loop can; every other tool is the executor's.
-                let output = if name == "delegate" { self.delegate(&id, &input, cancel).await? } else { tools::execute(&name, &input, &self.tool_context(cancel)).await };
+                // `delegate` starts sessions and `ask_user` waits on the user, which only the loop can; every other tool is the executor's.
+                let output = match name.as_str() {
+                    "delegate" => self.delegate(&id, &input, cancel).await?,
+                    tools::ASK_USER => match self.ask_user(&id, &input, &tuning, cancel).await? {
+                        Some(output) => output,
+                        None => return Ok("cancelled"),
+                    },
+                    _ => tools::execute(&name, &input, &self.tool_context(cancel)).await,
+                };
                 self.tool_result(&id, &name, output.content, output.is_error, output.meta)?;
             }
         }
@@ -1437,6 +1493,100 @@ mod tests {
         assert!(!fixture.workspace.path().join("out.txt").exists());
     }
 
+    /// An `ask_user` call of two questions: which of two plans, and anything to add in words.
+    fn asks() -> Result<AssistantTurn, LlmError> {
+        calls(&[(
+            "q1",
+            "ask_user",
+            json!({ "questions": [
+                { "header": "方案", "question": "用哪个方案？", "options": [{ "label": "方案一 (推荐)", "description": "改得少" }, { "label": "方案二" }] },
+                { "header": "补充", "question": "还有什么要求？", "kind": "text" }
+            ] }),
+        )])
+    }
+
+    async fn question(fixture: &mut Fixture) -> (String, Vec<crate::events::Question>, Option<String>) {
+        match fixture.until(|event| matches!(event, UiEvent::Log { envelope, .. } if matches!(envelope.event, Event::QuestionAsked { .. }))).await {
+            UiEvent::Log { envelope: Envelope { event: Event::QuestionAsked { tool_use_id, questions, expires_at }, .. }, .. } => (tool_use_id, questions, expires_at),
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_the_user_and_hands_the_answers_back_in_the_same_turn() {
+        let mut fixture = fixture(ScriptedLlm::new(vec![asks(), says("就用方案一。")], None));
+        fixture.session.send("改一下解析器".into());
+        let (asked, questions, expires_at) = question(&mut fixture).await;
+        // Shown as the user will see them, tidied, and waited on for good outside auto mode.
+        assert_eq!(asked, "q1");
+        assert_eq!(questions.iter().map(|question| (question.header.as_str(), question.kind)).collect::<Vec<_>>(), [("方案", crate::events::QuestionKind::Single), ("补充", crate::events::QuestionKind::Text)]);
+        assert_eq!(questions[0].options[0].description, "改得少");
+        assert!(expires_at.is_none());
+        fixture.until(|event| matches!(event, UiEvent::Status { status: Status::WaitingApproval, .. })).await;
+        assert!(fixture.session.summary().awaiting_approval);
+        // The answer goes to the call it was asked by, and only once.
+        let answers = vec![Reply { chosen: vec!["方案一 (推荐)".into()], text: String::new() }, Reply { chosen: Vec::new(), text: "别动公共接口".into() }];
+        assert!(!fixture.session.answer_questions("other", Some(answers.clone())));
+        assert!(fixture.session.answer_questions("q1", Some(answers.clone())));
+        assert!(!fixture.session.answer_questions("q1", Some(answers.clone())));
+        fixture.idle().await;
+        let log = fixture.session.snapshot();
+        assert!(log.iter().any(|envelope| envelope.event == Event::QuestionAnswered { tool_use_id: "q1".into(), answers: answers.clone(), declined: false, timed_out: false }));
+        let (id, failed, told) = fixture.results().remove(0);
+        assert_eq!((id.as_str(), failed), ("q1", false));
+        assert!(told.contains("用哪个方案？\n   → 方案一 (推荐)") && told.contains("还有什么要求？\n   → 别动公共接口"), "{told}");
+        // The model was told within the same turn, and the session is no longer waiting.
+        assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "turn/end").count(), 1);
+        assert!(!fixture.session.summary().awaiting_approval);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn questions_left_to_the_agent_or_unanswered_in_time_let_it_decide() {
+        // The user leaves it to the agent.
+        let mut fixture = fixture(ScriptedLlm::new(vec![asks(), says("我自己定了方案一。")], None));
+        fixture.session.send("改一下解析器".into());
+        let (asked, ..) = question(&mut fixture).await;
+        assert!(fixture.session.answer_questions(&asked, None));
+        fixture.idle().await;
+        assert!(fixture.session.snapshot().iter().any(|envelope| matches!(&envelope.event, Event::QuestionAnswered { declined: true, timed_out: false, answers, .. } if answers.is_empty())));
+        let (_, failed, told) = fixture.results().remove(0);
+        assert!(!failed && told.contains("chose not to answer"), "{told}");
+
+        // In auto mode nobody may be there: the questions wait a while, then the agent decides.
+        let mut auto = self::fixture(ScriptedLlm::new(vec![asks(), says("没人答，我选了方案一。")], None));
+        *auto.guard.lock().unwrap() = (None, Some(Duration::from_millis(300)));
+        auto.session.set_mode(Mode::Auto);
+        auto.session.send("改一下解析器".into());
+        let (_, _, expires_at) = question(&mut auto).await;
+        assert!(expires_at.is_some());
+        auto.idle().await;
+        assert!(auto.session.snapshot().iter().any(|envelope| matches!(&envelope.event, Event::QuestionAnswered { declined: false, timed_out: true, .. })));
+        let (_, failed, told) = auto.results().remove(0);
+        assert!(!failed && told.starts_with("Nobody answered within 0 seconds"), "{told}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn questions_that_cannot_be_shown_are_sent_back_without_asking() {
+        let script = vec![calls(&[("q1", "ask_user", json!({ "questions": [{ "question": "哪个？", "options": [{ "label": "只有一个" }] }] }))]), says("ok")];
+        let mut fixture = fixture(ScriptedLlm::new(script, None));
+        fixture.session.send("hi".into());
+        fixture.idle().await;
+        assert!(!fixture.kinds().contains(&"question/asked".to_string()));
+        let (_, failed, told) = fixture.results().remove(0);
+        assert!(failed && told.contains("offers 1 options"), "{told}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_the_turn_while_it_asks_ends_the_wait() {
+        let mut fixture = fixture(ScriptedLlm::new(vec![asks()], None));
+        fixture.session.send("改一下解析器".into());
+        let (asked, ..) = question(&mut fixture).await;
+        fixture.session.cancel();
+        fixture.idle().await;
+        assert!(!fixture.session.answer_questions(&asked, None));
+        assert!(!fixture.session.summary().awaiting_approval);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn the_guardian_and_the_wait_are_auto_modes_only() {
         // In edit mode the user is asked, and waited for: no guardian, no time limit.
@@ -1457,8 +1607,8 @@ mod tests {
         fixture.idle().await;
         let requests = fixture.llm.requests.lock().unwrap();
         assert!(requests[0].system.contains("A schedule the user set up started this session") && !requests[0].system.contains("You are a subagent"));
-        // It is still a session of the user's own, so it may hand work to subagents.
-        assert_eq!(requests[0].tools.len(), tools::specs().len() + 1);
+        // It is still a session of the user's own, so it may hand work to subagents and ask the user.
+        assert_eq!(requests[0].tools.len(), tools::specs().len() + 2);
         assert_eq!(fixture.session.summary().schedule.as_deref(), Some("nightly"));
     }
 
@@ -1477,8 +1627,8 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].effort, "high");
         assert_eq!((requests[0].provider.as_str(), requests[0].session.as_str()), ("anthropic", fixture.session.id()));
-        // The built-in tools and `delegate`, which only a session the user started is offered.
-        assert_eq!(requests[0].tools.len(), tools::specs().len() + 1);
+        // The built-in tools, `delegate` and `ask_user`, which only a session the user started is offered.
+        assert_eq!(requests[0].tools.len(), tools::specs().len() + 2);
         assert!(requests[0].system.contains(&fixture.workspace.path().display().to_string()) && !requests[0].system.contains("A schedule"));
         // The second request carries the whole conversation: user, assistant tool call, tool result.
         assert_eq!(requests[1].messages.len(), 3);
@@ -1820,7 +1970,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         let names: Vec<&str> = requests[0].tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
         assert_eq!(names[names.len() - 3..], ["web_search", "mcp__echo__echo", "mcp__echo__fail_now"]);
-        assert_eq!(names.len(), tools::specs().len() + 4);
+        assert_eq!(names.len(), tools::specs().len() + 5);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1932,7 +2082,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         // The summary is asked for at the end of the conversation as it was, tools included.
         assert_eq!(texts(&requests[1]), [vec!["one".to_string()], vec!["first answer".into()], vec!["two".into(), SUMMARIZE.into()]]);
-        assert_eq!(requests[1].tools.len(), tools::specs().len() + 1);
+        assert_eq!(requests[1].tools.len(), tools::specs().len() + 2);
         // The step then starts over from the summary and the message not yet answered.
         let summary = format!("{}\n\nThe user said one; I answered.", crate::session::COMPACTED);
         assert_eq!(texts(&requests[2]), [vec![summary, "two".to_string()]]);
@@ -2212,9 +2362,10 @@ mod tests {
         let theirs: Vec<&LlmRequest> = requests.iter().filter(|request| request.session != fixture.session.id()).collect();
         assert_eq!((own.len(), theirs.len()), (2, 2));
         // The agent the user started may delegate and is not told it is a subagent; a subagent is the reverse.
-        assert!(named(own[0], "delegate") && own[0].system.contains("`delegate`") && !own[0].system.contains("You are a subagent"));
+        assert!(named(own[0], "delegate") && named(own[0], "ask_user") && own[0].system.contains("`delegate`") && !own[0].system.contains("You are a subagent"));
         for request in &theirs {
-            assert!(!named(request, "delegate") && named(request, "read_file"));
+            // Nor may it ask the user: it reports to the agent that set it off.
+            assert!(!named(request, "delegate") && !named(request, "ask_user") && named(request, "read_file"));
             assert!(request.system.contains("You are a subagent") && !request.system.contains("`delegate`"));
             assert_eq!(request.messages.len(), 1);
         }

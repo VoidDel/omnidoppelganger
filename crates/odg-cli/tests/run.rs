@@ -151,6 +151,17 @@ fn approves_or_declines_what_the_agent_asks_as_told() {
 }
 
 #[test]
+fn leaves_the_agent_s_questions_to_it_when_nobody_can_answer() {
+    let questions = json!({ "questions": [{ "header": "方案", "question": "用哪个方案？", "options": [{ "label": "一" }, { "label": "二" }] }] });
+    let replies = vec![Reply { text: "Asking.", tool: Some(("ask_user", questions)) }, Reply { text: "I chose one.", tool: None }];
+    let run = odg(&["pick", "one"], replies);
+    assert!(run.output.status.success(), "{}", run.stderr());
+    assert!(run.stderr().contains("> ask_user  用哪个方案？\n  nobody to answer (--no); the agent decides\n"), "{}", run.stderr());
+    let told = results(&run.requests[1]);
+    assert!(told[0].0.starts_with("The user chose not to answer") && !told[0].1, "{told:?}");
+}
+
+#[test]
 fn runs_a_subagent_and_answers_what_it_asks() {
     let replies = vec![
         Reply { text: "Splitting it.", tool: Some(("delegate", json!({ "tasks": [{ "name": "runner", "task": "Run the command." }] }))) },

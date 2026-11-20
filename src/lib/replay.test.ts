@@ -28,6 +28,13 @@ describe("replay", () => {
     // Not at the header, the instructions read before the first message, a turn's start, or a turn that ended well.
     expect(replayStops(events)).toEqual([3, 4, 5, 6, 7, 8, 11, 12]);
     expect(replayStops([])).toEqual([]);
+    // A question the 分身 asks, and its answer, each put something on the page.
+    const asked = log(
+      { type: "assistant/message", data: { content: [{ type: "tool_use", id: "q1", name: "ask_user", input: {} }], stop_reason: "tool_use", model: "m" } },
+      { type: "question/asked", data: { tool_use_id: "q1", questions: [{ header: "h", question: "q?", kind: "text" }] } },
+      { type: "question/answered", data: { tool_use_id: "q1", declined: true } },
+    );
+    expect(replayStops(asked)).toEqual([0, 1, 2]);
   });
 
   it("shows at a stop what the session showed then", () => {
