@@ -341,7 +341,7 @@ const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] =
     icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
   },
   { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
-  { id: "tools", name: "神通", hint: "天机阁（联网搜索）。秘籍和身外法器（MCP 服务）在侧栏的「秘籍」「法器」里", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
+  { id: "tools", name: "神通", hint: "天机阁（联网搜索）、丹青（生成图片）、文房（文档运行环境）。秘籍和身外法器（MCP 服务）在侧栏的「秘籍」「法器」里", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
   {
     id: "look",
     name: "外观",
@@ -354,6 +354,44 @@ const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] =
     ),
   },
 ];
+
+/**
+ * Which image model the 分身 paints with: the one chosen, while its provider has a key; else the first that has one.
+ * What is in force is said under the choice, and when nothing can paint, what puts it right.
+ */
+function PainterSection({ view, onSave }: { view: SettingsView; onSave: (settings: Settings) => unknown }) {
+  const { settings } = view;
+  const keyed = (provider: string) => (view.keys[provider]?.source ?? "none") !== "none";
+  const providerName = (provider: string) => view.kinds.find((kind) => kind.id === provider)?.name ?? provider;
+  const name = (id: string | null) => view.painters.find(([painter]) => painter === id)?.[1] ?? "";
+  const options = [
+    { value: "", text: "自动：哪家有密钥就请哪家" },
+    ...view.painters.map(([id, painter, provider]) => ({ value: id, text: keyed(provider) ? painter : `${painter}（还没有 ${providerName(provider)} 的密钥）` })),
+  ];
+  return (
+    <section>
+      <h2>丹青（生成图片）</h2>
+      <div className="field">
+        <div className="label-line">
+          <label htmlFor="painter">请哪家作画</label>
+          <Info>
+            照片、写实渲染、插画这类代码画不出来的，分身请这里的画师（图像模型）作画，用的是那家宗门的密钥和接口地址：OpenAI 的 GPT Image，或者智谱的 GLM-Image、CogView。每张画都先请示本尊。图表、流程图、图标、海报排版这类，分身照「画图」秘籍用代码画，不走这里。
+          </Info>
+        </div>
+        <div className="inline model-row">
+          <Combo id="painter" value={settings.painter} options={options} editable={false} onSave={(painter) => onSave({ ...settings, painter })} />
+        </div>
+        {view.painter_ready === null ? (
+          <p className="hint missing">还没有 OpenAI 或 GLM（智谱）的密钥，分身现在只能用代码画图。到「心法」那一页给其中一家添上密钥，就能请画师作画。</p>
+        ) : settings.painter && settings.painter !== view.painter_ready ? (
+          <p className="hint">{name(settings.painter)}还没有密钥，眼下请 {name(view.painter_ready)} 作画。</p>
+        ) : (
+          <p className="hint">眼下请 {name(view.painter_ready)} 作画。</p>
+        )}
+      </div>
+    </section>
+  );
+}
 
 interface Props {
   view: SettingsView;
@@ -766,6 +804,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             )}
           </div>
         </section>
+        <PainterSection view={view} onSave={onSave} />
         <RuntimeSection />
           </>
         )}

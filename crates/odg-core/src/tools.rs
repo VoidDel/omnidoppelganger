@@ -54,6 +54,8 @@ pub struct ToolContext {
     pub sandbox: Option<crate::sandbox::Sandbox>,
     /// Where the document runtime is kept; see [`crate::runtime`]. `None` means it is not offered.
     pub runtime: Option<PathBuf>,
+    /// Where `generate_image` paints. `None` means painting is not set up.
+    pub painter: Option<crate::imagegen::ImageConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -262,7 +264,7 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "document_runtime",
-            "description": "The Python to make and read Word, Excel, PowerPoint and PDF files with: OmniDoppelganger's own, apart from the system's, with python-docx, openpyxl, XlsxWriter, python-pptx, reportlab, pypdf, pandas and Pillow. Returns the interpreter's absolute path, to run your scripts with through run_command, and where LibreOffice is if it is installed. Not installed yet, it says so: then call it with `install` true, which asks the user first and downloads about 70 MB once. Never install these libraries into another Python, and never run pip on this one.",
+            "description": "The Python to make and read Word, Excel, PowerPoint and PDF files, and to draw charts and pictures, with: OmniDoppelganger's own, apart from the system's, with python-docx, openpyxl, XlsxWriter, python-pptx, reportlab, pypdf, pandas, Pillow, matplotlib, qrcode and resvg_py (SVG to PNG). Returns the interpreter's absolute path, to run your scripts with through run_command, and where LibreOffice is if it is installed. Not installed yet, it says so: then call it with `install` true, which asks the user first and downloads about 90 MB once. Never install these libraries into another Python, and never run pip on this one.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -329,6 +331,78 @@ pub fn search_spec() -> Value {
             "required": ["query"]
         }
     })
+}
+
+/// The definition of `generate_image`. It is sent to the model only while a painter is set up, named in it.
+pub fn image_spec(painter: &crate::imagegen::Painter) -> Value {
+    json!({
+        "name": "generate_image",
+        "description": format!("Paint a picture with an image model ({}) and save it in the workspace: what code cannot draw, such as a photo, a realistic rendering, an illustration, a scene, a character, a texture. Charts, diagrams, icons, logos, cards and anything that must be exact or carry much text are drawn with code instead (SVG, or a script with the document runtime), as the `image` skill says. Each picture is a paid call, and the user is asked first. Write the prompt as a full description: what the picture is for, the subject, the style or medium, the composition, the lighting and mood, the colors, and any words it must show, quoted exactly; say what to avoid. You cannot see the picture: the user sees it under this step. Paint one picture per call; for another version, call again with a new path.", painter.name),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string", "description": "The full description of the picture." },
+                "path": { "type": "string", "description": "Where to save it in the workspace, such as `images/hero.png`. A file that is there is never replaced: choose a new name, such as `hero-v2.png`. The extension is set to the kind of picture that comes back." },
+                "shape": { "type": "string", "enum": crate::imagegen::SHAPES, "description": "Default square. landscape is about 3:2, portrait 2:3 (wider on some models)." },
+                "quality": { "type": "string", "enum": ["standard", "high"], "description": "Default standard. high takes longer and costs more; use it for a final picture." }
+            },
+            "required": ["prompt", "path"]
+        }
+    })
+}
+
+/// Paint a picture with the painter set up, and save it at a path in the workspace that holds nothing yet.
+async fn generate_image(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let Some(config) = &context.painter else {
+        return Err(ToolOutput::error("Painting is not set up: it needs an OpenAI or GLM (Zhipu) API key saved in the settings."));
+    };
+    let prompt = string_arg(input, "prompt")?.trim();
+    if prompt.is_empty() {
+        return Err(ToolOutput::error("`prompt` is empty: describe the picture."));
+    }
+    let shape = input["shape"].as_str().unwrap_or("square");
+    if !crate::imagegen::SHAPES.contains(&shape) {
+        return Err(ToolOutput::error(format!("`shape` must be one of {}.", crate::imagegen::SHAPES.join(", "))));
+    }
+    let high = match input["quality"].as_str().unwrap_or("standard") {
+        "standard" => false,
+        "high" => true,
+        _ => return Err(ToolOutput::error("`quality` must be standard or high.")),
+    };
+    let asked = resolve(&context.workspace, string_arg(input, "path")?);
+    if !inside_workspace(&context.workspace, &asked) {
+        return Err(ToolOutput::error(format!("{} is outside the workspace: save pictures inside it.", asked.display())));
+    }
+    // Before anything is paid for: a file that is there stays as it is.
+    if asked.exists() {
+        let stem = asked.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+        return Err(ToolOutput::error(format!("{} is there already, and is not replaced: choose a new name, such as `{stem}-v2.png`.", display(&context.workspace, &asked))));
+    }
+    let painted = crate::imagegen::paint(config, prompt, shape, high, &context.cancel).await.map_err(ToolOutput::error)?;
+    // Saved as the kind it is; and, paid for, it is kept under another name rather than lost to one taken since.
+    let mut path = asked.with_extension(painted.extension);
+    let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| "picture".to_string());
+    let mut next = 2;
+    while path.exists() {
+        path = path.with_file_name(format!("{stem}-{next}.{}", painted.extension));
+        next += 1;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot make the folder {}: {error}", parent.display())))?;
+    }
+    std::fs::write(&path, &painted.bytes).map_err(|error| ToolOutput::error(format!("Cannot save the picture at {}: {error}", path.display())))?;
+    let shown = display(&context.workspace, &path);
+    let mut content = format!(
+        "Painted {shown} ({}, {} KB) with {}. The user sees it under this step. You cannot see it: do not describe it beyond what you asked for; ask the user whether it is what they wanted, and if not, paint again under a new name.",
+        painted.size,
+        painted.bytes.len().div_ceil(1024),
+        config.painter.name
+    );
+    if path != asked {
+        content.push_str(&format!(" It was saved as {shown}, not {}, since that is the kind of picture that came back or the name was taken.", display(&context.workspace, &asked)));
+    }
+    let meta = json!({ "file": path.to_string_lossy(), "path": shown, "painter": config.painter.name, "model": config.painter.model, "size": painted.size, "prompt": prompt });
+    Ok(ToolOutput::ok(content, meta))
 }
 
 /// The most subagents one `delegate` call sets off.
@@ -476,6 +550,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "install_skill" => install_skill(input, context).await,
         "document_runtime" => document_runtime(input, context).await,
         "deliver_files" => deliver_files(input, context),
+        "generate_image" => generate_image(input, context).await,
         "add_mcp_server" => add_mcp_server(input, context).await,
         "web_search" => match (string_arg(input, "query"), &context.search) {
             (Ok(query), Some(config)) => {
@@ -1201,8 +1276,35 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None, runtime: None };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None, runtime: None, painter: None };
         (directory, context)
+    }
+
+    #[tokio::test]
+    async fn paints_a_picture_into_the_workspace_as_the_kind_it_is_and_never_over_a_file() {
+        let (directory, context) = context();
+        let unset = execute("generate_image", &json!({ "prompt": "一只白鹤", "path": "crane.png" }), &context).await;
+        assert!(unset.is_error && unset.content.contains("API key"), "{}", unset.content);
+
+        let answer = format!(r#"{{"data":[{{"b64_json":"{}"}}]}}"#, crate::events::base64(crate::imagegen::tests::PNG));
+        let (address, _sent) = crate::imagegen::tests::serve(vec![(200, "application/json", answer.into_bytes())]);
+        let painter = crate::imagegen::painter("gpt-image-2").unwrap();
+        let context = ToolContext { painter: Some(crate::imagegen::ImageConfig { painter, url: format!("{address}/v1/images/generations"), key: "sk".into() }), ..context };
+        // Asked for as a JPEG, it comes back a PNG and is saved as one, in a folder made for it.
+        let painted = execute("generate_image", &json!({ "prompt": "一只白鹤", "path": "images/crane.jpg", "shape": "landscape" }), &context).await;
+        assert!(!painted.is_error, "{}", painted.content);
+        let saved = directory.path().join("images").join("crane.png");
+        assert_eq!(std::fs::read(&saved).unwrap(), crate::imagegen::tests::PNG);
+        assert!(painted.content.contains("images/crane.png") && painted.content.contains("1536x1024") && painted.content.contains("saved as"), "{}", painted.content);
+        assert_eq!((painted.meta["file"].as_str(), painted.meta["model"].as_str()), (Some(saved.to_string_lossy().as_ref()), Some("gpt-image-2")));
+
+        // A file that is there is not painted over, and nothing is asked for; nor is a picture put outside.
+        let taken = execute("generate_image", &json!({ "prompt": "又一只", "path": "images/crane.png" }), &context).await;
+        assert!(taken.is_error && taken.content.contains("crane-v2.png"), "{}", taken.content);
+        let outside = execute("generate_image", &json!({ "prompt": "x", "path": "../crane.png" }), &context).await;
+        assert!(outside.is_error && outside.content.contains("outside the workspace"), "{}", outside.content);
+        let shaped = execute("generate_image", &json!({ "prompt": "x", "path": "a.png", "shape": "round" }), &context).await;
+        assert!(shaped.is_error && shaped.content.contains("square"), "{}", shaped.content);
     }
 
     #[tokio::test]
@@ -1218,7 +1320,7 @@ mod tests {
         let python = if cfg!(windows) { root.join("python").join("python.exe") } else { root.join("python").join("bin").join("python3") };
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::write(&python, "").unwrap();
-        std::fs::write(root.join("runtime.json"), serde_json::to_vec(&crate::runtime::Installed { edition: 1, python: "3.12.16".into(), target: "t".into() }).unwrap()).unwrap();
+        std::fs::write(root.join("runtime.json"), serde_json::to_vec(&crate::runtime::Installed { edition: crate::runtime::EDITION, python: "3.12.16".into(), target: "t".into() }).unwrap()).unwrap();
         let ready = execute("document_runtime", &json!({}), &context).await;
         let call = if cfg!(windows) { format!("& \"{}\" make_report.py", python.display()) } else { format!("\"{}\" make_report.py", python.display()) };
         assert!(ready.content.contains(&call) && ready.meta["python"] == python.to_string_lossy().as_ref(), "{}", ready.content);

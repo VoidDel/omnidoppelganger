@@ -99,6 +99,10 @@ pub struct Settings {
     /// Which of Zhipu's search engines `web_search` asks; see [`SEARCH_ENGINES`].
     #[serde(default = "default_search_engine")]
     pub search_engine: String,
+    /// The image model `generate_image` asks, one of [`crate::imagegen::PAINTERS`]; empty for the first whose
+    /// provider has a key. See [`SettingsStore::painter`].
+    #[serde(default)]
+    pub painter: String,
     /// `system`, `light`, or `dark`.
     pub theme: String,
     /// Addresses that replace a provider's default, by provider id; for an
@@ -148,6 +152,7 @@ impl Default for Settings {
             context_limit: DEFAULT_CONTEXT_LIMIT,
             context_auto: true,
             search_engine: default_search_engine(),
+            painter: String::new(),
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
             provider_names: BTreeMap::new(),
@@ -212,6 +217,9 @@ impl Settings {
         }
         if !SEARCH_ENGINES.iter().any(|(id, _)| *id == self.search_engine) {
             self.search_engine = default.search_engine;
+        }
+        if crate::imagegen::painter(&self.painter).is_none() {
+            self.painter = default.painter;
         }
         self.base_urls = std::mem::take(&mut self.base_urls)
             .into_iter()
@@ -553,6 +561,19 @@ impl SettingsStore {
         let key = key?;
         let engine = if base_url.contains("z.ai") { INTERNATIONAL_ENGINE.to_string() } else { self.load().search_engine };
         Some(SearchConfig { url: format!("{}/web_search", base_url.trim_end_matches('/')), key, engine })
+    }
+
+    /// Where `generate_image` paints: the painter the user chose, while its provider has a key; else the first of
+    /// [`crate::imagegen::PAINTERS`] whose provider has one. `None` while neither OpenAI nor GLM has a key, which is
+    /// how painting is switched on. It goes to the provider's address, so a gateway set there serves it too.
+    pub fn painter(&self) -> Option<crate::imagegen::ImageConfig> {
+        let chosen = self.load().painter;
+        let reachable = |painter: &'static crate::imagegen::Painter| {
+            let Endpoint { base_url, key } = self.endpoint(painter.provider);
+            let key = key?;
+            (!base_url.is_empty()).then(|| crate::imagegen::ImageConfig { painter, url: format!("{}/images/generations", base_url.trim_end_matches('/')), key })
+        };
+        crate::imagegen::painter(&chosen).and_then(reachable).or_else(|| crate::imagegen::PAINTERS.iter().find_map(reachable))
     }
 
     /// The directories the user added for confined commands to write under,
@@ -897,6 +918,29 @@ mod tests {
         assert!(missing.context_auto && missing.guardian);
         let kept: Settings = serde_json::from_str(r#"{"model": "m", "effort": "high", "theme": "system", "context_auto": false, "guardian": false}"#).unwrap();
         assert!(!kept.context_auto && !kept.guardian);
+    }
+
+    #[test]
+    fn paints_with_the_chosen_model_while_its_provider_has_a_key_and_else_with_one_that_has() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(directory.path());
+        // Keys may also come from the environment, which this test does not control.
+        if std::env::var_os("OPENAI_API_KEY").is_some() || std::env::var_os("ZHIPUAI_API_KEY").is_some() {
+            return;
+        }
+        assert_eq!(store.painter(), None);
+        store.save_api_key("zhipu", "glm-key-0000000000000000").unwrap();
+        // Nothing chosen: the first painter whose provider has a key.
+        let config = store.painter().unwrap();
+        assert_eq!((config.painter.id, config.url.as_str(), config.key.as_str()), ("glm-image", "https://open.bigmodel.cn/api/paas/v4/images/generations", "glm-key-0000000000000000"));
+        // Chosen, and its provider has no key: one that has is used instead.
+        store.save(Settings { painter: "gpt-image-2".into(), ..Settings::default() }).unwrap();
+        assert_eq!(store.painter().unwrap().painter.id, "glm-image");
+        store.save_api_key("openai", "sk-test-0000000000000000").unwrap();
+        let config = store.painter().unwrap();
+        assert_eq!((config.painter.id, config.url.as_str()), ("gpt-image-2", "https://api.openai.com/v1/images/generations"));
+        // One this build does not know is forgotten.
+        assert_eq!(store.save(Settings { painter: "midjourney".into(), ..Settings::default() }).unwrap().painter, "");
     }
 
     #[test]

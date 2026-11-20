@@ -57,14 +57,17 @@ describe("what the 分身 made", () => {
       { type: "turn/end", data: { turn: 1, reason: "completed", error: null } },
       { type: "turn/start", data: { turn: 2 } },
       user("again"),
-      { type: "files/made", data: { turn: 2, files: ["D:\\p\\report.docx"] } },
+      said(call("g", "generate_image", { prompt: "白鹤", path: "images/crane.png" })),
+      result("g", "generate_image", { file: "D:\\p\\images\\crane.png", path: "images/crane.png", painter: "OpenAI GPT Image 2", size: "1024x1024" }),
+      { type: "files/made", data: { turn: 2, files: ["D:\\p\\images\\crane.png", "D:\\p\\report.docx"] } },
     );
     const rows = fold(events);
     expect(rows[0].items.filter((item) => item.kind === "made")).toEqual([{ kind: "made", turn: 1, files: ["D:\\p\\data.xlsx"] }]);
-    expect(rows[1].items).toEqual([{ kind: "made", turn: 2, files: ["D:\\p\\report.docx"] }]);
+    expect(rows[1].items.filter((item) => item.kind === "made")).toEqual([{ kind: "made", turn: 2, files: ["D:\\p\\report.docx"] }]);
     expect(products(rows)).toEqual([
-      { path: "D:\\p\\data.xlsx", turn: 1, delivered: false },
-      { path: "D:\\p\\report.docx", turn: 2, delivered: true },
+      { path: "D:\\p\\images\\crane.png", turn: 2, how: "painted" },
+      { path: "D:\\p\\data.xlsx", turn: 1, how: "found" },
+      { path: "D:\\p\\report.docx", turn: 2, how: "delivered" },
     ]);
   });
 });

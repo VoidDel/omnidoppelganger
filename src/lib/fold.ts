@@ -302,20 +302,20 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
   return [...files.values()];
 }
 
-/** The files on disk an act tells of: the one it wrote, or those it handed over. */
+/** The files on disk an act tells of: the one it wrote or painted, or those it handed over. */
 function toldOf(item: ToolItem): string[] {
   const meta = item.result?.meta;
   if (item.name === "deliver_files") return Array.isArray(meta?.files) ? meta.files : [];
-  return editsFiles(item.name) && meta?.file ? [meta.file] : [];
+  return (editsFiles(item.name) || item.name === "generate_image") && meta?.file ? [meta.file] : [];
 }
 
-/** A file the 分身 made for 本尊: handed over with `deliver_files`, or found in the workspace when its turn ended. */
+/** A file the 分身 made for 本尊: painted with `generate_image`, handed over with `deliver_files`, or found in the workspace when its turn ended. */
 export interface Product {
   /** Where it is on disk. */
   path: string;
   turn: number;
-  /** Handed over by the 分身, rather than found. */
-  delivered: boolean;
+  /** How it came: painted, handed over, or found. What a 分身 said of a file outranks finding it. */
+  how: "painted" | "delivered" | "found";
 }
 
 /** What the 分身 made for 本尊 in this session, the newest first, each once. */
@@ -323,9 +323,9 @@ export function products(rows: Row[]): Product[] {
   const made = new Map<string, Product>();
   for (const item of rows.flatMap((row) => row.items)) {
     if (item.kind === "made") {
-      for (const path of item.files) made.set(path, { path, turn: item.turn, delivered: made.get(path)?.delivered ?? false });
-    } else if (item.kind === "tool" && item.name === "deliver_files" && item.result && !item.result.isError) {
-      for (const path of toldOf(item)) made.set(path, { path, turn: item.turn, delivered: true });
+      for (const path of item.files) made.set(path, { path, turn: item.turn, how: made.get(path)?.how ?? "found" });
+    } else if (item.kind === "tool" && item.result && !item.result.isError && (item.name === "deliver_files" || item.name === "generate_image")) {
+      for (const path of toldOf(item)) made.set(path, { path, turn: item.turn, how: item.name === "generate_image" ? "painted" : "delivered" });
     }
   }
   return [...made.values()].reverse();

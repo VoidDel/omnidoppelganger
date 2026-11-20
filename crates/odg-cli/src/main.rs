@@ -192,6 +192,7 @@ async fn run(options: Options) -> Result<bool, String> {
         Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort, guardian, approval_wait }
     };
     let searching = store.clone();
+    let painting = store.clone();
     let confining = store.clone();
     let services = Services {
         grants: Arc::new(GrantStore::new(home.join("grants.json"))),
@@ -201,6 +202,7 @@ async fn run(options: Options) -> Result<bool, String> {
         sandbox: Some(Arc::new(move || confining.sandbox())),
         chat: Some(home.join("闲谈")),
         runtime: Some(home.join("runtime")),
+        painter: Some(Arc::new(move || painting.painter())),
     };
     let (sender, mut events) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let session = Session::new(log, llm, Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).map_err(|error| error.to_string())?;

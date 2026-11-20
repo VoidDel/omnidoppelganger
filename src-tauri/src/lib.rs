@@ -82,6 +82,9 @@ struct SettingsView {
     /// The engines `web_search` can ask, `(id, what it is)`, and whether a GLM key is saved for it to work.
     search_engines: &'static [(&'static str, &'static str)],
     search_ready: bool,
+    /// The image models `generate_image` can ask, `(id, name, provider)`, and the one in force, if any provider has a key.
+    painters: Vec<(&'static str, &'static str, &'static str)>,
+    painter_ready: Option<&'static str>,
     /// The user's own skills, and the directory they are kept in.
     skills: Vec<odg_core::events::SkillInfo>,
     skills_directory: String,
@@ -107,6 +110,7 @@ impl App {
             Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort, guardian, approval_wait }
         };
         let searching = self.settings.clone();
+        let painting = self.settings.clone();
         let confining = self.settings.clone();
         let services = Services {
             grants: self.grants.clone(),
@@ -116,6 +120,7 @@ impl App {
             sandbox: Some(Arc::new(move || confining.sandbox())),
             chat: Some(settings::chat_folder()),
             runtime: Some(settings::home().join("runtime")),
+            painter: Some(Arc::new(move || painting.painter())),
         };
         Session::new(log, self.llm.clone(), Arc::new(tuning), services, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
     }
@@ -222,6 +227,8 @@ impl App {
             grants: self.grants.all(),
             search_engines: odg_core::web::SEARCH_ENGINES,
             search_ready: self.settings.search().is_some(),
+            painters: odg_core::imagegen::PAINTERS.iter().map(|painter| (painter.id, painter.name, painter.provider)).collect(),
+            painter_ready: self.settings.painter().map(|config| config.painter.id),
             skills: odg_core::skills::listing(&odg_core::skills::discover(&[settings::home().join("skills")])),
             skills_directory: settings::home().join("skills").display().to_string(),
             chat_folder: settings::chat_folder().display().to_string(),
@@ -394,7 +401,7 @@ fn session_file(session: &Session<Router>, path: &str) -> bool {
     session.snapshot().iter().any(|envelope| match &envelope.event {
         Event::UserMessage { files, .. } => files.iter().any(|file| file.path == path),
         Event::ToolResult { tool, is_error: false, meta, .. } => match tool.as_str() {
-            "edit_file" | "write_file" => meta["file"].as_str() == Some(path),
+            "edit_file" | "write_file" | "generate_image" => meta["file"].as_str() == Some(path),
             // What the 分身 handed over, having made it some other way, such as with a script.
             "deliver_files" => meta["files"].as_array().is_some_and(|files| files.iter().any(|file| file.as_str() == Some(path))),
             _ => false,

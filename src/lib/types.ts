@@ -115,6 +115,10 @@ export interface ToolMeta {
   /** For `document_runtime`: its interpreter, and LibreOffice's command if there is one; `state` says whether it is set up. */
   python?: string;
   libreoffice?: string | null;
+  /** For `generate_image`: who painted it, in what size, from what prompt. */
+  painter?: string;
+  size?: string;
+  prompt?: string;
   created?: boolean;
   added?: number;
   removed?: number;
@@ -259,6 +263,8 @@ export interface Settings {
   context_limit: number;
   /** Which search engine `web_search` asks. */
   search_engine: string;
+  /** The image model `generate_image` asks; empty for the first whose provider has a key. */
+  painter: string;
   theme: "system" | "light" | "dark";
   /** Addresses that replace a provider's default, by provider id. */
   base_urls: Record<string, string>;
@@ -325,6 +331,9 @@ export interface SettingsView {
   /** The engines a web search can ask, `[id, what it is]`, and whether a GLM key is saved for searching to work. */
   search_engines: [string, string][];
   search_ready: boolean;
+  /** The image models there are, `[id, name, provider]`, and the one in force; null while no provider for one has a key. */
+  painters: [string, string, string][];
+  painter_ready: string | null;
   /**
    * The context window of the model new 分身 use, and how it is known: the provider said so when asked for its
    * models, its documentation said so when this build was made, or nobody did and a size small enough to be safe is assumed.

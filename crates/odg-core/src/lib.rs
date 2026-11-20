@@ -9,6 +9,7 @@ pub mod documents;
 pub mod events;
 pub mod fsutil;
 pub mod grants;
+pub mod imagegen;
 pub mod jobs;
 pub mod llm;
 pub mod made;

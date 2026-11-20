@@ -1869,7 +1869,11 @@ function ProductRow({ product, workspace, onOpenFile }: { product: Product; work
             <span className="file-name">{name}</span>
             {cut > 0 && <span className="file-dir">{shown.slice(0, cut - 1)}</span>}
           </span>
-          {product.delivered ? (
+          {product.how === "painted" ? (
+            <span className="chip done" title="分身请画师画的">
+              作画
+            </span>
+          ) : product.how === "delivered" ? (
             <span className="chip done" title="分身做好之后交付的">
               交付
             </span>

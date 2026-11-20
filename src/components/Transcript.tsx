@@ -279,6 +279,8 @@ function sealOf(tool: ToolItem): string {
       return "备";
     case "deliver_files":
       return "交";
+    case "generate_image":
+      return "画";
     case "fetch_url":
       return "网";
     case "web_search":
@@ -350,7 +352,7 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
     case "document_runtime":
       return {
         verb: tool.input.install === true ? "备置文房" : "查看文房",
-        target: "Word、Excel、PPT、PDF 用的 Python",
+        target: "做文档、画图用的 Python",
         outcome: waiting || (result!.isError ? "没备成" : meta?.state === "ready" ? (meta.libreoffice ? "已就绪，有 LibreOffice" : "已就绪") : "还没安装"),
       };
     case "deliver_files": {
@@ -362,6 +364,12 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         outcome: waiting || (result!.isError ? "没交成" : `${handed.length} 个`),
       };
     }
+    case "generate_image":
+      return {
+        verb: "作画",
+        target: meta?.path ?? text("path"),
+        outcome: waiting || (result!.isError ? "没画成" : [meta?.painter, meta?.size].filter(Boolean).join("，")),
+      };
     case "add_mcp_server":
       return {
         verb: "收纳法器",
@@ -464,7 +472,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
   // The file an edit wrote, by where it is: what can be opened from under the act.
-  const written = editsFiles(tool.name) && result && !result.isError && result.meta?.file ? result.meta.file : null;
+  const written = (editsFiles(tool.name) || tool.name === "generate_image") && result && !result.isError && result.meta?.file ? result.meta.file : null;
   // What was handed over, made some other way: each opened from under the act as a written file is.
   const handed = tool.name === "deliver_files" && result && !result.isError && Array.isArray(result.meta?.files) ? result.meta.files : [];
   // A change and a failure are open until closed, even when they come in after the line they belong to; but a
@@ -509,7 +517,7 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
   },
   search: {
     title: "分身要向天机阁打探（联网搜索），请本尊定夺",
-    note: "要打探的话会发给智谱的搜索服务，每问一次都要花灵石（基础版约 0.01 元）。",
+    note: "要打探的话会发给智谱的搜索服务，用的是 GLM（智谱）的密钥。",
     always: "之后打探都准",
   },
   web: {
@@ -522,6 +530,11 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
     note: "这件法器来自你在「法器」里接入的 MCP 服务，它具体做什么由那个服务决定，所以无论哪种禁制都要先请示。",
     always: "之后这件法器都准",
   },
+  image: {
+    title: "分身要请画师作一幅画（生成图片），请本尊定夺",
+    note: "下面是要画的内容和存放的位置。会请设置「神通 → 丹青」里选的画师作画，画好存进洞府，在对话里直接能看。",
+    always: "之后作画都准",
+  },
   install_skill: {
     title: "分身要装一部秘籍，请本尊定夺",
     note: "秘籍是一份做事说明，装上以后分身遇到对得上的事会照着做；里面也可能带着脚本。下面是从哪里装、装到哪里：.odg/skills 只对这处洞府生效，~/.odg/skills 对所有分身生效。从网上的仓库装时会先下载下来。无论哪种禁制，每次都要请示。",
@@ -529,7 +542,7 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
   },
   install_runtime: {
     title: "分身要下载文档运行环境，请本尊定夺",
-    note: "做 Word、Excel、PPT、PDF 要用到一套 Python 和几个库。准了之后，会从 Python 官方构建的发布处和 PyPI 下载下面这些，逐个按事先定好的校验码核对，装到 ~/.odg/runtime，不动你电脑上已有的 Python。只下载这一次，以后所有分身都能用；在设置的「神通」里可以查看或移除。无论哪种禁制，每次都要请示。",
+    note: "做 Word、Excel、PPT、PDF 和画图要用到一套 Python 和几个库。准了之后，会从 Python 官方构建的发布处和 PyPI 下载下面这些，逐个按事先定好的校验码核对，装到 ~/.odg/runtime，不动你电脑上已有的 Python。只下载这一次，以后所有分身都能用；在设置的「神通」里可以查看或移除。无论哪种禁制，每次都要请示。",
     always: "",
   },
   add_mcp_server: {

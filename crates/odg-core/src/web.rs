@@ -258,9 +258,9 @@ pub struct SearchConfig {
 /// Gives the search configuration in force, or `None` when searching is not set up.
 pub type SearchSource = std::sync::Arc<dyn Fn() -> Option<SearchConfig> + Send + Sync>;
 
-/// The engines Zhipu's site in China offers, the cheapest first: `(id, what it is)`.
-pub const SEARCH_ENGINES: &[(&str, &str)] =
-    &[("search_std", "智谱基础版，约 0.01 元一次"), ("search_pro", "智谱高阶版，约 0.03 元一次"), ("search_pro_sogou", "搜狗，约 0.05 元一次"), ("search_pro_quark", "夸克，约 0.05 元一次")];
+/// The engines Zhipu's site in China offers, the plainest first: `(id, what it is)`. What each costs is Zhipu's to
+/// say, and changes; it is not said here.
+pub const SEARCH_ENGINES: &[(&str, &str)] = &[("search_std", "智谱基础版"), ("search_pro", "智谱高阶版"), ("search_pro_sogou", "搜狗"), ("search_pro_quark", "夸克")];
 /// The one engine of Zhipu's international site, which also takes fewer fields.
 pub const INTERNATIONAL_ENGINE: &str = "search-prime";
 const RECENCY: &[&str] = &["oneDay", "oneWeek", "oneMonth", "oneYear"];

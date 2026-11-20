@@ -14,7 +14,7 @@ function stepText(step: RuntimeProgress): string {
     case "unpacking":
       return "正在解开……";
     case "installing":
-      return "正在下载并安装 Word、Excel、PPT、PDF 用的库，要一两分钟……";
+      return "正在下载并安装做文档、画图用的库，要一两分钟……";
     case "checking":
       return "正在检查装好的库……";
     case "done":
@@ -106,7 +106,7 @@ export function RuntimeSection() {
         文房（文档运行环境）
         <Info>
           <p>
-            做 Word、Excel、PPT、PDF 的秘籍要用一套 Python 和几个库：python-docx、openpyxl、XlsxWriter、python-pptx、reportlab、pypdf、pandas、Pillow。它们装在
+            做 Word、Excel、PPT、PDF 和画图的秘籍要用一套 Python 和几个库：python-docx、openpyxl、XlsxWriter、python-pptx、reportlab、pypdf、pandas、Pillow、matplotlib（图表）、qrcode（二维码）、resvg（SVG 转 PNG）。它们装在
             ~/.odg/runtime，自成一套，不动你电脑上已有的 Python；下载的每个文件都按事先定好的校验码核对，对不上就不装。分身第一次要用时也会请示你下载。
           </p>
           <p>LibreOffice 是可选的：装了它，分身做完文档会转成 PDF 核对版面、把表格公式算一遍；不装也能做文档，只是少这一步核对。</p>

@@ -20,6 +20,7 @@ const LOOKS: Record<string, { title: string; seal: string }> = {
   xlsx: { title: "Excel 表格", seal: "表" },
   pptx: { title: "PPT 演示", seal: "演" },
   pdf: { title: "PDF 文件", seal: "印" },
+  image: { title: "画图", seal: "绘" },
 };
 
 interface CardProps {

@@ -46,13 +46,17 @@ pub const MODULES: &[(&str, &str)] = &[
     ("pandas", "pandas"),
     ("PIL", "Pillow"),
     ("lxml", "lxml"),
+    ("matplotlib", "matplotlib: charts"),
+    ("qrcode", "qrcode: QR codes"),
+    ("resvg_py", "resvg: SVG to PNG"),
 ];
 
-/// Raised whenever what is installed changes, so a runtime from before is put in place again.
-const EDITION: u32 = 1;
+/// Raised whenever what is installed changes, so a runtime from before is put in place again. Edition 2 adds the
+/// libraries to draw with: matplotlib, qrcode and resvg.
+pub const EDITION: u32 = 2;
 
-/// About how much is downloaded, said to the user before they agree to it.
-pub const DOWNLOAD_MB: u32 = 70;
+/// About how much is downloaded, said to the user before they agree to it: the most of any system, Linux's.
+pub const DOWNLOAD_MB: u32 = 90;
 
 /// What `runtime.json` records of an installed runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -163,6 +163,13 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             None => Verdict::Allow,
         },
         "web_search" => Verdict::Ask { reason: "search", detail: input["query"].as_str().unwrap_or_default().to_string(), grant: Some("search".to_string()) },
+        // A picture writes a file and is paid for: what it shows, and where it goes, are put to the user.
+        "generate_image" if mode == Mode::Plan => Verdict::Refuse("Nothing is painted in plan mode: a picture writes a file and is paid for. Put it in the plan."),
+        "generate_image" => Verdict::Ask {
+            reason: "image",
+            detail: format!("{}\n→ {}", input["prompt"].as_str().unwrap_or_default().trim(), path("path").to_string_lossy()),
+            grant: Some("image".to_string()),
+        },
         "fetch_url" => {
             let url = input["url"].as_str().unwrap_or_default();
             match crate::web::host(url) {
@@ -236,9 +243,23 @@ mod tests {
         for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Bypass] {
             let Verdict::Ask { reason, detail, grant } = check_in(mode, "document_runtime", &json!({ "install": true }), workspace, false) else { panic!("{mode:?} did not ask") };
             assert_eq!((reason, grant), ("install_runtime", None), "{mode:?}");
-            assert!(detail.contains("python-docx") && detail.contains("约 70 MB") && detail.contains("~/.odg/runtime"), "{detail}");
+            assert!(detail.contains("python-docx") && detail.contains("约 90 MB") && detail.contains("matplotlib") && detail.contains("~/.odg/runtime"), "{detail}");
         }
         assert_eq!(reason(check_in(Mode::Plan, "document_runtime", &json!({ "install": true }), workspace, false)), Some("refused"));
+    }
+
+    #[test]
+    fn a_picture_is_asked_for_with_what_it_shows_and_where_it_goes_and_not_painted_in_plan_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let input = json!({ "prompt": " 雪中的白鹤 ", "path": "images/crane.png" });
+        for mode in [Mode::Manual, Mode::Edit, Mode::Auto] {
+            let Verdict::Ask { reason, detail, grant } = check_in(mode, "generate_image", &input, workspace, false) else { panic!("{mode:?} did not ask") };
+            assert_eq!((reason, grant.as_deref()), ("image", Some("image")), "{mode:?}");
+            assert!(detail.starts_with("雪中的白鹤\n→ ") && detail.contains("crane.png"), "{detail}");
+        }
+        assert_eq!(check_in(Mode::Bypass, "generate_image", &input, workspace, false), Verdict::Allow);
+        assert_eq!(reason(check_in(Mode::Plan, "generate_image", &input, workspace, false)), Some("refused"));
     }
 
     #[test]
