@@ -75,6 +75,10 @@ export const api = {
   revokeGrant: (workspace: string, grant: string) => invoke<SettingsView>("revoke_grant", { workspace, grant }),
   saveApiKey: (provider: string, key: string) => invoke<SettingsView>("save_api_key", { provider, key }),
   deleteApiKey: (provider: string) => invoke<SettingsView>("delete_api_key", { provider }),
+  /** Put a provider of `kind` in the list under `name`; resolves with its id, which is new when the first of the kind is already set up. */
+  addProvider: (kind: string, name: string) => invoke<{ id: string; view: SettingsView }>("add_provider", { kind, name }),
+  /** Take a provider out of the list, with its key, address and name. */
+  removeProvider: (id: string) => invoke<SettingsView>("remove_provider", { id }),
   /** Ask for a folder with the system dialog. Resolves null when the user closes it. */
   pickWorkspace: async (): Promise<string | null> => {
     // The end-to-end test names the folder up front: it cannot drive the system dialog.

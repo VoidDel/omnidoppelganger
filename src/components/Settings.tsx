@@ -27,7 +27,7 @@ function useDraft(value: string, save: (value: string) => void) {
   };
 }
 
-function KeyLine({ provider, status }: { provider: Provider; status: KeyStatus }) {
+function KeyLine({ provider, status }: { provider: { key_env: string | null }; status: KeyStatus }) {
   return (
     <>
       {status.source === "saved" && <span className="muted">{status.plaintext ? "密钥存在本机的明文文件里，只显示开头和结尾" : "密钥已存进系统凭据管理器，只显示开头和结尾"}</span>}
@@ -40,18 +40,33 @@ function KeyLine({ provider, status }: { provider: Provider; status: KeyStatus }
 
 const NO_KEY: KeyStatus = { source: "none", preview: null, plaintext: false };
 
+/** A provider put in the list, and the settings as they are after, or null when it could not be. */
+type Added = { id: string; view: SettingsView } | null;
+
 interface KeyDialogProps {
-  /** The provider whose key and address are set; null to add one of `choices`. */
+  /** The provider whose name, key and address are set; null to add one. */
   provider: Provider | null;
-  choices: Provider[];
   view: SettingsView;
   onSave: (settings: Settings) => unknown;
   onSaveKey: (provider: string, key: string) => unknown;
+  onAdd: (kind: string, name: string) => Promise<Added>;
   onClose: () => void;
 }
 
-/** The window that takes a provider's key and address: to add a provider to the list, or to change one in it. */
-function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyDialogProps) {
+/**
+ * Whether the first provider of `kind` is not set up yet (no key, no address, not the default, not named), so that
+ * adding one of the kind puts that one in the list rather than another beside it. As the core decides it.
+ */
+function firstFree(view: SettingsView, kind: string): boolean {
+  const { settings } = view;
+  return (view.keys[kind] ?? NO_KEY).source === "none" && !settings.base_urls[kind] && settings.provider !== kind && !settings.provider_names[kind];
+}
+
+/**
+ * The window that takes a provider's name, key and address: to add one, of any kind, as many of a kind as wanted,
+ * or to change one in the list.
+ */
+function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDialogProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   // Shown as a modal, which keeps the keyboard inside it and closes on Escape.
   useEffect(() => {
@@ -60,24 +75,42 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
     dialog.current?.querySelector<HTMLInputElement>("#key-value")?.focus();
   }, []);
   const { settings } = view;
-  const [picked, setPicked] = useState(provider?.id ?? choices[0]?.id ?? "");
-  const chosen = provider ?? choices.find((choice) => choice.id === picked);
-  const status = view.keys[picked] ?? NO_KEY;
+  const [picked, setPicked] = useState(provider?.kind ?? view.kinds[0]?.id ?? "");
+  const kind = view.kinds.find((one) => one.id === (provider?.kind ?? picked));
+  const [name, setName] = useState(provider?.name ?? "");
   const [key, setKey] = useState("");
-  const [address, setAddress] = useState(settings.base_urls[picked] ?? "");
+  const [address, setAddress] = useState(provider ? (settings.base_urls[provider.id] ?? "") : "");
   const [wrong, setWrong] = useState<string | null>(null);
-  if (!chosen) return null;
-  const takesAddress = chosen.protocol !== "anthropic";
+  const [busy, setBusy] = useState(false);
+  if (!kind) return null;
+  // The provider this window sets: the one changed, or the one adding will make, the first of its kind while that is free.
+  const target = provider?.id ?? (firstFree(view, kind.id) ? kind.id : null);
+  const status = target ? (view.keys[target] ?? NO_KEY) : NO_KEY;
+  // The first Anthropic provider's address comes from the environment; every other one has its own.
+  const takesAddress = target !== "anthropic";
   const save = async () => {
     const url = takesAddress ? address.trim() : "";
     if (!key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
-    if (takesAddress && !chosen.base_url && !url) return setWrong("这个宗门没有默认的接口地址，要填上。");
-    // One after the other: each answer carries the whole of the settings, and the last one to arrive is what is shown.
-    if (key.trim()) await onSaveKey(chosen.id, key);
-    if (url !== (settings.base_urls[chosen.id] ?? "")) {
-      const { [chosen.id]: _, ...others } = settings.base_urls;
-      await onSave({ ...settings, base_urls: url ? { ...others, [chosen.id]: url } : others });
+    if (takesAddress && !kind.base_url && !url) return setWrong("这个宗门没有默认的接口地址，要填上。");
+    setBusy(true);
+    let id = provider?.id;
+    let base = settings;
+    if (!id) {
+      const added = await onAdd(kind.id, name.trim());
+      if (!added) return setBusy(false);
+      ({ id } = added);
+      base = added.view.settings;
     }
+    // One after the other: each answer carries the whole of the settings, and the last one to arrive is what is shown.
+    if (key.trim()) await onSaveKey(id, key);
+    const { [id]: _url, ...otherUrls } = base.base_urls;
+    const { [id]: _name, ...otherNames } = base.provider_names;
+    const renamed = provider && name.trim() && name.trim() !== provider.name;
+    // A name the same as its kind's is no name of its own, except for one added, which keeps the name it has.
+    const names = renamed ? (name.trim() === kind.name && id === kind.id ? otherNames : { ...otherNames, [id]: name.trim() }) : base.provider_names;
+    const urls = url ? { ...otherUrls, [id]: url } : otherUrls;
+    if (url !== (base.base_urls[id] ?? "") || names !== base.provider_names) await onSave({ ...base, base_urls: urls, provider_names: names });
+    setBusy(false);
     onClose();
   };
   return (
@@ -89,37 +122,48 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
           void save();
         }}
       >
-        <h2 id="key-dialog-title">{provider ? `${provider.name} 的密钥` : "新增宗门"}</h2>
+        <h2 id="key-dialog-title">{provider ? `修改「${provider.name}」` : "新增宗门"}</h2>
         {!provider && (
           <div className="field">
-            <label htmlFor="key-provider">哪个宗门</label>
+            <label htmlFor="key-provider">哪种宗门</label>
             <Combo
               id="key-provider"
               value={picked}
-              options={choices.map((choice) => ({ value: choice.id, text: choice.name }))}
+              options={view.kinds.map((one) => ({ value: one.id, text: one.name, note: firstFree(view, one.id) ? "" : "再加一个" }))}
               editable={false}
               onSave={(id) => {
                 setPicked(id);
-                setAddress(settings.base_urls[id] ?? "");
                 setWrong(null);
               }}
             />
           </div>
         )}
         <div className="field">
+          <label htmlFor="key-name">名字</label>
+          <input id="key-name" className="input" placeholder={kind.name} value={name} onChange={(event) => setName(event.target.value)} />
+          <Hint>在宗门列表和心法菜单里显示的名字。同一种宗门加了几个时，靠它分清；不填就用「{kind.name}」{target === kind.id ? "" : "加上编号"}。</Hint>
+        </div>
+        <div className="field">
           <label htmlFor="key-value">{status.source === "saved" ? "换一个密钥（不换就留空）" : "API 密钥"}</label>
           <input id="key-value" className="input" type="password" autoComplete="off" autoFocus placeholder="粘贴密钥" value={key} onChange={(event) => setKey(event.target.value)} />
           <p className="hint key-line">
-            <KeyLine provider={chosen} status={status} />
+            <KeyLine provider={{ ...kind, key_env: target === kind.id ? kind.key_env : null }} status={status} />
           </p>
         </div>
         {takesAddress && (
           <div className="field">
-            <label htmlFor="key-address">{chosen.base_url ? "接口地址（留空用默认）" : "接口地址（必填）"}</label>
-            <input id="key-address" className="input mono" placeholder={chosen.base_url || "https://example.com/v1"} value={address} onChange={(event) => setAddress(event.target.value)} />
-            {chosen.other_urls.length > 0 && (
+            <label htmlFor="key-address">{kind.base_url ? "接口地址（留空用默认）" : "接口地址（必填）"}</label>
+            <input
+              id="key-address"
+              className="input mono"
+              placeholder={kind.base_url || (kind.protocol === "anthropic" ? "https://example.com/anthropic" : "https://example.com/v1")}
+              value={address}
+              onChange={(event) => setAddress(event.target.value)}
+            />
+            {kind.protocol === "anthropic" && !kind.base_url && <Hint>填到 /v1 之前为止，请求会发到「地址/v1/messages」，和 ANTHROPIC_BASE_URL 的写法一样。</Hint>}
+            {kind.other_urls.length > 0 && (
               <Hint>
-                {chosen.other_urls.map(([url, what]) => (
+                {kind.other_urls.map(([url, what]) => (
                   <span key={url}>
                     {what}：<span className="mono">{url}</span>{" "}
                   </span>
@@ -134,7 +178,7 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
           </p>
         )}
         <div className="actions">
-          <button type="submit" className="button primary">
+          <button type="submit" className="button primary" disabled={busy}>
             保存
           </button>
           <button type="button" className="button text" onClick={onClose}>
@@ -147,48 +191,46 @@ function KeyDialog({ provider, choices, view, onSave, onSaveKey, onClose }: KeyD
 }
 
 /**
- * The providers that are set up: those with a key, or an address of their own, and the one the default 分身 uses,
- * so that a missing key shows. They are what the list holds, and what the default can be picked from.
+ * The providers that are set up: those with a key, or an address of their own, those the user added, and the one the
+ * default 分身 uses, so that a missing key shows. They are what the list holds, and what the default can be picked from.
  */
 function setUp(view: SettingsView): Provider[] {
   const { settings } = view;
-  return view.providers.filter((provider) => (view.keys[provider.id] ?? NO_KEY).source !== "none" || !!settings.base_urls[provider.id] || provider.id === settings.provider);
+  return view.providers.filter(
+    (provider) => (view.keys[provider.id] ?? NO_KEY).source !== "none" || !!settings.base_urls[provider.id] || provider.id !== provider.kind || provider.id === settings.provider,
+  );
 }
 
 interface KeyListProps {
   view: SettingsView;
   onSave: (settings: Settings) => unknown;
   onSaveKey: (provider: string, key: string) => unknown;
-  onDeleteKey: (provider: string) => unknown;
+  onAdd: (kind: string, name: string) => Promise<Added>;
+  onRemove: (provider: string) => unknown;
 }
 
 /**
  * The providers that are set up, one to a line: which has a key, and where its requests go. One is added, or
  * changed, in a window of its own. The provider new 分身 use is always listed, so a missing key shows.
  */
-function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
+function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
   const { settings } = view;
   /** The window that is open: for the provider with this id, or `new` to add one. */
   const [editing, setEditing] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const statusOf = (provider: Provider) => view.keys[provider.id] ?? NO_KEY;
   const listed = setUp(view);
-  const rest = view.providers.filter((provider) => !listed.includes(provider));
-  /** Take a provider out of the list: its saved key, and the address set for it. A key from the environment is not ours to remove. */
+  /** Take a provider out of the list: its saved key, its address and its name. A key from the environment is not ours to remove. */
   const remove = async (provider: Provider) => {
     setRemoving(null);
-    if (statusOf(provider).source === "saved") await onDeleteKey(provider.id);
-    if (settings.base_urls[provider.id]) {
-      const { [provider.id]: _, ...others } = settings.base_urls;
-      await onSave({ ...settings, base_urls: others });
-    }
+    await onRemove(provider.id);
   };
   return (
     <section>
       <div className="section-head">
         <h2>宗门</h2>
         <span className="spacer" />
-        <button type="button" className="button primary compact" disabled={rest.length === 0} title={rest.length === 0 ? "每个宗门都在列表里了" : "添一个宗门（模型供应商），填上它的密钥"} onClick={() => setEditing("new")}>
+        <button type="button" className="button primary compact" title="添一个宗门（模型供应商），填上它的密钥；同一种可以加好几个" onClick={() => setEditing("new")}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
             <path d="M8 3v10M3 8h10" />
           </svg>
@@ -199,9 +241,9 @@ function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
         {listed.map((provider) => {
           const status = statusOf(provider);
           const address = settings.base_urls[provider.id];
-          const removable = status.source === "saved" || !!address;
-          // Where its requests go, when that can be set: Anthropic's address comes from the environment.
-          const shown = provider.protocol === "anthropic" ? "" : address || "默认地址";
+          const removable = status.source === "saved" || !!address || provider.id !== provider.kind || !!settings.provider_names[provider.id];
+          // Where its requests go, when that can be set: the first Anthropic provider's address comes from the environment.
+          const shown = provider.id === "anthropic" ? "" : address || (provider.base_url ? "默认地址" : "未填地址");
           return (
             <li key={provider.id}>
               <div className="key-who">
@@ -248,7 +290,7 @@ function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
                     type="button"
                     className="icon-button danger"
                     disabled={!removable}
-                    title={removable ? `删掉 ${provider.name} 存着的密钥和改过的地址` : status.source === "env" ? "密钥来自环境变量，这里删不了" : "没有可删的"}
+                    title={removable ? `删掉 ${provider.name}：存着的密钥、地址和名字` : status.source === "env" ? "密钥来自环境变量，这里删不了" : "没有可删的"}
                     onClick={() => setRemoving(provider.id)}
                   >
                     <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -268,10 +310,10 @@ function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
       {editing && (
         <KeyDialog
           provider={editing === "new" ? null : (view.providers.find((provider) => provider.id === editing) ?? null)}
-          choices={rest}
           view={view}
           onSave={onSave}
           onSaveKey={onSaveKey}
+          onAdd={onAdd}
           onClose={() => setEditing(null)}
         />
       )}
@@ -328,10 +370,11 @@ interface Props {
   onRevoke: (workspace: string, grant: string) => void;
   onSave: (settings: Settings) => unknown;
   onSaveKey: (provider: string, key: string) => unknown;
-  onDeleteKey: (provider: string) => unknown;
+  onAddProvider: (kind: string, name: string) => Promise<Added>;
+  onRemoveProvider: (provider: string) => unknown;
 }
 
-export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, onRefresh, listModels }: Props) {
+export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveProvider, onRevoke, onRefresh, listModels }: Props) {
   const [tab, setTab] = useState<SettingsTab>("model");
   const grants = Object.entries(view.grants);
   const { settings } = view;
@@ -411,7 +454,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
       <div className="settings-inner">
         {tab === "model" && (
           <>
-        <KeyList view={view} onSave={onSave} onSaveKey={onSaveKey} onDeleteKey={onDeleteKey} />
+        <KeyList view={view} onSave={onSave} onSaveKey={onSaveKey} onAdd={onAddProvider} onRemove={onRemoveProvider} />
         <section>
           <h2>默认分身</h2>
           <p className="muted">新化出的分身照这里的来。已经化出的不受影响，要换心法在它输入框下方换。</p>

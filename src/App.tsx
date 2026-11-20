@@ -495,7 +495,19 @@ export default function App() {
             view={state.settings}
             onSave={(settings) => saved(api.saveSettings(settings))}
             onSaveKey={(provider, key) => saved(api.saveApiKey(provider, key))}
-            onDeleteKey={(provider) => saved(api.deleteApiKey(provider))}
+            onAddProvider={(kind, name) =>
+              api.addProvider(kind, name).then(
+                (added) => {
+                  dispatch({ type: "settings", settings: added.view });
+                  return added;
+                },
+                (error) => {
+                  fail(error);
+                  return null;
+                },
+              )
+            }
+            onRemoveProvider={(provider) => saved(api.removeProvider(provider))}
             onRevoke={(workspace, grant) => saved(api.revokeGrant(workspace, grant))}
             onRefresh={refreshSettings}
             listModels={api.listModels}
@@ -632,8 +644,8 @@ export default function App() {
             <Composer
               status={state.status}
               providers={providers}
-              // A provider can be moved to once it has a key; one of the user's own (a local server) may need none.
-              keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || providers.find((known) => known.id === provider)?.key_env === null}
+              // A provider can be moved to once it has a key; a compatible service (a local server) may need none.
+              keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || !!providers.find((known) => known.id === provider)?.kind.startsWith("custom")}
               providerId={active.provider}
               model={active.model}
               effort={active.effort ?? state.settings?.settings.effort ?? "high"}

@@ -238,6 +238,8 @@ export interface Settings {
   theme: "system" | "light" | "dark";
   /** Addresses that replace a provider's default, by provider id. */
   base_urls: Record<string, string>;
+  /** The names the user gave providers, by provider id; every provider added beside the first of its kind is here. */
+  provider_names: Record<string, string>;
   /** Whether the commands a 分身 runs are confined to writing under its workspace, where the system can do that. */
   sandbox: boolean;
   /** Directories confined commands may also write under. */
@@ -262,8 +264,23 @@ export interface KeyStatus {
 }
 
 /** A model provider as the core describes it. Pairs are `[id, display name]` and `[address, what it is]`. */
+/** A kind of provider, which providers are added as. */
+export interface ProviderKind {
+  id: string;
+  name: string;
+  protocol: "anthropic" | "responses" | { chat: string };
+  base_url: string;
+  other_urls: [string, string][];
+  key_env: string | null;
+  models: [string, string][];
+}
+
+/** A provider to choose from: the first of a kind (its id the kind's), or another the user added (`<kind>-<n>`). */
 export interface Provider {
   id: string;
+  /** The id of its kind. */
+  kind: string;
+  /** The name the user gave it, or its kind's. */
   name: string;
   protocol: "anthropic" | "responses" | { chat: string };
   base_url: string;
@@ -276,6 +293,7 @@ export interface SettingsView {
   settings: Settings;
   keys: Record<string, KeyStatus>;
   providers: Provider[];
+  kinds: ProviderKind[];
   efforts: string[];
   home: string;
   /** Command approvals given for good, by workspace path. */
