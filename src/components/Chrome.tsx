@@ -220,10 +220,11 @@ interface SidebarProps {
   sessions: SessionItem[];
   activeId: string | null;
   /** What the main area shows: a conversation, or one of the pages reached from the foot of this list. */
-  page: "chat" | "settings" | "schedules" | "mcp";
+  page: "chat" | "settings" | "schedules" | "mcp" | "skills";
   /** Back to the home screen: no 分身 open. */
   onHome: () => void;
   onMcp: () => void;
+  onSkills: () => void;
   onSchedules: () => void;
   /** Start a conversation: a 分身 in the folder kept for them. */
   onChat: () => void;
@@ -276,7 +277,7 @@ export const CHAT_ICON = (
   </svg>
 );
 
-export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSchedules, onChat, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
+export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSkills, onSchedules, onChat, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
   const now = useNow(30_000);
   const [folded, toggleFolded] = useFolded();
   const [query, setQuery] = useState("");
@@ -443,6 +444,13 @@ export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSchedules, 
       </div>
       {/* The pages at the foot, close together: one group, apart from the 分身 above. */}
       <div className="sidebar-foot">
+        <button type="button" className="row-button" aria-current={page === "skills" ? "page" : undefined} title="秘籍：分身遇到对得上的事才研读的做事说明" onClick={onSkills}>
+          {/* A bound book, open at its spine: a 秘籍. */}
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 4c-1.6-1.2-3.6-1.5-5.5-1.2v9.8c1.9-.3 3.9 0 5.5 1.2 1.6-1.2 3.6-1.5 5.5-1.2V2.8C11.6 2.5 9.6 2.8 8 4zM8 4v9.6" />
+          </svg>
+          秘籍
+        </button>
         <button type="button" className="row-button" aria-current={page === "mcp" ? "page" : undefined} title="法器：给分身添上本事的 MCP 服务" onClick={onMcp}>
           {/* A bell of bronze hung from its loop: a 法器. */}
           <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1017,7 +1025,7 @@ interface ComposerProps {
 }
 
 /** The order the "/" menu lists the commands in; any not named here (a skill's) come after, as given. */
-const COMMAND_ORDER = ["new", "fork", "compact", "model", "effort", "mode", "rename", "replay", "init", "review", "mcp", "schedule", "settings"];
+const COMMAND_ORDER = ["new", "fork", "compact", "model", "effort", "mode", "rename", "replay", "init", "review", "skills", "mcp", "schedule", "settings"];
 
 /**
  * How full the conversation is, as five 灵石 lit one after another: each stands for a fifth of the room there is

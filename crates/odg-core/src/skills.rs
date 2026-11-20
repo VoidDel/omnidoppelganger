@@ -95,6 +95,102 @@ pub fn load(roots: &[PathBuf], name: &str) -> Result<String, String> {
     Ok(body)
 }
 
+/// The skills that come with the app, by name, as their `SKILL.md`. None is
+/// in use until the user switches it on, which writes it into the user's
+/// skills directory; switched off, it is taken out again.
+pub const BUILTINS: &[(&str, &str)] = &[
+    ("commit-message", include_str!("../skills/commit-message/SKILL.md")),
+    ("code-review", include_str!("../skills/code-review/SKILL.md")),
+    ("debugging", include_str!("../skills/debugging/SKILL.md")),
+    ("writing-tests", include_str!("../skills/writing-tests/SKILL.md")),
+    ("refactoring", include_str!("../skills/refactoring/SKILL.md")),
+    ("writing-docs", include_str!("../skills/writing-docs/SKILL.md")),
+    ("frontend-design", include_str!("../skills/frontend-design/SKILL.md")),
+    ("release-notes", include_str!("../skills/release-notes/SKILL.md")),
+    ("security-review", include_str!("../skills/security-review/SKILL.md")),
+];
+
+/// A skill as the 秘籍 page lists it: one of the app's, on or off, or one of the user's own.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Listed {
+    pub name: String,
+    pub description: String,
+    /// Where it is, or would be once switched on.
+    pub directory: String,
+    pub builtin: bool,
+    /// In the user's skills directory, and so offered to every session.
+    pub installed: bool,
+    /// One of the app's whose instructions the user has changed: switching it off would lose that.
+    pub edited: bool,
+}
+
+/// The same text, however its lines end.
+fn same_text(one: &str, other: &str) -> bool {
+    one.replace("\r\n", "\n").trim_end() == other.replace("\r\n", "\n").trim_end()
+}
+
+/// The skills of the user's skills directory `root`: the app's own, on or
+/// off, then the others found there, by name.
+pub fn catalog(root: &Path) -> Vec<Listed> {
+    let mut listed: Vec<Listed> = BUILTINS
+        .iter()
+        .map(|(name, text)| {
+            let directory = root.join(name);
+            let held = std::fs::read_to_string(directory.join(FILE_NAME)).ok();
+            let (_, description, _) = parse(text);
+            Listed {
+                name: name.to_string(),
+                description: description.unwrap_or_default(),
+                directory: directory.display().to_string(),
+                builtin: true,
+                installed: held.is_some(),
+                edited: held.is_some_and(|held| !same_text(&held, text)),
+            }
+        })
+        .collect();
+    let own = discover(&[root.to_path_buf()])
+        .into_iter()
+        .filter(|skill| !BUILTINS.iter().any(|(name, _)| skill.directory.file_name().is_some_and(|folder| folder == *name)))
+        .map(|skill| Listed { name: skill.name, description: skill.description, directory: skill.directory.display().to_string(), builtin: false, installed: true, edited: false });
+    listed.extend(own);
+    listed
+}
+
+/// Switch one of the app's skills on, which writes it into `root`, or off,
+/// which takes it out. One already there is not written over; one the user
+/// changed is taken out only with `force`.
+pub fn switch(root: &Path, name: &str, on: bool, force: bool) -> Result<(), String> {
+    let Some((_, text)) = BUILTINS.iter().find(|(builtin, _)| *builtin == name) else {
+        return Err(format!("`{name}` is not one of the app's skills"));
+    };
+    let directory = root.join(name);
+    let file = directory.join(FILE_NAME);
+    if on {
+        if file.is_file() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&directory).map_err(|error| format!("Cannot make {}: {error}", directory.display()))?;
+        return std::fs::write(&file, text).map_err(|error| format!("Cannot write {}: {error}", file.display()));
+    }
+    if !directory.exists() {
+        return Ok(());
+    }
+    let edited = std::fs::read_to_string(&file).is_ok_and(|held| !same_text(&held, text)) || std::fs::read_dir(&directory).map(|entries| entries.count() > 1).unwrap_or(false);
+    if edited && !force {
+        return Err("edited".to_string());
+    }
+    std::fs::remove_dir_all(&directory).map_err(|error| format!("Cannot take away {}: {error}", directory.display()))
+}
+
+/// Take one of the user's own skills out of `root`, by its name: only a folder directly in `root` is ever taken.
+pub fn remove(root: &Path, name: &str) -> Result<(), String> {
+    let skill = discover(&[root.to_path_buf()]).into_iter().find(|skill| skill.name == name).ok_or_else(|| format!("There is no skill `{name}` in {}.", root.display()))?;
+    if skill.directory.parent() != Some(root) {
+        return Err(format!("{} is not in {}.", skill.directory.display(), root.display()));
+    }
+    std::fs::remove_dir_all(&skill.directory).map_err(|error| format!("Cannot take away {}: {error}", skill.directory.display()))
+}
+
 /// The most a skill installed may hold: instructions and the scripts and references beside them, not a project.
 const INSTALL_FILES: usize = 2_000;
 const INSTALL_BYTES: u64 = 50 * 1024 * 1024;
@@ -232,6 +328,44 @@ mod tests {
         assert_eq!(discover(std::slice::from_ref(&into))[0].description, "Better.");
         assert!(std::fs::read_dir(&into).unwrap().count() == 1, "nothing is left half installed");
         assert!(install(&directory.path().join("empty"), &into, false).unwrap_err().contains("not a skill"));
+    }
+
+    #[test]
+    fn switches_the_apps_skills_on_and_off_and_keeps_what_the_user_changed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("skills");
+        // Each that comes with the app reads as a skill: named as listed, and described.
+        for (name, text) in BUILTINS {
+            let (named, described, body) = parse(text);
+            assert_eq!(named.as_deref(), Some(*name));
+            assert!(described.is_some_and(|text| !text.is_empty()) && !body.trim().is_empty(), "{name}");
+        }
+        // None is on until switched on.
+        let listed = catalog(&root);
+        assert_eq!(listed.len(), BUILTINS.len());
+        assert!(listed.iter().all(|skill| skill.builtin && !skill.installed));
+        switch(&root, "debugging", true, false).unwrap();
+        assert_eq!(discover(std::slice::from_ref(&root)).iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["debugging"]);
+        assert!(catalog(&root).iter().any(|skill| skill.name == "debugging" && skill.installed && !skill.edited));
+        // Off takes it out; one the user changed, only when told to.
+        switch(&root, "debugging", false, false).unwrap();
+        assert!(!root.join("debugging").exists());
+        switch(&root, "code-review", true, false).unwrap();
+        std::fs::write(root.join("code-review").join(FILE_NAME), "---\nname: code-review\ndescription: Mine now.\n---\nMy way.\n").unwrap();
+        assert!(catalog(&root).iter().any(|skill| skill.name == "code-review" && skill.edited));
+        // Switching it on again keeps the user's text.
+        switch(&root, "code-review", true, false).unwrap();
+        assert!(std::fs::read_to_string(root.join("code-review").join(FILE_NAME)).unwrap().contains("My way."));
+        assert_eq!(switch(&root, "code-review", false, false), Err("edited".to_string()));
+        switch(&root, "code-review", false, true).unwrap();
+        assert!(!root.join("code-review").exists());
+        assert!(switch(&root, "nope", true, false).is_err());
+        // The user's own are listed after, and can be taken away; nothing outside the directory can.
+        skill(&root, "mine", "---\nname: mine\ndescription: My own.\n---\nDo it my way.\n");
+        let own = catalog(&root).into_iter().find(|skill| !skill.builtin).unwrap();
+        assert_eq!((own.name.as_str(), own.installed), ("mine", true));
+        remove(&root, "mine").unwrap();
+        assert!(!root.join("mine").exists() && remove(&root, "mine").is_err());
     }
 
     #[test]

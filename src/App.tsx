@@ -3,6 +3,7 @@ import { Desk } from "./components/Desk";
 import { Guard } from "./components/Guard";
 import { Jump } from "./components/Jump";
 import { McpPage } from "./components/Mcp";
+import { SkillsPage } from "./components/Skills";
 import { CHAT_ICON, Composer, Logo, Mountains, PANEL_STRIP, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
 import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
@@ -35,7 +36,7 @@ interface State {
   stream: StreamBlock[];
   /** Messages sent during a turn that the agent has not picked up yet. */
   queued: string[];
-  page: "chat" | "settings" | "schedules" | "mcp";
+  page: "chat" | "settings" | "schedules" | "mcp" | "skills";
   settings: SettingsView | null;
   /** The 功课, read when the app starts and again whenever one comes due. */
   schedules: Schedule[];
@@ -421,6 +422,7 @@ export default function App() {
       { name: "init", label: "立规矩", aliases: ["立规矩", "规矩"], hint: "让分身读懂这个项目，写一份 AGENTS.md", unavailable: working, run: () => send(INIT_TASK) },
       { name: "review", label: "审查", aliases: ["审查"], hint: "让分身审查还没提交的改动，只看不改", unavailable: working, run: () => send(REVIEW_TASK) },
       { name: "mcp", label: "法器", aliases: ["法器"], hint: "打开法器页：MCP 服务", run: toMcp },
+      { name: "skills", label: "秘籍", aliases: ["秘籍"], hint: "打开秘籍页：收入或收起秘籍", run: () => dispatch({ type: "page", page: "skills" }) },
       { name: "schedule", label: "功课", aliases: ["功课"], hint: "打开功课页：到点自行去办的事", run: toSchedules },
       { name: "settings", label: "设置", aliases: ["设置"], hint: "打开设置", run: toSettings },
     ];
@@ -474,6 +476,7 @@ export default function App() {
         page={state.page}
         onHome={() => dispatch({ type: "home" })}
         onMcp={toMcp}
+        onSkills={() => dispatch({ type: "page", page: "skills" })}
         onSchedules={toSchedules}
         onChat={chat}
         onOpen={open}
@@ -515,6 +518,10 @@ export default function App() {
               )
             }
           />
+          </Guard>
+        ) : state.page === "skills" ? (
+          <Guard name="秘籍" className="fill" resetKey={state.page}>
+            <SkillsPage onChanged={refreshSettings} />
           </Guard>
         ) : state.page === "schedules" ? (
           <Guard name="功课" className="fill" resetKey={state.page}>
@@ -694,6 +701,7 @@ export default function App() {
             { id: "home", name: "首页", hint: "回到山前：候旨的、运功的、将至的功课", seal: "山", run: () => dispatch({ type: "home" }) },
             { id: "new", name: "开辟洞府", hint: "选一个文件夹，化出分身", seal: "辟", run: () => void create() },
             { id: "chat", name: "闲谈", hint: "不选文件夹，直接和分身说话", seal: "谈", run: chat },
+            { id: "skills", name: "秘籍", hint: "随程序带来的做事说明，打开才收入；还有自己的", seal: "籍", run: () => dispatch({ type: "page", page: "skills" }) },
             { id: "mcp", name: "法器", hint: "给分身添上本事的 MCP 服务：查文档、搜网页、操控浏览器", seal: "器", run: toMcp },
             { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: toSchedules },
             { id: "settings", name: "设置", hint: "心法、禁制、神通、外观", seal: "设", run: toSettings },

@@ -306,7 +306,7 @@ const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] =
     icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
   },
   { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
-  { id: "tools", name: "神通", hint: "天机阁（联网搜索）、秘籍。身外法器（MCP 服务）在侧栏的「法器」里", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
+  { id: "tools", name: "神通", hint: "天机阁（联网搜索）。秘籍和身外法器（MCP 服务）在侧栏的「秘籍」「法器」里", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
   {
     id: "look",
     name: "外观",
@@ -700,23 +700,6 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
             </Hint>
           </div>
-        </section>
-
-        <section>
-          <h2>秘籍</h2>
-          <p className="muted">
-            秘籍是专项的做事说明，平时不占分身的心神，遇到对得上的事它才去研读。每部秘籍是一个文件夹，里面放一份 SKILL.md，开头用 --- 围起来写上 name 和 description。放在{" "}
-            <span className="mono">{view.skills_directory}</span> 里的对所有分身生效；放在某处洞府的 <span className="mono">.odg/skills</span> 里的只对那处洞府生效，重名时以洞府里的为准。新放进去的，下一轮生效。
-          </p>
-          {view.skills.length === 0 && <p className="muted">还没有装秘籍。</p>}
-          {view.skills.map((skill) => (
-            <div className="provider-card" key={skill.name}>
-              <div className="who">
-                <strong className="mono">{skill.name}</strong>
-                <span className="muted">{skill.description}</span>
-              </div>
-            </div>
-          ))}
         </section>
           </>
         )}

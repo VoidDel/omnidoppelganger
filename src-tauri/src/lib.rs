@@ -261,6 +261,37 @@ async fn create_session(app: State<'_, App>, workspace: String, isolated: Option
     Ok(view(&app, &session))
 }
 
+/// The 秘籍 page: the skills that come with the app, on or off, and the user's own, in the user's skills directory.
+#[derive(Serialize)]
+struct SkillsView {
+    skills: Vec<odg_core::skills::Listed>,
+    folder: String,
+}
+
+fn skills_view() -> SkillsView {
+    let folder = settings::home().join("skills");
+    SkillsView { skills: odg_core::skills::catalog(&folder), folder: folder.display().to_string() }
+}
+
+#[tauri::command]
+async fn list_skills() -> Result<SkillsView, String> {
+    Ok(skills_view())
+}
+
+/// Switch one of the app's skills on or off. Off fails with `edited` for one the user changed, unless `force`.
+#[tauri::command]
+async fn switch_skill(name: String, on: bool, force: Option<bool>) -> Result<SkillsView, String> {
+    odg_core::skills::switch(&settings::home().join("skills"), &name, on, force == Some(true))?;
+    Ok(skills_view())
+}
+
+/// Take one of the user's own skills out of their skills directory.
+#[tauri::command]
+async fn remove_skill(name: String) -> Result<SkillsView, String> {
+    odg_core::skills::remove(&settings::home().join("skills"), &name)?;
+    Ok(skills_view())
+}
+
 /// Start a conversation (闲谈): a session in the folder kept for them, made the first time it is wanted.
 #[tauri::command]
 async fn start_chat(app: State<'_, App>) -> Result<SessionView, String> {
@@ -625,6 +656,9 @@ pub fn run() {
             set_model,
             set_effort,
             start_chat,
+            list_skills,
+            switch_skill,
+            remove_skill,
             list_models,
             undo_turn,
             cancel_turn,

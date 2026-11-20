@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Decision, Image, Mode, Picked, Schedule, SessionItem, SessionView, Settings, SettingsView, UiEvent } from "./types";
+import type { Decision, Image, Mode, Picked, Schedule, SessionItem, SessionView, Settings, SettingsView, SkillsView, UiEvent } from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
@@ -54,6 +54,9 @@ export const api = {
   setModel: (id: string, provider: string, model: string) => invoke<SessionItem>("set_model", { id, provider, model }),
   setEffort: (id: string, effort: string) => invoke<SessionItem>("set_effort", { id, effort }),
   startChat: () => invoke<SessionView>("start_chat"),
+  listSkills: () => invoke<SkillsView>("list_skills"),
+  switchSkill: (name: string, on: boolean, force = false) => invoke<SkillsView>("switch_skill", { name, on, force }),
+  removeSkill: (name: string) => invoke<SkillsView>("remove_skill", { name }),
   /** The models a provider serves with the saved key, `[id, display name]`, asked from the provider itself. */
   listModels: (provider: string) => invoke<[string, string][]>("list_models", { provider }),
   /** Undo the agent's file edits from `turn` on. Rejects while a turn is running. */

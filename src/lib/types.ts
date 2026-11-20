@@ -300,6 +300,25 @@ export interface SettingsView {
   mcp_servers: McpServer[];
 }
 
+/** A skill (秘籍) as the 秘籍 page lists it: one that comes with the app, on or off, or one of the user's own. */
+export interface ListedSkill {
+  name: string;
+  description: string;
+  /** Where it is, or would be once switched on. */
+  directory: string;
+  builtin: boolean;
+  /** In the user's skills directory, and so offered to every session. */
+  installed: boolean;
+  /** One of the app's the user has changed: switching it off would lose that. */
+  edited: boolean;
+}
+
+export interface SkillsView {
+  skills: ListedSkill[];
+  /** The user's skills directory. */
+  folder: string;
+}
+
 /** An MCP server from the user's list and whether it is connected. */
 export interface McpServer {
   name: string;
