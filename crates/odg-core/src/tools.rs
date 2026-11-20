@@ -646,15 +646,17 @@ async fn document_runtime(input: &Value, context: &ToolContext) -> Result<ToolOu
     let Some(root) = &context.runtime else {
         return Err(ToolOutput::error("There is no document runtime here: use a Python the user has, and ask the user before installing anything into it."));
     };
-    let python = match crate::runtime::python(root) {
-        Some(python) => python,
-        None if input["install"] == true => crate::runtime::install(root, &|_| {}, &context.cancel).await.map_err(ToolOutput::error)?,
-        None => {
-            let outdated = matches!(crate::runtime::status(root), crate::runtime::Status::Missing { outdated: true });
+    let status = crate::runtime::status(root);
+    let python = match status {
+        crate::runtime::Status::Ready { python, .. } => python,
+        // Its Python is there and its libraries are behind: what is missing is installed now, without asking.
+        crate::runtime::Status::Stale { .. } => crate::runtime::install(root, &|_| {}, &context.cancel).await.map_err(ToolOutput::error)?,
+        crate::runtime::Status::Missing { .. } if input["install"] == true => crate::runtime::install(root, &|_| {}, &context.cancel).await.map_err(ToolOutput::error)?,
+        crate::runtime::Status::Missing { outdated } => {
             return Ok(ToolOutput::ok(
                 format!(
                     "The document runtime is {}. Call document_runtime with `install` true to set it up: the user is asked first, and about {} MB is downloaded once.",
-                    if outdated { "from an earlier version and must be set up again" } else { "not installed" },
+                    if outdated { "on another version of Python and must be set up again" } else { "not installed" },
                     crate::runtime::DOWNLOAD_MB
                 ),
                 json!({ "state": "missing" }),
@@ -1320,7 +1322,7 @@ mod tests {
         let python = if cfg!(windows) { root.join("python").join("python.exe") } else { root.join("python").join("bin").join("python3") };
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::write(&python, "").unwrap();
-        std::fs::write(root.join("runtime.json"), serde_json::to_vec(&crate::runtime::Installed { edition: crate::runtime::EDITION, python: "3.12.16".into(), target: "t".into() }).unwrap()).unwrap();
+        std::fs::write(root.join("runtime.json"), serde_json::to_vec(&crate::runtime::Installed::current("t")).unwrap()).unwrap();
         let ready = execute("document_runtime", &json!({}), &context).await;
         let call = if cfg!(windows) { format!("& \"{}\" make_report.py", python.display()) } else { format!("\"{}\" make_report.py", python.display()) };
         assert!(ready.content.contains(&call) && ready.meta["python"] == python.to_string_lossy().as_ref(), "{}", ready.content);

@@ -808,6 +808,19 @@ pub fn run() {
             // Servers connect in the background; a session uses whichever are ready when it asks the model.
             mcp.reload();
             let schedules = ScheduleStore::new(home.join("schedules.json"));
+
+            // A document runtime whose libraries are behind this build's list has what is missing installed now, in
+            // the background, without fetching its Python again; the settings page is told how it goes.
+            if matches!(odg_core::runtime::status(&home.join("runtime")), odg_core::runtime::Status::Stale { .. }) {
+                let (handle, root) = (app.handle().clone(), home.join("runtime"));
+                tauri::async_runtime::spawn(async move {
+                    let watch = move |step: odg_core::runtime::Progress| {
+                        let _ = handle.emit(RUNTIME_EVENT, step);
+                    };
+                    // What did not go is tried again by the next start, or by the first 分身 that asks for it.
+                    let _ = odg_core::runtime::install(&root, &watch, &tokio_util::sync::CancellationToken::new()).await;
+                });
+            }
             app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, llm, sessions: Mutex::new(HashMap::new()), events });
 
             // The clock: whatever has come due is started, with or without a window to show it in.

@@ -83,7 +83,8 @@ export interface DiffHunk {
 /** Presentation data a tool attaches to its result. Each tool fills its own fields. */
 /** How the document runtime stands, as the settings show it. */
 export interface RuntimeView {
-  status: { state: "ready"; python: string; version: string } | { state: "missing"; outdated: boolean };
+  /** `stale`: its Python is there and some libraries are not, which are installed by themselves. */
+  status: { state: "ready"; python: string; version: string } | { state: "stale"; python: string; version: string } | { state: "missing"; outdated: boolean };
   python_version: string;
   download_mb: number;
   libreoffice: string | null;

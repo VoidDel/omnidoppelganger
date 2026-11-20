@@ -57,7 +57,17 @@ export function RuntimeSection() {
     api.runtimeStatus().then(setView, (error) => setWrong(String(error)));
     let stop: (() => void) | undefined;
     let gone = false;
-    api.onRuntimeProgress(setStep).then((unlisten) => (gone ? unlisten() : (stop = unlisten)));
+    // The app may be installing what is missing by itself: shown as it goes, as if the button had been pressed.
+    const heard = (next: RuntimeProgress) => {
+      setStep(next);
+      if (next.step === "done") {
+        setBusy((now) => (now === "install" ? null : now));
+        api.runtimeStatus().then(setView, () => {});
+      } else {
+        setBusy((now) => now ?? "install");
+      }
+    };
+    api.onRuntimeProgress(heard).then((unlisten) => (gone ? unlisten() : (stop = unlisten)));
     return () => {
       gone = true;
       stop?.();
@@ -98,6 +108,8 @@ export function RuntimeSection() {
   if (!view) return null;
   const ready = view.status.state === "ready";
   const outdated = view.status.state === "missing" && view.status.outdated;
+  // Python is there, and some libraries are not yet: they are installed by themselves, or here when that failed.
+  const stale = view.status.state === "stale";
   const share = step?.step === "downloading" && step.total ? Math.min(1, step.done / step.total) : null;
   const python = view.status.state === "ready" ? view.status.python : null;
   return (
@@ -127,17 +139,25 @@ export function RuntimeSection() {
               <span className="runtime-detail mono" title={python}>
                 {python}
               </span>
+            ) : stale ? (
+              <span className="runtime-detail missing">有几个库还没装上，会自动补装，不用重新下载 Python</span>
             ) : (
-              <span className={`runtime-detail ${outdated ? "missing" : ""}`}>{outdated ? "装的是旧版本，要重新装一次" : `还没装，约下载 ${view.download_mb} MB，装一次所有分身都能用`}</span>
+              <span className={`runtime-detail ${outdated ? "missing" : ""}`}>{outdated ? "装的 Python 版本不对，要重新装一次" : `还没装，约下载 ${view.download_mb} MB，装一次所有分身都能用`}</span>
             )}
           </div>
           <div className="runtime-acts">
             {view.supported && !ready && (busy === "install" ? <Ring share={share} /> : (
-              <button type="button" className="icon-button go" disabled={!!busy} title={outdated ? `重新下载并安装（约 ${view.download_mb} MB）` : `下载并安装（约 ${view.download_mb} MB）`} onClick={install}>
+              <button
+                type="button"
+                className="icon-button go"
+                disabled={!!busy}
+                title={stale ? "现在补装缺少的库" : outdated ? `重新下载并安装（约 ${view.download_mb} MB）` : `下载并安装（约 ${view.download_mb} MB）`}
+                onClick={install}
+              >
                 <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M8 2.5v7.6M4.8 7 8 10.2 11.2 7M2.8 11.2v1.4a.9.9 0 0 0 .9.9h8.6a.9.9 0 0 0 .9-.9v-1.4" />
                 </svg>
-                <span className="sr-only">{outdated ? "重新装" : "下载并安装"}</span>
+                <span className="sr-only">{stale ? "补装缺少的库" : outdated ? "重新装" : "下载并安装"}</span>
               </button>
             ))}
             {ready && (

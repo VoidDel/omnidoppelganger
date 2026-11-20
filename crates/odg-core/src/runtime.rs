@@ -51,27 +51,44 @@ pub const MODULES: &[(&str, &str)] = &[
     ("resvg_py", "resvg: SVG to PNG"),
 ];
 
-/// Raised whenever what is installed changes, so a runtime from before is put in place again. Edition 2 adds the
-/// libraries to draw with: matplotlib, qrcode and resvg.
-pub const EDITION: u32 = 2;
-
-/// About how much is downloaded, said to the user before they agree to it: the most of any system, Linux's.
+/// About how much a whole install downloads, said to the user before they agree to it: the most of any system,
+/// Linux's. Bringing the libraries up to date downloads only those that changed.
 pub const DOWNLOAD_MB: u32 = 90;
 
-/// What `runtime.json` records of an installed runtime.
+/// What `runtime.json` records of an installed runtime: the Python, and which list of libraries is installed in it,
+/// by the SHA-256 of [`REQUIREMENTS`]. They are told apart so that a change to the list installs only what changed,
+/// in the Python that is there, rather than fetching everything again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Installed {
-    pub edition: u32,
+    /// The version of Python.
     pub python: String,
     pub target: String,
+    /// The SHA-256 of the requirements installed. Runtimes set up before it was kept have none, and so are brought
+    /// up to date by installing the libraries again.
+    #[serde(default)]
+    pub libraries: String,
+}
+
+impl Installed {
+    /// The record of a runtime as this build sets one up, on `target`.
+    pub fn current(target: &str) -> Self {
+        Installed { python: PYTHON_VERSION.to_string(), target: target.to_string(), libraries: libraries() }
+    }
+}
+
+/// Which list of libraries this build installs: the SHA-256 of [`REQUIREMENTS`], line endings aside.
+pub fn libraries() -> String {
+    Sha256::digest(REQUIREMENTS.replace("\r\n", "\n").as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// How the runtime stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Status {
-    /// Not there, or from an edition before this one.
+    /// No Python, or another version than this build's: the whole runtime is to be set up. `outdated` when one was there.
     Missing { outdated: bool },
+    /// The Python is this build's, and its libraries are another list: only they are to be brought up to date.
+    Stale { python: PathBuf, version: String },
     Ready { python: PathBuf, version: String },
 }
 
@@ -110,7 +127,13 @@ pub fn status(root: &Path) -> Status {
     let recorded: Option<Installed> = std::fs::read_to_string(root.join("runtime.json")).ok().and_then(|text| serde_json::from_str(&text).ok());
     let python = interpreter(&root.join("python"));
     match recorded {
-        Some(installed) if installed.edition == EDITION && python.is_file() => Status::Ready { python, version: installed.python },
+        Some(installed) if installed.python == PYTHON_VERSION && python.is_file() => {
+            if installed.libraries == libraries() {
+                Status::Ready { python, version: installed.python }
+            } else {
+                Status::Stale { python, version: installed.python }
+            }
+        }
         Some(_) => Status::Missing { outdated: true },
         None => Status::Missing { outdated: false },
     }
@@ -120,7 +143,7 @@ pub fn status(root: &Path) -> Status {
 pub fn python(root: &Path) -> Option<PathBuf> {
     match status(root) {
         Status::Ready { python, .. } => Some(python),
-        Status::Missing { .. } => None,
+        Status::Missing { .. } | Status::Stale { .. } => None,
     }
 }
 
@@ -211,19 +234,45 @@ async fn run(python: &Path, arguments: &[&str], limit: Duration, cancel: &Cancel
     }
 }
 
-/// Fetch and set up the runtime under `root`, in place of whatever was there, and return its interpreter. Done
-/// in a folder of its own and moved into place only once it imports every library: a runtime half set up is
-/// never left where it would be used.
+/// Have pip install the pinned libraries into `python`: only what is missing or at another version is fetched.
+async fn install_libraries(python: &Path, folder: &Path, watch: &(dyn Fn(Progress) + Send + Sync), cancel: &CancellationToken) -> Result<(), String> {
+    watch(Progress::Installing);
+    let requirements = folder.join(format!(".requirements-{}.txt", uuid::Uuid::now_v7()));
+    std::fs::write(&requirements, REQUIREMENTS).map_err(|error| error.to_string())?;
+    let listed = requirements.to_string_lossy().into_owned();
+    let installed = run(python, &["-m", "pip", "install", "--require-hashes", "--only-binary", ":all:", "--no-warn-script-location", "-r", &listed], Duration::from_secs(20 * 60), cancel).await;
+    let _ = std::fs::remove_file(&requirements);
+    installed.map_err(|why| format!("安装文档用的库失败：\n{why}"))?;
+    watch(Progress::Checking);
+    let imports = format!("import {}", MODULES.iter().map(|(module, _)| *module).collect::<Vec<_>>().join(", "));
+    run(python, &["-c", &imports], Duration::from_secs(120), cancel).await.map_err(|why| format!("装好的库导入不了：\n{why}"))
+}
+
+/// Bring the runtime under `root` up to date, and return its interpreter. A runtime whose Python is this build's has
+/// only its libraries brought up to date, in place: pip fetches what is missing or changed, nothing else; should that
+/// fail, the record still says what was there, so it is tried again next time. Otherwise the whole runtime is fetched
+/// and set up in a folder of its own, and moved into place only once it imports every library: a runtime half set
+/// up is never left where it would be used.
 pub async fn install(root: &Path, watch: &(dyn Fn(Progress) + Send + Sync), cancel: &CancellationToken) -> Result<PathBuf, String> {
-    // One at a time: the settings page and a 分身 may both ask. The second finds it done.
+    // One at a time: the settings page, the app as it starts, and a 分身 may all ask. The later ones find it done.
     static INSTALLING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _held = tokio::select! {
         held = INSTALLING.lock() => held,
         () = cancel.cancelled() => return Err("已取消。".to_string()),
     };
-    if let Some(python) = python(root) {
-        watch(Progress::Done);
-        return Ok(python);
+    match status(root) {
+        Status::Ready { python, .. } => {
+            watch(Progress::Done);
+            return Ok(python);
+        }
+        Status::Stale { python, .. } => {
+            install_libraries(&python, root, watch, cancel).await?;
+            let triple = target().unwrap_or_default();
+            std::fs::write(root.join("runtime.json"), serde_json::to_vec_pretty(&Installed::current(triple)).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+            watch(Progress::Done);
+            return Ok(python);
+        }
+        Status::Missing { .. } => {}
     }
     let triple = target().ok_or_else(|| format!("这个系统（{} {}）没有可用的文档运行环境。", std::env::consts::OS, std::env::consts::ARCH))?;
     let sha256 = BUILDS.iter().find(|(name, _)| *name == triple).map(|(_, sha)| *sha).ok_or("no checksum")?;
@@ -243,18 +292,8 @@ pub async fn install(root: &Path, watch: &(dyn Fn(Progress) + Send + Sync), canc
         if !python.is_file() {
             return Err(format!("下载的 Python 里找不到 {}。", python.display()));
         }
-        watch(Progress::Installing);
-        let requirements = staging.join("requirements.txt");
-        std::fs::write(&requirements, REQUIREMENTS).map_err(|error| error.to_string())?;
-        let listed = requirements.to_string_lossy().into_owned();
-        run(&python, &["-m", "pip", "install", "--require-hashes", "--only-binary", ":all:", "--no-warn-script-location", "-r", &listed], Duration::from_secs(20 * 60), cancel)
-            .await
-            .map_err(|why| format!("安装文档用的库失败：\n{why}"))?;
-        watch(Progress::Checking);
-        let imports = format!("import {}", MODULES.iter().map(|(module, _)| *module).collect::<Vec<_>>().join(", "));
-        run(&python, &["-c", &imports], Duration::from_secs(120), cancel).await.map_err(|why| format!("装好的库导入不了：\n{why}"))?;
-        let installed = Installed { edition: EDITION, python: PYTHON_VERSION.to_string(), target: triple.to_string() };
-        std::fs::write(staging.join("runtime.json"), serde_json::to_vec_pretty(&installed).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+        install_libraries(&python, &staging, watch, cancel).await?;
+        std::fs::write(staging.join("runtime.json"), serde_json::to_vec_pretty(&Installed::current(triple)).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
         Ok(())
     }
     .await;
@@ -326,18 +365,27 @@ mod tests {
     }
 
     #[test]
-    fn says_how_it_stands_and_is_ready_only_when_its_edition_and_interpreter_are_there() {
+    fn tells_a_python_to_fetch_from_libraries_to_bring_up_to_date() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         assert_eq!(status(root), Status::Missing { outdated: false });
         let python = interpreter(&root.join("python"));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::write(&python, "").unwrap();
-        let record = |edition: u32| std::fs::write(root.join("runtime.json"), serde_json::to_vec(&Installed { edition, python: "3.12.16".into(), target: "t".into() }).unwrap()).unwrap();
-        record(EDITION - 1);
+        let record = |text: &str| std::fs::write(root.join("runtime.json"), text).unwrap();
+        // Set up by a build that kept no list of libraries: its Python stays, its libraries are brought up to date.
+        record(r#"{"edition": 2, "python": "3.12.16", "target": "t"}"#);
+        assert_eq!(status(root), Status::Stale { python: python.clone(), version: "3.12.16".into() });
+        // Another list of libraries: the same.
+        record(&serde_json::to_string(&Installed { libraries: "0".repeat(64), ..Installed::current("t") }).unwrap());
+        assert!(matches!(status(root), Status::Stale { .. }));
+        // Another Python: the whole of it is fetched again.
+        record(&serde_json::to_string(&Installed { python: "3.11.9".into(), ..Installed::current("t") }).unwrap());
         assert_eq!(status(root), Status::Missing { outdated: true });
-        record(EDITION);
+        record(&serde_json::to_string(&Installed::current("t")).unwrap());
         assert_eq!(status(root), Status::Ready { python: python.clone(), version: "3.12.16".into() });
+        // The list is told by what it says, not by how its lines end.
+        assert_eq!(libraries().len(), 64);
         remove(root).unwrap();
         assert_eq!(status(root), Status::Missing { outdated: false });
         assert!(!root.join("python").exists());
