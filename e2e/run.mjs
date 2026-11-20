@@ -66,13 +66,36 @@ for (const args of [["init", "--quiet", "--initial-branch", "main"], ["add", "-A
   }
 }
 
-// Files to attach, outside the workspace: a small one, one too large to send with a message, and one that is not text.
+/** A one-page PDF of these lines in Helvetica, as small as a PDF can be and still be read for its words. */
+function pdfOf(lines) {
+  const words = lines.map((line, row) => `BT /F1 12 Tf 72 ${760 - 16 * row} Td (${line}) Tj ET\n`).join("");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${words.length} >>\nstream\n${words}endstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = objects.map((object, at) => {
+    const offset = pdf.length;
+    pdf += `${at + 1} 0 obj\n${object}\nendobj\n`;
+    return offset;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}`;
+  return pdf + `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+}
+
+// Files to attach, outside the workspace: a small one, one too large to send with a message, one that is not text, and a PDF.
 const attachedNotes = join(scratch, "要点.md");
 const attachedLog = join(scratch, "build.log");
 const attachedBinary = join(scratch, "archive.zip");
+const attachedPdf = join(scratch, "sheet.pdf");
 writeFileSync(attachedNotes, "# 要点\n先读配置\n");
 writeFileSync(attachedLog, "first line of the log\n" + "x".repeat(120_000) + "\n");
 writeFileSync(attachedBinary, Buffer.from([80, 75, 3, 4, 0, 0, 0, 0]));
+writeFileSync(attachedPdf, pdfOf(["Pin 1 is VIN", "Pin 2 is GND"]));
 
 // What the stand-in model says: create a file and run a command, then wrap up.
 const mock = await startMock([
@@ -484,10 +507,11 @@ try {
   await page.waitFor("a new session", `${title} === "新分身"`);
   // Dropped on the window, as the system tells the page of it.
   const beforeFiles = mock.requests.length;
-  await page.evaluate(`window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "tauri://drag-drop", payload: { paths: ${JSON.stringify([attachedNotes, attachedLog, attachedBinary])}, position: { x: 600, y: 600 } } }).then(() => true)`);
-  await page.waitFor("the files to be attached", `document.querySelectorAll(".attachment.file").length === 2`);
+  await page.evaluate(`window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "tauri://drag-drop", payload: { paths: ${JSON.stringify([attachedNotes, attachedLog, attachedBinary, attachedPdf])}, position: { x: 600, y: 600 } } }).then(() => true)`);
+  await page.waitFor("the files to be attached", `document.querySelectorAll(".attachment.file").length === 3`);
   const pending = await page.evaluate(`({ chips: [...document.querySelectorAll(".attachment.file")].map((chip) => chip.textContent), refused: document.querySelector(".attachments .refused")?.textContent ?? "" })`);
   check(pending.chips[0].includes("要点.md") && pending.chips[1].includes("build.log") && pending.chips[1].includes("分身自读") && !pending.chips[0].includes("分身自读"), "files dropped on the window wait in the box, the large one marked as left for the 分身 to read");
+  check(pending.chips[2].includes("sheet.pdf") && pending.chips[2].includes("1 页") && !pending.chips[2].includes("分身自读"), "a PDF is attached, with how many pages it has");
   check(pending.refused.includes("archive.zip") && pending.refused.includes("不是文本文件"), "a file that is not text is not attached, and the box says why");
   await page.type("#composer-input", "看看这两份");
   await page.enter();
@@ -496,12 +520,13 @@ try {
   const [withFiles, afterRead] = mock.requests.slice(beforeFiles).map((request) => request.body);
   const sentBlocks = withFiles.messages[0].content.map((block) => block.text);
   check(
-    sentBlocks.length === 3 && sentBlocks[0] === `<attached_file path="${attachedNotes}">\n# 要点\n先读配置\n</attached_file>` && sentBlocks[1].startsWith(`<attached_file path="${attachedLog}" bytes="120023">`) && !sentBlocks[1].includes("first line of the log") && sentBlocks[2] === "看看这两份",
+    sentBlocks.length === 4 && sentBlocks[0] === `<attached_file path="${attachedNotes}">\n# 要点\n先读配置\n</attached_file>` && sentBlocks[1].startsWith(`<attached_file path="${attachedLog}" bytes="120023">`) && !sentBlocks[1].includes("first line of the log") && sentBlocks[3] === "看看这两份",
     "the small file's text went to the model with the message, the large one by its path alone, both ahead of the words",
   );
+  check(sentBlocks[2].startsWith(`<attached_file path="${attachedPdf}" pages="1">\n[A PDF: this is its text`) && sentBlocks[2].includes("Pin 1 is VIN") && sentBlocks[2].includes("Pin 2 is GND"), "the PDF went to the model as the text of its page");
   const readBack = afterRead.messages[afterRead.messages.length - 1].content.find((block) => block.type === "tool_result");
   check(!readBack.is_error && readBack.content.includes("first line of the log") && !(await page.evaluate(`document.body.innerText.includes("请本尊定夺")`)), "the 分身 read the attached file outside the workspace without asking");
-  check((await page.evaluate(`[...document.querySelectorAll(".said-files .file-chip-name")].map((name) => name.textContent).join()`)) === "要点.md,build.log", "the conversation shows what was attached under the message");
+  check((await page.evaluate(`[...document.querySelectorAll(".said-files .file-chip-name")].map((name) => name.textContent).join()`)) === "要点.md,build.log,sheet.pdf", "the conversation shows what was attached under the message");
 
   console.log("Passed.");
 } catch (error) {

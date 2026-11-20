@@ -37,8 +37,8 @@ export interface Row {
   key: string;
   /** The turn the message opened or, for a steering message, joined. */
   turn: number;
-  /** `files`: what was attached, each with whether its text went with the message. */
-  prompt: { text: string; ts: string; steering: boolean; images: Image[]; files: { path: string; bytes: number; inline: boolean }[] };
+  /** `files`: what was attached, each with whether its text went with the message, and for a PDF its pages. */
+  prompt: { text: string; ts: string; steering: boolean; images: Image[]; files: { path: string; bytes: number; inline: boolean; pages?: number }[] };
   items: Item[];
 }
 
@@ -83,7 +83,7 @@ export function fold(events: Envelope[]): Row[] {
             ts: event.ts,
             steering: event.data.steering,
             images: event.data.images ?? [],
-            files: (event.data.files ?? []).map((file) => ({ path: file.path, bytes: file.bytes, inline: file.content !== undefined })),
+            files: (event.data.files ?? []).map((file) => ({ path: file.path, bytes: file.bytes, inline: file.content !== undefined, pages: file.pages })),
           },
           items: [],
         });

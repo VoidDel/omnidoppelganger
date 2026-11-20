@@ -70,6 +70,10 @@ pub struct Attached {
     /// which the model reads in parts with `read_file`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// For a PDF, how many pages it has; its `content` is then the text taken
+    /// out of them, not the file as it is. Since format 14.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages: Option<u32>,
 }
 
 /// The most files one message may carry.
@@ -84,12 +88,20 @@ const IMAGE_FILE_BYTES: u64 = (IMAGE_BASE64_BYTES / 4 * 3) as u64;
 
 /// What a path the user picked turns out to be: a file to attach, a picture
 /// to send as one, or neither, with why in a word the client puts into its
-/// own: `missing`, `directory`, `binary`, `too_large`, `image_too_large`.
+/// own: `missing`, `directory`, `binary`, `too_large`, `image_too_large`, or
+/// for a PDF one of [`crate::pdf::PdfError::word`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Picked {
-    /// `inline` when its text will go with the message; otherwise the agent reads it in parts.
-    File { path: String, name: String, bytes: u64, inline: bool },
+    /// `inline` when its text will go with the message; otherwise the agent reads it in parts. `pages` for a PDF.
+    File {
+        path: String,
+        name: String,
+        bytes: u64,
+        inline: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pages: Option<u32>,
+    },
     Image { name: String, image: Image },
     Refused { name: String, why: &'static str },
 }
@@ -129,6 +141,20 @@ pub fn attach(path: &Path) -> Result<Attached, &'static str> {
     if metadata.is_dir() {
         return Err("directory");
     }
+    // A PDF goes as its words, when they are few enough, and is otherwise read in parts by `read_file`, which takes them out the same way.
+    if crate::pdf::is_pdf_file(path) {
+        if metadata.len() > crate::pdf::PDF_BYTES {
+            return Err("too_large");
+        }
+        let read = crate::pdf::file_text(path).map_err(|_| "missing")?.map_err(crate::pdf::PdfError::word)?;
+        let inline = read.text.len() as u64 <= ATTACHED_INLINE_BYTES;
+        return Ok(Attached {
+            path: path.to_string_lossy().into_owned(),
+            bytes: metadata.len(),
+            content: inline.then(|| read.text.clone()),
+            pages: Some(u32::try_from(read.pages).unwrap_or(u32::MAX)),
+        });
+    }
     if metadata.len() > ATTACHED_BYTES {
         return Err("too_large");
     }
@@ -146,7 +172,7 @@ pub fn attach(path: &Path) -> Result<Attached, &'static str> {
     if bytes.iter().take(8192).any(|byte| *byte == 0) {
         return Err("binary");
     }
-    Ok(Attached { path: path.to_string_lossy().into_owned(), bytes: metadata.len(), content: inline.then(|| String::from_utf8_lossy(&bytes).into_owned()) })
+    Ok(Attached { path: path.to_string_lossy().into_owned(), bytes: metadata.len(), content: inline.then(|| String::from_utf8_lossy(&bytes).into_owned()), pages: None })
 }
 
 /// What a path the user picked is, for the client to show before the message is sent.
@@ -164,7 +190,7 @@ pub fn pick(path: &Path) -> Picked {
         };
     }
     match attach(path) {
-        Ok(file) => Picked::File { path: file.path, name, bytes: file.bytes, inline: file.content.is_some() },
+        Ok(file) => Picked::File { path: file.path, name, bytes: file.bytes, inline: file.content.is_some(), pages: file.pages },
         Err(why) => Picked::Refused { name, why },
     }
 }
@@ -172,10 +198,19 @@ pub fn pick(path: &Path) -> Picked {
 /// How an attached file is put to the model, ahead of the words sent with it:
 /// its text between tags that name it, or for a large one the way to read it.
 pub fn attached_text(file: &Attached) -> String {
-    match &file.content {
-        Some(content) => format!("<attached_file path=\"{}\">\n{}\n</attached_file>", file.path, content.trim_end_matches('\n')),
-        None => format!(
+    match (&file.content, file.pages) {
+        (Some(content), None) => format!("<attached_file path=\"{}\">\n{}\n</attached_file>", file.path, content.trim_end_matches('\n')),
+        (None, None) => format!(
             "<attached_file path=\"{}\" bytes=\"{}\">\nThe user attached this file. It is too large to include here: read the parts you need with read_file, which may read this path without asking.\n</attached_file>",
+            file.path, file.bytes
+        ),
+        (Some(content), Some(pages)) => format!(
+            "<attached_file path=\"{}\" pages=\"{pages}\">\n[A PDF: this is its text, taken out page by page. Its drawings, pictures, and layout are not kept.]\n{}\n</attached_file>",
+            file.path,
+            content.trim_end_matches('\n')
+        ),
+        (None, Some(pages)) => format!(
+            "<attached_file path=\"{}\" bytes=\"{}\" pages=\"{pages}\">\nThe user attached this PDF. Its text is too long to include here: read the parts you need with read_file, which gives a PDF's text page by page and may read this path without asking.\n</attached_file>",
             file.path, file.bytes
         ),
     }
@@ -423,7 +458,7 @@ mod tests {
         // A small text file goes with the message, text and all.
         let small = attach(&at("notes.md")).unwrap();
         assert_eq!((small.bytes, small.content.as_deref()), (18, Some("# 笔记\nline two\n")));
-        assert_eq!(pick(&at("notes.md")), Picked::File { path: small.path.clone(), name: "notes.md".into(), bytes: 18, inline: true });
+        assert_eq!(pick(&at("notes.md")), Picked::File { path: small.path.clone(), name: "notes.md".into(), bytes: 18, inline: true, pages: None });
         // A large one is attached by its path alone.
         let large = attach(&at("big.log")).unwrap();
         assert_eq!((large.bytes, large.content), (ATTACHED_INLINE_BYTES + 1, None));
@@ -449,10 +484,40 @@ mod tests {
 
     #[test]
     fn an_attached_file_is_put_to_the_model_by_name() {
-        let small = Attached { path: "/x/notes.md".into(), bytes: 9, content: Some("one\ntwo\n".into()) };
+        let small = Attached { path: "/x/notes.md".into(), bytes: 9, content: Some("one\ntwo\n".into()), pages: None };
         assert_eq!(attached_text(&small), "<attached_file path=\"/x/notes.md\">\none\ntwo\n</attached_file>");
-        let large = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None };
+        let large = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None, pages: None };
         let told = attached_text(&large);
         assert!(told.starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">") && told.contains("read_file") && told.contains("without asking"), "{told}");
+        // A PDF is said to be one, and what goes with it to be its text.
+        let sheet = Attached { path: "/x/sheet.pdf".into(), bytes: 52_000, content: Some("[page 1 of 1]\nVIN\n".into()), pages: Some(1) };
+        let told = attached_text(&sheet);
+        assert!(told.starts_with("<attached_file path=\"/x/sheet.pdf\" pages=\"1\">\n[A PDF: this is its text") && told.ends_with("[page 1 of 1]\nVIN\n</attached_file>"), "{told}");
+        let manual = Attached { path: "/x/manual.pdf".into(), bytes: 9_000_000, content: None, pages: Some(300) };
+        let told = attached_text(&manual);
+        assert!(told.starts_with("<attached_file path=\"/x/manual.pdf\" bytes=\"9000000\" pages=\"300\">") && told.contains("read_file"), "{told}");
+    }
+
+    #[test]
+    fn a_pdf_is_attached_as_its_text_or_refused_with_why() {
+        use crate::pdf::tests::sample;
+        let directory = tempfile::tempdir().unwrap();
+        let at = |name: &str| directory.path().join(name);
+        std::fs::write(at("sheet.pdf"), sample(&[&["Pin 1 is VIN"], &["Absolute maximum 42 V"]])).unwrap();
+        // Many pages of words: more than goes with a message.
+        let long = vec!["A line of words that goes on for a while, sixty characters."; 40];
+        std::fs::write(at("manual.pdf"), sample(&vec![long.as_slice(); 60])).unwrap();
+        std::fs::write(at("scan.pdf"), sample(&[&[], &[]])).unwrap();
+        std::fs::write(at("broken.pdf"), b"%PDF-1.7\nnot really a PDF").unwrap();
+
+        let sheet = attach(&at("sheet.pdf")).unwrap();
+        assert_eq!(sheet.pages, Some(2));
+        assert!(sheet.content.as_deref().is_some_and(|text| text.contains("[page 2 of 2]") && text.contains("Absolute maximum 42 V")), "{sheet:?}");
+        assert!(matches!(pick(&at("sheet.pdf")), Picked::File { inline: true, pages: Some(2), .. }));
+        let manual = attach(&at("manual.pdf")).unwrap();
+        assert_eq!((manual.pages, manual.content), (Some(60), None));
+        assert_eq!(attach(&at("scan.pdf")), Err("pdf_no_text"));
+        assert_eq!(attach(&at("broken.pdf")), Err("pdf_unreadable"));
+        assert_eq!(pick(&at("scan.pdf")), Picked::Refused { name: "scan.pdf".into(), why: "pdf_no_text" });
     }
 }

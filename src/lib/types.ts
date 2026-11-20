@@ -49,16 +49,22 @@ export interface Attached {
   path: string;
   bytes: number;
   content?: string;
+  /** For a PDF, how many pages it has; its `content` is then the text taken out of them. */
+  pages?: number;
 }
 
 /**
  * What a path the user picked to attach turned out to be: a file (`inline` when its text will go with the
- * message; otherwise the 分身 reads it in parts), a picture to send as one, or neither, with why.
+ * message; otherwise the 分身 reads it in parts; `pages` for a PDF), a picture to send as one, or neither, with why.
  */
 export type Picked =
-  | { kind: "file"; path: string; name: string; bytes: number; inline: boolean }
+  | { kind: "file"; path: string; name: string; bytes: number; inline: boolean; pages?: number }
   | { kind: "image"; name: string; image: Image }
-  | { kind: "refused"; name: string; why: "missing" | "directory" | "binary" | "too_large" | "image_too_large" };
+  | {
+      kind: "refused";
+      name: string;
+      why: "missing" | "directory" | "binary" | "too_large" | "image_too_large" | "pdf_unreadable" | "pdf_locked" | "pdf_no_text";
+    };
 
 export interface DiffHunk {
   old_start: number;

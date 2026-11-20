@@ -879,12 +879,19 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
               {row.prompt.files.length > 0 && (
                 <div className="said-files">
                   {row.prompt.files.map((file) => (
-                    <span key={file.path} className="file-chip" title={`${file.path}\n${file.inline ? "它的内容随这句话一起给了分身" : "它太大，没有随消息发送：分身自己分段去读"}`}>
+                    <span
+                      key={file.path}
+                      className="file-chip"
+                      title={`${file.path}\n${file.inline ? (file.pages ? "取出的文字随这句话一起给了分身，图和排版不在其中" : "它的内容随这句话一起给了分身") : "它太大，没有随消息发送：分身自己分段去读"}`}
+                    >
                       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
                       </svg>
                       <span className="file-chip-name">{file.path.replace(/^.*[\\/]/, "")}</span>
-                      <span className="file-chip-size">{fileSize(file.bytes)}</span>
+                      <span className="file-chip-size">
+                        {fileSize(file.bytes)}
+                        {file.pages ? `，${file.pages} 页` : ""}
+                      </span>
                     </span>
                   ))}
                 </div>

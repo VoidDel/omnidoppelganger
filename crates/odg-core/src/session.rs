@@ -27,7 +27,7 @@ use crate::providers::DEFAULT_PROVIDER;
 /// `guardian/reviewed` event, `expires_at` on an approval request and
 /// `timed_out` on its answer. A build
 /// from before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 13;
+pub const FORMAT_VERSION: u32 = 14;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -967,8 +967,8 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let png = Image { media_type: "image/png".into(), data: "aGVsbG8=".into() };
-        let notes = Attached { path: "/x/notes.md".into(), bytes: 4, content: Some("one\n".into()) };
-        let big = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None };
+        let notes = Attached { path: "/x/notes.md".into(), bytes: 4, content: Some("one\n".into()), pages: None };
+        let big = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None, pages: None };
         log.append(Event::UserMessage { text: "compare them".into(), steering: false, mode: Mode::Edit, images: vec![png], files: vec![notes.clone(), big.clone()] }).unwrap();
         let content = derive_messages(log.events())[0]["content"].clone();
         assert_eq!(content[0]["type"], "image");

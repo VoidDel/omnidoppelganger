@@ -99,7 +99,7 @@ pub fn specs() -> Vec<Value> {
     vec![
         json!({
             "name": "read_file",
-            "description": "Read a text file. Returns numbered lines. Read a file before editing it. One read returns at most 2000 lines and 100,000 characters; use offset and limit to read the rest.",
+            "description": "Read a text file, or the text of a PDF. Returns numbered lines. Read a file before editing it. One read returns at most 2000 lines and 100,000 characters; use offset and limit to read the rest.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -201,7 +201,7 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "fetch_url",
-            "description": "Get a web page and return its text: documentation, an issue, a raw file. HTML comes back as its words, without markup. The user may have to approve the site first. A long page is cut; pass `offset` to read on. It reads the one address it is given.",
+            "description": "Get a web page and return its text: documentation, an issue, a raw file, a PDF. HTML comes back as its words, without markup; a PDF as the text of its pages. The user may have to approve the site first. A long page is cut; pass `offset` to read on. It reads the one address it is given.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -410,7 +410,7 @@ fn clip(line: &str) -> String {
 /// Run one tool. Unknown tools and bad arguments come back as error results, never as panics.
 pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOutput {
     let result = match name {
-        "read_file" => read_file(input, context),
+        "read_file" => read_file(input, context).await,
         "edit_file" => edit_file(input, context),
         "write_file" => write_file(input, context),
         "search" => search(input, context).await,
@@ -452,12 +452,28 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
     result.unwrap_or_else(|error| error)
 }
 
-fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+async fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let path = resolve(&context.workspace, string_arg(input, "path")?);
     let shown = display(&context.workspace, &path);
     let metadata = std::fs::metadata(&path).map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?;
     if metadata.is_dir() {
         return Err(ToolOutput::error(format!("{shown} is a directory. Use `find_files` to list it.")));
+    }
+    // A PDF is read for its words, which take a while to take out of a large one: off the thread the agent runs on.
+    if crate::pdf::is_pdf_file(&path) {
+        if metadata.len() > crate::pdf::PDF_BYTES {
+            return Err(ToolOutput::error(format!("{shown} is a PDF of {} bytes, over the {}-byte limit.", metadata.len(), crate::pdf::PDF_BYTES)));
+        }
+        let taken = tokio::task::spawn_blocking(move || crate::pdf::file_text(&path)).await;
+        let read = match taken {
+            Ok(Ok(Ok(read))) => read,
+            Ok(Ok(Err(why))) => return Err(ToolOutput::error(format!("{shown} {}.", why.describe()))),
+            Ok(Err(error)) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
+            Err(error) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
+        };
+        let (content, lines, selected) = numbered(&read.text, input, &shown);
+        let content = format!("[{shown} is a PDF of {} pages. This is its text, taken out page by page: its drawings, pictures, and layout are not kept.]\n{content}", read.pages);
+        return Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected, "pages": read.pages })));
     }
     if metadata.len() > READ_FILE_BYTES {
         return Err(ToolOutput::error(format!("{shown} is {} bytes, over the {READ_FILE_BYTES}-byte limit.", metadata.len())));
@@ -466,7 +482,14 @@ fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
     if bytes.iter().take(8192).any(|byte| *byte == 0) {
         return Err(ToolOutput::error(format!("{shown} is a binary file.")));
     }
-    let text = String::from_utf8_lossy(&bytes);
+    let (content, lines, selected) = numbered(&String::from_utf8_lossy(&bytes), input, &shown);
+    Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected })))
+}
+
+/// The lines of `text` that `read_file`'s offset and limit ask for, each with
+/// its number, and a note of how to read on when there are more: with how
+/// many lines there are in all, and how many are shown.
+fn numbered(text: &str, input: &Value, shown: &str) -> (String, usize, usize) {
     let lines: Vec<&str> = text.lines().collect();
     let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let limit = input["limit"].as_u64().map(|limit| limit as usize).unwrap_or(READ_LINE_LIMIT).clamp(1, READ_LINE_LIMIT);
@@ -497,7 +520,7 @@ fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOut
     } else if last < lines.len() {
         content.push_str(&format!("\n[showing lines {offset}-{last} of {}; pass offset to read more]", lines.len()));
     }
-    Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines.len(), "shown": selected.len() })))
+    (content, lines.len(), selected.len())
 }
 
 /// The list `update_todos` was given, checked: `(text, status)` per item.
@@ -1018,6 +1041,27 @@ mod tests {
         assert!(execute("read_file", &json!({}), &context).await.is_error);
         std::fs::write(directory.path().join("b.bin"), [1u8, 0, 2]).unwrap();
         assert!(execute("read_file", &json!({ "path": "b.bin" }), &context).await.content.contains("binary"));
+    }
+
+    #[tokio::test]
+    async fn reads_the_text_of_a_pdf_in_numbered_lines() {
+        let (directory, context) = context();
+        // Named as anything: a PDF is known by its first bytes.
+        std::fs::write(directory.path().join("sheet.dat"), crate::pdf::tests::sample(&[&["Pin 1 is VIN", "Pin 2 is GND"], &["Absolute maximum 42 V"]])).unwrap();
+        let all = execute("read_file", &json!({ "path": "sheet.dat" }), &context).await;
+        assert!(!all.is_error, "{}", all.content);
+        assert!(all.content.starts_with("[sheet.dat is a PDF of 2 pages."), "{}", all.content);
+        assert!(all.content.contains("     1\t[page 1 of 2]\n     2\tPin 1 is VIN") && all.content.contains("\t[page 2 of 2]\n"), "{}", all.content);
+        assert_eq!(all.meta["pages"].as_u64(), Some(2));
+        // Read on from a line, as a text file is: here from where the second page starts.
+        let second = all.content.lines().find(|line| line.ends_with("\t[page 2 of 2]")).and_then(|line| line.trim().split('\t').next()?.parse::<u64>().ok()).unwrap();
+        let part = execute("read_file", &json!({ "path": "sheet.dat", "offset": second, "limit": 2 }), &context).await;
+        assert!(part.content.starts_with("[sheet.dat is a PDF of 2 pages."), "{}", part.content);
+        assert!(part.content.ends_with(&format!("{second:>6}\t[page 2 of 2]\n{:>6}\tAbsolute maximum 42 V", second + 1)), "{}", part.content);
+        // A PDF without words says so, rather than that it is a binary file.
+        std::fs::write(directory.path().join("scan.pdf"), crate::pdf::tests::sample(&[&[]])).unwrap();
+        let scan = execute("read_file", &json!({ "path": "scan.pdf" }), &context).await;
+        assert!(scan.is_error && scan.content.contains("no text in it"), "{}", scan.content);
     }
 
     #[tokio::test]

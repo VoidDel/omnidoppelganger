@@ -7,6 +7,11 @@ use tokio::task::JoinHandle;
 /// Answer one connection per entry of `responses`, in order, each with the
 /// raw HTTP response given, then close it. Resolves to the raw requests received.
 pub async fn serve(responses: Vec<String>) -> (String, JoinHandle<Vec<String>>) {
+    serve_bytes(responses.into_iter().map(String::into_bytes).collect()).await
+}
+
+/// [`serve`], for responses whose bodies are not text: a PDF, a gzipped page.
+pub async fn serve_bytes(responses: Vec<Vec<u8>>) -> (String, JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
@@ -14,7 +19,7 @@ pub async fn serve(responses: Vec<String>) -> (String, JoinHandle<Vec<String>>) 
         for response in responses {
             let (mut socket, _) = listener.accept().await.unwrap();
             requests.push(read_request(&mut socket).await);
-            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.write_all(&response).await.unwrap();
             socket.shutdown().await.unwrap();
         }
         requests

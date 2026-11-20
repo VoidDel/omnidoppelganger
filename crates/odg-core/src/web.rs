@@ -2,8 +2,9 @@
 //! finds pages.
 //!
 //! The page comes back as text. HTML is reduced to its words (scripts,
-//! styles, and markup gone); other text is returned as it is; anything else
-//! (a PDF, an image) is refused. A request leaves the machine, and its
+//! styles, and markup gone); a PDF to the words taken out of it (see
+//! [`crate::pdf`]); other text is returned as it is; anything else (an
+//! image, an archive) is refused. A request leaves the machine, and its
 //! address can carry whatever the model puts in it, so every host asks the
 //! user first (see [`crate::policy`]).
 
@@ -85,6 +86,48 @@ fn failed(message: String) -> Fetched {
     Fetched { content: message, is_error: true, meta: Value::Null }
 }
 
+/// The headers a browser sends when it opens a page. Some sites (those behind
+/// Akamai's screen for robots, for one) turn a request away without all of
+/// them, though a person could read the page. Nothing in them is about the
+/// user or the project. Only gzip is asked for, which [`unzipped`] undoes.
+const BROWSER: &[(&str, &str)] = &[
+    ("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"),
+    ("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.9,*/*;q=0.8"),
+    ("accept-language", "zh-CN,zh;q=0.9,en;q=0.8"),
+    ("accept-encoding", "gzip"),
+    ("sec-fetch-dest", "document"),
+    ("sec-fetch-mode", "navigate"),
+    ("sec-fetch-site", "none"),
+    ("sec-fetch-user", "?1"),
+    ("upgrade-insecure-requests", "1"),
+];
+
+/// How much of an error page goes to the model: enough for what it says of why, or of where the page went.
+const ERROR_PAGE_CHARS: usize = 3_000;
+
+/// A body the site sent gzipped, unzipped to no more than `limit` bytes: as
+/// much as comes out, when the download was cut short or is not whole.
+fn unzipped(body: &[u8], limit: usize) -> Vec<u8> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    // An error here leaves what was unzipped before it in `out`, which is what there is to read.
+    let _ = flate2::read::MultiGzDecoder::new(body).take(limit as u64).read_to_end(&mut out);
+    out
+}
+
+/// What to make of an answer that is not the page: what it means, and where to go from it.
+fn advice(status: u16) -> &'static str {
+    match status {
+        404 | 410 => {
+            " There is no page at this address: it may be mistyped, or the page may have moved. Find its address from the site's home page or a search rather than guessing another."
+        }
+        401 | 403 => " The site refused the request: it may show this page only to a signed-in user, or turn away programs. Look for what is on it elsewhere.",
+        429 => " The site is asking for fewer requests: wait before asking it again, or look elsewhere.",
+        500..=599 => " The site failed to answer: it may work later.",
+        _ => "",
+    }
+}
+
 /// Get `url` and return its text from character `offset` on.
 pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetched {
     if host(url).is_none() {
@@ -94,40 +137,74 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         Ok(client) => client,
         Err(error) => return failed(format!("Cannot set up the request: {error}")),
     };
-    // A plain client name: nothing about the user or the project goes with the request.
-    let request = client.get(url).header("user-agent", "odg-fetch/0.1").header("accept", "text/html, text/plain, application/json, text/*;q=0.8");
+    let request = BROWSER.iter().fold(client.get(url), |request, (name, value)| request.header(*name, *value));
     let download = async {
         let mut response = request.send().await.map_err(|error| format!("Cannot reach {url}: {error}"))?;
         let status = response.status();
-        let kind = response.headers().get("content-type").and_then(|value| value.to_str().ok()).unwrap_or_default().to_lowercase();
+        let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).unwrap_or_default().to_lowercase();
+        let (kind, encoding) = (header("content-type"), header("content-encoding"));
         let landed = response.url().to_string();
+        // A PDF is read whole or not at all, and runs larger than a page of HTML.
+        let limit = if kind.contains("pdf") { crate::pdf::PDF_BYTES as usize } else { BODY_BYTES };
         let mut body: Vec<u8> = Vec::new();
+        let mut whole = true;
         while let Some(chunk) = response.chunk().await.map_err(|error| format!("The download of {url} broke off: {error}"))? {
             body.extend_from_slice(&chunk);
-            if body.len() > BODY_BYTES {
-                body.truncate(BODY_BYTES);
+            if body.len() > limit {
+                body.truncate(limit);
+                whole = false;
                 break;
             }
         }
-        Ok::<_, String>((status, kind, landed, body))
+        if encoding.contains("gzip") {
+            let unzipped = unzipped(&body, limit + 1);
+            whole &= unzipped.len() <= limit;
+            body = unzipped;
+            body.truncate(limit);
+        }
+        Ok::<_, String>((status, kind, landed, body, whole))
     };
-    let (status, kind, landed, body) = tokio::select! {
+    let (status, kind, landed, body, whole) = tokio::select! {
         outcome = download => match outcome {
             Ok(got) => got,
             Err(error) => return failed(error),
         },
         () = cancel.cancelled() => return failed("The fetch was cancelled.".to_string()),
     };
-    if !status.is_success() {
-        return failed(format!("{url} answered HTTP {}.", status.as_u16()));
-    }
     let textual = kind.is_empty() || kind.starts_with("text/") || ["json", "xml", "javascript", "yaml"].iter().any(|word| kind.contains(word));
-    if !textual || body.iter().take(8192).any(|byte| *byte == 0) {
-        return failed(format!("{url} is {}, not text; it cannot be read here.", if kind.is_empty() { "binary data" } else { kind.as_str() }));
+    let binary = body.iter().take(8192).any(|byte| *byte == 0);
+    if !status.is_success() {
+        let mut message = format!("{url} answered HTTP {}.{}", status.as_u16(), advice(status.as_u16()));
+        // What the site sent with it: an error page often says why, or links to where the page went.
+        if textual && !binary {
+            let (_, text) = html_text(&String::from_utf8_lossy(&body));
+            if !text.is_empty() {
+                let shown: String = text.chars().take(ERROR_PAGE_CHARS).collect();
+                let cut = if shown.len() < text.len() { "\n[cut]" } else { "" };
+                message.push_str(&format!("\n\nThe page it sent with that:\n{shown}{cut}"));
+            }
+        }
+        return failed(message);
     }
-    let raw = String::from_utf8_lossy(&body);
-    let looks_like_html = kind.contains("html") || raw.trim_start().get(..15).is_some_and(|start| start.to_lowercase().starts_with("<!doctype html") || start.to_lowercase().starts_with("<html"));
-    let (title, text) = if looks_like_html { html_text(&raw) } else { (None, raw.trim().to_string()) };
+    let (title, text, pages) = if kind.contains("pdf") || crate::pdf::is_pdf(&body) {
+        if !whole {
+            return failed(format!("{url} is a PDF larger than {} MB, too large to read here.", crate::pdf::PDF_BYTES / 1024 / 1024));
+        }
+        // Taking the words out of a long PDF takes a while: off the thread the agent runs on.
+        match tokio::task::spawn_blocking(move || crate::pdf::text(&body)).await {
+            Ok(Ok(read)) => (None, format!("[A PDF of {} pages: this is its text, taken out page by page. Its drawings, pictures, and layout are not kept.]\n{}", read.pages, read.text), Some(read.pages)),
+            Ok(Err(why)) => return failed(format!("{url} {}.", why.describe())),
+            Err(error) => return failed(format!("Cannot read the PDF at {url}: {error}")),
+        }
+    } else {
+        if !textual || binary {
+            return failed(format!("{url} is {}, not text or a PDF; it cannot be read here.", if kind.is_empty() { "binary data" } else { kind.as_str() }));
+        }
+        let raw = String::from_utf8_lossy(&body);
+        let looks_like_html = kind.contains("html") || raw.trim_start().get(..15).is_some_and(|start| start.to_lowercase().starts_with("<!doctype html") || start.to_lowercase().starts_with("<html"));
+        let (title, text) = if looks_like_html { html_text(&raw) } else { (None, raw.trim().to_string()) };
+        (title, text, None)
+    };
 
     let total = text.chars().count();
     let shown: String = text.chars().skip(offset).take(TEXT_CHARS).collect();
@@ -147,7 +224,11 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
             content.push_str(&format!("\n[showing characters {offset}-{end} of {total}; pass offset {end} to read on]"));
         }
     }
-    Fetched { content, is_error: false, meta: json!({ "url": landed, "title": title, "characters": total }) }
+    let mut meta = json!({ "url": landed, "title": title, "characters": total });
+    if let Some(pages) = pages {
+        meta["pages"] = json!(pages);
+    }
+    Fetched { content, is_error: false, meta }
 }
 
 /// Where a search is sent. Today the one source is Zhipu's Web Search API,
@@ -312,26 +393,46 @@ mod tests {
         format!("HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
     }
 
+    /// A response with this status line, these headers, and this body, which need not be text.
+    fn answer(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
+        let mut bytes = format!("HTTP/1.1 {status}\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n", body.len()).into_bytes();
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
     #[tokio::test]
     async fn fetches_a_page_as_text_and_refuses_what_is_not() {
+        use std::io::Write;
         let cancel = CancellationToken::new();
         let long = "word ".repeat(TEXT_CHARS / 4);
-        let (address, requests) = serve(vec![
-            page("text/html; charset=utf-8", "<html><head><title>Docs</title></head><body><p>Hello</p><p>there</p></body></html>"),
-            page("application/json", "{\"ok\": true}"),
-            page("application/pdf", "%PDF-1.7"),
-            "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string(),
-            page("text/plain", &long),
-            page("text/plain", &long),
+        let moved = "<html><head><title>Not found</title></head><body><h1>No such page</h1><p>Datasheets are now under /docs.</p></body></html>";
+        let mut zipped = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        zipped.write_all(b"<html><head><title>Zipped</title></head><body><p>Small and squeezed</p></body></html>").unwrap();
+        let (address, requests) = crate::testing::serve_bytes(vec![
+            page("text/html; charset=utf-8", "<html><head><title>Docs</title></head><body><p>Hello</p><p>there</p></body></html>").into_bytes(),
+            page("application/json", "{\"ok\": true}").into_bytes(),
+            answer("200 OK", "content-type: application/pdf\r\n", &crate::pdf::tests::sample(&[&["Pin 1 is VIN"], &["Absolute maximum 42 V"]])),
+            answer("404 Not Found", "content-type: text/html\r\n", moved.as_bytes()),
+            page("text/plain", &long).into_bytes(),
+            page("text/plain", &long).into_bytes(),
+            answer("200 OK", "content-type: text/html\r\ncontent-encoding: gzip\r\n", &zipped.finish().unwrap()),
+            answer("200 OK", "content-type: application/zip\r\n", &[b'P', b'K', 3, 4, 0, 0]),
+            answer("200 OK", "content-type: application/octet-stream\r\n", &crate::pdf::tests::sample(&[&[]])),
         ])
         .await;
         let got = fetch(&format!("{address}/docs?page=1"), 0, &cancel).await;
         assert_eq!((got.content.as_str(), got.is_error), ("Title: Docs\n\nHello\n\nthere", false));
         assert_eq!((got.meta["title"].as_str(), got.meta["characters"].as_u64()), (Some("Docs"), Some(12)));
         assert_eq!(fetch(&format!("{address}/data.json"), 0, &cancel).await.content, "{\"ok\": true}");
+        // A PDF comes back as its words, page by page.
         let pdf = fetch(&format!("{address}/a.pdf"), 0, &cancel).await;
-        assert!(pdf.is_error && pdf.content.ends_with("is application/pdf, not text; it cannot be read here."), "{}", pdf.content);
-        assert!(fetch(&format!("{address}/missing"), 0, &cancel).await.content.ends_with("answered HTTP 404."));
+        assert!(!pdf.is_error && pdf.content.starts_with("[A PDF of 2 pages: this is its text"), "{}", pdf.content);
+        assert!(pdf.content.contains("[page 1 of 2]\nPin 1 is VIN") && pdf.content.contains("[page 2 of 2]\nAbsolute maximum 42 V"), "{}", pdf.content);
+        assert_eq!(pdf.meta["pages"].as_u64(), Some(2));
+        // A missing page says so, with what to do instead and what the site's own page said.
+        let missing = fetch(&format!("{address}/missing"), 0, &cancel).await;
+        assert!(missing.is_error && missing.content.contains("answered HTTP 404. There is no page at this address") && missing.content.contains("rather than guessing"), "{}", missing.content);
+        assert!(missing.content.ends_with("The page it sent with that:\nNo such page\n\nDatasheets are now under /docs."), "{}", missing.content);
 
         // A long page is cut, and read on from an offset.
         let total = long.trim().chars().count();
@@ -339,9 +440,18 @@ mod tests {
         assert!(first.content.ends_with(&format!("[showing characters 0-{TEXT_CHARS} of {total}; pass offset {TEXT_CHARS} to read on]")), "{}", &first.content[first.content.len() - 90..]);
         let rest = fetch(&format!("{address}/long"), TEXT_CHARS, &cancel).await;
         assert_eq!(rest.content.chars().count(), total - TEXT_CHARS);
+        // A page sent gzipped is unzipped; an archive is still refused; a PDF of scans says why it gives nothing.
+        assert_eq!(fetch(&format!("{address}/zipped"), 0, &cancel).await.content, "Title: Zipped\n\nSmall and squeezed");
+        let archive = fetch(&format!("{address}/a.zip"), 0, &cancel).await;
+        assert!(archive.is_error && archive.content.ends_with("is application/zip, not text or a PDF; it cannot be read here."), "{}", archive.content);
+        let scan = fetch(&format!("{address}/scan"), 0, &cancel).await;
+        assert!(scan.is_error && scan.content.contains("no text in it"), "{}", scan.content);
 
+        // Asked for as a browser asks: some sites turn away anything else.
         let requests = requests.await.unwrap();
-        assert!(requests[0].starts_with("GET /docs?page=1 ") && requests[0].to_lowercase().contains("user-agent: odg-fetch/0.1"));
+        let asked = requests[0].to_lowercase();
+        assert!(requests[0].starts_with("GET /docs?page=1 "));
+        assert!(["user-agent: mozilla/5.0", "accept-encoding: gzip", "accept-language: zh-cn", "sec-fetch-mode: navigate"].iter().all(|header| asked.contains(header)), "{asked}");
         assert!(fetch("file:///etc/passwd", 0, &cancel).await.is_error);
     }
 }

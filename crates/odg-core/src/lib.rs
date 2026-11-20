@@ -13,6 +13,7 @@ pub mod llm;
 pub mod mcp;
 pub mod openai_chat;
 pub mod openai_responses;
+pub mod pdf;
 pub mod policy;
 pub mod providers;
 pub mod safety;
