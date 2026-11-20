@@ -1,7 +1,7 @@
 // Folds the session log into what the window draws. The log is the only input,
 // so reopening a session shows exactly what was on screen before.
 
-import type { ContentBlock, Decision, DiffHunk, DocumentKind, Envelope, Image, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
+import type { ContentBlock, Decision, DiffHunk, DocumentKind, Envelope, Image, Question, Reply, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
 
 export interface ToolItem {
   kind: "tool";
@@ -11,6 +11,11 @@ export interface ToolItem {
   result?: { content: string; isError: boolean; meta: ToolMeta | null };
   /** `grant` is what allowing for the session covers; without one, the request is approved each time. */
   approval?: { reason: string; detail: string; grant?: string; decision?: Decision; expiresAt?: string; timedOut?: boolean };
+  /**
+   * What an `ask_user` call put to 本尊, and once it is over what came of it: an answer to each question, or none
+   * when 本尊 left it to the 分身 (`declined`) or nobody answered in time (`timedOut`).
+   */
+  question?: { questions: Question[]; expiresAt?: string; answered?: { answers: Reply[]; declined: boolean; timedOut: boolean } };
   /** What the 护法 made of the call: let it run, or left it to 本尊; `failed` when it could not be asked. */
   review?: { allowed: boolean; reason: string; model: string; failed: boolean };
   /** The turn the call belongs to. */
@@ -124,6 +129,16 @@ export function fold(events: Envelope[]): Row[] {
       case "approval/requested": {
         const tool = tools.get(event.data.tool_use_id);
         if (tool) tool.approval = { reason: event.data.reason, detail: event.data.detail, grant: event.data.grant, expiresAt: event.data.expires_at };
+        break;
+      }
+      case "question/asked": {
+        const tool = tools.get(event.data.tool_use_id);
+        if (tool) tool.question = { questions: event.data.questions, expiresAt: event.data.expires_at };
+        break;
+      }
+      case "question/answered": {
+        const tool = tools.get(event.data.tool_use_id);
+        if (tool?.question) tool.question.answered = { answers: event.data.answers ?? [], declined: !!event.data.declined, timedOut: !!event.data.timed_out };
         break;
       }
       case "approval/resolved": {
@@ -358,6 +373,9 @@ export function commandRuns(rows: Row[]): ToolItem[] {
   const shows = (name: string) => name === "run_command" || name === "command_output" || name === "stop_command";
   return rows.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool" && shows(item.name) && !!item.result?.meta?.command);
 }
+
+/** Whether an `ask_user` call is waiting on 本尊's answers: asked, and neither answered nor ended. */
+export const asking = (tool: ToolItem) => !!tool.question && !tool.question.answered && !tool.result;
 
 /** The approval the session is waiting on, if any. */
 export function pendingApproval(rows: Row[]): ToolItem | undefined {

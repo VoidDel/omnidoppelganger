@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Decision, Image, Mode, Picked, RuntimeProgress, RuntimeView, Schedule, SessionItem, SessionView, Settings, SettingsView, SkillsView, UiEvent } from "./types";
+import type { Decision, Image, Mode, Picked, Reply, RuntimeProgress, RuntimeView, Schedule, SessionItem, SessionView, Settings, SettingsView, SkillsView, UiEvent } from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
@@ -49,6 +49,8 @@ export const api = {
     }),
   resolveApproval: (id: string, toolUseId: string, decision: Decision) =>
     invoke<boolean>("resolve_approval", { id, toolUseId, decision }),
+  /** Answer the questions an `ask_user` call waits on, one reply each in their order; `null` leaves it to the 分身. */
+  answerQuestions: (id: string, toolUseId: string, answers: Reply[] | null) => invoke<boolean>("answer_questions", { id, toolUseId, answers }),
   setMode: (id: string, mode: Mode) => invoke<SessionItem>("set_mode", { id, mode }),
   /** Move the session to another model of its provider. Rejects while its agent is working. */
   setModel: (id: string, provider: string, model: string) => invoke<SessionItem>("set_model", { id, provider, model }),

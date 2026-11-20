@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use odg_core::agent::{Services, Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
-use odg_core::events::{Decision, Event};
+use odg_core::events::{Decision, Event, Question, QuestionKind, Reply};
 use odg_core::grants::GrantStore;
 use odg_core::llm::StreamDelta;
 use odg_core::mcp::McpHub;
@@ -108,6 +108,7 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
         "web_search" => text("query"),
         "load_skill" => text("name"),
         "command_output" | "stop_command" => text("job"),
+        "ask_user" => input["questions"].as_array().map(|questions| questions.iter().filter_map(|question| question["question"].as_str()).collect::<Vec<_>>().join(" / ")).unwrap_or_default(),
         _ => String::new(),
     };
     let subject: String = subject.lines().next().unwrap_or_default().chars().take(120).collect();
@@ -138,6 +139,58 @@ fn ask(reason: &str, detail: &str, session_wide: bool) -> Decision {
         "a" | "all" if session_wide => Decision::AllowSession,
         _ => Decision::Deny,
     }
+}
+
+/// The answer to one question, from a line typed on the terminal: the numbers of options for a question
+/// that has them (one, or for `multiple` several, split by commas or spaces), and anything else as words.
+/// An empty line leaves it unanswered.
+fn reply(question: &Question, line: &str) -> Reply {
+    let line = line.trim();
+    if line.is_empty() {
+        return Reply::default();
+    }
+    let parts: Vec<&str> = line.split(|c: char| c == ',' || c == '，' || c.is_whitespace()).filter(|part| !part.is_empty()).collect();
+    let numbers: Option<Vec<usize>> = parts.iter().map(|part| part.parse().ok().filter(|number| (1..=question.options.len()).contains(number))).collect();
+    match numbers {
+        Some(numbers) if !question.options.is_empty() && (question.kind == QuestionKind::Multiple || numbers.len() == 1) => {
+            let mut chosen: Vec<String> = Vec::new();
+            for number in numbers {
+                let label = &question.options[number - 1].label;
+                if !chosen.contains(label) {
+                    chosen.push(label.clone());
+                }
+            }
+            Reply { chosen, text: String::new() }
+        }
+        _ => Reply { chosen: Vec::new(), text: line.to_string() },
+    }
+}
+
+/// Ask the agent's questions on the terminal, one after another.
+fn ask_questions(questions: &[Question]) -> Vec<Reply> {
+    let mut stderr = std::io::stderr();
+    let _ = writeln!(stderr, "\n? The agent asks:");
+    questions
+        .iter()
+        .enumerate()
+        .map(|(index, question)| {
+            let _ = writeln!(stderr, "  {}. [{}] {}", index + 1, question.header, question.question);
+            for (number, option) in question.options.iter().enumerate() {
+                let description = if option.description.is_empty() { String::new() } else { format!(" — {}", option.description) };
+                let _ = writeln!(stderr, "     {}) {}{description}", number + 1, option.label);
+            }
+            let how = match question.kind {
+                QuestionKind::Single => "a number, or your own words",
+                QuestionKind::Multiple => "numbers split by commas, or your own words",
+                QuestionKind::Text => "your answer",
+            };
+            let _ = write!(stderr, "  {how} (empty to leave it to the agent): ");
+            let _ = stderr.flush();
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            reply(question, &line)
+        })
+        .collect()
 }
 
 async fn run(options: Options) -> Result<bool, String> {
@@ -285,6 +338,15 @@ async fn run(options: Options) -> Result<bool, String> {
                     }
                     session.resolve_approval(&tool_use_id, decision);
                 }
+                Event::QuestionAsked { tool_use_id, questions, .. } => {
+                    let answers = if answer == Answer::Ask {
+                        tokio::task::spawn_blocking(move || ask_questions(&questions)).await.ok()
+                    } else {
+                        eprintln!("  nobody to answer (--{}); the agent decides", if answer == Answer::Yes { "yes" } else { "no" });
+                        None
+                    };
+                    session.answer_questions(&tool_use_id, answers);
+                }
                 Event::ToolResult { content, is_error, .. } => {
                     let first: String = content.lines().next().unwrap_or_default().chars().take(160).collect();
                     eprintln!("  {} {first}", if is_error { "✗" } else { "✓" });
@@ -338,6 +400,28 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reads_an_answer_typed_on_the_terminal() {
+        use odg_core::events::Choice;
+        let question = |kind: QuestionKind| Question {
+            header: "方案".into(),
+            question: "用哪个？".into(),
+            kind,
+            options: ["一", "二", "三"].iter().map(|label| Choice { label: label.to_string(), description: String::new() }).collect(),
+        };
+        let (single, multiple) = (question(QuestionKind::Single), question(QuestionKind::Multiple));
+        let chosen = |labels: &[&str]| Reply { chosen: labels.iter().map(|label| label.to_string()).collect(), text: String::new() };
+        let words = |text: &str| Reply { chosen: Vec::new(), text: text.to_string() };
+        assert_eq!(reply(&single, " 2\n"), chosen(&["二"]));
+        assert_eq!(reply(&multiple, "3, 1，3 "), chosen(&["三", "一"]));
+        // Several numbers for one choice, a number out of range, or words: taken as words.
+        assert_eq!(reply(&single, "1 2"), words("1 2"));
+        assert_eq!(reply(&single, "4"), words("4"));
+        assert_eq!(reply(&single, "都不要"), words("都不要"));
+        assert_eq!(reply(&Question { kind: QuestionKind::Text, options: Vec::new(), ..single.clone() }, "2"), words("2"));
+        assert_eq!(reply(&single, "  \n"), Reply::default());
+    }
+
     use super::*;
 
     fn parsed(arguments: &[&str]) -> Result<Options, String> {

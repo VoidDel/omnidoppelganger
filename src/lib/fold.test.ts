@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, changedFiles, commandRuns, documentLabel, fileSize, fold, pendingApproval, products, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, asking, changedFiles, commandRuns, documentLabel, fileSize, fold, pendingApproval, products, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -256,6 +256,36 @@ describe("fold", () => {
     expect(pendingApproval(rows)).toBeUndefined();
     expect((rows[0].items[0] as ToolItem).approval?.decision).toBe("deny");
     expect(rows[0].items[1]).toEqual({ kind: "notice", reason: "cancelled", error: null });
+  });
+
+  it("keeps the questions the 分身 asked, and what came of them", () => {
+    const questions = [
+      { header: "方案", question: "用哪个？", kind: "single" as const, options: [{ label: "一" }, { label: "二" }] },
+      { header: "补充", question: "还有什么？", kind: "text" as const },
+    ];
+    const asked = log(user("改一下"), said(call("q1", "ask_user", { questions })), {
+      type: "question/asked",
+      data: { tool_use_id: "q1", questions, expires_at: "2026-11-20T10:00:30.000Z" },
+    });
+    const waiting = fold(asked);
+    const tool = waiting[0].items[0] as ToolItem;
+    expect(tool.question).toEqual({ questions, expiresAt: "2026-11-20T10:00:30.000Z" });
+    expect(asking(tool)).toBe(true);
+    // It is not an approval: no 准 or 驳回 is waited on.
+    expect(pendingApproval(waiting)).toBeUndefined();
+
+    const later = (...events: SessionEvent[]) => [...asked, ...log(...events).map((envelope) => ({ ...envelope, seq: envelope.seq + asked.length }))];
+    const answers = [{ chosen: ["一"] }, { text: "别动接口" }];
+    const answered = fold(later({ type: "question/answered", data: { tool_use_id: "q1", answers } }, result("q1", "ask_user", null)));
+    const done = answered[0].items[0] as ToolItem;
+    expect(done.question?.answered).toEqual({ answers, declined: false, timedOut: false });
+    expect(asking(done)).toBe(false);
+
+    const unanswered = fold(later({ type: "question/answered", data: { tool_use_id: "q1", timed_out: true } }));
+    expect((unanswered[0].items[0] as ToolItem).question?.answered).toEqual({ answers: [], declined: false, timedOut: true });
+    // Stopped while it asked: the call has its result, and nothing waits any more.
+    const stopped = fold(later(result("q1", "ask_user", null, true)));
+    expect(asking(stopped[0].items[0] as ToolItem)).toBe(false);
   });
 
   it("reads an approval logged before grants existed as having none", () => {

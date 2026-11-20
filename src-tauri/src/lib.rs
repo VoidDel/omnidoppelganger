@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use odg_core::agent::{Services, Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
-use odg_core::events::{Decision, Envelope, Event, FILES_PER_MESSAGE, Image, Picked, attach, check_images, pick};
+use odg_core::events::{Decision, Envelope, Event, FILES_PER_MESSAGE, Image, Picked, Reply, attach, check_images, pick};
 use odg_core::grants::{GrantStore, Grants};
 use odg_core::mcp::{McpHub, ServerStatus};
 use odg_core::policy::Mode;
@@ -565,6 +565,12 @@ async fn resolve_approval(app: State<'_, App>, id: String, tool_use_id: String, 
     Ok(app.live(&id)?.resolve_approval(&tool_use_id, decision))
 }
 
+/// Answer the questions an `ask_user` call is waiting on: a reply to each, or none to leave it to the 分身.
+#[tauri::command]
+async fn answer_questions(app: State<'_, App>, id: String, tool_use_id: String, answers: Option<Vec<Reply>>) -> Result<bool, String> {
+    Ok(app.live(&id)?.answer_questions(&tool_use_id, answers))
+}
+
 #[tauri::command]
 async fn rename_session(app: State<'_, App>, id: String, title: String) -> Result<SessionItem, String> {
     let session = app.live(&id)?;
@@ -859,6 +865,7 @@ pub fn run() {
             search_sessions,
             send_message,
             resolve_approval,
+            answer_questions,
             set_mode,
             set_model,
             set_effort,

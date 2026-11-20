@@ -28,9 +28,10 @@ use crate::providers::DEFAULT_PROVIDER;
 /// `timed_out` on its answer. Format 13 adds `files` on a user message, and
 /// format 14 a document's kind and parts on an attached file. Format 15 adds
 /// `provider` on `model/changed`, for a move to another provider, and the
-/// `effort/changed` event. Format 16 adds the `files/made` event. A build from
-/// before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 16;
+/// `effort/changed` event. Format 16 adds the `files/made` event, and format 17
+/// the `question/asked` and `question/answered` events. A build from before a
+/// format refuses its sessions rather than misread them.
+pub const FORMAT_VERSION: u32 = 17;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -802,10 +803,11 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
     let mut requested: HashSet<&str> = HashSet::new();
     for envelope in events {
         match &envelope.event {
-            Event::ApprovalRequested { tool_use_id, .. } => {
+            // A question waits on the user as an approval does.
+            Event::ApprovalRequested { tool_use_id, .. } | Event::QuestionAsked { tool_use_id, .. } => {
                 requested.insert(tool_use_id);
             }
-            Event::ApprovalResolved { tool_use_id, .. } | Event::ToolResult { tool_use_id, .. } => {
+            Event::ApprovalResolved { tool_use_id, .. } | Event::QuestionAnswered { tool_use_id, .. } | Event::ToolResult { tool_use_id, .. } => {
                 requested.remove(tool_use_id.as_str());
             }
             _ => {}
