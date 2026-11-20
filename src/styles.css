@@ -250,6 +250,22 @@ pre,
   gap: 16px;
 }
 
+/* A 分身 for a folder, the larger; beside it, one to talk to. */
+.sidebar-new {
+  display: flex;
+  gap: var(--s-2);
+}
+
+.sidebar-new .button.primary {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-new .button.outline {
+  flex: none;
+  padding: 0 var(--s-3);
+}
+
 /* The name over the door: pressed, it is the way back to the home screen. */
 .brand {
   display: flex;

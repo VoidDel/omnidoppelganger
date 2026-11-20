@@ -6,7 +6,7 @@
 //! and each model request is derived from the log alone.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -85,6 +85,8 @@ pub struct Services {
     pub search: Option<crate::web::SearchSource>,
     /// Whether commands are confined, asked at every command; `None` means never. See [`crate::sandbox`].
     pub sandbox: Option<crate::sandbox::SandboxSource>,
+    /// The folder kept for conversations (闲谈): a session there is told it is one, not work on a project.
+    pub chat: Option<PathBuf>,
 }
 
 /// What the model is asked when the conversation is compacted. It follows
@@ -139,6 +141,8 @@ struct Inner<L: Llm> {
     sandbox: Option<crate::sandbox::SandboxSource>,
     /// Where Git keeps the workspace's repository, found when a command is first confined.
     git_directory: std::sync::OnceLock<Option<PathBuf>>,
+    /// The session works in the folder kept for conversations.
+    chatting: bool,
     /// The provider and model requests go to; the user can move the session to another of either.
     provider: Mutex<String>,
     model: Mutex<String>,
@@ -186,7 +190,7 @@ pub enum Origin {
 /// The system prompt. It changes only when the project's instructions do,
 /// so the cached prefix stays valid from one request to the next.
 /// `instructions` is the project's own file for agents, as `(name, contents)`.
-pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], origin: Origin) -> String {
+pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], origin: Origin, chat: bool) -> String {
     let subagent = origin == Origin::Agent;
     let (_, _, shell) = tools::shell();
     let project = match instructions {
@@ -228,8 +232,18 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
         Origin::Agent => SUBAGENT,
         Origin::Schedule => SCHEDULED,
     };
-    general + EXTENDING + told + &project + &offered
+    general + if chat { CHAT } else { "" } + EXTENDING + told + &project + &offered
 }
+
+/// Whether two paths name one folder, however each is written.
+fn same_folder(one: &Path, other: &Path) -> bool {
+    one == other || matches!((one.canonicalize(), other.canonicalize()), (Ok(one), Ok(other)) if one == other)
+}
+
+/// What a session in the folder kept for conversations is told: it is one, and the folder is only where its files go.
+const CHAT: &str = "
+
+This session is a conversation, not work on a project. The workspace is a folder the app keeps for conversations, holding only what was written there before. Answer the user directly, as in a chat. Use tools only when what is asked calls for them: to look something up on the web, to read a file the user attached, or to write a file the user asked for, which goes in the workspace. Do not look through the workspace or run commands unless the user asks.";
 
 /// How the agent is to add to what it can do when the user asks: by this app's own ways, not another's.
 const EXTENDING: &str = "\n\nWhen the user asks you to add a skill or an MCP server:\n\
@@ -256,7 +270,8 @@ impl<L: Llm> Session<L> {
         let worktree = crate::session::worktree(log.events()).cloned();
         let granted_in = worktree.as_ref().map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
         let store = SessionStore::of(&log);
-        let Services { grants: kept, mcp, skills, search, sandbox } = services.clone();
+        let Services { grants: kept, mcp, skills, search, sandbox, chat } = services.clone();
+        let chatting = chat.is_some_and(|folder| same_folder(&folder, &workspace));
         let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
         Ok(Self {
             inner: Arc::new(Inner {
@@ -277,6 +292,7 @@ impl<L: Llm> Session<L> {
                 search,
                 sandbox,
                 git_directory: std::sync::OnceLock::new(),
+                chatting,
                 provider: Mutex::new(provider),
                 model: Mutex::new(model),
                 effort: Mutex::new(crate::session::effort(log.events())),
@@ -572,7 +588,7 @@ impl<L: Llm> Inner<L> {
             (None, true) => Origin::Schedule,
             (None, false) => Origin::User,
         };
-        system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), origin)
+        system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), origin, self.chatting)
     }
 
     /// Log the project's instructions when they are new, changed, or gone
@@ -1211,7 +1227,7 @@ mod tests {
             Tuning { effort: "high".to_string(), context_limit, context_window, guardian, approval_wait }
         };
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None, sandbox: sandbox.then(|| Arc::new(|| Some(Vec::new())) as crate::sandbox::SandboxSource) };
+        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None, sandbox: sandbox.then(|| Arc::new(|| Some(Vec::new())) as crate::sandbox::SandboxSource), chat: None };
         let session = Session::new(log, llm.clone(), Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, limits, guard, workspace, session, llm, events }
     }
@@ -1444,7 +1460,7 @@ mod tests {
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
-        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None };
+        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None, chat: None };
         let later = Session::new(log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
         fixture.events = events;
@@ -1688,7 +1704,7 @@ mod tests {
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
         // Searching is set up, so the model is offered `web_search` as well.
         let search: crate::web::SearchSource = Arc::new(|| Some(crate::web::SearchConfig { url: "http://127.0.0.1:9/web_search".into(), key: "k".into(), engine: "search_std".into() }));
-        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search), sandbox: None };
+        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search), sandbox: None, chat: None };
         let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         // Auto mode lets safe commands through, but never a server's tool.
         session.set_mode(Mode::Auto);
@@ -1748,6 +1764,19 @@ mod tests {
         // The earlier model's reasoning goes along untouched: the provider drops what the new model cannot read.
         assert_eq!(requests[1].messages[1]["content"][0], thinking);
         assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "model/changed").count(), 1);
+    }
+
+    #[test]
+    fn tells_a_conversation_it_is_one_and_a_project_nothing_of_the_kind() {
+        let workspace = Path::new("/home/me/.odg/闲谈");
+        let chat = system_prompt(workspace, None, &[], Origin::User, true);
+        let project = system_prompt(workspace, None, &[], Origin::User, false);
+        assert!(chat.contains("This session is a conversation, not work on a project") && chat.contains("Answer the user directly"));
+        assert!(!project.contains("This session is a conversation"));
+        // However the folder is written, it is the same folder.
+        let directory = tempfile::tempdir().unwrap();
+        assert!(same_folder(directory.path(), &directory.path().join(".")));
+        assert!(!same_folder(directory.path(), &directory.path().join("elsewhere")));
     }
 
     #[tokio::test(flavor = "multi_thread")]

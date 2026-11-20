@@ -82,6 +82,8 @@ struct SettingsView {
     /// The user's own skills, and the directory they are kept in.
     skills: Vec<odg_core::events::SkillInfo>,
     skills_directory: String,
+    /// The folder kept for conversations (闲谈), which a session there works in.
+    chat_folder: String,
     /// The context window of the model new sessions use, and how it is known.
     context_window: settings::Window,
     /// What confines commands on this system when the user switches that on, or why nothing can.
@@ -109,6 +111,7 @@ impl App {
             skills: Some(settings::home().join("skills")),
             search: Some(Arc::new(move || searching.search())),
             sandbox: Some(Arc::new(move || confining.sandbox())),
+            chat: Some(settings::chat_folder()),
         };
         Session::new(log, self.llm.clone(), Arc::new(tuning), services, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
     }
@@ -215,6 +218,7 @@ impl App {
             search_ready: self.settings.search().is_some(),
             skills: odg_core::skills::listing(&odg_core::skills::discover(&[settings::home().join("skills")])),
             skills_directory: settings::home().join("skills").display().to_string(),
+            chat_folder: settings::chat_folder().display().to_string(),
             context_window: {
                 let settings = self.settings.load();
                 self.settings.context_window(&settings, &settings.provider, &settings.model)
@@ -254,6 +258,15 @@ async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionItem>, String> 
 #[tauri::command]
 async fn create_session(app: State<'_, App>, workspace: String, isolated: Option<bool>) -> Result<SessionView, String> {
     let session = app.start(PathBuf::from(workspace), isolated == Some(true), None)?;
+    Ok(view(&app, &session))
+}
+
+/// Start a conversation (闲谈): a session in the folder kept for them, made the first time it is wanted.
+#[tauri::command]
+async fn start_chat(app: State<'_, App>) -> Result<SessionView, String> {
+    let folder = settings::chat_folder();
+    std::fs::create_dir_all(&folder).map_err(|error| format!("Cannot make {}: {error}", folder.display()))?;
+    let session = app.start(folder, false, None)?;
     Ok(view(&app, &session))
 }
 
@@ -611,6 +624,7 @@ pub fn run() {
             set_mode,
             set_model,
             set_effort,
+            start_chat,
             list_models,
             undo_turn,
             cancel_turn,

@@ -294,6 +294,8 @@ export interface SettingsView {
   skills: Skill[];
   skills_directory: string;
   /** The text of the MCP server list, and how each server it names stands. */
+  /** The folder kept for conversations (闲谈): a session there is a chat, not work on a project. */
+  chat_folder: string;
   mcp_config: string;
   mcp_servers: McpServer[];
 }

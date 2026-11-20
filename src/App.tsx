@@ -3,7 +3,7 @@ import { Desk } from "./components/Desk";
 import { Guard } from "./components/Guard";
 import { Jump } from "./components/Jump";
 import { McpPage } from "./components/Mcp";
-import { Composer, Logo, Mountains, PANEL_STRIP, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
+import { CHAT_ICON, Composer, Logo, Mountains, PANEL_STRIP, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
 import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
@@ -301,6 +301,13 @@ export default function App() {
       dispatch({ type: "note", note: `已分叉：这是一个新的分身，${point}。只分了对话：洞府里的文件是同一份，还是现在的样子。` });
     }, fail);
   };
+  /** Start a conversation: a 分身 in the folder kept for them, which is made the first time. */
+  const chat = () => api.startChat().then((view) => dispatch({ type: "opened", view }), fail);
+  /** Whether a session works in the folder kept for conversations. */
+  const chatting = (session: SessionItem) => {
+    const plain = (path: string) => path.replace(/[\\/]+$/, "").toLowerCase();
+    return !!state.settings && plain(session.workspace) === plain(state.settings.chat_folder);
+  };
   const create = async () => {
     try {
       const workspace = await api.pickWorkspace();
@@ -427,7 +434,9 @@ export default function App() {
         run: (task) => send(task ? `按技能「${skill.name}」办：${task}` : `按技能「${skill.name}」办。`),
       };
     });
-    return [...builtIn, ...skills];
+    // Learning the project and reviewing its changes are for a project, not a conversation.
+    const fitting = chatting(session) ? builtIn.filter((command) => command.name !== "init" && command.name !== "review") : builtIn;
+    return [...fitting, ...skills];
   };
   const banners = (
     <>
@@ -462,6 +471,7 @@ export default function App() {
         onHome={() => dispatch({ type: "home" })}
         onMcp={toMcp}
         onSchedules={toSchedules}
+        onChat={chat}
         onOpen={open}
         onNew={create}
         onNewIn={(workspace, isolated) => api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view }), fail)}
@@ -553,7 +563,14 @@ export default function App() {
             />
             </Guard>
             {banners}
-            {rows.length === 0 && state.queued.length === 0 ? (
+            {rows.length === 0 && state.queued.length === 0 && chatting(active) ? (
+              <div className="empty">
+                <h1>有话直说</h1>
+                <p>
+                  这是闲谈，不绑哪个项目：问什么答什么，要查的它会上网查，附上的文件它会读。它写出的文件放在 <span className="mono">{state.settings?.chat_folder}</span>。要它在某个项目里干活，就用「开辟洞府」选那个文件夹。
+                </p>
+              </div>
+            ) : rows.length === 0 && state.queued.length === 0 ? (
               <div className="empty">
                 <h1>分身已入驻这处洞府</h1>
                 <p>
@@ -651,6 +668,10 @@ export default function App() {
               <button type="button" className="button primary" onClick={create}>
                 选文件夹作洞府，化出分身
               </button>
+              <button type="button" className="button outline" onClick={chat}>
+                {CHAT_ICON}
+                不选文件夹，直接闲谈
+              </button>
               {missingKey && (
                 <button type="button" className="button outline" onClick={() => dispatch({ type: "page", page: "settings" })}>
                   去填密钥
@@ -668,6 +689,7 @@ export default function App() {
           acts={[
             { id: "home", name: "首页", hint: "回到山前：候旨的、运功的、将至的功课", seal: "山", run: () => dispatch({ type: "home" }) },
             { id: "new", name: "开辟洞府", hint: "选一个文件夹，化出分身", seal: "辟", run: () => void create() },
+            { id: "chat", name: "闲谈", hint: "不选文件夹，直接和分身说话", seal: "谈", run: chat },
             { id: "mcp", name: "法器", hint: "给分身添上本事的 MCP 服务：查文档、搜网页、操控浏览器", seal: "器", run: toMcp },
             { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: toSchedules },
             { id: "settings", name: "设置", hint: "功法、禁制、神通、外观", seal: "设", run: toSettings },

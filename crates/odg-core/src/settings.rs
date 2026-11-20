@@ -33,6 +33,11 @@ pub const MIN_CONTEXT_LIMIT: u64 = 20_000;
 /// The smallest context window the user can set for a model: one whose four fifths is the lowest limit.
 pub const MIN_CONTEXT_WINDOW: u64 = MIN_CONTEXT_LIMIT / 4 * 5;
 
+/// The folder kept for conversations (闲谈), in the home directory: a session there is not work on a project.
+pub fn chat_folder() -> PathBuf {
+    home().join("闲谈")
+}
+
 /// The directory holding sessions, settings, and credentials: `$ODG_HOME`, or `~/.odg`.
 pub fn home() -> PathBuf {
     std::env::var_os("ODG_HOME")

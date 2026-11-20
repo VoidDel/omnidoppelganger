@@ -225,6 +225,8 @@ interface SidebarProps {
   onHome: () => void;
   onMcp: () => void;
   onSchedules: () => void;
+  /** Start a conversation: a 分身 in the folder kept for them. */
+  onChat: () => void;
   onOpen: (id: string) => void;
   onNew: () => void;
   /** Start another session in a workspace that already has some, without asking for the folder again; `isolated` gives it a worktree of its own. */
@@ -267,7 +269,14 @@ function useFolded() {
   return [folded, toggle] as const;
 }
 
-export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSchedules, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
+/** A word said, in a bubble: a conversation. */
+export const CHAT_ICON = (
+  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+    <path d="M2.5 3.5h11v7.5H7.5l-3 2.5V11h-2z" />
+  </svg>
+);
+
+export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSchedules, onChat, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
   const now = useNow(30_000);
   const [folded, toggleFolded] = useFolded();
   const [query, setQuery] = useState("");
@@ -311,12 +320,19 @@ export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSchedules, 
         <Logo />
         <span>OmniDoppelganger</span>
       </button>
-      <button type="button" className="button primary" onClick={onNew}>
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-          <path d="M8 3v10M3 8h10" />
-        </svg>
-        开辟洞府
-      </button>
+      {/* Work in a folder, or just talk: a 分身 for a project, or one in the folder kept for conversations. */}
+      <div className="sidebar-new">
+        <button type="button" className="button primary" onClick={onNew}>
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <path d="M8 3v10M3 8h10" />
+          </svg>
+          开辟洞府
+        </button>
+        <button type="button" className="button outline" title="闲谈：不选文件夹，直接和分身说话" onClick={onChat}>
+          {CHAT_ICON}
+          闲谈
+        </button>
+      </div>
       {sessions.length > 0 && (
         <>
           <label htmlFor="session-search" className="sr-only">

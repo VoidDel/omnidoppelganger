@@ -199,6 +199,7 @@ async fn run(options: Options) -> Result<bool, String> {
         skills: Some(home.join("skills")),
         search: Some(Arc::new(move || searching.search())),
         sandbox: Some(Arc::new(move || confining.sandbox())),
+        chat: Some(home.join("闲谈")),
     };
     let (sender, mut events) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let session = Session::new(log, llm, Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).map_err(|error| error.to_string())?;
