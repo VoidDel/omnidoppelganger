@@ -707,7 +707,8 @@ impl<L: Llm> Inner<L> {
             specs.push(tools::delegate_spec());
             specs.push(tools::ask_user_spec());
         }
-        if self.search_config().is_some() {
+        // Through Zhipu with a GLM key, or else through the session's own provider where it can search.
+        if self.search_config().is_some() || crate::provider_search::can_search(&self.provider()) {
             specs.push(tools::search_spec());
         }
         if let Some(config) = self.painter_config() {
@@ -790,6 +791,33 @@ impl<L: Llm> Inner<L> {
         self.append(Event::QuestionAnswered { tool_use_id: tool_use_id.to_string(), answers: answers.clone(), declined, timed_out })?;
         let content = tools::answered(&questions, &answers, declined, timed_out.then(|| wait.map_or(0, |wait| wait.as_secs())));
         Ok(Some(ToolOutput { content, is_error: false, meta: Value::Null, images: Vec::new() }))
+    }
+
+    /// Search the web through the session's own provider and model, with the provider's search tool, in a request of
+    /// its own; see [`crate::provider_search`]. What it cost is kept with the result. `None` when the turn was stopped.
+    async fn search_with_provider(&self, input: &Value, cancel: &CancellationToken) -> Option<ToolOutput> {
+        let (provider, model) = (self.provider(), self.model());
+        let query = input["query"].as_str().unwrap_or_default();
+        let request = match crate::provider_search::request(&provider, &self.id, &model, query, input) {
+            Ok(request) => request,
+            Err(message) => return Some(ToolOutput::error(message)),
+        };
+        let kind = providers::kind_id(&provider);
+        let (sender, mut receiver) = unbounded_channel::<StreamDelta>();
+        // What the searching model writes is not the agent's: it is not shown as it comes.
+        let discard = async { while receiver.recv().await.is_some() {} };
+        let (result, ()) = tokio::join!(self.llm.stream(request, sender, cancel.clone()), discard);
+        match result {
+            Err(LlmError::Cancelled) => None,
+            Err(error) => Some(ToolOutput::error(format!("The search through {kind} failed: {error}"))),
+            Ok(turn) => {
+                let mut output = crate::provider_search::results(&turn, query.trim(), input, kind, &model);
+                if let Some(tokens) = providers::tokens(&provider, &turn.usage) {
+                    output.meta["tokens"] = json!(tokens);
+                }
+                Some(output)
+            }
+        }
     }
 
     async fn delegate(&self, tool_use_id: &str, input: &Value, cancel: &CancellationToken) -> Result<ToolOutput, String> {
@@ -1245,6 +1273,11 @@ impl<L: Llm> Inner<L> {
                         Some(output) => output,
                         None => return Ok("cancelled"),
                     },
+                    // Without Zhipu's search, the session's own provider searches, in a request of its own.
+                    "web_search" if self.search_config().is_none() => match self.search_with_provider(&input, cancel).await {
+                        Some(output) => output,
+                        None => return Ok("cancelled"),
+                    },
                     _ => tools::execute(&name, &input, &self.tool_context(cancel)).await,
                 };
                 self.tool_output(&id, &name, output)?;
@@ -1614,8 +1647,9 @@ mod tests {
         fixture.idle().await;
         let requests = fixture.llm.requests.lock().unwrap();
         assert!(requests[0].system.contains("A schedule the user set up started this session") && !requests[0].system.contains("You are a subagent"));
-        // It is still a session of the user's own, so it may hand work to subagents and ask the user.
-        assert_eq!(requests[0].tools.len(), tools::specs().len() + 2);
+        // It is still a session of the user's own, so it may hand work to subagents and ask the user; and on Anthropic
+        // it may search the web through it, with no GLM key saved.
+        assert_eq!(requests[0].tools.len(), tools::specs().len() + 3);
         assert_eq!(fixture.session.summary().schedule.as_deref(), Some("nightly"));
     }
 
@@ -1634,8 +1668,9 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].effort, "high");
         assert_eq!((requests[0].provider.as_str(), requests[0].session.as_str()), ("anthropic", fixture.session.id()));
-        // The built-in tools, `delegate` and `ask_user`, which only a session the user started is offered.
-        assert_eq!(requests[0].tools.len(), tools::specs().len() + 2);
+        // The built-in tools, `delegate` and `ask_user`, which only a session the user started is offered, and
+        // `web_search`, which Anthropic answers with no GLM key saved.
+        assert_eq!(requests[0].tools.len(), tools::specs().len() + 3);
         assert!(requests[0].system.contains(&fixture.workspace.path().display().to_string()) && !requests[0].system.contains("A schedule"));
         // The second request carries the whole conversation: user, assistant tool call, tool result.
         assert_eq!(requests[1].messages.len(), 3);
@@ -2089,7 +2124,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         // The summary is asked for at the end of the conversation as it was, tools included.
         assert_eq!(texts(&requests[1]), [vec!["one".to_string()], vec!["first answer".into()], vec!["two".into(), SUMMARIZE.into()]]);
-        assert_eq!(requests[1].tools.len(), tools::specs().len() + 2);
+        assert_eq!(requests[1].tools.len(), tools::specs().len() + 3);
         // The step then starts over from the summary and the message not yet answered.
         let summary = format!("{}\n\nThe user said one; I answered.", crate::session::COMPACTED);
         assert_eq!(texts(&requests[2]), [vec![summary, "two".to_string()]]);
@@ -2156,6 +2191,39 @@ mod tests {
         fixture.idle().await;
         assert_eq!(fixture.end().0, "error");
         assert_eq!(fixture.llm.requests.lock().unwrap().len(), 8);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_no_glm_key_the_sessions_provider_searches_in_a_request_of_its_own() {
+        let found = Ok(AssistantTurn {
+            content: vec![
+                json!({ "type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": { "query": "tokio 1.54" } }),
+                json!({ "type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [{ "type": "web_search_result", "url": "https://tokio.rs/blog/1-54", "title": "Tokio 1.54", "encrypted_content": "x" }] }),
+                json!({ "type": "text", "text": "Tokio 1.54 adds a thing." }),
+            ],
+            stop_reason: Some("end_turn".into()),
+            model: "scripted".into(),
+            usage: json!({ "input_tokens": 900, "output_tokens": 40 }),
+            ..Default::default()
+        });
+        let script = vec![calls(&[("t1", "web_search", json!({ "query": "tokio 1.54", "site": "tokio.rs" }))]), found, says("Found it.")];
+        let mut fixture = fixture(ScriptedLlm::new(script, None));
+        fixture.session.send("what is new in tokio?".into());
+        // Each search is still asked about first, as Zhipu's is.
+        let asked = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&asked, Decision::AllowOnce));
+        fixture.idle().await;
+        let requests = fixture.llm.requests.lock().unwrap();
+        // The search is a request of its own: the provider's tool, its own prompt, and the query alone.
+        let search = &requests[1];
+        assert_eq!((search.system.as_str(), search.effort.as_str(), search.messages.len()), (crate::provider_search::SEARCHER, "low", 1));
+        assert_eq!(search.tools[0]["allowed_domains"], json!(["tokio.rs"]));
+        assert!(search.tools[0]["type"].as_str().unwrap().starts_with("web_search_"));
+        let (_, failed, told) = fixture.results().remove(0);
+        assert!(!failed && told.starts_with("Searched the web for `tokio 1.54` through anthropic") && told.contains("https://tokio.rs/blog/1-54"), "{told}");
+        // What the search spent is kept with its result.
+        let spent = fixture.session.snapshot().into_iter().find_map(|envelope| if let Event::ToolResult { meta, .. } = envelope.event { Some(meta["tokens"].clone()) } else { None });
+        assert_eq!(spent.unwrap()["output"], 40);
     }
 
     #[tokio::test(flavor = "multi_thread")]

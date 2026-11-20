@@ -226,6 +226,9 @@ export function usage(events: Envelope[]): Usage {
     } else if (event.type === "guardian/reviewed") {
       // The 护法's requests are spent too; they are no part of the conversation.
       add(event.data.tokens);
+    } else if (event.type === "tool/result") {
+      // So is a search a provider ran in a request of its own.
+      add(event.data.meta?.tokens);
     } else if (event.type === "context/compacted") {
       add(event.data.tokens);
       // Only the summary is left, which is what its request wrote.

@@ -786,7 +786,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             <div className="label-line">
               <label htmlFor="search-engine">向哪家打探</label>
               <Info>
-                搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家心法都能搜；每次搜索前要请示，按次花灵石。GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
+                搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家心法都能搜；每次搜索前要请示，按次花灵石。GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。没有 GLM 密钥时，用 Anthropic 或 OpenAI 心法的分身改由那一家自带的搜索来搜：每次多发一次模型请求，搜索费和这次请求的灵石都算在那一家，同样先请示。
               </Info>
             </div>
             <div className="inline model-row">
@@ -800,7 +800,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             </div>
             {/* Searching does not work yet: said in the open, with what puts it right. */}
             {!view.search_ready && (
-              <p className="hint missing">还没有 GLM 的密钥，分身现在搜不了。到「心法」那一页给 GLM 添上密钥，或者到侧栏的「法器」里启用 Exa，它不用密钥。</p>
+              <p className="hint missing">还没有 GLM 的密钥：用 Anthropic 或 OpenAI 心法的分身改由那一家自带的搜索来搜，用别家心法的分身搜不了。到「心法」那一页给 GLM 添上密钥，或者到侧栏的「法器」里启用 Exa，它不用密钥。</p>
             )}
           </div>
         </section>

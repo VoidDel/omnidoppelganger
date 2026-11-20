@@ -148,9 +148,13 @@ export interface ToolMeta {
   stopped?: string | null;
   duration_ms?: number;
   output?: string;
-  /** What `web_search` looked for, and how many results came back. */
+  /** What `web_search` looked for, and how many results came back; with no GLM key, the provider that searched
+   *  (`engine`), its model, and what the search's own request cost. */
   query?: string;
   results?: number;
+  engine?: string;
+  model?: string;
+  tokens?: Tokens;
   /** The address `fetch_url` ended at, its title, and how many characters of text it holds. */
   url?: string;
   title?: string | null;

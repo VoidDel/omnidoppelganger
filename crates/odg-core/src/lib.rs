@@ -19,6 +19,7 @@ mod office;
 pub mod openai_responses;
 pub mod pdf;
 pub mod policy;
+pub mod provider_search;
 pub mod providers;
 pub mod runtime;
 pub mod safety;

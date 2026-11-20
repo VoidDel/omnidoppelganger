@@ -87,8 +87,12 @@ pub fn request_body(request: &LlmRequest) -> Value {
     let tools: Vec<Value> = request
         .tools
         .iter()
-        // The tool schemas have optional fields, which strict mode does not allow.
-        .map(|tool| json!({ "type": "function", "name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"], "strict": false }))
+        .map(|tool| match tool.get("type") {
+            // A tool of the API's own, such as web search, goes as it is.
+            Some(_) => tool.clone(),
+            // The tool schemas have optional fields, which strict mode does not allow.
+            None => json!({ "type": "function", "name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"], "strict": false }),
+        })
         .collect();
     let mut body = json!({
         "model": request.model,
@@ -463,5 +467,21 @@ mod tests {
         let alone = input_items(&[json!({ "role": "user", "content": [json!({ "type": "tool_result", "tool_use_id": "c1", "content": [{ "type": "text", "text": "x" }, { "type": "image", "source": { "type": "base64", "media_type": "image/gif", "data": "aGk=" } }], "is_error": false })] })]);
         assert_eq!(alone.len(), 2);
         assert_eq!(alone[1]["content"][1]["image_url"], "data:image/gif;base64,aGk=");
+    }
+
+    #[test]
+    fn sends_a_tool_of_the_apis_own_as_it_is() {
+        let request = LlmRequest {
+            provider: "openai".into(),
+            session: "s".into(),
+            model: "gpt-6.2-sol".into(),
+            system: "sys".into(),
+            messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })],
+            tools: vec![json!({ "type": "web_search" }), json!({ "name": "read_file", "description": "d", "input_schema": { "type": "object" } })],
+            effort: "low".into(),
+        };
+        let body = request_body(&request);
+        assert_eq!(body["tools"][0], json!({ "type": "web_search" }));
+        assert_eq!(body["tools"][1]["type"], "function");
     }
 }

@@ -100,6 +100,11 @@ impl StreamAccumulator {
                         deltas.push(StreamDelta::ThinkingDelta { index, text: text.to_string() });
                     }
                     Some("signature_delta") => append_string(block, "signature", delta["signature"].as_str().unwrap_or_default()),
+                    // A source the text cites, such as a page a web search found: gathered on the block, as the API sends it whole.
+                    Some("citations_delta") => match block["citations"].as_array_mut() {
+                        Some(citations) => citations.push(delta["citation"].clone()),
+                        None => block["citations"] = json!([delta["citation"]]),
+                    },
                     Some("input_json_delta") => {
                         let partial = delta["partial_json"].as_str().unwrap_or_default();
                         self.partial_json.entry(index).or_default().push_str(partial);
@@ -193,7 +198,8 @@ pub fn request_body(request: &LlmRequest, official: bool) -> Value {
         .iter()
         .map(|tool| {
             let mut tool = tool.clone();
-            if official {
+            // Not on a tool of the API's own, such as web search, which runs on its side and takes no such field.
+            if official && tool.get("type").is_none() {
                 tool["eager_input_streaming"] = json!(true);
             }
             tool
@@ -448,5 +454,45 @@ mod tests {
 
         let haiku = request_body(&LlmRequest { model: "claude-haiku-5-5".into(), ..request }, true);
         assert!(haiku.get("fallbacks").is_none());
+    }
+
+    #[test]
+    fn keeps_a_web_search_and_the_citations_on_the_text_that_cites_it() {
+        let result = json!({ "type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [{ "type": "web_search_result", "url": "https://a.dev", "title": "A", "encrypted_content": "x" }] });
+        let citation = json!({ "type": "web_search_result_location", "url": "https://a.dev", "title": "A", "cited_text": "a says", "encrypted_index": "y" });
+        let events = [
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {} } }),
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"query\":\"a\"}" } }),
+            json!({ "type": "content_block_stop", "index": 0 }),
+            json!({ "type": "content_block_start", "index": 1, "content_block": result }),
+            json!({ "type": "content_block_stop", "index": 1 }),
+            json!({ "type": "content_block_start", "index": 2, "content_block": { "type": "text", "text": "" } }),
+            json!({ "type": "content_block_delta", "index": 2, "delta": { "type": "citations_delta", "citation": citation } }),
+            json!({ "type": "content_block_delta", "index": 2, "delta": { "type": "text_delta", "text": "A says so." } }),
+            json!({ "type": "content_block_stop", "index": 2 }),
+        ];
+        let mut accumulator = StreamAccumulator::default();
+        for event in &events {
+            accumulator.apply(event).unwrap();
+        }
+        let turn = accumulator.finish();
+        // The search's own call is the API's, not one to run here: never reported as a bad tool input.
+        assert!(turn.invalid_tool_inputs.is_empty());
+        assert_eq!(turn.content[1], result);
+        assert_eq!(turn.content[2], json!({ "type": "text", "text": "A says so.", "citations": [citation] }));
+    }
+
+    #[test]
+    fn sends_a_tool_of_the_apis_own_as_it_is() {
+        let request = LlmRequest {
+            provider: "anthropic".into(),
+            session: "s".into(),
+            model: "claude-opus-5-5".into(),
+            system: "sys".into(),
+            messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })],
+            tools: vec![json!({ "type": "web_search_20260209", "name": "web_search", "max_uses": 2 })],
+            effort: "low".into(),
+        };
+        assert_eq!(request_body(&request, true)["tools"], json!([{ "type": "web_search_20260209", "name": "web_search", "max_uses": 2 }]));
     }
 }

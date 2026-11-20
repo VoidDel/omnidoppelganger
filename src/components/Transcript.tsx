@@ -357,7 +357,8 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       };
     }
     case "web_search":
-      return { verb: "问天机阁", target: text("query"), outcome: waiting || (result!.isError ? "没问到" : `${meta?.results ?? 0} 条`) };
+      // Who searched, when it was not Zhipu: the provider the 分身 works with.
+      return { verb: "问天机阁", target: text("query"), outcome: waiting || (result!.isError ? "没问到" : `${meta?.engine ? `${meta.engine} 代搜，` : ""}${meta?.results ?? 0} 条`) };
     case "fetch_url":
       return { verb: "抓取网页", target: text("url"), outcome: waiting || (result!.isError ? "没取到" : `${shortCount(meta?.characters ?? 0)} 字`) };
     case "load_skill":

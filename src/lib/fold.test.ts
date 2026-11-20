@@ -42,6 +42,18 @@ describe("the guardian", () => {
   });
 });
 
+describe("a search through the provider", () => {
+  it("counts what its own request spent with the rest", () => {
+    const tokens = { input: 900, cached: 100, output: 40 };
+    const events = log(
+      user("what is new in tokio?"),
+      said(call("s1", "web_search", { query: "tokio" })),
+      result("s1", "web_search", { query: "tokio", results: 3, engine: "anthropic", model: "claude-opus-5-5", tokens }),
+    );
+    expect(usage(events).spent).toEqual(tokens);
+  });
+});
+
 describe("what the 分身 made", () => {
   it("lists what it handed over and what a turn left, newest first, each once, and says in the turn only what no act showed", () => {
     const events = log(
