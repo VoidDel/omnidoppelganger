@@ -1751,9 +1751,11 @@ button.did-head:not(:disabled):hover {
 /* ---------- light going round an edge ---------- */
 
 /* Two layers under the words of what they light (see Light.tsx). `edge` is the thing's own box with the light
-   turning in it, covered but for a hair's breadth round its rim. What turns is one square of gradient, turned whole by the compositor: nothing is laid out or
-   painted again as it goes round, so it costs next to nothing however long the 分身 works. A gradient whose
+   turning in it, covered but for a hair's breadth round its rim; `aura`, round the box an order is written in only,
+   is the same light a little larger and out of focus. What turns is one square of gradient, turned whole by the
+   compositor: nothing is laid out or painted again as it goes round, so it costs next to nothing however long the 分身 works. A gradient whose
    angle is animated looks the same and has the page painted afresh at every step. */
+.aura,
 .edge {
   position: absolute;
   z-index: -1;
@@ -1767,6 +1769,7 @@ button.did-head:not(:disabled):hover {
   --light-rest: color-mix(in srgb, var(--jade) 45%, var(--seal-ground, var(--bg)));
 }
 
+.aura::before,
 .edge::before {
   content: "";
   position: absolute;
@@ -2523,6 +2526,19 @@ button.did-head:not(:disabled):hover {
 
 .composer-frame > .edge::after {
   display: none;
+}
+
+/* The same light, out of focus about the box: a glow that goes round with it. */
+.composer-frame > .aura {
+  inset: -3px;
+  z-index: -2;
+  border-radius: calc(var(--r-control) + 3px);
+  filter: blur(9px);
+  opacity: 0.6;
+  --light-rest: transparent;
+  --light-side: 140%;
+  --light-time: 4.5s;
+  animation: come var(--d-arrive) ease backwards;
 }
 
 @keyframes come {
@@ -6679,7 +6695,11 @@ button.select-button svg {
     transition: none !important;
   }
 
-  /* A seal or a box at work: a plain edge of jade, no light going round. */
+  /* A seal or a box at work: a plain edge of jade, no light going round and no glow. */
+  .aura {
+    display: none;
+  }
+
   .edge::before {
     background: var(--jade);
   }

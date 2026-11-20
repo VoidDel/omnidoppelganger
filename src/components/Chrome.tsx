@@ -1380,7 +1380,7 @@ export function Composer(props: ComposerProps) {
       {/* The frame carries the light round the box: jade and gold going round while the 分身 works, cinnabar held while it waits. */}
       <div className={`composer-frame ${status === "running" ? "working" : status === "waiting_approval" ? "waiting" : ""}`}>
       {/* Not in 全权托付: there the box keeps its cinnabar edge, which says more. */}
-      {status === "running" && mode !== "bypass" && <Light />}
+      {status === "running" && mode !== "bypass" && <Light aura />}
       <div className={`composer-box ${mode === "bypass" ? "trusted" : ""} ${dropping ? "dropping" : ""}`}>
         {dropping && <div className="drop-note">松手，把文件附给分身</div>}
         {/* The box's top edge, to drag: up makes more room to write in, down gives it back to the conversation. */}
