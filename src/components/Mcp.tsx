@@ -1,7 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import { BUILTINS, NEEDS, launchLine, parseServers, withServer, type Builtin, type ServerEntry } from "../lib/mcp";
+import {
+  BUILTINS,
+  EMPTY_FORM,
+  NEEDS,
+  SERVER_NAME,
+  entryProblem,
+  fromForm,
+  launchLine,
+  parseServers,
+  readPasted,
+  toForm,
+  withServer,
+  type Builtin,
+  type ServerEntry,
+  type ServerForm,
+} from "../lib/mcp";
 import type { McpServer } from "../lib/types";
+import { FormDialog, Pairs, Row, Segmented } from "./FormDialog";
 import { Hint } from "./Hint";
 
 const STATES: Record<McpServer["state"], string> = { connecting: "正在连接", ready: "已连上", failed: "没连上" };
@@ -177,6 +193,239 @@ function Card({ builtin, home, on, server, held, onSwitch }: CardProps) {
   );
 }
 
+interface ServerDialogProps {
+  /** The text of `mcp.json`, which can be read. */
+  config: string;
+  /** The server being changed, by name; null to add one. */
+  editing: string | null;
+  /** Resolves with what went wrong, or null once the list is saved. */
+  onSave: (config: string) => Promise<string | null>;
+  onClose: () => void;
+}
+
+const RUNS: [ServerForm["runs"], string][] = [
+  ["command", "本机命令"],
+  ["url", "远程地址"],
+];
+
+/**
+ * The window for adding a 法器 of the user's own, or changing one: a form to fill, or the JSON an MCP server's
+ * page gives, pasted straight in. JSON pasted into the form fills it.
+ */
+function ServerDialog({ config, editing, onSave, onClose }: ServerDialogProps) {
+  const listed = parseServers(config) as Record<string, ServerEntry>;
+  const original = editing ? listed[editing] : undefined;
+  const [mode, setMode] = useState<"form" | "json">("form");
+  const [form, setForm] = useState<ServerForm>(editing && original ? toForm(editing, original) : EMPTY_FORM);
+  const [json, setJson] = useState("");
+  const [wrong, setWrong] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const update = (patch: Partial<ServerForm>) => {
+    setForm((form) => ({ ...form, ...patch }));
+    setWrong(null);
+  };
+  /** Fill the form from JSON read, or say why it cannot be. */
+  const fill = (read: NonNullable<ReturnType<typeof readPasted>>): boolean => {
+    if ("entry" in read) return (setForm((form) => toForm(form.name, read.entry)), true);
+    const named = Object.entries(read.servers);
+    if (named.length !== 1) return false;
+    setForm(toForm(named[0][0], named[0][1]));
+    return true;
+  };
+  const switchMode = (next: "form" | "json") => {
+    setWrong(null);
+    if (next === "json") {
+      // A form not yet filled leaves the JSON side empty, for its example to show and a paste to go in.
+      const entry = fromForm(form);
+      const name = form.name.trim();
+      setJson("error" in entry ? "" : `${JSON.stringify(name ? { [name]: entry } : entry, null, 2)}\n`);
+      return setMode("json");
+    }
+    // Nothing written there, or an empty object, is nothing to bring back.
+    if (json.trim() && !/^\{\s*\}$/.test(json.trim())) {
+      const read = readPasted(json);
+      if (!read) return setWrong("这段 JSON 读不懂，改好了再切回表单。");
+      if (!fill(read)) return setWrong("这段 JSON 里有好几个服务，表单一次只填一个；就在 JSON 里保存吧。");
+    }
+    setMode("form");
+  };
+  /** The servers to put in the list, by name, or what is wrong. */
+  const gathered = (): [string, ServerEntry][] | string => {
+    if (mode === "form") {
+      const entry = fromForm(form);
+      return "error" in entry ? entry.error : [[form.name.trim(), entry]];
+    }
+    const read = readPasted(json);
+    if (!read) return '读不懂这段 JSON：要像 {"名称": {"command": …}} 或 {"mcpServers": {…}} 这样。';
+    if ("entry" in read) return form.name.trim() ? [[form.name.trim(), read.entry]] : "这段 JSON 只有服务本身，没有名称：切到表单填上名称再保存。";
+    return Object.entries(read.servers);
+  };
+  const save = (close: () => void) => {
+    const servers = gathered();
+    if (typeof servers === "string") return setWrong(servers);
+    for (const [name, entry] of servers) {
+      if (!name) return setWrong("填上名称。");
+      if (!SERVER_NAME.test(name)) return setWrong(`名称「${name}」只能用字母、数字、- 和 _。`);
+      if (BUILTINS.some((builtin) => builtin.id === name)) return setWrong(`「${name}」是内置法器用的名字，换一个。`);
+      if (name !== editing && name in listed) return setWrong(`清单里已经有「${name}」了，换个名字，或者去改那一个。`);
+      const problem = entryProblem(entry);
+      if (problem) return setWrong(`「${name}」${problem}。`);
+    }
+    let text: string | { error: string } = config;
+    // Renamed, it is put in under its new name and the old taken out; switched off, it stays off.
+    if (editing && !servers.some(([name]) => name === editing)) text = withServer(text, editing, null);
+    for (const [name, entry] of servers) {
+      if (typeof text !== "string") break;
+      text = withServer(text, name, editing && original?.disabled && servers.length === 1 ? { ...entry, disabled: true } : entry);
+    }
+    if (typeof text !== "string") return setWrong(text.error);
+    setSaving(true);
+    onSave(text).then((error) => {
+      setSaving(false);
+      if (error) return setWrong(`没有保存：${error}`);
+      close();
+    });
+  };
+  const remove = (close: () => void) => {
+    const text = withServer(config, editing ?? "", null);
+    if (typeof text !== "string") return setWrong(text.error);
+    setSaving(true);
+    onSave(text).then((error) => {
+      setSaving(false);
+      if (error) return setWrong(`没有删掉：${error}`);
+      close();
+    });
+  };
+  return (
+    <FormDialog
+      seal="器"
+      title={editing ? `修改「${editing}」` : "新的法器"}
+      modes={[
+        ["form", "表单"],
+        ["json", "JSON"],
+      ]}
+      mode={mode}
+      onMode={switchMode}
+      aside={mode === "form" ? "或直接在这里粘贴它的 JSON" : undefined}
+      wrong={wrong}
+      onClose={onClose}
+      onSubmit={save}
+      onPaste={(event) => {
+        // JSON pasted anywhere in the form fills the form; any other text is pasted as usual.
+        if (mode !== "form") return;
+        const read = readPasted(event.clipboardData.getData("text"));
+        if (!read) return;
+        event.preventDefault();
+        // Several servers at once are more than the form holds: they go to the JSON side, to be saved together.
+        if (!fill(read) && "servers" in read) {
+          setJson(`${JSON.stringify({ mcpServers: read.servers }, null, 2)}\n`);
+          setMode("json");
+        }
+        setWrong(null);
+      }}
+      actions={(close) => (
+        <>
+          <button type="submit" className="button primary" disabled={saving}>
+            {saving ? "正在保存…" : "保存并连接"}
+          </button>
+          <button type="button" className="button text" onClick={close}>
+            算了
+          </button>
+          {editing && (
+            <span className="form-dialog-end">
+              {removing ? (
+                <>
+                  从清单里删掉它？
+                  <button type="button" className="button outline red small" disabled={saving} onClick={() => remove(close)}>
+                    删掉
+                  </button>
+                  <button type="button" className="button text small" onClick={() => setRemoving(false)}>
+                    留着
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="button text small danger-text" onClick={() => setRemoving(true)}>
+                  删掉这件法器
+                </button>
+              )}
+            </span>
+          )}
+        </>
+      )}
+    >
+      {mode === "form" ? (
+        <>
+          <Row label="名称" htmlFor="server-name" hint="字母、数字、- 和 _。分身用这个名字称呼它带来的工具。">
+            <input
+              id="server-name"
+              className="input mono"
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="例如 github"
+              value={form.name}
+              onChange={(event) => update({ name: event.target.value })}
+            />
+          </Row>
+          <Row label="运行方式">
+            <Segmented label="运行方式" options={RUNS} value={form.runs} onChange={(runs) => update({ runs })} />
+          </Row>
+          {form.runs === "command" ? (
+            <>
+              <Row label="命令" htmlFor="server-line" hint="命令和参数，就像在终端里输入的那样；带空格的路径用引号括起来。">
+                <input
+                  id="server-line"
+                  className="input mono"
+                  spellCheck={false}
+                  placeholder="npx -y @modelcontextprotocol/server-github"
+                  value={form.line}
+                  onChange={(event) => update({ line: event.target.value })}
+                />
+              </Row>
+              <Row label="环境变量" hint="交给这个程序的环境变量，比如它要的令牌。和清单一起明文存在 mcp.json 里。">
+                <Pairs rows={form.env} onChange={(env) => update({ env })} keyHolder="名称，如 GITHUB_TOKEN" valueHolder="值" what="环境变量" />
+              </Row>
+            </>
+          ) : (
+            <>
+              <Row label="地址" htmlFor="server-url" hint="MCP 服务的 HTTP 地址。">
+                <input
+                  id="server-url"
+                  className="input mono"
+                  spellCheck={false}
+                  placeholder="https://example.com/mcp"
+                  value={form.url}
+                  onChange={(event) => update({ url: event.target.value })}
+                />
+              </Row>
+              <Row label="请求头" hint="每次请求都带上的头，比如 Authorization。和清单一起明文存在 mcp.json 里。">
+                <Pairs rows={form.headers} onChange={(headers) => update({ headers })} keyHolder="Authorization" valueHolder="Bearer …" what="请求头" />
+              </Row>
+            </>
+          )}
+        </>
+      ) : (
+        <Row label="JSON" htmlFor="server-json" hint='MCP 服务说明里给的配置片段直接贴进来：整份 {"mcpServers": {…}}，或者 {"名称": {…}}，一次可以加好几个。'>
+          <textarea
+            id="server-json"
+            className="input mono config"
+            rows={12}
+            autoFocus
+            spellCheck={false}
+            placeholder={'{\n  "github": {\n    "command": "npx",\n    "args": ["-y", "@modelcontextprotocol/server-github"]\n  }\n}'}
+            value={json}
+            onChange={(event) => {
+              setJson(event.target.value);
+              setWrong(null);
+            }}
+          />
+        </Row>
+      )}
+    </FormDialog>
+  );
+}
+
 interface Props {
   /** The text of `mcp.json`. */
   config: string;
@@ -194,6 +443,8 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
   const [draft, setDraft] = useState(config);
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** The add or change window, open on the server being changed, or on none to add one. */
+  const [dialog, setDialog] = useState<{ editing: string | null } | null>(null);
   useEffect(() => setDraft(config), [config]);
   // Servers connect in the background: look again until none is still connecting.
   const connecting = servers.some((server) => server.state === "connecting");
@@ -264,7 +515,19 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
         </section>
 
         <section>
-          <h2>自定义法器</h2>
+          <div className="section-head">
+            <h2>自定义法器</h2>
+            <button
+              type="button"
+              className="button outline small"
+              disabled={saving || dirty || !!unreadable}
+              title={unreadable ? "下面的清单读不懂，先把它改好" : dirty ? "下面的清单还有没保存的改动，先保存或撤销" : "加一件别的 MCP 服务"}
+              onClick={() => setDialog({ editing: null })}
+            >
+              ＋ 添加法器
+            </button>
+          </div>
+          {own.length === 0 && !unreadable && <p className="muted">还没有。点「添加法器」填一件，MCP 服务说明里给的 JSON 也可以直接贴进去。</p>}
           {own.length > 0 && (
             <div className="mcp-list">
               {own.map((name) => {
@@ -278,6 +541,9 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
                     <div className="mcp-body">
                       <div className="mcp-head">
                         <strong className="mono">{name}</strong>
+                        <button type="button" className="button text small" disabled={saving || dirty} onClick={() => setDialog({ editing: name })}>
+                          修改
+                        </button>
                       </div>
                       <p className="mcp-launch mono" title={launchLine(entries[name] ?? {})}>
                         {launchLine(entries[name] ?? {})}
@@ -300,35 +566,41 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
               })}
             </div>
           )}
-          <div className="field">
-            <label htmlFor="mcp-config">服务清单（mcp.json）</label>
-            <textarea id="mcp-config" className="input mono config" rows={8} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
-            <Hint>
-              用各家通用的 mcpServers 写法，MCP 服务说明里给的配置片段可以直接贴进来：本机程序写 command 和 args，远程服务写 url（需要的话加 headers）。上面启用的法器也写在这份清单里。保存后立即连接。
-            </Hint>
-            {unreadable && !dirty && (
-              <p className="hint failed" role="alert">
-                这份清单读不懂：{unreadable}。改好之前，上面的开关先停着。
-              </p>
-            )}
-            {problem && (
-              <p className="hint failed" role="alert">
-                清单没有保存：{problem}
-              </p>
-            )}
-            <div className="actions">
-              <button type="button" className="button primary" disabled={!dirty || saving} onClick={() => save(draft).then(setProblem)}>
-                保存并连接
-              </button>
-              {dirty && (
-                <button type="button" className="button text" onClick={() => setDraft(config)}>
-                  撤销改动
-                </button>
+          <details className="raw-config" open={unreadable || dirty ? true : undefined}>
+            <summary>直接改 mcp.json</summary>
+            <div className="field">
+              <label htmlFor="mcp-config">服务清单（mcp.json）</label>
+              <textarea id="mcp-config" className="input mono config" rows={8} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
+              <Hint>
+                用各家通用的 mcpServers 写法，MCP 服务说明里给的配置片段可以直接贴进来：本机程序写 command 和 args，远程服务写 url（需要的话加
+                headers）。上面启用的法器也写在这份清单里。保存后立即连接。
+              </Hint>
+              {unreadable && !dirty && (
+                <p className="hint failed" role="alert">
+                  这份清单读不懂：{unreadable}。改好之前，上面的开关先停着。
+                </p>
               )}
+              {problem && (
+                <p className="hint failed" role="alert">
+                  清单没有保存：{problem}
+                </p>
+              )}
+              <div className="actions">
+                <button type="button" className="button primary" disabled={!dirty || saving} onClick={() => save(draft).then(setProblem)}>
+                  保存并连接
+                </button>
+                {dirty && (
+                  <button type="button" className="button text" onClick={() => setDraft(config)}>
+                    撤销改动
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
+          </details>
         </section>
       </div>
+      {/* Its close comes a moment after it shuts: it lets go only of the window it opened, not one opened since. */}
+      {dialog && <ServerDialog key={dialog.editing ?? ""} config={config} editing={dialog.editing} onSave={save} onClose={() => setDialog((now) => (now === dialog ? null : now))} />}
     </div>
   );
 }

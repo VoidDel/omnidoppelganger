@@ -1,5 +1,42 @@
 import { describe, expect, it } from "vitest";
-import { BUILTINS, launchLine, parseServers, withServer } from "./mcp";
+import { BUILTINS, EMPTY_FORM, entryProblem, fromForm, joinLine, launchLine, parseServers, readPasted, splitLine, toForm, withServer } from "./mcp";
+
+describe("a 法器 added by hand", () => {
+  it("takes its command line apart as a terminal would, keeping Windows paths and quoted words whole", () => {
+    expect(splitLine("npx -y @modelcontextprotocol/server-github")).toEqual(["npx", "-y", "@modelcontextprotocol/server-github"]);
+    expect(splitLine('  node "C:\\My Tools\\server.js"  --name \'a b\' ""')).toEqual(["node", "C:\\My Tools\\server.js", "--name", "a b", ""]);
+    for (const words of [
+      ["node", "C:\\My Tools\\s.js", "--x", ""],
+      ["echo", 'say "hi"', "it's"],
+    ]) {
+      expect(splitLine(joinLine(words))).toEqual(words);
+    }
+  });
+
+  it("reads what is pasted: a whole list, its servers, one named server, or one entry", () => {
+    const entry = { command: "npx", args: ["-y", "x"] };
+    expect(readPasted(JSON.stringify({ mcpServers: { x: entry } }))).toEqual({ servers: { x: entry } });
+    expect(readPasted(JSON.stringify({ x: entry, y: { url: "https://y" } }))).toEqual({ servers: { x: entry, y: { url: "https://y" } } });
+    expect(readPasted(JSON.stringify(entry))).toEqual({ entry });
+    // A snippet cut out of a bigger file, without its braces and with a trailing comma.
+    expect(readPasted('"x": {"command": "npx", "args": ["-y", "x"]},')).toEqual({ servers: { x: entry } });
+    expect(readPasted("npx -y x")).toBeNull();
+    expect(readPasted('{"name": "x"}')).toBeNull();
+  });
+
+  it("goes from the form to an entry and back", () => {
+    const entry = { command: "node", args: ["C:\\My Tools\\s.js"], env: { TOKEN: "${TOKEN}" } };
+    const form = toForm("tools", entry);
+    expect(form).toMatchObject({ name: "tools", runs: "command", line: 'node "C:\\My Tools\\s.js"' });
+    expect(fromForm(form)).toEqual(entry);
+    const remote = fromForm({ ...EMPTY_FORM, runs: "url", url: "https://x/mcp", headers: [["Authorization", "Bearer k"], ["  ", "dropped"]] });
+    expect(remote).toEqual({ url: "https://x/mcp", headers: { Authorization: "Bearer k" } });
+    expect(fromForm({ ...EMPTY_FORM, line: "  " })).toHaveProperty("error");
+    expect(fromForm({ ...EMPTY_FORM, runs: "url", url: "mcp.example.com" })).toHaveProperty("error");
+    expect(entryProblem({ command: "x", url: "https://x" })).not.toBeNull();
+    expect(entryProblem({ url: "https://x" })).toBeNull();
+  });
+});
 
 describe("the 法器 that come with the app", () => {
   it("are switched on by writing one into the list, and off by taking it out, leaving the rest as it was", () => {

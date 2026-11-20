@@ -147,6 +147,115 @@ export function launchLine(entry: ServerEntry): string {
   return entry.url ?? [entry.command, ...(entry.args ?? [])].join(" ");
 }
 
+/** What a server may be named in the list: the characters the core accepts, which its tools are then known by. */
+export const SERVER_NAME = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * A command line taken apart as a terminal would: words split at spaces, a quoted stretch kept whole. A backslash
+ * is kept as it is, for the Windows paths it is mostly found in.
+ */
+export function splitLine(line: string): string[] {
+  const words: string[] = [];
+  let word: string | null = null;
+  let quote: string | null = null;
+  for (const c of line) {
+    if (quote) {
+      if (c === quote) quote = null;
+      else word += c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      word ??= "";
+    } else if (/\s/.test(c)) {
+      if (word !== null) words.push(word);
+      word = null;
+    } else {
+      word = (word ?? "") + c;
+    }
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+/** Words put back into a command line that [`splitLine`] takes apart again into the same words. */
+export function joinLine(words: string[]): string {
+  return words.map((word) => (word === "" || /[\s"']/.test(word) ? (word.includes('"') ? `'${word}'` : `"${word}"`) : word)).join(" ");
+}
+
+/** Whether a value read from JSON looks like one server's entry: a program to start or an address to reach. */
+const isEntry = (value: unknown): value is ServerEntry =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && (typeof (value as ServerEntry).command === "string" || typeof (value as ServerEntry).url === "string");
+
+/**
+ * What a piece of JSON pasted in gives: the servers it names (a whole `mcp.json`, or just its `mcpServers`, or
+ * `{"name": {...}}`), or one server's entry with no name, or null for what is none of these.
+ */
+export function readPasted(text: string): { servers: Record<string, ServerEntry> } | { entry: ServerEntry } | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text.trim());
+  } catch {
+    // A snippet copied out of a larger file often comes with the comma that followed it, or without its braces.
+    try {
+      value = JSON.parse(`{${text.trim().replace(/,\s*$/, "")}}`);
+    } catch {
+      return null;
+    }
+  }
+  if (isEntry(value)) return { entry: value };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const inner = (value as { mcpServers?: unknown }).mcpServers ?? value;
+  if (typeof inner !== "object" || inner === null || Array.isArray(inner)) return null;
+  const servers = Object.entries(inner as Record<string, unknown>).filter(([, entry]) => isEntry(entry)) as [string, ServerEntry][];
+  return servers.length ? { servers: Object.fromEntries(servers) } : null;
+}
+
+/** One server as the add dialog's form holds it. */
+export interface ServerForm {
+  name: string;
+  runs: "command" | "url";
+  /** The command and its arguments, as typed at a terminal. */
+  line: string;
+  env: [string, string][];
+  url: string;
+  headers: [string, string][];
+}
+
+export const EMPTY_FORM: ServerForm = { name: "", runs: "command", line: "", env: [], url: "", headers: [] };
+
+/** A server's entry as the form shows it. */
+export function toForm(name: string, entry: ServerEntry): ServerForm {
+  return {
+    name,
+    runs: entry.url !== undefined && entry.command === undefined ? "url" : "command",
+    line: entry.command === undefined ? "" : joinLine([entry.command, ...(entry.args ?? [])]),
+    env: Object.entries(entry.env ?? {}),
+    url: entry.url ?? "",
+    headers: Object.entries(entry.headers ?? {}),
+  };
+}
+
+/** The entry the form gives, or what is missing from it, in the user's words. */
+export function fromForm(form: ServerForm): ServerEntry | { error: string } {
+  const pairs = (rows: [string, string][]) => Object.fromEntries(rows.map(([key, value]) => [key.trim(), value] as [string, string]).filter(([key]) => key));
+  if (form.runs === "command") {
+    const [command, ...args] = splitLine(form.line);
+    if (!command) return { error: "填上要启动的命令，比如 npx -y @modelcontextprotocol/server-github" };
+    const env = pairs(form.env);
+    return { command, ...(args.length ? { args } : {}), ...(Object.keys(env).length ? { env } : {}) };
+  }
+  const url = form.url.trim();
+  if (!/^https?:\/\/\S+$/.test(url)) return { error: "地址要以 http:// 或 https:// 开头" };
+  const headers = pairs(form.headers);
+  return { url, ...(Object.keys(headers).length ? { headers } : {}) };
+}
+
+/** Whether an entry will do for the list as the core reads it: a program to start or an http(s) address, not both. */
+export function entryProblem(entry: ServerEntry): string | null {
+  const command = typeof entry.command === "string" && entry.command.trim() !== "";
+  const url = typeof entry.url === "string" && /^https?:\/\//.test(entry.url);
+  return command === url ? "要么写 command（本机启动的程序），要么写 http(s) 开头的 url（远程服务），两者只能有一个" : null;
+}
+
 /** The servers `mcp.json`'s text lists, by name, or what is wrong with the text. */
 export function parseServers(text: string): Record<string, ServerEntry> | { error: string } {
   if (!text.trim()) return {};

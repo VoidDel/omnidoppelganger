@@ -4663,6 +4663,227 @@ button.select-button svg {
   gap: 0 8px;
 }
 
+/* ---------- a window for adding something: head, rows of label and field, foot ---------- */
+
+.dialog.form-dialog {
+  width: min(720px, calc(100vw - 48px));
+  padding: 0;
+}
+
+.dialog.form-dialog form {
+  gap: 0;
+  max-height: calc(100vh - 48px);
+}
+
+.form-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.form-dialog-head h2 {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-lead);
+}
+
+.form-dialog-aside {
+  color: var(--ink-2);
+  font-size: var(--t-small);
+}
+
+/* Label at the left, right-aligned to the fields, which take the rest. */
+.form-dialog-body {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 18px 20px;
+  align-items: start;
+  padding: 22px 24px;
+  overflow-y: auto;
+}
+
+.form-row-label {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-weight: 700;
+}
+
+.form-row-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-row-field > .hint {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--t-small);
+  line-height: 1.6;
+}
+
+.form-row-field textarea.config {
+  min-height: 220px;
+}
+
+.form-dialog-wrong {
+  margin: 0;
+  padding: 0 24px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A way on from what went wrong: small, in ink, apart from the words in red. */
+.form-dialog-wrong .button.small {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: var(--t-small);
+  font-weight: 400;
+}
+
+.form-dialog-wrong .button.outline:not(.red) {
+  color: var(--ink);
+}
+
+.skill-choices {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.form-dialog-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+}
+
+/* What takes something away sits apart, at the foot's far end. */
+.form-dialog-end {
+  margin-left: auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--t-small);
+}
+
+.form-dialog-foot .button.small,
+.section-head .button.small {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: var(--t-small);
+}
+
+.button.text.danger-text {
+  color: var(--cinnabar);
+}
+
+@media (max-width: 600px) {
+  .form-dialog-head {
+    flex-wrap: wrap;
+  }
+
+  .form-dialog-aside {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .form-dialog-body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .form-row-label {
+    min-height: 0;
+    justify-content: flex-start;
+    margin-top: 10px;
+  }
+}
+
+/* A choice of a few, side by side, the one chosen raised off the tray. */
+.segmented {
+  align-self: flex-start;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-control);
+  background: var(--control);
+  border: 1px solid var(--line);
+}
+
+.segmented button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: calc(var(--r-control) - 2px);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.segmented button:hover {
+  color: var(--ink);
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--sheet);
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+
+/* Names and their values, one pair to a line. */
+.pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.pairs-add.button.text {
+  align-self: flex-start;
+  min-height: 32px;
+  padding: 0 2px;
+  text-decoration: none;
+  font-weight: 400;
+}
+
+/* A section's heading with what adds to it, at the right. */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+/* The list as text, folded away under the cards it gives. */
+.raw-config summary {
+  width: fit-content;
+  color: var(--ink-2);
+  font-size: var(--t-small);
+  cursor: pointer;
+}
+
+.raw-config[open] summary {
+  margin-bottom: 12px;
+}
+
 .field {
   margin: 0;
   padding: 0;
@@ -5055,7 +5276,9 @@ button.select-button svg {
 /* A 法器 on a card: its seal, what it does and how it runs, and its switch. Off, it sits back on the page;
    on, it is on paper of its own with a gold edge, as a 功课 that keeps its hours is, and cinnabar where it
    would not connect. */
+/* The first line of a card, which the seal, the name and the switch all sit on, centred or on its baseline. */
 .mcp-card {
+  --mcp-line: 28px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
@@ -5082,7 +5305,7 @@ button.select-button svg {
 .mcp-seal {
   width: 20px;
   height: 20px;
-  margin-top: 1px;
+  margin-top: calc((var(--mcp-line) - 20px) / 2);
   font-size: 13px;
   line-height: 18px;
   border: 1px solid var(--line-strong);
@@ -5111,7 +5334,17 @@ button.select-button svg {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px var(--s-2);
+  gap: 0 var(--s-2);
+}
+
+/* Each on a line of the same height, so the small words sit on the name's baseline and nothing stands taller. */
+.mcp-head > * {
+  line-height: var(--mcp-line);
+}
+
+.mcp-head > .chip {
+  line-height: normal;
+  align-self: center;
 }
 
 .mcp-head strong {
@@ -5162,7 +5395,7 @@ button.select-button svg {
 }
 
 .mcp-head .button.small {
-  min-height: 22px;
+  min-height: 0;
   padding: 0 2px;
   font-size: var(--t-micro);
 }
@@ -5215,7 +5448,7 @@ button.select-button svg {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 24px;
+  height: var(--mcp-line);
 }
 
 .mcp-side .mcp-switch {

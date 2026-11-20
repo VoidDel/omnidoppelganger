@@ -57,6 +57,9 @@ export const api = {
   listSkills: () => invoke<SkillsView>("list_skills"),
   switchSkill: (name: string, on: boolean, force = false) => invoke<SkillsView>("switch_skill", { name, on, force }),
   removeSkill: (name: string) => invoke<SkillsView>("remove_skill", { name }),
+  /** Put a skill in from a folder on this computer or a Git address; `path` is the folder in it that holds the skill. */
+  installSkill: (source: string, path: string | null, replace = false) => invoke<SkillsView>("install_skill", { source, path, replace }),
+  writeSkill: (name: string, description: string, body: string, replace = false) => invoke<SkillsView>("write_skill", { name, description, body, replace }),
   /** The models a provider serves with the saved key, `[id, display name]`, asked from the provider itself. */
   listModels: (provider: string) => invoke<[string, string][]>("list_models", { provider }),
   /** Undo the agent's file edits from `turn` on. Rejects while a turn is running. */
@@ -78,6 +81,11 @@ export const api = {
     const preset = await invoke<string | null>("preset_workspace");
     if (preset) return preset;
     const picked = await open({ directory: true, multiple: false, title: "选一个文件夹作洞府" });
+    return typeof picked === "string" ? picked : null;
+  },
+  /** Ask for a folder with the system dialog, titled `title`. Resolves null when the user closes it. */
+  pickFolder: async (title: string): Promise<string | null> => {
+    const picked = await open({ directory: true, multiple: false, title });
     return typeof picked === "string" ? picked : null;
   },
   /** Open an http(s) or mailto link in the system's default app, never in the app window. */

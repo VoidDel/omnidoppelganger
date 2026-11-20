@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import type { ListedSkill, SkillsView } from "../lib/types";
+import { FormDialog, Row } from "./FormDialog";
 import { Hint } from "./Hint";
 
 /** How each 秘籍 that comes with the app is called and sealed. */
@@ -92,6 +93,244 @@ function Card({ skill, held, onChange }: CardProps) {
   );
 }
 
+type Way = "write" | "folder" | "git";
+
+const WAYS: [Way, string][] = [
+  ["write", "自己写"],
+  ["folder", "从文件夹"],
+  ["git", "从 Git 仓库"],
+];
+
+/** A skill's name as skills are named everywhere: lower-case letters, digits and `-`. */
+const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+/** What went wrong putting a skill in, in the user's words: with a way to put it in place of one there, or the folders below to choose from. */
+export function skillProblem(error: string): {
+  text: string;
+  replace?: boolean;
+  choices?: string[];
+} {
+  if (error.includes("already installed")) return { text: "秘籍目录里已经有同名的一部。", replace: true };
+  const below = /Skills in the folders below it: (.+?)\. Pass/.exec(error);
+  if (below)
+    return {
+      text: "这里顶上没有 SKILL.md，下面的文件夹里有这几部，选一部收入：",
+      choices: below[1].split(", "),
+    };
+  if (error.includes("it is not a skill"))
+    return {
+      text: "这里找不到 SKILL.md，下面几层文件夹里也没有：它不是一部秘籍。",
+    };
+  if (error.startsWith("Cannot run git"))
+    return {
+      text: "这台电脑上找不到 Git。先装好 Git（git-scm.com），再关掉程序重开。",
+    };
+  const failed = /^`git clone .*?` failed: ([\s\S]*)$/.exec(error);
+  if (failed) return { text: `下载失败：${failed[1]}` };
+  if (error.includes("took more than three minutes")) return { text: "下载超过三分钟还没完，停下了。" };
+  if (error.includes("will not do")) return { text: "名称只能用小写字母、数字和 -，最多 64 个字符。" };
+  if (error.includes("comes with the app")) return { text: "这个名字是内置秘籍用的，换一个。" };
+  if (error.includes("holds more than a skill does"))
+    return {
+      text: "这个文件夹太大，不像一部秘籍（超过 2000 个文件或 50 MB），没有收入。",
+    };
+  return { text: error };
+}
+
+/** The window for adding a 秘籍 of the user's own: written here, or put in from a folder or a Git repository. */
+function SkillDialog({ onDone, onClose }: { onDone: (view: SkillsView) => void; onClose: () => void }) {
+  const [way, setWay] = useState<Way>("write");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [body, setBody] = useState("");
+  const [folder, setFolder] = useState("");
+  const [address, setAddress] = useState("");
+  const [within, setWithin] = useState("");
+  const [wrong, setWrong] = useState<ReturnType<typeof skillProblem> | null>(null);
+  const [saving, setSaving] = useState(false);
+  const typed =
+    <T,>(set: (value: T) => void) =>
+    (value: T) => {
+      set(value);
+      setWrong(null);
+    };
+  const put = (close: () => void, replace = false, inside?: string) => {
+    const missing =
+      way === "write"
+        ? !SKILL_NAME.test(name.trim())
+          ? "名称只能用小写字母、数字和 -，最多 64 个字符。"
+          : !description.trim()
+            ? "写一句说明：分身靠它决定什么时候翻开这部秘籍。"
+            : !body.trim()
+              ? "写上做法：分身翻开秘籍时照着做的就是这些。"
+              : null
+        : way === "folder"
+          ? !folder.trim() && "选一个带 SKILL.md 的文件夹。"
+          : !/^(https?:\/\/|git@|ssh:\/\/)/.test(address.trim()) && !address.trim().endsWith(".git") && "填仓库的地址，以 https:// 或 git@ 开头。";
+    if (missing) return setWrong({ text: missing });
+    setSaving(true);
+    setWrong(null);
+    const request =
+      way === "write"
+        ? api.writeSkill(name.trim(), description, body, replace)
+        : api.installSkill(way === "folder" ? folder.trim() : address.trim(), (inside ?? within).trim() || null, replace);
+    request.then(
+      (view) => {
+        setSaving(false);
+        onDone(view);
+        close();
+      },
+      (error) => {
+        setSaving(false);
+        setWrong(skillProblem(String(error)));
+      },
+    );
+  };
+  return (
+    <FormDialog
+      seal="籍"
+      title="新的秘籍"
+      modes={WAYS}
+      mode={way}
+      onMode={(next) => {
+        setWay(next);
+        setWrong(null);
+      }}
+      wrong={
+        wrong &&
+        ((close) => (
+          <>
+            {wrong.text}
+            {wrong.replace && (
+              <button type="button" className="button outline red small" disabled={saving} onClick={() => put(close, true)}>
+                替换它
+              </button>
+            )}
+            {wrong.choices && (
+              <span className="skill-choices">
+                {wrong.choices.map((choice) => (
+                  <button
+                    key={choice}
+                    type="button"
+                    className="button outline small mono"
+                    disabled={saving}
+                    onClick={() => {
+                      const inside = within.trim() ? `${within.trim().replace(/\/+$/, "")}/${choice}` : choice;
+                      setWithin(inside);
+                      put(close, false, inside);
+                    }}
+                  >
+                    {choice}
+                  </button>
+                ))}
+              </span>
+            )}
+          </>
+        ))
+      }
+      onClose={onClose}
+      onSubmit={(close) => put(close)}
+      actions={(close) => (
+        <>
+          <button type="submit" className="button primary" disabled={saving}>
+            {saving ? (way === "git" ? "正在下载…" : "正在收入…") : "收入"}
+          </button>
+          <button type="button" className="button text" onClick={close}>
+            算了
+          </button>
+        </>
+      )}
+    >
+      {way === "write" && (
+        <>
+          <Row label="名称" htmlFor="skill-name" hint="小写字母、数字和 -。在输入框打 /名称，就能叫分身照它办事。">
+            <input
+              id="skill-name"
+              className="input mono"
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="例如 weekly-report"
+              value={name}
+              onChange={(event) => typed(setName)(event.target.value)}
+            />
+          </Row>
+          <Row label="说明" htmlFor="skill-description" hint="一句话：它管什么事、什么时候该用。分身平时只看得到这一句，靠它决定要不要翻开。">
+            <input
+              id="skill-description"
+              className="input"
+              placeholder="例如：写周报时用，汇总这周合进主干的改动，按模块分组"
+              value={description}
+              onChange={(event) => typed(setDescription)(event.target.value)}
+            />
+          </Row>
+          <Row label="做法" htmlFor="skill-body" hint="照着做的说明，用 Markdown 写。分身翻开这部秘籍时读的就是这些。">
+            <textarea
+              id="skill-body"
+              className="input config"
+              rows={10}
+              placeholder={"## 步骤\n\n1. 用 git log 列出这周合进主干的提交\n2. 按模块分组，每组一两句话\n3. 末尾写下周要做的"}
+              value={body}
+              onChange={(event) => typed(setBody)(event.target.value)}
+            />
+          </Row>
+        </>
+      )}
+      {way === "folder" && (
+        <Row label="文件夹" htmlFor="skill-folder" hint="带 SKILL.md 的文件夹，会整个复制进你的秘籍目录，原来的文件夹不动。">
+          <div className="inline wide">
+            <input
+              id="skill-folder"
+              className="input mono"
+              autoFocus
+              spellCheck={false}
+              placeholder="D:\skills\pdf"
+              value={folder}
+              onChange={(event) => typed(setFolder)(event.target.value)}
+            />
+            <button
+              type="button"
+              className="button outline"
+              onClick={() =>
+                api.pickFolder("选一个带 SKILL.md 的文件夹").then((picked) => {
+                  if (picked) typed(setFolder)(picked);
+                })
+              }
+            >
+              选择…
+            </button>
+          </div>
+        </Row>
+      )}
+      {way === "git" && (
+        <>
+          <Row label="地址" htmlFor="skill-address" hint="仓库的地址，或 GitHub 上某个文件夹的地址。要装有 Git，只取最新的一次提交。">
+            <input
+              id="skill-address"
+              className="input mono"
+              autoFocus
+              spellCheck={false}
+              placeholder="https://github.com/anthropics/skills/tree/main/skills/pdf"
+              value={address}
+              onChange={(event) => typed(setAddress)(event.target.value)}
+            />
+          </Row>
+          <Row label="子文件夹" htmlFor="skill-within" hint="可选。秘籍不在仓库顶上时，填它所在的文件夹。">
+            <input
+              id="skill-within"
+              className="input mono"
+              spellCheck={false}
+              placeholder="例如 skills/pdf"
+              value={within}
+              onChange={(event) => typed(setWithin)(event.target.value)}
+            />
+          </Row>
+        </>
+      )}
+    </FormDialog>
+  );
+}
+
 /**
  * The 秘籍 page: the skills that come with the app, each kept out of the 分身's sight until switched on, and the
  * user's own, in the user's skills directory.
@@ -100,6 +339,8 @@ export function SkillsPage({ onChanged }: { onChanged: () => void }) {
   const [view, setView] = useState<SkillsView | null>(null);
   const [wrong, setWrong] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** The add window while it is open; a fresh one each time it is opened. */
+  const [adding, setAdding] = useState<object | null>(null);
   useEffect(() => {
     api.listSkills().then(setView, (error) => setWrong(String(error)));
   }, []);
@@ -147,12 +388,13 @@ export function SkillsPage({ onChanged }: { onChanged: () => void }) {
         </section>
 
         <section>
-          <h2>自己的秘籍</h2>
-          {view && own.length === 0 && (
-            <p className="muted">
-              还没有。可以叫分身装一部（它会用 install_skill，从文件夹或 Git 仓库装，先请示你），或者把带 SKILL.md 的文件夹放进 <span className="mono">{view.folder}</span>。
-            </p>
-          )}
+          <div className="section-head">
+            <h2>自己的秘籍</h2>
+            <button type="button" className="button outline small" disabled={saving} onClick={() => setAdding({})}>
+              ＋ 添加秘籍
+            </button>
+          </div>
+          {view && own.length === 0 && <p className="muted">还没有。点「添加秘籍」自己写一部，或者从文件夹、Git 仓库收入；也可以叫分身装一部，它会先请示你。</p>}
           <div className="mcp-list">
             {own.map((skill) => (
               <Card key={skill.directory} skill={skill} held={saving} onChange={change} />
@@ -169,6 +411,16 @@ export function SkillsPage({ onChanged }: { onChanged: () => void }) {
           </p>
         </section>
       </div>
+      {adding && (
+        <SkillDialog
+          onDone={(next) => {
+            setView(next);
+            onChanged();
+          }}
+          // Its close comes a moment after it shuts: it lets go only of the window it opened, not one opened since.
+          onClose={() => setAdding((now) => (now === adding ? null : now))}
+        />
+      )}
     </div>
   );
 }
