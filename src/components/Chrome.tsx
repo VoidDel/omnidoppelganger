@@ -1166,30 +1166,46 @@ export function Composer(props: ComposerProps) {
   const commands = [...own, ...given].sort((a, b) => rank(a) - rank(b));
   /** The text the menu was put away for with Escape: shown again once the text changes. */
   const [dismissed, setDismissed] = useState<string | null>(null);
-  const menu = dismissed === text ? [] : offers(commands, text);
+  /** The menu opened with the "/" button: every command, whatever the box holds, until one is taken or it is put away. */
+  const [browsing, setBrowsing] = useState(false);
+  const menu = browsing ? offers(commands, "/") : dismissed === text ? [] : offers(commands, text);
   const [chosen, setChosen] = useState(0);
-  useEffect(() => setChosen(0), [text]);
+  // What is typed takes over from the button's menu.
+  useEffect(() => {
+    setChosen(0);
+    setBrowsing(false);
+  }, [text]);
   const menuList = useRef<HTMLDivElement>(null);
-  useEffect(() => menuList.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }), [chosen]);
-  /** Do a command with what follows it, and empty the box; or say why it was not done. */
-  const perform = (command: SlashCommand, arg: string) => {
+  // Kept in sight as the choice moves. In braces: scrolling now answers with a promise, which an effect must not
+  // hand back, or it is taken for the effect's cleanup and called when the choice next changes.
+  useEffect(() => {
+    menuList.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [chosen]);
+  /**
+   * Do a command with what follows it, and empty the box of the command typed there; or say why it was not done.
+   * With `keep`, the box is left as it is: the command came from the button, and what the box holds is not it.
+   */
+  const perform = (command: SlashCommand, arg: string, keep = false) => {
     if (command.unavailable) return setRefused(command.unavailable);
     const why = command.run(arg);
     if (typeof why === "string") return setRefused(why);
-    setText("");
+    if (!keep) setText("");
     setRefused(null);
   };
   /** Take an offer: a value is done at once; a command is done, unless it wants something yet to be written, which it is completed to wait for. */
   const accept = (offer: Offer) => {
     if (offer.command.unavailable) return setRefused(offer.command.unavailable);
     if (offer.kind === "choice") return perform(offer.command, offer.choice.value);
-    const typed = parse(text);
+    // Opened with the button, the menu is not about what the box holds: the command is taken as if "/" alone were typed.
+    const typed = browsing ? parse("/") : parse(text);
+    const fromButton = browsing;
+    setBrowsing(false);
     if ((!typed?.named && (offer.command.arg || offer.command.choices)) || (offer.command.choices && !typed?.arg)) {
       setText(completion(offer));
       input.current?.focus();
       return;
     }
-    perform(offer.command, typed?.arg ?? "");
+    perform(offer.command, typed?.arg ?? "", fromButton);
   };
   const blind = `${model} 这门心法只认字，看不了图。点左下的心法，换一门能看图的。`;
   /** Attach the pictures pasted into the box, saying why when one cannot be sent. */
@@ -1398,6 +1414,8 @@ export function Composer(props: ComposerProps) {
           aria-controls={menu.length > 0 ? "slash-menu" : undefined}
           aria-activedescendant={menu.length > 0 ? `slash-${Math.min(chosen, menu.length - 1)}` : undefined}
           onChange={(event) => setText(event.target.value)}
+          // The button's menu belongs to the box while the box has the keyboard: pressed elsewhere, it is put away.
+          onBlur={() => setBrowsing(false)}
           onPaste={(event) => {
             // A pasted screenshot is attached; pasted text goes into the box as usual.
             const files = [...event.clipboardData.items].filter((item) => item.kind === "file" && item.type.startsWith("image/")).flatMap((item) => item.getAsFile() ?? []);
@@ -1415,6 +1433,7 @@ export function Composer(props: ComposerProps) {
               }
               if (event.key === "Tab" && !event.shiftKey) {
                 event.preventDefault();
+                setBrowsing(false);
                 setText(completion(menu[Math.min(chosen, menu.length - 1)]));
                 return;
               }
@@ -1425,6 +1444,7 @@ export function Composer(props: ComposerProps) {
               }
               if (event.key === "Escape") {
                 event.preventDefault();
+                setBrowsing(false);
                 setDismissed(text);
                 return;
               }
@@ -1455,57 +1475,35 @@ export function Composer(props: ComposerProps) {
             </svg>
             <span className="sr-only">附件</span>
           </button>
-          {/* The "/" commands, for a hand on the pointer: those that take something put themselves in the box to be finished. */}
-          <Popup
-            name="命令"
-            title="命令：也可以在输入框行首打 / 唤出"
-            label={
-              <>
-                <span className="slash-glyph" aria-hidden="true">
-                  /
-                </span>
-                <span className="label sr-only">命令</span>
-              </>
-            }
-          >
-            {(close) => (
-              <>
-                <div className="mode-menu-head">
-                  <span>命令</span>
-                  <span>行首打 / 也能唤出</span>
-                </div>
-                <div className="menu-scroll">
-                  {commands.map((command) => (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      key={command.name}
-                      className="mode-option plain"
-                      disabled={!!command.unavailable}
-                      title={command.unavailable}
-                      onClick={() => {
-                        close();
-                        if (command.arg || command.choices) {
-                          setText(`/${command.name} `);
-                          input.current?.focus();
-                        } else perform(command, "");
-                      }}
-                    >
-                      <span className="mode-text">
-                        <span className="name">
-                          <span className="mono">/{command.name}</span>
-                          <span className="slash-label">{command.label}</span>
-                          {command.arg && <span className="slash-arg">{command.arg}</span>}
-                        </span>
-                        <span className="hint">{command.unavailable ?? command.hint}</span>
-                      </span>
-                      <span />
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </Popup>
+          {/* The "/" commands, for a hand on the pointer: the same menu typing "/" brings up, with every command in it. */}
+          <div className="mode-picker">
+            <button
+              type="button"
+              className="select-button"
+              aria-haspopup="listbox"
+              aria-expanded={menu.length > 0}
+              aria-controls={menu.length > 0 ? "slash-menu" : undefined}
+              title="命令：也可以在输入框行首打 / 唤出"
+              // The box keeps the keyboard, so the arrows, Enter and Escape work in the menu as when it is typed up.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                input.current?.focus();
+                if (menu.length > 0) {
+                  setBrowsing(false);
+                  setDismissed(text);
+                } else {
+                  setDismissed(null);
+                  setChosen(0);
+                  setBrowsing(true);
+                }
+              }}
+            >
+              <span className="slash-glyph" aria-hidden="true">
+                /
+              </span>
+              <span className="label sr-only">命令</span>
+            </button>
+          </div>
           <Popup
             name="心法"
             summon={modelSummon}

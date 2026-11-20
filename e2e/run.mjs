@@ -535,6 +535,24 @@ try {
   check(!readBack.is_error && readBack.content.includes("first line of the log") && !(await page.evaluate(`document.body.innerText.includes("请本尊定夺")`)), "the 分身 read the attached file outside the workspace without asking");
   check((await page.evaluate(`[...document.querySelectorAll(".said-files .file-chip-name")].map((name) => name.textContent).join()`)) === "要点.md,build.log,sheet.pdf", "the conversation shows what was attached under the message");
 
+  // The "/" menu: its choice moves with the arrow keys and with the pointer, and the message box stays whole.
+  // (Scrolling the choice into sight answers with a promise; an effect that handed it back broke the box.)
+  await page.type("#composer-input", "/");
+  await page.waitFor("the / menu", `!!document.querySelector(".slash-menu")`);
+  const pressed = (key) => page.evaluate(`document.querySelector("#composer-input").dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(key)}, code: ${JSON.stringify(key)}, bubbles: true, cancelable: true }))`);
+  const chosenCommand = `[...document.querySelectorAll(".slash-menu [aria-selected]")].findIndex((option) => option.getAttribute("aria-selected") === "true")`;
+  await pressed("ArrowDown");
+  await pressed("ArrowDown");
+  await pressed("ArrowUp");
+  await page.waitFor("the choice to move with the arrow keys", `${chosenCommand} === 1`);
+  await page.evaluate(`document.querySelectorAll(".slash-menu [aria-selected]")[3].dispatchEvent(new MouseEvent("mouseover", { bubbles: true }))`);
+  await page.waitFor("the choice to follow the pointer", `${chosenCommand} === 3`);
+  await pressed("ArrowDown");
+  await page.waitFor("the choice to move on from there", `${chosenCommand} === 4`);
+  check(await page.evaluate(`!!document.querySelector("#composer-input") && !document.querySelector(".broken")`), "the / menu's choice moves with the arrow keys and the pointer, and the message box stays whole");
+  await pressed("Escape");
+  await page.waitFor("the / menu to be put away", `!document.querySelector(".slash-menu")`);
+
   console.log("Passed.");
 } catch (error) {
   failed = true;
