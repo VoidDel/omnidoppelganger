@@ -12,6 +12,7 @@ pub mod grants;
 pub mod imagegen;
 pub mod jobs;
 pub mod llm;
+pub mod lsp;
 pub mod made;
 pub mod mcp;
 pub mod openai_chat;

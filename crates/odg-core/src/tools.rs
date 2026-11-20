@@ -59,6 +59,8 @@ pub struct ToolContext {
     pub painter: Option<crate::imagegen::ImageConfig>,
     /// Whether the model at work can see pictures: `None` when that is not known, and a picture is tried.
     pub vision: Option<bool>,
+    /// The language servers `code_nav` asks. `None` means code is not navigated.
+    pub lsp: Option<Arc<crate::lsp::LspHub>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,7 +75,7 @@ pub struct ToolOutput {
 }
 
 impl ToolOutput {
-    fn ok(content: impl Into<String>, meta: Value) -> Self {
+    pub(crate) fn ok(content: impl Into<String>, meta: Value) -> Self {
         Self { content: content.into(), is_error: false, meta, images: Vec::new() }
     }
 
@@ -180,6 +182,22 @@ pub fn specs() -> Vec<Value> {
                     "content": { "type": "string", "description": "The file's full new contents." }
                 },
                 "required": ["path", "content"]
+            }
+        }),
+        json!({
+            "name": "code_nav",
+            "description": "Find your way in code with the language's own server, which reads it as the compiler does: where a symbol is defined, where it is used, what implements it, its type and documentation, a file's outline, symbols by name across the project, and a file's errors and warnings. More precise than `search` for code: it tells a function from a variable of the same name, and follows imports and re-exports. For a place in a file, give `path`, `line`, and the `symbol` on that line. Rust, C and C++, TypeScript and JavaScript, Python, and Go are understood when their server is installed; the first question for a language starts its server, which can take a minute to index a large project.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "operation": { "type": "string", "enum": ["definition", "references", "implementations", "hover", "symbols", "find_symbol", "diagnostics"], "description": "definition, references, implementations, and hover ask about the symbol at `line`; symbols outlines the file; find_symbol looks up `query` across the project; diagnostics lists the file's errors and warnings." },
+                    "path": { "type": "string", "description": "The file, absolute or relative to the workspace. For find_symbol, any file of the language to search in." },
+                    "line": { "type": "integer", "description": "The line the symbol is on, from 1." },
+                    "symbol": { "type": "string", "description": "The symbol on that line to ask about, as it is written there." },
+                    "column": { "type": "integer", "description": "Instead of `symbol`: the column, from 1." },
+                    "query": { "type": "string", "description": "For find_symbol: the name, or part of it." }
+                },
+                "required": ["operation", "path"]
             }
         }),
         json!({
@@ -664,7 +682,7 @@ pub fn git_branch(workspace: &Path) -> Option<String> {
     }
 }
 
-fn display(workspace: &Path, path: &Path) -> String {
+pub(crate) fn display(workspace: &Path, path: &Path) -> String {
     path.strip_prefix(workspace).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
@@ -687,6 +705,10 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "edit_file" => edit_file(input, context),
         "write_file" => write_file(input, context),
         "delete_file" => delete_file(input, context),
+        "code_nav" => match &context.lsp {
+            Some(hub) => crate::lsp::navigate(hub, &context.workspace, input, &context.cancel).await.map_err(ToolOutput::error),
+            None => Err(ToolOutput::error("Code navigation is not available here. Use `search` instead.")),
+        },
         "move_file" => move_file(input, context),
         "search" => search(input, context).await,
         "find_files" => find_files(input, context).await,
@@ -1610,7 +1632,7 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None, runtime: None, painter: None, vision: Some(true) };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None, runtime: None, painter: None, vision: Some(true), lsp: None };
         (directory, context)
     }
 

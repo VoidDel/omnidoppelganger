@@ -233,7 +233,7 @@ function useFresh(): { className: string; style: CSSProperties | undefined } {
 type Weight = "live" | "failed" | "wrote" | "act" | "quiet";
 
 /** Acts that only look: they change nothing and reach nowhere outside the machine. */
-const LOOKS = new Set(["read_file", "search", "find_files", "load_skill", "update_todos", "command_output"]);
+const LOOKS = new Set(["read_file", "search", "find_files", "code_nav", "load_skill", "update_todos", "command_output"]);
 
 /** Whether nothing came of an act because it was not let to, or was taken back. */
 const voided = (tool: ToolItem) => tool.approval?.decision === "deny" || !!tool.result?.meta?.refused || !!tool.undone;
@@ -292,11 +292,24 @@ function sealOf(tool: ToolItem): string {
       return "询";
     case "ask_user":
       return "问";
+    case "code_nav":
+      return "察";
     default:
       // A tool of an MCP server: an instrument borrowed from outside.
       return mcpTool(tool.name) ? "器" : "术";
   }
 }
+
+/** What each operation of `code_nav` is called in the conversation. */
+const CODE_NAV: Record<string, string> = {
+  definition: "查定义",
+  references: "查引用",
+  implementations: "查实现",
+  hover: "看类型",
+  symbols: "看大纲",
+  find_symbol: "找符号",
+  diagnostics: "查错",
+};
 
 /** What a finished or running tool call says in its one-line header. */
 function describe(tool: ToolItem): { verb: string; target: string; outcome: string } {
@@ -400,6 +413,14 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       };
     case "ask_user":
       return { verb: "请教本尊", target: "", outcome: waiting || (result!.isError ? "没问成" : "已答") };
+    case "code_nav": {
+      const operation = text("operation");
+      const verb = CODE_NAV[operation] ?? "察看代码";
+      const line = typeof tool.input.line === "number" ? `:${tool.input.line}` : "";
+      const what = text("symbol") || text("query");
+      const counted = operation === "diagnostics" ? `${meta?.errors ?? 0} 错，共 ${meta?.results ?? 0} 条` : operation === "hover" ? "已得" : `${meta?.results ?? 0} 处`;
+      return { verb, target: [`${text("path")}${line}`, what].filter(Boolean).join("  "), outcome: waiting || (result!.isError ? "没查成" : counted) };
+    }
     case "update_todos": {
       const list = meta?.todos ?? [];
       const current = list.find((todo) => todo.status === "in_progress")?.text ?? "";
@@ -490,7 +511,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "stop_command" ? result?.meta?.output : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
   // What an MCP tool returned is its whole result, so it is kept one click away like a command's output.
-  const returned = (result?.meta?.mcp || tool.name === "web_search") && !result?.isError ? result?.content : undefined;
+  const returned = (result?.meta?.mcp || tool.name === "web_search" || tool.name === "code_nav") && !result?.isError ? result?.content : undefined;
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
   // The file an edit wrote, by where it is: what can be opened from under the act.
@@ -579,6 +600,11 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
   edit: { title: "分身要改一个文件，请本尊定夺", note: "眼下的禁制是步步请示，每次改文件都先请示。整文件写入时，下面是它要写进去的全部内容。", always: "之后改文件都准" },
   outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
   outside_read: { title: "分身要读洞府之外的内容，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类读取都准" },
+  lsp: {
+    title: "分身要启动语言服务来察看代码，请本尊定夺",
+    note: "TypeScript 的语言服务会加载项目 node_modules 里的 TypeScript 来分析代码，这算是运行项目里的代码。准了之后，查定义、查引用这类不改文件的操作就能用。别的语言的服务都设成不运行项目代码，不用请示。",
+    always: "之后都准",
+  },
   git_write: {
     title: "分身要改 .git 里的文件，请本尊定夺",
     note: "这里放着 Git 的钩子和配置，改动后你自己运行 git 时可能执行其中的代码，所以每次都要请示。",
@@ -663,7 +689,7 @@ function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
             {alwaysLabel(approval.grant, ask.always)}
           </button>
         )}
-        {(approval.grant === "search" || ["command:", "mcp:", "web:"].some((kind) => approval.grant?.startsWith(kind))) && (
+        {(approval.grant === "search" || ["command:", "mcp:", "web:", "lsp:"].some((kind) => approval.grant?.startsWith(kind))) && (
           <button type="button" className="button outline red" title="发一道通行符：重启应用之后也算数，可以在设置的「禁制」里收回" onClick={() => onDecide(tool.id, "allow_always")}>
             此府永准
           </button>

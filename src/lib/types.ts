@@ -155,6 +155,9 @@ export interface ToolMeta {
   engine?: string;
   model?: string;
   tokens?: Tokens;
+  /** For `code_nav`: what was asked, and of a file's diagnostics how many are errors; `server` is the language server that answered. */
+  operation?: string;
+  errors?: number;
   /** The address `fetch_url` ended at, its title, and how many characters of text it holds. */
   url?: string;
   title?: string | null;

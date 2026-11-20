@@ -91,6 +91,8 @@ pub struct Services {
     pub runtime: Option<PathBuf>,
     /// Where `generate_image` paints, asked at every request so that saving a key switches painting on.
     pub painter: Option<crate::imagegen::ImageSource>,
+    /// The language servers `code_nav` asks, shared by every session. `None` means code is not navigated.
+    pub lsp: Option<Arc<crate::lsp::LspHub>>,
 }
 
 /// What the model is asked when the conversation is compacted. It follows
@@ -149,6 +151,8 @@ struct Inner<L: Llm> {
     documents: Option<PathBuf>,
     /// Where a picture is painted, asked at every request so that saving a key switches painting on.
     painter: Option<crate::imagegen::ImageSource>,
+    /// The language servers `code_nav` asks; shared by every session.
+    lsp: Option<Arc<crate::lsp::LspHub>>,
     /// Where Git keeps the workspace's repository, found when a command is first confined.
     git_directory: std::sync::OnceLock<Option<PathBuf>>,
     /// The session works in the folder kept for conversations.
@@ -240,7 +244,7 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
          \n\
          How you work:\n\
          - Read and search before you change code, and keep each change as small as the task allows.\n\
-         - To read, search, or list files, use `read_file`, `search`, and `find_files`, not shell commands: they never wait for the user's approval, and the user sees what you looked at.\n\
+         - To read, search, or list files, use `read_file`, `search`, and `find_files`, not shell commands: they never wait for the user's approval, and the user sees what you looked at. In code, `code_nav` finds where a symbol is defined and used more surely than `search`.\n\
          - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
          - For work of several steps, keep a to-do list with `update_todos` and mark items as you go; the user follows it beside the conversation.{delegating}\n\
          - After changing code, verify it when the project gives you a way to: build it, run its tests.\n\
@@ -303,7 +307,7 @@ impl<L: Llm> Session<L> {
         let worktree = crate::session::worktree(log.events()).cloned();
         let granted_in = worktree.as_ref().map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
         let store = SessionStore::of(&log);
-        let Services { grants: kept, mcp, skills, search, sandbox, chat, runtime: documents, painter } = services.clone();
+        let Services { grants: kept, mcp, skills, search, sandbox, chat, runtime: documents, painter, lsp } = services.clone();
         let chatting = chat.is_some_and(|folder| same_folder(&folder, &workspace));
         let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
         Ok(Self {
@@ -326,6 +330,7 @@ impl<L: Llm> Session<L> {
                 sandbox,
                 documents,
                 painter,
+                lsp,
                 git_directory: std::sync::OnceLock::new(),
                 chatting,
                 provider: Mutex::new(provider),
@@ -671,6 +676,7 @@ impl<L: Llm> Inner<L> {
             runtime: self.documents.clone(),
             painter: self.painter_config(),
             vision: providers::vision(&self.provider(), &self.model()),
+            lsp: self.lsp.clone(),
         }
     }
 
@@ -1373,7 +1379,7 @@ mod tests {
             Tuning { effort: "high".to_string(), context_limit, context_window, guardian, approval_wait }
         };
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None, sandbox: sandbox.then(|| Arc::new(|| Some(Vec::new())) as crate::sandbox::SandboxSource), chat: None, runtime: None, painter: None };
+        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None, sandbox: sandbox.then(|| Arc::new(|| Some(Vec::new())) as crate::sandbox::SandboxSource), chat: None, runtime: None, painter: None, lsp: None };
         let session = Session::new(log, llm.clone(), Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, limits, guard, workspace, session, llm, events }
     }
@@ -1743,7 +1749,7 @@ mod tests {
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
-        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None, chat: None, runtime: None, painter: None };
+        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None, chat: None, runtime: None, painter: None, lsp: None };
         let later = Session::new(log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
         fixture.events = events;
@@ -1987,7 +1993,7 @@ mod tests {
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
         // Searching is set up, so the model is offered `web_search` as well.
         let search: crate::web::SearchSource = Arc::new(|| Some(crate::web::SearchConfig { url: "http://127.0.0.1:9/web_search".into(), key: "k".into(), engine: "search_std".into() }));
-        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search), sandbox: None, chat: None, runtime: None, painter: None };
+        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search), sandbox: None, chat: None, runtime: None, painter: None, lsp: None };
         let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         // Auto mode lets safe commands through, but never a server's tool.
         session.set_mode(Mode::Auto);

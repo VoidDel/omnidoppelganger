@@ -38,6 +38,8 @@ struct App {
     schedules: ScheduleStore,
     /// The MCP servers the user configured, shared by every session.
     mcp: Arc<McpHub>,
+    /// The language servers `code_nav` started, shared by every session.
+    lsp: Arc<odg_core::lsp::LspHub>,
     llm: Arc<Router>,
     /// Sessions opened since the app started. A session stays here so its turn keeps running while another is shown.
     sessions: Mutex<HashMap<String, Session<Router>>>,
@@ -121,6 +123,7 @@ impl App {
             chat: Some(settings::chat_folder()),
             runtime: Some(settings::home().join("runtime")),
             painter: Some(Arc::new(move || painting.painter())),
+            lsp: Some(self.lsp.clone()),
         };
         Session::new(log, self.llm.clone(), Arc::new(tuning), services, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
     }
@@ -829,7 +832,8 @@ pub fn run() {
                     let _ = odg_core::runtime::install(&root, &watch, &tokio_util::sync::CancellationToken::new()).await;
                 });
             }
-            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, llm, sessions: Mutex::new(HashMap::new()), events });
+            let lsp = Arc::new(odg_core::lsp::LspHub::default());
+            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, lsp, llm, sessions: Mutex::new(HashMap::new()), events });
 
             // The clock: whatever has come due is started, with or without a window to show it in.
             let handle = app.handle().clone();
@@ -906,6 +910,7 @@ pub fn run() {
                 }
                 // Ends the servers started as processes.
                 app.mcp.shutdown();
+                app.lsp.shutdown();
             }
         });
 }

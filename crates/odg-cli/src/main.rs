@@ -102,6 +102,11 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
     let subject = match name {
         "read_file" | "edit_file" | "write_file" | "delete_file" => text("path"),
         "move_file" => format!("{} → {}", text("path"), text("to")),
+        "code_nav" => {
+            let line = input["line"].as_u64().map(|line| format!(":{line}")).unwrap_or_default();
+            let what = [text("symbol"), text("query")].into_iter().find(|what| !what.is_empty()).map(|what| format!(" {what}")).unwrap_or_default();
+            format!("{} {}{line}{what}", text("operation"), text("path"))
+        }
         "search" => text("pattern"),
         "find_files" => input["glob"].as_str().or(input["path"].as_str()).unwrap_or(".").to_string(),
         "run_command" => text("command"),
@@ -126,6 +131,7 @@ fn ask(reason: &str, detail: &str, session_wide: bool) -> Decision {
         "mcp" => "call this MCP tool",
         "git_write" => "change this file in .git",
         "outside_read" => "read outside the workspace",
+        "lsp" => "start a language server that loads the project's own code",
         _ => "change a file outside the workspace",
     };
     let mut stderr = std::io::stderr();
@@ -226,6 +232,7 @@ async fn run(options: Options) -> Result<bool, String> {
 
     // The model can only be offered the tools of servers that are connected, so they get a moment to.
     let mcp = Arc::new(McpHub::new(home.join("mcp.json"), tokio::runtime::Handle::current()));
+    let lsp = Arc::new(odg_core::lsp::LspHub::default());
     mcp.reload();
     for _ in 0..100 {
         if mcp.statuses().iter().all(|server| server.state != "connecting") {
@@ -257,6 +264,7 @@ async fn run(options: Options) -> Result<bool, String> {
         chat: Some(home.join("闲谈")),
         runtime: Some(home.join("runtime")),
         painter: Some(Arc::new(move || painting.painter())),
+        lsp: Some(lsp.clone()),
     };
     let (sender, mut events) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let session = Session::new(log, llm, Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).map_err(|error| error.to_string())?;
@@ -373,6 +381,7 @@ async fn run(options: Options) -> Result<bool, String> {
     // Nothing the run started outlives it.
     session.kill_jobs();
     mcp.shutdown();
+    lsp.shutdown();
     Ok(completed)
 }
 
@@ -452,5 +461,6 @@ mod tests {
         assert_eq!(describe("find_files", &json(r#"{"glob": "**/*.rs"}"#)), "find_files  **/*.rs");
         assert_eq!(describe("update_todos", &json("{}")), "update_todos");
         assert_eq!(describe("move_file", &json(r#"{"path": "a.txt", "to": "lib/a.txt"}"#)), "move_file  a.txt → lib/a.txt");
+        assert_eq!(describe("code_nav", &json(r#"{"operation": "definition", "path": "src/a.rs", "line": 12, "symbol": "helper"}"#)), "code_nav  definition src/a.rs:12 helper");
     }
 }

@@ -168,6 +168,17 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             Some(path) => ask("outside_read", path),
             None => Verdict::Allow,
         },
+        // Reading code through its language's server: outside the workspace as reading there is; and the one server
+        // that loads code of the project to run (see `crate::lsp`) is asked about, once for good if the user says so.
+        "code_nav" => match (outside("path"), crate::lsp::language_for(&path("path"))) {
+            (Some(path), _) => ask("outside_read", path),
+            (None, Some(language)) if language.runs_project_code => Verdict::Ask {
+                reason: "lsp",
+                detail: format!("{} ({})", language.program, workspace.display()),
+                grant: Some(format!("lsp:{}", language.program)),
+            },
+            (None, _) => Verdict::Allow,
+        },
         "web_search" => Verdict::Ask { reason: "search", detail: input["query"].as_str().unwrap_or_default().to_string(), grant: Some("search".to_string()) },
         // A picture writes a file and is paid for: what it shows, and where it goes, are put to the user.
         "generate_image" if mode == Mode::Plan => Verdict::Refuse("Nothing is painted in plan mode: a picture writes a file and is paid for. Put it in the plan."),
@@ -458,5 +469,18 @@ mod tests {
         // Asked about every time in 步步请示, and not done at all in 先谋后动.
         assert_eq!(reason(super::check(Mode::Manual, "delete_file", &json!({ "path": "a.txt" }), workspace)), Some("edit"));
         assert_eq!(reason(super::check(Mode::Plan, "move_file", &json!({ "path": "a.txt", "to": "b.txt" }), workspace)), Some("refused"));
+    }
+
+    #[test]
+    fn navigating_code_asks_only_outside_the_workspace_and_before_running_project_code() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        assert_eq!(check("code_nav", &json!({ "operation": "definition", "path": "src/a.rs" }), workspace), Verdict::Allow);
+        assert_eq!(super::check(Mode::Plan, "code_nav", &json!({ "operation": "symbols", "path": "a.py" }), workspace), Verdict::Allow);
+        assert_eq!(reason(check("code_nav", &json!({ "operation": "hover", "path": "../x.rs" }), workspace)), Some("outside_read"));
+        // The TypeScript server loads the project's own TypeScript: asked about, and allowed for good by its grant.
+        let typescript = check("code_nav", &json!({ "operation": "definition", "path": "src/a.ts" }), workspace);
+        assert!(matches!(&typescript, Verdict::Ask { reason: "lsp", grant: Some(grant), .. } if grant == "lsp:typescript-language-server"), "{typescript:?}");
+        assert!(crate::grants::GrantStore::keeps("lsp:typescript-language-server"));
     }
 }
