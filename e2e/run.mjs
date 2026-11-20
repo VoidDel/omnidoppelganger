@@ -167,10 +167,10 @@ try {
 
   // The model menu lists what the provider says it serves; picking one moves the session to it.
   const chip = (label) => `[...document.querySelectorAll(".composer-row .select-button")].find((b) => b.querySelector(".label")?.textContent === ${JSON.stringify(label)})?.querySelector(".value")?.textContent`;
-  await page.click("功法");
+  await page.click("心法");
   await page.waitForText("它报了 2 门");
   await page.click("claude-e2e-small");
-  await page.waitFor("the session to move to the picked model", `${chip("功法")} === "claude-e2e-small"`);
+  await page.waitFor("the session to move to the picked model", `${chip("心法")} === "claude-e2e-small"`);
   step("the model menu listed the provider's models, and picking one moved the session to it");
 
   // The 境界 menu sets how hard this 分身 works, apart from the settings' default.
@@ -395,13 +395,13 @@ try {
   const sandbox = await page.evaluate(`(() => { const box = [...document.querySelectorAll(".settings .check input")].find((input) => input.closest("label").textContent.includes("结界")); return { disabled: box.disabled, checked: box.checked, paths: document.querySelector("#sandbox-paths").closest(".field").hidden }; })()`);
   check(sandbox.disabled && !sandbox.checked && sandbox.paths, "the sandbox setting is off and cannot be switched on where the system has none");
   // A provider is added to the list of keys in a window of its own, and its key is kept.
-  await page.click("功法");
+  await page.click("心法");
   await page.waitFor("the list of providers that are set up", `document.querySelectorAll(".key-list li").length === 1 && document.querySelector(".key-list").textContent.includes("环境变量")`);
   // The button beside the model field asks the provider for its list again.
   const listed = mock.lists.count;
-  await page.click("刷新功法列表");
+  await page.click("刷新心法列表");
   for (let waited = 0; mock.lists.count === listed && waited < 100; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
-  await page.waitForText("问到它提供的 2 门功法");
+  await page.waitForText("问到它提供的 2 门心法");
   check(mock.lists.count === listed + 1, "the refresh button asked the provider for its models again");
   await page.click("新增宗门");
   await page.waitFor("the window that adds one", `document.querySelector("dialog.dialog")?.open`);

@@ -12,6 +12,8 @@ export interface SlashChoice {
 export interface SlashCommand {
   /** What follows "/": letters, digits, "-" and "_", typed without switching the input method. */
   name: string;
+  /** What it is called in the user's language, shown beside the name. */
+  label: string;
   /** Words it is also found by, in the user's language. */
   aliases: string[];
   /** What it does, in a line. */

@@ -301,12 +301,12 @@ export type SettingsTab = "model" | "rules" | "tools" | "look";
 const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] = [
   {
     id: "model",
-    name: "功法",
-    hint: "各个宗门和它们的密钥，默认分身修哪门功法、推演多深，前情留多长",
+    name: "心法",
+    hint: "各个宗门和它们的密钥，默认分身修哪门心法、推演多深，前情留多长",
     icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
   },
   { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
-  { id: "tools", name: "神通", hint: "天机阁（联网搜索）、技能。身外法器（MCP 服务）在侧栏的「法器」里", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
+  { id: "tools", name: "神通", hint: "天机阁（联网搜索）、秘籍。身外法器（MCP 服务）在侧栏的「法器」里", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
   {
     id: "look",
     name: "外观",
@@ -414,7 +414,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
         <KeyList view={view} onSave={onSave} onSaveKey={onSaveKey} onDeleteKey={onDeleteKey} />
         <section>
           <h2>默认分身</h2>
-          <p className="muted">新化出的分身照这里的来。已经化出的不受影响，要换功法在它输入框下方换。</p>
+          <p className="muted">新化出的分身照这里的来。已经化出的不受影响，要换心法在它输入框下方换。</p>
           <div className="field">
             <label htmlFor="default-provider">宗门（模型供应商）</label>
             <div className="inline model-row">
@@ -430,7 +430,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             <Hint>只列上面已有的宗门。要用别家，先点「新增宗门」把它添进来。</Hint>
           </div>
           <div className="field">
-            <label htmlFor="default-model">功法（模型）</label>
+            <label htmlFor="default-model">心法（模型）</label>
             <div className="inline model-row">
               <Combo
                 id="default-model"
@@ -445,25 +445,25 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                 type="button"
                 className={`icon-button ${asking ? "turning" : ""}`}
                 disabled={asking || keyed === "none"}
-                title={keyed === "none" ? "先给这个宗门填上密钥，才问得到它的功法" : asking ? "正在问……" : `再向 ${chosen?.name ?? settings.provider} 问一遍它有哪些功法`}
+                title={keyed === "none" ? "先给这个宗门填上密钥，才问得到它的心法" : asking ? "正在问……" : `再向 ${chosen?.name ?? settings.provider} 问一遍它有哪些心法`}
                 onClick={() => setAsked((times) => times + 1)}
               >
                 <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M13.2 8a5.2 5.2 0 0 1-9.3 3.2M2.8 8a5.2 5.2 0 0 1 9.3-3.2" />
                   <path d="M12.6 2.2v2.9H9.7M3.4 13.8v-2.9h2.9" />
                 </svg>
-                <span className="sr-only">刷新功法列表</span>
+                <span className="sr-only">刷新心法列表</span>
               </button>
             </div>
             <Hint>
               {asking
-                ? `正在向 ${chosen?.name ?? settings.provider} 问它有哪些功法……`
+                ? `正在向 ${chosen?.name ?? settings.provider} 问它有哪些心法……`
                 : served.models.length > 0
-                ? `已向 ${chosen?.name ?? settings.provider} 问到它提供的 ${served.models.length} 门功法，可以从列表里选，也可以直接填。`
+                ? `已向 ${chosen?.name ?? settings.provider} 问到它提供的 ${served.models.length} 门心法，可以从列表里选，也可以直接填。`
                 : served.why
-                  ? `没能向 ${chosen?.name ?? settings.provider} 问到功法列表（${served.why}），先用内置的几门，也可以直接填模型 ID。`
+                  ? `没能向 ${chosen?.name ?? settings.provider} 问到心法列表（${served.why}），先用内置的几门，也可以直接填模型 ID。`
                   : keyed === "none"
-                    ? "填上这个宗门的密钥后，会自动向它问有哪些功法。眼下可以从内置的几门里选，或直接填模型 ID。"
+                    ? "填上这个宗门的密钥后，会自动向它问有哪些心法。眼下可以从内置的几门里选，或直接填模型 ID。"
                     : "可以从列表里选，也可以直接填模型 ID。"}
             </Hint>
             {/* How much the model itself can hold, and who says so: a fact about the model, so one line, with the way to correct it kept out of sight. */}
@@ -483,7 +483,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
           </div>
           {editingWindow && (
             <div className="field">
-              <label htmlFor="context-window-set">这门功法一次最多能装多少（token）</label>
+              <label htmlFor="context-window-set">这门心法一次最多能装多少（token）</label>
               <input
                 id="context-window-set"
                 className="input mono"
@@ -500,7 +500,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                   if (event.key === "Escape") setEditingWindow(false);
                 }}
               />
-              <Hint>这是功法自己的硬指标，不是想让对话多长：填得比实际大，请求会被宗门拒掉。留空不改。</Hint>
+              <Hint>这是心法自己的硬指标，不是想让对话多长：填得比实际大，请求会被宗门拒掉。留空不改。</Hint>
             </div>
           )}
           <fieldset className="field">
@@ -544,8 +544,8 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             <Hint>
               每次请求都要把整段对话发给模型，对话越长越费灵石。对话到上限，分身会把前情凝成一段摘要，之后只凭摘要接着做。
               {settings.context_auto
-                ? `自动：按每门功法自己的窗口，用到它的八成，${settings.model} 眼下是 ${shortCount(ceiling)}。窗口大的功法前情留得长，也更费灵石。`
-                : "自己定一个数（token，最低 20000），对所有功法都用它；功法装不下这么多时，按它窗口的八成算。"}
+                ? `自动：按每门心法自己的窗口，用到它的八成，${settings.model} 眼下是 ${shortCount(ceiling)}。窗口大的心法前情留得长，也更费灵石。`
+                : "自己定一个数（token，最低 20000），对所有心法都用它；心法装不下这么多时，按它窗口的八成算。"}
             </Hint>
           </div>
           {/* Said here only when it matters: the model cannot hold as much as the limit asks for. */}
@@ -630,7 +630,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
           </Hint>
           {settings.guardian && (
             <div className="field">
-              <label htmlFor="guardian-model">护法的功法（{chosen?.name ?? settings.provider}）</label>
+              <label htmlFor="guardian-model">护法的心法（{chosen?.name ?? settings.provider}）</label>
               <div className="inline model-row">
                 <Combo
                   id="guardian-model"
@@ -638,14 +638,14 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
                   options={suggestions.map(([id, name]) => ({ value: id, text: id, note: name === id ? "" : name }))}
                   editable
                   mono
-                  placeholder="留空就用分身自己的功法"
+                  placeholder="留空就用分身自己的心法"
                   onSave={(model) => {
                     const { [settings.provider]: _, ...others } = settings.guardian_models;
                     onSave({ ...settings, guardian_models: model ? { ...others, [settings.provider]: model } : others });
                   }}
                 />
               </div>
-              <Hint>挑一门又快又便宜的。护法和分身用同一个宗门，这里设的是默认宗门的；别的宗门没设时，用分身自己的功法。</Hint>
+              <Hint>挑一门又快又便宜的。护法和分身用同一个宗门，这里设的是默认宗门的；别的宗门没设时，用分身自己的心法。</Hint>
             </div>
           )}
           <div className="field">
@@ -693,22 +693,22 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               />
             </div>
             <Hint>
-              搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家功法都能搜。
+              搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家心法都能搜。
               {view.search_ready
                 ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。"
-                : "还没有 GLM 的密钥，所以分身现在不能这样搜：到「功法」那一页给 GLM 添上密钥就行，或者到侧栏的「法器」里启用 Exa，它不用密钥。"}
+                : "还没有 GLM 的密钥，所以分身现在不能这样搜：到「心法」那一页给 GLM 添上密钥就行，或者到侧栏的「法器」里启用 Exa，它不用密钥。"}
               GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
             </Hint>
           </div>
         </section>
 
         <section>
-          <h2>技能</h2>
+          <h2>秘籍</h2>
           <p className="muted">
-            技能是专项的做事说明，平时不占分身的心神，遇到对得上的事它才去研读。每门技能是一个文件夹，里面放一份 SKILL.md，开头用 --- 围起来写上 name 和 description。放在{" "}
+            秘籍是专项的做事说明，平时不占分身的心神，遇到对得上的事它才去研读。每部秘籍是一个文件夹，里面放一份 SKILL.md，开头用 --- 围起来写上 name 和 description。放在{" "}
             <span className="mono">{view.skills_directory}</span> 里的对所有分身生效；放在某处洞府的 <span className="mono">.odg/skills</span> 里的只对那处洞府生效，重名时以洞府里的为准。新放进去的，下一轮生效。
           </p>
-          {view.skills.length === 0 && <p className="muted">还没有装技能。</p>}
+          {view.skills.length === 0 && <p className="muted">还没有装秘籍。</p>}
           {view.skills.map((skill) => (
             <div className="provider-card" key={skill.name}>
               <div className="who">

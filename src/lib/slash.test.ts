@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { choose, completion, find, offers, parse, type SlashCommand } from "./slash";
 
-const command = (name: string, extra: Partial<SlashCommand> = {}): SlashCommand => ({ name, aliases: [], hint: "", run: () => undefined, ...extra });
+const command = (name: string, extra: Partial<SlashCommand> = {}): SlashCommand => ({ name, label: name, aliases: [], hint: "", run: () => undefined, ...extra });
 const commands = [
   command("compact", { aliases: ["凝练", "摘要"] }),
   command("effort", { aliases: ["境界"], arg: "<境界>", choices: [{ value: "low", label: "练气" }, { value: "high", label: "金丹" }] }),

@@ -226,10 +226,10 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
     case "fetch_url":
       return { verb: "抓取网页", target: text("url"), outcome: waiting || (result!.isError ? "没取到" : `${shortCount(meta?.characters ?? 0)} 字`) };
     case "load_skill":
-      return { verb: "研读技能", target: text("name"), outcome: waiting || (result!.isError ? "没有这门技能" : "已读") };
+      return { verb: "研读秘籍", target: text("name"), outcome: waiting || (result!.isError ? "没有这部秘籍" : "已读") };
     case "install_skill":
       return {
-        verb: "习得技能",
+        verb: "习得秘籍",
         target: text("path") ? `${text("source")}  ${text("path")}` : text("source"),
         outcome: waiting || (result!.isError ? "没装成" : `「${meta?.skill ?? ""}」装给${meta?.scope === "user" ? "所有分身" : "这处洞府"}`),
       };
@@ -384,8 +384,8 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
     always: "之后这件法器都准",
   },
   install_skill: {
-    title: "分身要装一门技能，请本尊定夺",
-    note: "技能是一份做事说明，装上以后分身遇到对得上的事会照着做；里面也可能带着脚本。下面是从哪里装、装到哪里：.odg/skills 只对这处洞府生效，~/.odg/skills 对所有分身生效。从网上的仓库装时会先下载下来。无论哪种禁制，每次都要请示。",
+    title: "分身要装一部秘籍，请本尊定夺",
+    note: "秘籍是一份做事说明，装上以后分身遇到对得上的事会照着做；里面也可能带着脚本。下面是从哪里装、装到哪里：.odg/skills 只对这处洞府生效，~/.odg/skills 对所有分身生效。从网上的仓库装时会先下载下来。无论哪种禁制，每次都要请示。",
     always: "",
   },
   add_mcp_server: {

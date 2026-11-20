@@ -266,6 +266,17 @@ pre,
   padding: 0 var(--s-3);
 }
 
+/* The pages at the foot, a list of their own: close together, as the 分身 in a 洞府 are. */
+.sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-foot .row-button {
+  min-height: 40px;
+}
+
 /* The name over the door: pressed, it is the way back to the home screen. */
 .brand {
   display: flex;
@@ -2999,6 +3010,12 @@ button.select-button svg {
 .slash-name {
   flex: none;
   font-weight: 700;
+}
+
+/* What the command is called in Chinese, beside its name: as the controls it stands for are called. */
+.slash-label {
+  flex: none;
+  margin-left: 6px;
 }
 
 .slash-arg {

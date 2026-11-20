@@ -441,27 +441,30 @@ export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSchedules, 
           );
         })}
       </div>
-      <button type="button" className="row-button" aria-current={page === "mcp" ? "page" : undefined} title="法器：给分身添上本事的 MCP 服务" onClick={onMcp}>
-        {/* A bell of bronze hung from its loop: a 法器. */}
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M8 1.8v1.4M4.6 11.5V7.4a3.4 3.4 0 0 1 6.8 0v4.1M3 11.5h10M6.6 13.6a1.5 1.5 0 0 0 2.8 0" />
-        </svg>
-        法器
-      </button>
-      <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title="功课：到了时辰，自行化出分身去办" onClick={onSchedules}>
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="8" cy="8" r="6" />
-          <path d="M8 4.5V8l2.5 1.5" />
-        </svg>
-        功课
-      </button>
-      <button type="button" className="row-button" aria-current={page === "settings" ? "page" : undefined} onClick={onSettings}>
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-          <circle cx="8" cy="8" r="2.2" />
-          <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
-        </svg>
-        设置
-      </button>
+      {/* The pages at the foot, close together: one group, apart from the 分身 above. */}
+      <div className="sidebar-foot">
+        <button type="button" className="row-button" aria-current={page === "mcp" ? "page" : undefined} title="法器：给分身添上本事的 MCP 服务" onClick={onMcp}>
+          {/* A bell of bronze hung from its loop: a 法器. */}
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 1.8v1.4M4.6 11.5V7.4a3.4 3.4 0 0 1 6.8 0v4.1M3 11.5h10M6.6 13.6a1.5 1.5 0 0 0 2.8 0" />
+          </svg>
+          法器
+        </button>
+        <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title="功课：到了时辰，自行化出分身去办" onClick={onSchedules}>
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="8" cy="8" r="6" />
+            <path d="M8 4.5V8l2.5 1.5" />
+          </svg>
+          功课
+        </button>
+        <button type="button" className="row-button" aria-current={page === "settings" ? "page" : undefined} onClick={onSettings}>
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <circle cx="8" cy="8" r="2.2" />
+            <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
+          </svg>
+          设置
+        </button>
+      </div>
     </nav>
   );
 }
@@ -622,7 +625,7 @@ function ModelList({ providers, keyed, providerId, model, onPick, listModels }: 
                 className="menu-tab"
                 aria-selected={id === showing}
                 disabled={!open}
-                title={open ? (id === providerId ? `${name(id)}：这个分身眼下的宗门` : `看看 ${name(id)} 的功法`) : `${name(id)} 还没有密钥：先到设置的「功法」页填上`}
+                title={open ? (id === providerId ? `${name(id)}：这个分身眼下的宗门` : `看看 ${name(id)} 的心法`) : `${name(id)} 还没有密钥：先到设置的「心法」页填上`}
                 onClick={() => {
                   setShowing(id);
                   setFilter("");
@@ -635,11 +638,11 @@ function ModelList({ providers, keyed, providerId, model, onPick, listModels }: 
         </div>
       )}
       <div className="mode-menu-head">
-        <span>{name(showing)} 的功法</span>
+        <span>{name(showing)} 的心法</span>
         <span>{asked.state === "asking" ? "正在问它有哪些…" : asked.state === "told" ? `它报了 ${asked.models.length} 门` : "没问到，先列内置的"}</span>
       </div>
       {asked.state === "failed" && <p className="menu-note">{asked.why}</p>}
-      {models.length > 8 && <input className="input menu-filter" type="search" placeholder="筛一筛" aria-label="筛选功法" autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} />}
+      {models.length > 8 && <input className="input menu-filter" type="search" placeholder="筛一筛" aria-label="筛选心法" autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} />}
       <div className="menu-scroll">
         {shown.map(([id, display]) => (
           <button type="button" role="menuitemradio" aria-checked={home && id === model} key={id} className="mode-option plain" onClick={() => onPick(showing, id)}>
@@ -654,7 +657,7 @@ function ModelList({ providers, keyed, providerId, model, onPick, listModels }: 
       </div>
       <p className="menu-note">
         {home
-          ? "换了之后，这个分身接下来的话由新功法来答，前情照旧带着。"
+          ? "换了之后，这个分身接下来的话由新心法来答，前情照旧带着。"
           : `换到 ${name(showing)} 之后，前情照旧带着；只是前面那家的推演过程不带过去，别家读不了它。`}
       </p>
     </>
@@ -969,7 +972,7 @@ const readBase64 = (file: File) =>
 
 interface ComposerProps {
   status: Status;
-  /** Every provider this build knows, and whether each has a key: the 功法 menu offers those that do. */
+  /** Every provider this build knows, and whether each has a key: the 心法 menu offers those that do. */
   providers: Provider[];
   keyed: (provider: string) => boolean;
   /** The id of the provider the session is on, which this build may no longer list. */
@@ -1009,7 +1012,7 @@ interface ComposerProps {
   trustable: boolean;
   /** Words to put in the box, as when a fork brings back the message it starts before; a new `id` puts them in. */
   seed: { id: number; text: string } | null;
-  /** The "/" commands the window gives, beside the box's own (功法, 境界, 禁制, 凝练); skills among them. */
+  /** The "/" commands the window gives, beside the box's own (心法, 境界, 禁制, 凝练); skills among them. */
   commands: SlashCommand[];
 }
 
@@ -1107,7 +1110,7 @@ export function Composer(props: ComposerProps) {
   };
 
   // The "/" commands: the box's own, for what it holds the controls of, and the window's.
-  /** Changed to open the 功法 menu, from "/model". */
+  /** Changed to open the 心法 menu, from "/model". */
   const [modelSummon, setModelSummon] = useState(0);
   const effortChoices: SlashChoice[] = efforts.map((level) => ({ value: level, label: EFFORT_NAMES[level] ?? level, hint: EFFORT_HINTS[level] }));
   const modeChoices: SlashChoice[] = MODES.map((one) => ({ value: one.value, label: one.name, hint: one.hint }));
@@ -1116,14 +1119,16 @@ export function Composer(props: ComposerProps) {
   const own: SlashCommand[] = [
     {
       name: "compact",
+      label: "凝练",
       aliases: ["凝练", "摘要", "压缩"],
       hint: "现在就把前情凝成摘要，之后的请求省灵石",
       unavailable: busy ? "分身运功时不能凝练，等它收功" : usage.context === 0 ? "还没有前情可凝" : undefined,
       run: () => onCompact(),
     },
-    { name: "model", aliases: ["功法", "模型"], hint: "换功法，也能换到别的宗门", unavailable: busy ? "分身运功时不能换功法，等它收功" : undefined, run: () => setModelSummon((count) => count + 1) },
+    { name: "model", label: "心法", aliases: ["心法", "功法", "模型"], hint: "换心法，也能换到别的宗门", unavailable: busy ? "分身运功时不能换心法，等它收功" : undefined, run: () => setModelSummon((count) => count + 1) },
     {
       name: "effort",
+      label: "境界",
       aliases: ["境界"],
       hint: "换这个分身的境界：推演深浅",
       arg: "<境界>",
@@ -1136,6 +1141,7 @@ export function Composer(props: ComposerProps) {
     },
     {
       name: "mode",
+      label: "禁制",
       aliases: ["禁制"],
       hint: "换禁制：分身不问就能做什么",
       arg: "<禁制>",
@@ -1176,7 +1182,7 @@ export function Composer(props: ComposerProps) {
     }
     perform(offer.command, typed?.arg ?? "");
   };
-  const blind = `${model} 这门功法只认字，看不了图。点左下的功法，换一门能看图的。`;
+  const blind = `${model} 这门心法只认字，看不了图。点左下的心法，换一门能看图的。`;
   /** Attach the pictures pasted into the box, saying why when one cannot be sent. */
   const attach = async (pasted: File[]) => {
     setRefused(null);
@@ -1361,6 +1367,7 @@ export function Composer(props: ComposerProps) {
                 ) : (
                   <>
                     <span className="slash-name mono">/{offer.command.name}</span>
+                    <span className="slash-label">{offer.command.label}</span>
                     {offer.command.arg && <span className="slash-arg">{offer.command.arg}</span>}
                     <span className="slash-hint">{offer.command.unavailable ?? offer.command.hint}</span>
                   </>
@@ -1478,6 +1485,7 @@ export function Composer(props: ComposerProps) {
                       <span className="mode-text">
                         <span className="name">
                           <span className="mono">/{command.name}</span>
+                          <span className="slash-label">{command.label}</span>
                           {command.arg && <span className="slash-arg">{command.arg}</span>}
                         </span>
                         <span className="hint">{command.unavailable ?? command.hint}</span>
@@ -1490,16 +1498,16 @@ export function Composer(props: ComposerProps) {
             )}
           </Popup>
           <Popup
-            name="功法"
+            name="心法"
             summon={modelSummon}
             disabled={busy}
-            title={busy ? `功法：${providerName} · ${model}。分身运功时不能换，等它收功` : `功法：${providerName} · ${model}。点开换一门`}
+            title={busy ? `心法：${providerName} · ${model}。分身运功时不能换，等它收功` : `心法：${providerName} · ${model}。点开换一门`}
             label={
               <>
                 <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3.5 2.5h8a1 1 0 0 1 1 1v10h-8a1 1 0 0 1-1-1zM3.5 11.5a1 1 0 0 1 1-1h8M6 5.5h4" />
                 </svg>
-                <span className="label sr-only">功法</span>
+                <span className="label sr-only">心法</span>
                 <span className="value">{model}</span>
               </>
             }
@@ -1618,7 +1626,7 @@ export function Composer(props: ComposerProps) {
                 >
                   <span className="mode-text">
                     <span className="name">自动</span>
-                    <span className="hint">按功法自己的窗口，用到八成：这门是 {shortCount(contextCeiling)}</span>
+                    <span className="hint">按心法自己的窗口，用到八成：这门是 {shortCount(contextCeiling)}</span>
                   </span>
                   {contextAuto ? CHECK : <span />}
                 </button>
@@ -1639,13 +1647,13 @@ export function Composer(props: ComposerProps) {
                     >
                       <span className="mode-text">
                         <span className="name">{shortCount(limit)}</span>
-                        {limit === contextCeiling && <span className="hint">这门功法装得下的最多</span>}
+                        {limit === contextCeiling && <span className="hint">这门心法装得下的最多</span>}
                       </span>
                       {chosen ? CHECK : <span />}
                     </button>
                   );
                 })}
-                <p className="menu-note">每次请求都要把整段前情发给功法，上限越高，长对话越费灵石。对所有分身生效；别的数可以到设置里填。</p>
+                <p className="menu-note">每次请求都要把整段前情发给心法，上限越高，长对话越费灵石。对所有分身生效；别的数可以到设置里填。</p>
               </>
             )}
           </Popup>

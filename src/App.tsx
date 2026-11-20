@@ -392,15 +392,17 @@ export default function App() {
     const builtIn: SlashCommand[] = [
       {
         name: "new",
+        label: "新分身",
         aliases: ["新分身", "化出"],
         hint: "在这处洞府再化出一个分身",
         run: () => {
           api.createSession(session.worktree?.origin ?? session.workspace, false).then((view) => dispatch({ type: "opened", view }), fail);
         },
       },
-      { name: "fork", aliases: ["分叉"], hint: "分叉：另起一个分身，带着到现在的全部对话", unavailable: session.parent ? "子分身的会话不能分叉" : undefined, run: () => forkFrom() },
+      { name: "fork", label: "分叉", aliases: ["分叉"], hint: "分叉：另起一个分身，带着到现在的全部对话", unavailable: session.parent ? "子分身的会话不能分叉" : undefined, run: () => forkFrom() },
       {
         name: "rename",
+        label: "改名",
         aliases: ["改名"],
         hint: "给这个分身改名；不写名字就用第一句话作名",
         arg: "<新名字>",
@@ -410,16 +412,17 @@ export default function App() {
       },
       {
         name: "replay",
+        label: "回溯",
         aliases: ["回溯"],
         hint: "回溯：从头一步步看这个分身做过什么",
         unavailable: stops.length === 0 ? "这个分身还没做过什么，没有可回溯的" : undefined,
         run: () => setReplay({ at: 0, playing: true, speed: 1 }),
       },
-      { name: "init", aliases: ["规矩", "立规矩"], hint: "让分身读懂这个项目，写一份 AGENTS.md", unavailable: working, run: () => send(INIT_TASK) },
-      { name: "review", aliases: ["审查"], hint: "让分身审查还没提交的改动，只看不改", unavailable: working, run: () => send(REVIEW_TASK) },
-      { name: "mcp", aliases: ["法器"], hint: "打开法器页：MCP 服务", run: toMcp },
-      { name: "schedule", aliases: ["功课"], hint: "打开功课页：到点自行去办的事", run: toSchedules },
-      { name: "settings", aliases: ["设置"], hint: "打开设置", run: toSettings },
+      { name: "init", label: "立规矩", aliases: ["立规矩", "规矩"], hint: "让分身读懂这个项目，写一份 AGENTS.md", unavailable: working, run: () => send(INIT_TASK) },
+      { name: "review", label: "审查", aliases: ["审查"], hint: "让分身审查还没提交的改动，只看不改", unavailable: working, run: () => send(REVIEW_TASK) },
+      { name: "mcp", label: "法器", aliases: ["法器"], hint: "打开法器页：MCP 服务", run: toMcp },
+      { name: "schedule", label: "功课", aliases: ["功课"], hint: "打开功课页：到点自行去办的事", run: toSchedules },
+      { name: "settings", label: "设置", aliases: ["设置"], hint: "打开设置", run: toSettings },
     ];
     const taken = new Set([...builtIn.map((command) => command.name), "compact", "model", "effort", "mode"]);
     // Each skill by its name, with what it is to do after it; one named as a command is reached by its alias.
@@ -427,11 +430,12 @@ export default function App() {
       const name = skill.name.trim().replace(/\s+/g, "-");
       return {
         name: taken.has(name.toLowerCase()) ? `skill-${name}` : name,
+        label: "秘籍",
         aliases: [skill.name],
-        hint: `技能：${skill.description}`,
+        hint: `秘籍：${skill.description}`,
         arg: "<要办的事>",
         unavailable: working,
-        run: (task) => send(task ? `按技能「${skill.name}」办：${task}` : `按技能「${skill.name}」办。`),
+        run: (task) => send(task ? `按秘籍「${skill.name}」（skill）办：${task}` : `按秘籍「${skill.name}」（skill）办。`),
       };
     });
     // Learning the project and reviewing its changes are for a project, not a conversation.
@@ -692,7 +696,7 @@ export default function App() {
             { id: "chat", name: "闲谈", hint: "不选文件夹，直接和分身说话", seal: "谈", run: chat },
             { id: "mcp", name: "法器", hint: "给分身添上本事的 MCP 服务：查文档、搜网页、操控浏览器", seal: "器", run: toMcp },
             { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: toSchedules },
-            { id: "settings", name: "设置", hint: "功法、禁制、神通、外观", seal: "设", run: toSettings },
+            { id: "settings", name: "设置", hint: "心法、禁制、神通、外观", seal: "设", run: toSettings },
           ]}
           onOpen={open}
           onSearch={api.searchSessions}

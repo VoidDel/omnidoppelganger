@@ -65,7 +65,7 @@ export const BUILTINS: Builtin[] = [
     id: "exa",
     name: "Exa",
     seal: "搜",
-    summary: "联网搜索网页和代码。不用存 GLM 的密钥，修别家功法的分身也能搜。",
+    summary: "联网搜索网页和代码。不用存 GLM 的密钥，修别家心法的分身也能搜。",
     runs: "remote",
     site: "https://exa.ai",
     entry: () => ({ url: "https://mcp.exa.ai/mcp" }),
