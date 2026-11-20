@@ -28,7 +28,8 @@ export type SessionEvent =
   | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number; parent?: string; schedule?: string; fork?: { session: string; turn: number } } }
   | { type: "subagent/started"; data: { tool_use_id: string; session: string; name: string } }
   | { type: "session/renamed"; data: { title: string } }
-  | { type: "model/changed"; data: { model: string } }
+  | { type: "model/changed"; data: { model: string; provider?: string } }
+  | { type: "effort/changed"; data: { effort: string } }
   | { type: "instructions/loaded"; data: { path: string; content: string } }
   | { type: "skills/listed"; data: { skills: Skill[] } }
   | { type: "turn/start"; data: { turn: number } }
@@ -160,9 +161,11 @@ export interface SessionItem {
   /** Set for a fork: the session its conversation was copied from, and the last turn that was copied (0 for none). */
   fork: { session: string; turn: number } | null;
   workspace: string;
-  /** Id of the model provider the session runs on. */
+  /** Id of the model provider the session runs on now, and the model. */
   provider: string;
   model: string;
+  /** How hard the model works for this session, when set for it; null while it follows the settings' default. */
+  effort: string | null;
   mode: Mode;
   /** The number of tokens at which the conversation is compacted into a summary. */
   context_limit: number;

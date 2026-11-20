@@ -3,7 +3,7 @@
 //! A session is one file, `<root>/<id>/session.v1.jsonl`, one [`Envelope`]
 //! per line. Lines are only ever appended.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -25,9 +25,12 @@ use crate::providers::DEFAULT_PROVIDER;
 /// Format 9 adds `schedule` to the header, and format 10 `fork`. Format 11
 /// adds the `bypass` mode a message can be sent in. Format 12 adds the
 /// `guardian/reviewed` event, `expires_at` on an approval request and
-/// `timed_out` on its answer. A build
-/// from before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 14;
+/// `timed_out` on its answer. Format 13 adds `files` on a user message, and
+/// format 14 a document's kind and parts on an attached file. Format 15 adds
+/// `provider` on `model/changed`, for a move to another provider, and the
+/// `effort/changed` event. A build from before a format refuses its sessions
+/// rather than misread them.
+pub const FORMAT_VERSION: u32 = 15;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -53,8 +56,11 @@ pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub workspace: String,
+    /// The provider and model the session is on now.
     pub provider: String,
     pub model: String,
+    /// How hard the model works for this session, when set for it; else the settings' default holds.
+    pub effort: Option<String>,
     /// Id of the session whose agent set this one off as a subagent.
     pub parent: Option<String>,
     /// The worktree made for the session, when it works apart from the repository's own checkout.
@@ -288,12 +294,10 @@ impl SessionLog {
         &self.events
     }
 
-    /// The workspace and provider recorded when the session was created, and the model it is on now.
+    /// The workspace recorded when the session was created, and the provider and model it is on now.
     pub fn header(&self) -> (PathBuf, String, String) {
         match &self.events[0].event {
-            Event::SessionCreated { workspace, provider, .. } => {
-                (PathBuf::from(workspace), provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()), model(&self.events))
-            }
+            Event::SessionCreated { workspace, .. } => (PathBuf::from(workspace), provider(&self.events), model(&self.events)),
             _ => unreachable!("create and open both guarantee the header"),
         }
     }
@@ -386,10 +390,20 @@ pub const PLAN_OFF: &str = "[Plan mode is off] You may change files and run comm
 /// A [`Event::ContextCompacted`] starts the conversation over: nothing before
 /// it is replayed. The request then opens with its summary, followed by the
 /// user's messages the model had not answered yet, in their own words.
+///
+/// What a provider answered stays as it came while the session is on that
+/// provider. Once it has moved to another, what earlier ones answered is sent
+/// in the form every provider takes: see [`carried`].
 pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     let text = |text: &str| json!({ "type": "text", "text": text });
     let mut messages = Vec::new();
     let mut pending: Vec<Value> = Vec::new();
+    // The provider that is answering, and which answered each assistant message, by its place in `messages`.
+    let mut speaker = match events.first().map(|envelope| &envelope.event) {
+        Some(Event::SessionCreated { provider, .. }) => provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
+        _ => DEFAULT_PROVIDER.to_string(),
+    };
+    let mut spoken: Vec<(usize, String)> = Vec::new();
     // What the user said since the model last spoke.
     let mut unanswered: Vec<Value> = Vec::new();
     // The to-do list as the model last wrote it.
@@ -425,8 +439,10 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 told.push_str(" Read a file again before relying on what it held.]");
                 pending.push(text(&told));
             }
+            Event::ModelChanged { provider: Some(provider), .. } => speaker = provider.clone(),
             Event::ContextCompacted { summary, .. } => {
                 messages.clear();
+                spoken.clear();
                 pending.clear();
                 pending.push(text(&format!("{COMPACTED}\n\n{summary}")));
                 if planning {
@@ -449,6 +465,7 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 if !pending.is_empty() {
                     messages.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
                 }
+                spoken.push((messages.len(), speaker.clone()));
                 messages.push(json!({ "role": "assistant", "content": content }));
                 unanswered.clear();
                 for block in content.iter().filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos") {
@@ -464,7 +481,54 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     if !pending.is_empty() {
         messages.push(json!({ "role": "user", "content": pending }));
     }
+    // What other providers answered, in the form this one takes; and the calls whose ids that changed, renamed in their results too.
+    let mut renamed: HashMap<String, String> = HashMap::new();
+    for (at, from) in spoken {
+        if from != speaker {
+            let content = carried(messages[at]["content"].as_array().map(Vec::as_slice).unwrap_or_default(), &mut renamed);
+            messages[at]["content"] = Value::Array(content);
+        }
+    }
+    if !renamed.is_empty() {
+        for message in messages.iter_mut().filter(|message| message["role"] == "user") {
+            for block in message["content"].as_array_mut().into_iter().flatten() {
+                if let Some(id) = block["tool_use_id"].as_str().and_then(|id| renamed.get(id)) {
+                    block["tool_use_id"] = json!(id);
+                }
+            }
+        }
+    }
     messages
+}
+
+/// What one provider answered, in the form every provider takes: its words
+/// and its tool calls, with nothing but the fields all of them know. Its
+/// reasoning is left out, since another provider cannot check it (a signed
+/// thinking block, an encrypted reasoning item) and would refuse it, and so
+/// is anything else of that provider's own. A tool call's id is given only
+/// the characters every provider allows (`functions.read:0` from Kimi is
+/// refused by Anthropic), and `renamed` records it so that the result can
+/// follow. A message of reasoning alone keeps its place with a mark.
+fn carried(content: &[Value], renamed: &mut HashMap<String, String>) -> Vec<Value> {
+    let mut kept: Vec<Value> = content
+        .iter()
+        .filter_map(|block| match block["type"].as_str() {
+            Some("text") => block["text"].as_str().filter(|words| !words.is_empty()).map(|words| json!({ "type": "text", "text": words })),
+            Some("tool_use") => {
+                let id = block["id"].as_str().unwrap_or_default();
+                let plain: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+                if plain != id {
+                    renamed.insert(id.to_string(), plain.clone());
+                }
+                Some(json!({ "type": "tool_use", "id": plain, "name": block["name"], "input": if block["input"].is_object() { block["input"].clone() } else { json!({}) } }))
+            }
+            _ => None,
+        })
+        .collect();
+    if kept.is_empty() {
+        kept.push(json!({ "type": "text", "text": "…" }));
+    }
+    kept
 }
 
 /// The names a project's instructions for agents go by, in the order they are looked for.
@@ -559,10 +623,31 @@ pub fn model(events: &[Envelope]) -> String {
         .iter()
         .rev()
         .find_map(|envelope| match &envelope.event {
-            Event::ModelChanged { model } | Event::SessionCreated { model, .. } => Some(model.clone()),
+            Event::ModelChanged { model, .. } | Event::SessionCreated { model, .. } => Some(model.clone()),
             _ => None,
         })
         .unwrap_or_default()
+}
+
+/// The provider the session is on: the last one it was moved to, or else the one it was created with.
+pub fn provider(events: &[Envelope]) -> String {
+    events
+        .iter()
+        .rev()
+        .find_map(|envelope| match &envelope.event {
+            Event::ModelChanged { provider: Some(provider), .. } => Some(provider.clone()),
+            Event::SessionCreated { provider, .. } => Some(provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string())),
+            _ => None,
+        })
+        .unwrap_or_else(|| DEFAULT_PROVIDER.to_string())
+}
+
+/// How hard the model works on the session's requests, when the user set it for this session; else the settings say.
+pub fn effort(events: &[Envelope]) -> Option<String> {
+    events.iter().rev().find_map(|envelope| match &envelope.event {
+        Event::EffortChanged { effort } => Some(effort.clone()),
+        _ => None,
+    })
 }
 
 /// The skills the model is told of: the last list logged.
@@ -681,11 +766,11 @@ pub fn matches(events: &[Envelope], query: &str) -> bool {
 /// Fold a log into its list entry. The title is the name the user gave the
 /// session, or else its first message cut to 40 characters.
 pub fn summarize(events: &[Envelope]) -> SessionSummary {
-    let (id, workspace, provider) = match &events[0].event {
-        Event::SessionCreated { id, workspace, provider, .. } => (id.clone(), workspace.clone(), provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string())),
+    let (id, workspace) = match &events[0].event {
+        Event::SessionCreated { id, workspace, .. } => (id.clone(), workspace.clone()),
         _ => unreachable!("create and open both guarantee the header"),
     };
-    let model = model(events);
+    let (provider, model, effort) = (provider(events), model(events), effort(events));
     let named = events.iter().rev().find_map(|envelope| match &envelope.event {
         Event::SessionRenamed { title } => Some(title.clone()),
         _ => None,
@@ -741,6 +826,7 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         workspace,
         provider,
         model,
+        effort,
         parent: parent(events).map(str::to_string),
         worktree: worktree(events).cloned(),
         schedule: schedule(events).map(str::to_string),
@@ -783,6 +869,36 @@ mod tests {
         assert_eq!(reopened.events(), written.as_slice());
         assert_eq!(reopened.events().iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(reopened.header(), (PathBuf::from("/work"), "anthropic".to_string(), "claude-opus-5-5".to_string()));
+    }
+
+    #[test]
+    fn sends_what_another_provider_answered_plainly_and_a_providers_own_as_it_was() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "anthropic", "claude").unwrap();
+        let said = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] };
+        let signed = json!({ "type": "thinking", "thinking": "hm", "signature": "sig" });
+        log.append(said("one")).unwrap();
+        log.append(assistant(vec![signed.clone(), json!({ "type": "text", "text": "from claude" })])).unwrap();
+        log.append(Event::ModelChanged { model: "deepseek-chat".into(), provider: Some("deepseek".into()) }).unwrap();
+        log.append(said("two")).unwrap();
+        // Reasoning alone, as a provider may answer when cut off: it keeps its place in the conversation.
+        log.append(assistant(vec![json!({ "type": "thinking", "thinking": "deep thoughts" })])).unwrap();
+        log.append(said("three")).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "from deepseek" })])).unwrap();
+        // A model of the same provider moves nothing; back on Anthropic, its own answer goes as it was.
+        log.append(Event::ModelChanged { model: "deepseek-reasoner".into(), provider: None }).unwrap();
+        assert_eq!(provider(log.events()), "deepseek");
+        log.append(Event::ModelChanged { model: "claude".into(), provider: Some("anthropic".into()) }).unwrap();
+        log.append(said("four")).unwrap();
+        let messages = derive_messages(log.events());
+        assert_eq!(messages[1]["content"], json!([signed, { "type": "text", "text": "from claude" }]));
+        assert_eq!(messages[3]["content"], json!([{ "type": "text", "text": "…" }]));
+        assert_eq!(messages[5]["content"], json!([{ "type": "text", "text": "from deepseek" }]));
+        assert_eq!((provider(log.events()), summarize(log.events()).provider), ("anthropic".to_string(), "anthropic".to_string()));
+        // The move is written in the log only when it is to another provider.
+        let lines: Vec<Value> = log.events().iter().map(|envelope| serde_json::to_value(envelope).unwrap()).collect();
+        let moves: Vec<&Value> = lines.iter().filter(|line| line["type"] == "model/changed").map(|line| &line["data"]).collect();
+        assert_eq!(moves, [&json!({ "model": "deepseek-chat", "provider": "deepseek" }), &json!({ "model": "deepseek-reasoner" }), &json!({ "model": "claude", "provider": "anthropic" })]);
     }
 
     #[test]

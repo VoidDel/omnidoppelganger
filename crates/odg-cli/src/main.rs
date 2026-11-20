@@ -184,11 +184,11 @@ async fn run(options: Options) -> Result<bool, String> {
     }
 
     let log = SessionStore::new(home.join("sessions")).create(&workspace, &provider_id, &model).map_err(|error| error.to_string())?;
-    let (tuned, tuned_provider) = (store.clone(), provider_id.clone());
-    let tuning = move |model: &str| {
+    let tuned = store.clone();
+    let tuning = move |provider: &str, model: &str| {
         let settings = tuned.load();
-        let window = tuned.context_window(&settings, &tuned_provider, model).tokens;
-        let (guardian, approval_wait) = (settings.guardian_model(&tuned_provider, model), settings.approval_wait());
+        let window = tuned.context_window(&settings, provider, model).tokens;
+        let (guardian, approval_wait) = (settings.guardian_model(provider, model), settings.approval_wait());
         Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort, guardian, approval_wait }
     };
     let searching = store.clone();

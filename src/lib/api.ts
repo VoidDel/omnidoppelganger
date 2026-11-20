@@ -51,7 +51,8 @@ export const api = {
     invoke<boolean>("resolve_approval", { id, toolUseId, decision }),
   setMode: (id: string, mode: Mode) => invoke<SessionItem>("set_mode", { id, mode }),
   /** Move the session to another model of its provider. Rejects while its agent is working. */
-  setModel: (id: string, model: string) => invoke<SessionItem>("set_model", { id, model }),
+  setModel: (id: string, provider: string, model: string) => invoke<SessionItem>("set_model", { id, provider, model }),
+  setEffort: (id: string, effort: string) => invoke<SessionItem>("set_effort", { id, effort }),
   /** The models a provider serves with the saved key, `[id, display name]`, asked from the provider itself. */
   listModels: (provider: string) => invoke<[string, string][]>("list_models", { provider }),
   /** Undo the agent's file edits from `turn` on. Rejects while a turn is running. */

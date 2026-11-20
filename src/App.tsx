@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { Desk } from "./components/Desk";
 import { Guard } from "./components/Guard";
 import { Jump } from "./components/Jump";
+import { McpPage } from "./components/Mcp";
 import { Composer, Logo, Mountains, PANEL_STRIP, PANEL_WIDTH, SessionHeader, SidePanel, Sidebar, fitPanel } from "./components/Chrome";
 import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
@@ -26,7 +27,7 @@ interface State {
   stream: StreamBlock[];
   /** Messages sent during a turn that the agent has not picked up yet. */
   queued: string[];
-  page: "chat" | "settings" | "schedules";
+  page: "chat" | "settings" | "schedules" | "mcp";
   settings: SettingsView | null;
   /** The 功课, read when the app starts and again whenever one comes due. */
   schedules: Schedule[];
@@ -357,6 +358,11 @@ export default function App() {
     api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
     dispatch({ type: "page", page: "settings" });
   };
+  /** To the 法器, read again on the way: a server may have connected, or stopped, since. */
+  const toMcp = () => {
+    api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
+    dispatch({ type: "page", page: "mcp" });
+  };
   const banners = (
     <>
         {state.error && (
@@ -388,6 +394,7 @@ export default function App() {
         activeId={state.activeId}
         page={state.page}
         onHome={() => dispatch({ type: "home" })}
+        onMcp={toMcp}
         onSchedules={toSchedules}
         onOpen={open}
         onNew={create}
@@ -409,7 +416,16 @@ export default function App() {
             onRevoke={(workspace, grant) => saved(api.revokeGrant(workspace, grant))}
             onRefresh={refreshSettings}
             listModels={api.listModels}
-            onSaveMcp={(config) =>
+          />
+          </Guard>
+        ) : state.page === "mcp" && state.settings ? (
+          <Guard name="法器" className="fill" resetKey={state.page}>
+          <McpPage
+            config={state.settings.mcp_config}
+            servers={state.settings.mcp_servers}
+            home={state.settings.home}
+            onRefresh={refreshSettings}
+            onSave={(config) =>
               api.saveMcpConfig(config).then(
                 (settings) => {
                   dispatch({ type: "settings", settings });
@@ -521,11 +537,17 @@ export default function App() {
             <Guard name="输入框" className="under" resetKey={active.id}>
             <Composer
               status={state.status}
-              provider={providers.find((known) => known.id === active.provider)}
+              providers={providers}
+              // A provider can be moved to once it has a key; one of the user's own (a local server) may need none.
+              keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || providers.find((known) => known.id === provider)?.key_env === null}
               providerId={active.provider}
               model={active.model}
+              effort={active.effort ?? state.settings?.settings.effort ?? "high"}
+              effortSet={active.effort !== null}
+              efforts={state.settings?.efforts ?? ["low", "medium", "high", "xhigh", "max"]}
+              onEffort={(effort) => api.setEffort(active.id, effort).then((item) => dispatch({ type: "session", item }), fail)}
               listModels={api.listModels}
-              onModel={(model) => api.setModel(active.id, model).then((item) => dispatch({ type: "session", item }), fail)}
+              onModel={(provider, model) => api.setModel(active.id, provider, model).then((item) => dispatch({ type: "session", item }), fail)}
               vision={active.vision}
               mode={active.mode}
               usage={spent}
@@ -579,8 +601,9 @@ export default function App() {
           acts={[
             { id: "home", name: "首页", hint: "回到山前：候旨的、运功的、将至的功课", seal: "山", run: () => dispatch({ type: "home" }) },
             { id: "new", name: "开辟洞府", hint: "选一个文件夹，化出分身", seal: "辟", run: () => void create() },
+            { id: "mcp", name: "法器", hint: "给分身添上本事的 MCP 服务：查文档、搜网页、操控浏览器", seal: "器", run: toMcp },
             { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: toSchedules },
-            { id: "settings", name: "设置", hint: "功法、禁制、法器、外观", seal: "设", run: toSettings },
+            { id: "settings", name: "设置", hint: "功法、禁制、神通、外观", seal: "设", run: toSettings },
           ]}
           onOpen={open}
           onSearch={api.searchSessions}

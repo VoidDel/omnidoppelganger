@@ -315,11 +315,23 @@ pub enum Event {
     /// every request after it. Since format 6.
     #[serde(rename = "skills/listed")]
     SkillsListed { skills: Vec<SkillInfo> },
-    /// The user moved the session to another model of the same provider.
-    /// Requests after this go to `model`. The conversation is sent as it is:
-    /// a provider leaves out the reasoning its new model cannot read. Since format 7.
+    /// The user moved the session to another model. Requests after this go
+    /// to `model`. Within a provider the conversation is sent as it is: the
+    /// provider leaves out the reasoning its new model cannot read. Since format 7.
     #[serde(rename = "model/changed")]
-    ModelChanged { model: String },
+    ModelChanged {
+        model: String,
+        /// The provider moved to, when it is another than the one the
+        /// session was on; absent for a model of the same one. What earlier
+        /// providers answered is then sent in a form any provider takes
+        /// (see [`crate::session::derive_messages`]). Since format 15.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+    },
+    /// The user set how hard the model works on this session's requests, one
+    /// of [`crate::settings::EFFORTS`], in place of the settings' default. Since format 15.
+    #[serde(rename = "effort/changed")]
+    EffortChanged { effort: String },
     /// The user named the session. Until then its title is the first message. Since format 3.
     #[serde(rename = "session/renamed")]
     SessionRenamed { title: String },

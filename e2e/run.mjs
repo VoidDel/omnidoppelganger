@@ -173,6 +173,12 @@ try {
   await page.waitFor("the session to move to the picked model", `${chip("功法")} === "claude-e2e-small"`);
   step("the model menu listed the provider's models, and picking one moved the session to it");
 
+  // The 境界 menu sets how hard this 分身 works, apart from the settings' default.
+  await page.click("境界");
+  await page.click("练气");
+  await page.waitFor("the session to work at the realm picked", `${chip("境界")} === "练气"`);
+  step("the 境界 menu set this 分身's realm");
+
   // The 灵石 menu sets the context limit, which is saved as a setting.
   await page.click("灵石");
   await page.waitForText("前情上限");
@@ -226,6 +232,7 @@ try {
   const [first, second] = mock.requests.map((request) => request.body);
   check(mock.requests.length === 2 && mock.requests[0].headers["x-api-key"] === "e2e-key", "the model was asked twice, with the key");
   check(first.messages[0].content.some((block) => block.text === "建一个 hello.txt，再跑个命令") && first.model === "claude-e2e-small", "the first request carries the user's message, to the model that was picked");
+  check(first.output_config?.effort === "low" && JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).effort !== "low", "it is asked at the realm set for this 分身, which leaves the default as it was");
   const sent = first.messages[0].content[0];
   check(sent.type === "image" && sent.source.media_type === "image/png" && sent.source.data === PNG, "the pasted screenshot reached the model unchanged, ahead of the text");
   check((await page.evaluate(`document.querySelectorAll(".shots img").length`)) === 1, "the transcript shows the screenshot with the message");

@@ -885,12 +885,47 @@ pre,
 }
 
 .main-header {
+  /* Above the conversation, for what hangs from it (the card that asks before deleting). */
+  position: relative;
+  z-index: 5;
   height: var(--bar);
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* What deleting a 分身 asks, on a card hung from the bar's right end, where the button that asked is: it is
+   for 本尊 to decide, and cannot be undone, so its edge is cinnabar. */
+.header-confirm {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 24px;
+  width: min(440px, calc(100% - 48px));
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--cinnabar);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-size: var(--t-small);
+  line-height: 1.6;
+  color: var(--ink-2);
+  animation: come var(--d-move) var(--ease-out);
+}
+
+.header-confirm p {
+  margin: 0;
+}
+
+.header-confirm .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
 }
 
 /* The title, and under it the folder. */
@@ -2492,7 +2527,8 @@ button.did-head:not(:disabled):hover {
   min-width: 0;
 }
 
-.composer-row .mode-picker + .mode-picker {
+.composer-row .mode-picker + .mode-picker,
+.composer-row .attach + .mode-picker {
   margin-left: var(--s-1);
   padding-left: var(--s-1);
   border-left: 1px solid var(--line);
@@ -2902,6 +2938,43 @@ button.select-button svg {
   margin: 0 4px 4px;
   width: auto;
   font-size: var(--t-small);
+}
+
+/* The providers along the top of the 功法 menu, one of which lists its models below: the session's own first. */
+.menu-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 4px 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 2px;
+}
+
+.menu-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--t-small);
+}
+
+.menu-tab:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.menu-tab[aria-selected="true"] {
+  border-color: var(--jade);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+/* One without a key cannot be moved to; it says why when pointed at. */
+.menu-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .menu-scroll {
@@ -4854,6 +4927,190 @@ button.select-button svg {
 
 .schedule-card .hint.failed {
   margin-left: 34px;
+}
+
+/* ---------- the 法器 page ---------- */
+
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+
+/* A 法器 on a card: its seal, what it does and how it runs, and its switch. Off, it sits back on the page;
+   on, it is on paper of its own with a gold edge, as a 功课 that keeps its hours is, and cinnabar where it
+   would not connect. */
+.mcp-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  transition:
+    background-color var(--d-move) var(--ease-out),
+    border-color var(--d-move) var(--ease-out);
+}
+
+.mcp-card.on {
+  background: var(--sheet);
+  border-left-color: var(--gold);
+}
+
+.mcp-card.failed {
+  border-left-color: var(--cinnabar);
+}
+
+/* Grey while it is off or connecting, gold once it is connected. */
+.mcp-seal {
+  margin-top: 2px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink-2);
+  transition:
+    background-color var(--d-move) var(--ease-out),
+    border-color var(--d-move) var(--ease-out),
+    color var(--d-move) var(--ease-out);
+}
+
+.mcp-seal.lit {
+  border-color: var(--gold);
+  background: var(--gold-soft);
+  color: var(--amber-ink);
+}
+
+.mcp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mcp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--s-2);
+}
+
+.mcp-head strong {
+  font-size: var(--t-lead);
+  overflow-wrap: anywhere;
+}
+
+.mcp-runs {
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.mcp-head .button.small {
+  min-height: 26px;
+  padding: 0 4px;
+  font-size: var(--t-small);
+}
+
+.mcp-summary {
+  margin: 0;
+  max-width: 62ch;
+}
+
+/* How it is started or reached, as one would type it. */
+.mcp-launch {
+  margin: 0;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.mcp-status {
+  margin: 0;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.mcp-status.ready {
+  color: var(--jade);
+}
+
+.mcp-status.failed {
+  color: var(--cinnabar);
+}
+
+.mcp-key {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  margin-top: var(--s-2);
+}
+
+.mcp-key label {
+  font-size: var(--t-small);
+}
+
+/* The switch: the box itself, unseen, laid over a track whose knob slides across, jade when it is on. */
+.mcp-switch {
+  position: relative;
+  display: inline-flex;
+  margin-top: 3px;
+}
+
+.mcp-switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.mcp-switch input:disabled {
+  cursor: not-allowed;
+}
+
+.mcp-switch .track {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--line-strong);
+  transition: background-color var(--d-quick) ease;
+}
+
+.mcp-switch .track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--sheet);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition: translate var(--d-move) var(--ease-out);
+}
+
+.mcp-switch input:checked + .track {
+  background: var(--jade);
+}
+
+/* By night the page's paper is dark, and a knob of it would sink into the track while it is off. */
+:root[data-theme="dark"] .mcp-switch input:not(:checked) + .track::after {
+  background: var(--ink-2);
+}
+
+.mcp-switch input:checked + .track::after {
+  translate: 16px 0;
+}
+
+.mcp-switch input:disabled + .track {
+  opacity: 0.45;
+}
+
+.mcp-switch input:focus-visible + .track {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
 }
 
 /* ---------- an explanation held to its first line ---------- */

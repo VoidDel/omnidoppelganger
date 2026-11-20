@@ -31,6 +31,9 @@ use crate::sse::SseParser;
 /// another it supports; the tool calls used here are the same in all of them.
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a server started as a program has to answer its first requests: `npx` and `uvx` download the
+/// server the first time it is started, which takes longer than reaching one over HTTP.
+const START_TIMEOUT: Duration = Duration::from_secs(120);
 const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// A tool result is replayed in every later request, like a file read.
 const RESULT_CHARS: usize = 100_000;
@@ -278,11 +281,11 @@ impl Server {
         }
     }
 
-    /// Shake hands and list the server's tools.
-    async fn open(wire: Wire) -> Result<Self, String> {
+    /// Shake hands and list the server's tools, each request given `timeout` to be answered.
+    async fn open(wire: Wire, timeout: Duration) -> Result<Self, String> {
         let mut server = Self { wire, next: AtomicU64::new(0), tools: Vec::new() };
         let hello = json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": { "name": "omnidoppelganger", "version": env!("CARGO_PKG_VERSION") } });
-        let welcome = server.request("initialize", hello, CONNECT_TIMEOUT).await?;
+        let welcome = server.request("initialize", hello, timeout).await?;
         if let (Wire::Http(wire), Some(version)) = (&server.wire, welcome["protocolVersion"].as_str()) {
             *wire.version.lock().unwrap() = Some(version.to_string());
         }
@@ -294,7 +297,7 @@ impl Server {
         let mut cursor: Option<String> = None;
         loop {
             let params = cursor.as_ref().map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
-            let page = server.request("tools/list", params, CONNECT_TIMEOUT).await?;
+            let page = server.request("tools/list", params, timeout).await?;
             for tool in page["tools"].as_array().map(Vec::as_slice).unwrap_or_default() {
                 let Some(name) = tool["name"].as_str() else { continue };
                 let schema = if tool["inputSchema"].is_object() { tool["inputSchema"].clone() } else { json!({ "type": "object" }) };
@@ -309,7 +312,7 @@ impl Server {
 
     /// Connect to a server over a pair of streams that carry one message per line.
     pub async fn over(reader: impl AsyncRead + Send + Unpin + 'static, writer: impl AsyncWrite + Send + Unpin + 'static) -> Result<Self, String> {
-        Self::open(Wire::Lines(LineWire::new(reader, writer, None))).await
+        Self::open(Wire::Lines(LineWire::new(reader, writer, None)), CONNECT_TIMEOUT).await
     }
 
     /// Start or reach the server `config` describes.
@@ -317,7 +320,7 @@ impl Server {
         if let Some(url) = &config.url {
             let http = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).build().map_err(|error| error.to_string())?;
             let wire = HttpWire { http, url: url.clone(), headers: config.headers.clone(), session: Mutex::new(None), version: Mutex::new(None) };
-            return Self::open(Wire::Http(wire)).await;
+            return Self::open(Wire::Http(wire), CONNECT_TIMEOUT).await;
         }
         let program = config.command.as_deref().unwrap_or_default();
         let mut command = tokio::process::Command::new(find_program(program));
@@ -342,7 +345,7 @@ impl Server {
                 }
             }
         });
-        Self::open(Wire::Lines(wire)).await
+        Self::open(Wire::Lines(wire), START_TIMEOUT).await
     }
 
     /// Call a tool and flatten what it returns into text.

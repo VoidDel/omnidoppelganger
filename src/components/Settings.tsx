@@ -2,31 +2,15 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
 import { Hint } from "./Hint";
+import { EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { mcpTool, shortCount } from "../lib/fold";
-import type { KeyStatus, McpServer, Provider, Settings, SettingsView } from "../lib/types";
-
-// The agent's realm (境界): cultivation stages, lowest to highest, for the API's five effort levels.
-const EFFORT_NAMES: Record<string, string> = { low: "练气", medium: "筑基", high: "金丹", xhigh: "元婴", max: "化神" };
+import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
 
 const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
   { value: "light", name: "白昼", hint: "月白底，宜昼", swatches: [["#FBFCFA", "#1B2A2B"], ["#F6E7A8", "#D9BC55"], ["#B8322A", "#B8322A"]] },
   { value: "dark", name: "玄夜", hint: "玄青底，宜夜", swatches: [["#1A2A2C", "#E6EEEA"], ["#ECD88C", "#B8962E"], ["#E0584E", "#E0584E"]] },
   { value: "system", name: "跟随系统", hint: "随系统昼夜更替", swatches: [["#FBFCFA", "#1B2A2B"], ["#1A2A2C", "#E6EEEA"]] },
 ];
-
-/** How a provider's effort setting lands, for the hint under the realms. */
-function effortNote(provider: Provider | undefined): string {
-  if (!provider || provider.protocol === "anthropic" || provider.protocol === "responses") return "";
-  switch (provider.protocol.chat) {
-    case "deep_seek":
-      return "DeepSeek 只分低、高、极三档：筑基和元婴按金丹算。";
-    case "kimi":
-    case "glm":
-      return `${provider.name} 只分低、高、极三档：筑基按金丹算，元婴按化神算。`;
-    default:
-      return "这个服务不一定认境界，所以不发送，按服务自己的默认推演。";
-  }
-}
 
 /** A text field that saves when it loses focus or Enter is pressed, not on every keystroke. */
 function useDraft(value: string, save: (value: string) => void) {
@@ -295,71 +279,12 @@ function KeyList({ view, onSave, onSaveKey, onDeleteKey }: KeyListProps) {
   );
 }
 
-const MCP_STATES: Record<McpServer["state"], string> = { connecting: "正在连接", ready: "已连上", failed: "没连上" };
-
 /** A kept grant as the user reads it: a command's opening words, or an MCP server's tool. */
 function grantLabel(grant: string): string {
   const borrowed = grant.startsWith("mcp:") ? mcpTool(grant.slice("mcp:".length)) : null;
   if (grant === "search") return "向天机阁打探（联网搜索）";
   if (grant.startsWith("web:")) return `网站 ${grant.slice("web:".length)}`;
   return borrowed ? `法器 ${borrowed.server} 的 ${borrowed.tool}` : grant.replace(/^command:/, "");
-}
-
-interface McpSectionProps {
-  config: string;
-  servers: McpServer[];
-  /** Resolves with what is wrong with the text, or null once it is saved. */
-  onSave: (config: string) => Promise<string | null>;
-  onRefresh: () => void;
-}
-
-/** The MCP server list as text to edit, and how each server stands. */
-function McpSection({ config, servers, onSave, onRefresh }: McpSectionProps) {
-  const [draft, setDraft] = useState(config);
-  const [problem, setProblem] = useState<string | null>(null);
-  useEffect(() => setDraft(config), [config]);
-  // Servers connect in the background: look again until none is still connecting.
-  const connecting = servers.some((server) => server.state === "connecting");
-  useEffect(() => {
-    if (!connecting) return;
-    const timer = setInterval(onRefresh, 1500);
-    return () => clearInterval(timer);
-  }, [connecting, onRefresh]);
-  return (
-    <section>
-      <h2>身外法器（MCP 服务）</h2>
-      <div className="field">
-        <label htmlFor="mcp-config">服务清单</label>
-        <textarea id="mcp-config" className="input mono config" rows={5} spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
-        <Hint>
-          用各家通用的 mcpServers 写法，MCP 服务说明里给的配置片段可以直接贴进来。本机程序写 command 和 args，远程服务写 url（需要的话加 headers）。保存后立即连接；连上的服务提供的工具，分身每次动用前都要请示。
-        </Hint>
-        {problem && (
-          <p className="hint failed" role="alert">
-            清单没有保存：{problem}
-          </p>
-        )}
-        <div className="actions">
-          <button type="button" className="button primary" disabled={draft === config} onClick={() => onSave(draft).then(setProblem)}>
-            保存并连接
-          </button>
-        </div>
-      </div>
-      {servers.map((server) => (
-        <div className="provider-card" key={server.name}>
-          <div className="who">
-            <strong className="mono">{server.name}</strong>
-            <span className={server.state === "failed" ? "failed" : "muted"}>
-              {MCP_STATES[server.state]}
-              {server.state === "ready" && `，${server.tools.length} 件法器`}
-            </span>
-          </div>
-          {server.error && <p className="hint failed">{server.error}</p>}
-          {server.tools.length > 0 && <p className="hint mono">{server.tools.join("、")}</p>}
-        </div>
-      ))}
-    </section>
-  );
 }
 
 /** Who says how large a model's context window is. */
@@ -381,7 +306,7 @@ const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] =
     icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
   },
   { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
-  { id: "tools", name: "法器", hint: "天机阁（联网搜索）、技能、身外法器（MCP 服务）", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
+  { id: "tools", name: "神通", hint: "天机阁（联网搜索）、技能。身外法器（MCP 服务）在侧栏的「法器」里", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
   {
     id: "look",
     name: "外观",
@@ -399,7 +324,6 @@ interface Props {
   view: SettingsView;
   /** The models a provider serves, asked from the provider itself. */
   listModels: (provider: string) => Promise<[string, string][]>;
-  onSaveMcp: (config: string) => Promise<string | null>;
   onRefresh: () => void;
   onRevoke: (workspace: string, grant: string) => void;
   onSave: (settings: Settings) => unknown;
@@ -407,7 +331,7 @@ interface Props {
   onDeleteKey: (provider: string) => unknown;
 }
 
-export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, onSaveMcp, onRefresh, listModels }: Props) {
+export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, onRefresh, listModels }: Props) {
   const [tab, setTab] = useState<SettingsTab>("model");
   const grants = Object.entries(view.grants);
   const { settings } = view;
@@ -590,7 +514,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
               ))}
             </div>
             <Hint>
-              境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。下一次请求起生效。{note}
+              境界越高，分身每一步推演得越深，也越慢、越费灵石（额度）。这是新分身的默认，下一次请求起生效；单个分身可以在输入框下方另换境界，换过的就不再跟着这里。{note}
             </Hint>
           </fieldset>
         </section>
@@ -770,7 +694,9 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             </div>
             <Hint>
               搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家功法都能搜。
-              {view.search_ready ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。" : "还没有 GLM 的密钥，所以分身现在不能搜：到「功法」那一页给 GLM 添上密钥就行。"}
+              {view.search_ready
+                ? "密钥已有，分身可以搜；每次搜索前要请示，按次花灵石。"
+                : "还没有 GLM 的密钥，所以分身现在不能这样搜：到「功法」那一页给 GLM 添上密钥就行，或者到侧栏的「法器」里启用 Exa，它不用密钥。"}
               GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。
             </Hint>
           </div>
@@ -792,8 +718,6 @@ export function SettingsPage({ view, onSave, onSaveKey, onDeleteKey, onRevoke, o
             </div>
           ))}
         </section>
-
-        <McpSection config={view.mcp_config} servers={view.mcp_servers} onSave={onSaveMcp} onRefresh={onRefresh} />
           </>
         )}
         {tab === "look" && (

@@ -1,5 +1,6 @@
 import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { launchFrom } from "../lib/flight";
 import { type ChangedFile, type ToolItem, type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
@@ -217,10 +218,11 @@ const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).po
 interface SidebarProps {
   sessions: SessionItem[];
   activeId: string | null;
-  /** What the main area shows: a conversation, or one of the two pages reached from the foot of this list. */
-  page: "chat" | "settings" | "schedules";
+  /** What the main area shows: a conversation, or one of the pages reached from the foot of this list. */
+  page: "chat" | "settings" | "schedules" | "mcp";
   /** Back to the home screen: no 分身 open. */
   onHome: () => void;
+  onMcp: () => void;
   onSchedules: () => void;
   onOpen: (id: string) => void;
   onNew: () => void;
@@ -264,7 +266,7 @@ function useFolded() {
   return [folded, toggle] as const;
 }
 
-export function Sidebar({ sessions, activeId, page, onHome, onSchedules, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
+export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSchedules, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
   const now = useNow(30_000);
   const [folded, toggleFolded] = useFolded();
   const [query, setQuery] = useState("");
@@ -422,6 +424,13 @@ export function Sidebar({ sessions, activeId, page, onHome, onSchedules, onOpen,
           );
         })}
       </div>
+      <button type="button" className="row-button" aria-current={page === "mcp" ? "page" : undefined} title="法器：给分身添上本事的 MCP 服务" onClick={onMcp}>
+        {/* A bell of bronze hung from its loop: a 法器. */}
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M8 1.8v1.4M4.6 11.5V7.4a3.4 3.4 0 0 1 6.8 0v4.1M3 11.5h10M6.6 13.6a1.5 1.5 0 0 0 2.8 0" />
+        </svg>
+        法器
+      </button>
       <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title="功课：到了时辰，自行化出分身去办" onClick={onSchedules}>
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="8" cy="8" r="6" />
@@ -536,54 +545,96 @@ const CHECK = (
 );
 
 interface ModelListProps {
-  provider: Provider | undefined;
+  /** Every provider this build knows. */
+  providers: Provider[];
+  /** Whether a provider has a key to be asked with: one without cannot be moved to. */
+  keyed: (provider: string) => boolean;
+  /** The provider and model the session is on. */
   providerId: string;
   model: string;
-  onPick: (model: string) => void;
+  onPick: (provider: string, model: string) => void;
   listModels: (provider: string) => Promise<[string, string][]>;
 }
 
-/** The models to choose from: what the provider says it serves, or the built-in suggestions while that is unknown. */
-function ModelList({ provider, providerId, model, onPick, listModels }: ModelListProps) {
+/**
+ * The models to choose from, a provider at a time: the session's own first, then any other that has a key. Each
+ * lists what it says it serves, or its built-in suggestions while that is unknown.
+ */
+function ModelList({ providers, keyed, providerId, model, onPick, listModels }: ModelListProps) {
+  /** The provider whose models are listed. */
+  const [showing, setShowing] = useState(providerId);
   const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: [string, string][]; why?: string }>({ state: "asking", models: [] });
   const [filter, setFilter] = useState("");
-  // Asked each time the menu opens: a provider's list changes, and so does the key it is asked with.
+  // Asked each time a provider is shown: its list changes, and so does the key it is asked with.
   useEffect(() => {
     let current = true;
-    listModels(providerId).then(
+    setAsked({ state: "asking", models: [] });
+    listModels(showing).then(
       (models) => current && setAsked({ state: "told", models }),
       (error) => current && setAsked({ state: "failed", models: [], why: String(error) }),
     );
     return () => {
       current = false;
     };
-  }, [providerId, listModels]);
+  }, [showing, listModels]);
+  const provider = providers.find((known) => known.id === showing);
+  const home = showing === providerId;
   const known = asked.state === "told" ? asked.models : (provider?.models ?? []);
   // The model in use is always there to return to, even when the provider's list leaves it out.
-  const models = known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
+  const models = !home || known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
   const shown = models.filter(([id, name]) => `${id} ${name}`.toLowerCase().includes(filter.trim().toLowerCase()));
-  const name = provider?.name ?? providerId;
+  const name = (id: string) => providers.find((known) => known.id === id)?.name ?? id;
+  // The session's own provider first, even one this build no longer lists.
+  const tabs = [providerId, ...providers.map((known) => known.id).filter((id) => id !== providerId)];
   return (
     <>
+      {tabs.length > 1 && (
+        <div className="menu-tabs" role="tablist" aria-label="宗门">
+          {tabs.map((id) => {
+            const open = id === providerId || keyed(id);
+            return (
+              <button
+                type="button"
+                role="tab"
+                key={id}
+                className="menu-tab"
+                aria-selected={id === showing}
+                disabled={!open}
+                title={open ? (id === providerId ? `${name(id)}：这个分身眼下的宗门` : `看看 ${name(id)} 的功法`) : `${name(id)} 还没有密钥：先到设置的「功法」页填上`}
+                onClick={() => {
+                  setShowing(id);
+                  setFilter("");
+                }}
+              >
+                {name(id)}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="mode-menu-head">
-        <span>{name} 的功法</span>
+        <span>{name(showing)} 的功法</span>
         <span>{asked.state === "asking" ? "正在问它有哪些…" : asked.state === "told" ? `它报了 ${asked.models.length} 门` : "没问到，先列内置的"}</span>
       </div>
       {asked.state === "failed" && <p className="menu-note">{asked.why}</p>}
       {models.length > 8 && <input className="input menu-filter" type="search" placeholder="筛一筛" aria-label="筛选功法" autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} />}
       <div className="menu-scroll">
         {shown.map(([id, display]) => (
-          <button type="button" role="menuitemradio" aria-checked={id === model} key={id} className="mode-option plain" onClick={() => onPick(id)}>
+          <button type="button" role="menuitemradio" aria-checked={home && id === model} key={id} className="mode-option plain" onClick={() => onPick(showing, id)}>
             <span className="mode-text">
               <span className="name mono">{id}</span>
               {display !== id && <span className="hint">{display}</span>}
             </span>
-            {id === model ? CHECK : <span />}
+            {home && id === model ? CHECK : <span />}
           </button>
         ))}
-        {shown.length === 0 && <p className="menu-note">没有对得上的。</p>}
+        {shown.length === 0 && <p className="menu-note">{asked.state === "asking" ? "正在问…" : "没有对得上的。"}</p>}
       </div>
-      <p className="menu-note">换了之后，这个分身接下来的话由新功法来答，前情照旧带着。只能在同一宗门里换。</p>
+      <p className="menu-note">
+        {home
+          ? "换了之后，这个分身接下来的话由新功法来答，前情照旧带着。"
+          : `换到 ${name(showing)} 之后，前情照旧带着；只是前面那家的推演过程不带过去，别家读不了它。`}
+      </p>
     </>
   );
 }
@@ -778,19 +829,27 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
       </div>
       </div>
       <span className="spacer" />
-      {deleting ? (
-        <span className="undo-confirm">
-          这个分身的全部记录和改文件前存的原样都会删掉，找不回来。
-          {session.worktree && !session.parent && `它的独立工作树也一并删掉：没提交的改动就没了，提交过但没并回的留在分支 ${session.worktree.branch} 上。`}
-          <button type="button" className="button outline red small" onClick={onDelete}>
-            确认删除
-          </button>
-          <button type="button" className="button text small" onClick={() => setDeleting(false)}>
-            算了
-          </button>
-        </span>
-      ) : (
-        draft === null && (
+      {/* Deleting asks on a card hung under the bar, whose height is fixed: what it says runs to several lines. */}
+      {deleting && (
+        <div className="header-confirm" role="alertdialog" aria-label="删除这个分身" onKeyDown={(event) => event.key === "Escape" && setDeleting(false)}>
+          <p>这个分身的全部记录和改文件前存的原样都会删掉，找不回来。</p>
+          {session.worktree && !session.parent && (
+            <p>
+              它的独立工作树也一并删掉：没提交的改动就没了，提交过但没并回的留在分支 <span className="mono">{session.worktree.branch}</span> 上。
+            </p>
+          )}
+          <div className="actions">
+            <button type="button" className="button outline red small" onClick={onDelete}>
+              确认删除
+            </button>
+            {/* Where the keys start: Enter at once keeps the 分身. */}
+            <button type="button" className="button text small" autoFocus onClick={() => setDeleting(false)}>
+              算了
+            </button>
+          </div>
+        </div>
+      )}
+      {draft === null && (
           <>
             {/* Pictures to look at, words for a screen reader and for the pointer that rests on one. */}
             <button type="button" className="icon-button" title="改名" onClick={() => setDraft(session.title)}>
@@ -826,7 +885,7 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
                 <span className="sr-only">并回</span>
               </button>
             )}
-            <button type="button" className="icon-button danger" disabled={busy} title={busy ? "分身还在运功，先收回它" : "删除这个分身"} onClick={() => setDeleting(true)}>
+            <button type="button" className="icon-button danger" disabled={busy} aria-expanded={deleting} title={busy ? "分身还在运功，先收回它" : "删除这个分身"} onClick={() => setDeleting(!deleting)}>
               <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
               </svg>
@@ -842,7 +901,6 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
               <span className="sr-only">{panelHidden ? "展开侧栏" : "收起侧栏"}</span>
             </button>
           </>
-        )
       )}
     </header>
   );
@@ -889,11 +947,18 @@ const readBase64 = (file: File) =>
 
 interface ComposerProps {
   status: Status;
-  /** The session's provider as the core describes it, and its id for when this build does not know it. */
-  provider: Provider | undefined;
+  /** Every provider this build knows, and whether each has a key: the 功法 menu offers those that do. */
+  providers: Provider[];
+  keyed: (provider: string) => boolean;
+  /** The id of the provider the session is on, which this build may no longer list. */
   providerId: string;
   /** The id of the model the session is on. */
   model: string;
+  /** The realm the session works at, whether it was set for it (else it follows the settings), and those there are. */
+  effort: string;
+  effortSet: boolean;
+  efforts: string[];
+  onEffort: (effort: string) => void;
   /** Whether the model takes pictures; null when that is not known, in which case they are sent. */
   vision: boolean | null;
   mode: Mode;
@@ -908,7 +973,7 @@ interface ComposerProps {
   onLimit: (limit: number | "auto") => void;
   /** Have the 分身 summarize the conversation now. */
   onCompact: () => void;
-  onModel: (model: string) => void;
+  onModel: (provider: string, model: string) => void;
   listModels: (provider: string) => Promise<[string, string][]>;
   /** The last turn in plan mode ended with the 分身's answer: offer to carry it out. */
   planReady: boolean;
@@ -966,8 +1031,9 @@ function useBoxHeight() {
 }
 
 export function Composer(props: ComposerProps) {
-  const { status, provider, providerId, model, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
-  const { onLimit, onCompact, onModel, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable } = props;
+  const { status, providers, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
+  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable } = props;
+  const provider = providers.find((known) => known.id === providerId);
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const [text, setText] = useState("");
@@ -1199,6 +1265,19 @@ export function Composer(props: ComposerProps) {
           }}
         />
         <div className="composer-row">
+          {/* First, where the hand goes to add something to the message; then how the 分身 stands. */}
+          <button
+            type="button"
+            className="select-button attach"
+            title="附文件或图给分身：文本文件和 PDF、Word、Excel、PPT 取出文字一起发，太大的由分身自己分段读；附上的文件，分身读它不用请示。也可以把文件拖进窗口，或把截图粘贴进输入框"
+            onClick={() => api.pickFiles().then(take, (error) => setRefused(`没附上：${String(error)}`))}
+          >
+            {/* A paperclip. */}
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 7.4 8 12.4a3 3 0 0 1-4.3-4.2l5.4-5.4a2 2 0 0 1 2.9 2.8L6.7 10.9a1 1 0 0 1-1.5-1.4l4.6-4.6" />
+            </svg>
+            <span className="sr-only">附件</span>
+          </button>
           <Popup
             name="功法"
             disabled={busy}
@@ -1215,15 +1294,60 @@ export function Composer(props: ComposerProps) {
           >
             {(close) => (
               <ModelList
-                provider={provider}
+                providers={providers}
+                keyed={keyed}
                 providerId={providerId}
                 model={model}
                 listModels={listModels}
-                onPick={(picked) => {
-                  if (picked !== model) onModel(picked);
+                onPick={(pickedProvider, picked) => {
+                  if (pickedProvider !== providerId || picked !== model) onModel(pickedProvider, picked);
                   close();
                 }}
               />
+            )}
+          </Popup>
+          <Popup
+            name="境界"
+            title={`境界：${EFFORT_NAMES[effort] ?? effort}，${effortSet ? "这个分身单独定的" : "跟着设置里的默认"}。点开换一档`}
+            label={
+              <>
+                {/* Three steps, each higher than the last. */}
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+                  <path d="M2.5 13.5h3v-3h-3zM6.5 13.5h3v-6h-3zM10.5 13.5h3v-9h-3z" />
+                </svg>
+                <span className="label sr-only">境界</span>
+                <span className="value">{EFFORT_NAMES[effort] ?? effort}</span>
+              </>
+            }
+          >
+            {(close) => (
+              <>
+                <div className="mode-menu-head">
+                  <span>境界</span>
+                  <span>{effortSet ? "这个分身单独定的" : "跟着设置里的默认"}</span>
+                </div>
+                {efforts.map((level) => (
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={level === effort}
+                    key={level}
+                    className="mode-option plain"
+                    onClick={() => {
+                      // Choosing the default's own level still sets this 分身 apart: the settings may change later.
+                      if (level !== effort || !effortSet) onEffort(level);
+                      close();
+                    }}
+                  >
+                    <span className="mode-text">
+                      <span className="name">{EFFORT_NAMES[level] ?? level}</span>
+                      <span className="hint">{EFFORT_HINTS[level]}</span>
+                    </span>
+                    {level === effort ? CHECK : <span />}
+                  </button>
+                ))}
+                <p className="menu-note">只换这个分身，下一次请求起生效；新分身用设置里的默认。{effortNote(provider)}</p>
+              </>
             )}
           </Popup>
           <ModePicker mode={mode} onMode={onMode} trustable={trustable} />
@@ -1313,18 +1437,6 @@ export function Composer(props: ComposerProps) {
               </>
             )}
           </Popup>
-          <button
-            type="button"
-            className="select-button"
-            title="附文件或图给分身：文本文件连同内容一起发，太大的由分身自己分段读；附上的文件，分身读它不用请示。也可以把文件拖进窗口，或把截图粘贴进输入框"
-            onClick={() => api.pickFiles().then(take, (error) => setRefused(`没附上：${String(error)}`))}
-          >
-            {/* A paperclip. */}
-            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M13 7.4 8 12.4a3 3 0 0 1-4.3-4.2l5.4-5.4a2 2 0 0 1 2.9 2.8L6.7 10.9a1 1 0 0 1-1.5-1.4l4.6-4.6" />
-            </svg>
-            <span className="sr-only">附件</span>
-          </button>
           <span className="spacer" />
           {/* A 令牌, the tablet an order is sent with: 令 on jade for an order, 音 on gold for a word to a 分身 at work.
               While the 分身 works the token is away with the order, and shows only when there is a word to send after it. */}

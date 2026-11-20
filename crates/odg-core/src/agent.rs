@@ -54,6 +54,7 @@ pub enum UiEvent {
 /// Settings read at the start of every model request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tuning {
+    /// How hard the model works, unless the session was set to work otherwise.
     pub effort: String,
     /// The conversation is compacted once it holds about this many tokens.
     pub context_limit: u64,
@@ -68,8 +69,8 @@ pub struct Tuning {
     pub approval_wait: Option<std::time::Duration>,
 }
 
-/// Gives the settings for a request to the model named: its window and limit depend on it.
-pub type TuningSource = Arc<dyn Fn(&str) -> Tuning + Send + Sync>;
+/// Gives the settings for a request to the provider and model named: the window and limit depend on them.
+pub type TuningSource = Arc<dyn Fn(&str, &str) -> Tuning + Send + Sync>;
 
 /// What a session shares with every other session of the app.
 #[derive(Clone)]
@@ -138,9 +139,11 @@ struct Inner<L: Llm> {
     sandbox: Option<crate::sandbox::SandboxSource>,
     /// Where Git keeps the workspace's repository, found when a command is first confined.
     git_directory: std::sync::OnceLock<Option<PathBuf>>,
-    provider: String,
-    /// The model requests go to; the user can move the session to another of the same provider.
+    /// The provider and model requests go to; the user can move the session to another of either.
+    provider: Mutex<String>,
     model: Mutex<String>,
+    /// How hard the model works, when the user set it for this session; else the settings' default.
+    effort: Mutex<Option<String>>,
     llm: Arc<L>,
     tuning: TuningSource,
     log: Mutex<SessionLog>,
@@ -268,8 +271,9 @@ impl<L: Llm> Session<L> {
                 search,
                 sandbox,
                 git_directory: std::sync::OnceLock::new(),
-                provider,
+                provider: Mutex::new(provider),
                 model: Mutex::new(model),
+                effort: Mutex::new(crate::session::effort(log.events())),
                 llm,
                 tuning,
                 log: Mutex::new(log),
@@ -332,24 +336,42 @@ impl<L: Llm> Session<L> {
         self.inner.mode()
     }
 
-    /// Move the session to another model of its provider. Only between
-    /// turns: a turn runs on the model it started with. The conversation
-    /// carries over as it is.
-    pub fn set_model(&self, model: &str) -> Result<(), String> {
-        let model = model.trim();
+    /// Move the session to another model, of its provider or of another.
+    /// Only between turns: a turn runs on the model it started with. Within
+    /// a provider the conversation carries over as it is; to another, what
+    /// earlier providers answered goes in a form it takes (see [`crate::session::derive_messages`]).
+    pub fn set_model(&self, provider: &str, model: &str) -> Result<(), String> {
+        let (provider, model) = (provider.trim(), model.trim());
         if model.is_empty() {
             return Err("name a model".to_string());
+        }
+        if providers::provider(provider).is_none() {
+            return Err(format!("there is no provider `{provider}`"));
         }
         // Held to the end: a turn cannot start between the check and the change.
         let state = self.inner.state.lock().unwrap();
         if state.status != Status::Idle {
             return Err("the agent is working; stop it or wait before changing the model".to_string());
         }
-        if *self.inner.model.lock().unwrap() != model {
-            self.inner.append(Event::ModelChanged { model: model.to_string() })?;
+        let moved = *self.inner.provider.lock().unwrap() != provider;
+        if moved || *self.inner.model.lock().unwrap() != model {
+            self.inner.append(Event::ModelChanged { model: model.to_string(), provider: moved.then(|| provider.to_string()) })?;
+            *self.inner.provider.lock().unwrap() = provider.to_string();
             *self.inner.model.lock().unwrap() = model.to_string();
         }
         drop(state);
+        Ok(())
+    }
+
+    /// Set how hard the model works on this session's requests, from the next one on, in place of the settings' default.
+    pub fn set_effort(&self, effort: &str) -> Result<(), String> {
+        if !crate::settings::EFFORTS.contains(&effort) {
+            return Err(format!("`{effort}` is not one of {}", crate::settings::EFFORTS.join(", ")));
+        }
+        if self.inner.effort.lock().unwrap().as_deref() != Some(effort) {
+            self.inner.append(Event::EffortChanged { effort: effort.to_string() })?;
+            *self.inner.effort.lock().unwrap() = Some(effort.to_string());
+        }
         Ok(())
     }
 
@@ -449,7 +471,7 @@ impl<L: Llm> Session<L> {
             state.cancel.clone()
         };
         self.inner.emit_status(Status::Running);
-        let tuning = (self.inner.tuning)(&self.inner.model());
+        let tuning = self.inner.tuning();
         let estimate = context_estimate(self.inner.log.lock().unwrap().events());
         // Near the window, the conversation itself would not fit beside the question: summarize a transcript of it.
         let near_window = estimate >= tuning.context_window / 10 * 9;
@@ -519,6 +541,19 @@ impl<L: Llm> Inner<L> {
 
     fn model(&self) -> String {
         self.model.lock().unwrap().clone()
+    }
+
+    fn provider(&self) -> String {
+        self.provider.lock().unwrap().clone()
+    }
+
+    /// The settings for a request now: for the provider and model the session is on, at the effort it was set to, if it was.
+    fn tuning(&self) -> Tuning {
+        let mut tuning = (self.tuning)(&self.provider(), &self.model());
+        if let Some(effort) = self.effort.lock().unwrap().clone() {
+            tuning.effort = effort;
+        }
+        tuning
     }
 
     /// The system prompt of the next request: the general part and the instructions the log holds.
@@ -611,9 +646,11 @@ impl<L: Llm> Inner<L> {
     }
 
     /// Start a subagent: a session of its own in this workspace, on this
-    /// session's model, in its mode and with what the user has allowed it so far.
+    /// session's provider, model, and effort, in its mode and with what the
+    /// user has allowed it so far.
     fn spawn(&self, name: &str) -> Result<Session<L>, String> {
-        let new = NewSession { workspace: &self.workspace, provider: &self.provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone(), schedule: None };
+        let provider = self.provider();
+        let new = NewSession { workspace: &self.workspace, provider: &provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone(), schedule: None };
         let log = self.store.create_with(new).map_err(|error| error.to_string())?;
         let child = Session::new(log, self.llm.clone(), self.tuning.clone(), self.services.clone(), self.events.clone(), self.runtime.clone()).map_err(|error| error.to_string())?;
         let (mode, grants) = {
@@ -626,6 +663,9 @@ impl<L: Llm> Inner<L> {
             state.grants = grants;
         }
         child.rename(name)?;
+        if let Some(effort) = self.effort.lock().unwrap().clone() {
+            child.set_effort(&effort)?;
+        }
         self.children.lock().unwrap().insert(child.id().to_string(), child.clone());
         Ok(child)
     }
@@ -785,7 +825,7 @@ impl<L: Llm> Inner<L> {
                 }
             };
             let request = LlmRequest {
-                provider: self.provider.clone(),
+                provider: self.provider(),
                 session: self.id.clone(),
                 model: self.model(),
                 system: self.system(),
@@ -815,7 +855,7 @@ impl<L: Llm> Inner<L> {
             if summary.is_empty() {
                 return Err(LlmError::Protocol("the model wrote no summary".to_string()));
             }
-            let event = Event::ContextCompacted { summary: summary.to_string(), tokens_before, tokens: providers::tokens(&self.provider, &turn.usage) };
+            let event = Event::ContextCompacted { summary: summary.to_string(), tokens_before, tokens: providers::tokens(&self.provider(), &turn.usage) };
             return self.append(event).map_err(LlmError::Protocol);
         }
     }
@@ -843,7 +883,7 @@ impl<L: Llm> Inner<L> {
             clip(&intent.join("\n"), 2_000),
         );
         let request = LlmRequest {
-            provider: self.provider.clone(),
+            provider: self.provider(),
             session: self.id.clone(),
             model: guardian.to_string(),
             system: GUARDIAN.to_string(),
@@ -865,7 +905,7 @@ impl<L: Llm> Inner<L> {
                 // Anything but a plain ALLOW leaves it to the user.
                 let allowed = verdict.trim_matches(|c: char| !c.is_alphabetic()).eq_ignore_ascii_case("allow");
                 let reason = lines.collect::<Vec<_>>().join(" ");
-                (allowed, reason, false, providers::tokens(&self.provider, &turn.usage))
+                (allowed, reason, false, providers::tokens(&self.provider(), &turn.usage))
             }
         };
         let event = Event::GuardianReviewed { tool_use_id: tool_use_id.to_string(), model: guardian.to_string(), allowed, reason, failed, tokens };
@@ -895,7 +935,7 @@ impl<L: Llm> Inner<L> {
                 return Ok("cancelled");
             }
 
-            let tuning = (self.tuning)(&self.model());
+            let tuning = self.tuning();
             let estimate = context_estimate(self.log.lock().unwrap().events());
             if estimate >= tuning.context_limit && self.compactable() {
                 let near_window = estimate >= tuning.context_window / 10 * 9;
@@ -907,7 +947,7 @@ impl<L: Llm> Inner<L> {
             }
 
             let request = LlmRequest {
-                provider: self.provider.clone(),
+                provider: self.provider(),
                 session: self.id.clone(),
                 model: self.model(),
                 system: self.system(),
@@ -950,7 +990,7 @@ impl<L: Llm> Inner<L> {
                 stop_reason: message.stop_reason.clone(),
                 model: message.model.clone(),
                 usage: message.usage.clone(),
-                tokens: providers::tokens(&self.provider, &message.usage),
+                tokens: providers::tokens(&self.provider(), &message.usage),
             })?;
 
             match message.stop_reason.as_deref() {
@@ -1159,7 +1199,7 @@ mod tests {
         let limits = Arc::new(Mutex::new((u64::MAX, u64::MAX)));
         let guard: Arc<Mutex<(Option<String>, Option<Duration>)>> = Arc::default();
         let (read, read_guard) = (limits.clone(), guard.clone());
-        let tuning = move |_: &str| {
+        let tuning = move |_: &str, _: &str| {
             let (context_limit, context_window) = *read.lock().unwrap();
             let (guardian, approval_wait) = read_guard.lock().unwrap().clone();
             Tuning { effort: "high".to_string(), context_limit, context_window, guardian, approval_wait }
@@ -1397,7 +1437,7 @@ mod tests {
         let home = fixture._home.path().to_path_buf();
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
-        let tuning = Arc::new(|_: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
+        let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
         let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None };
         let later = Session::new(log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
@@ -1638,7 +1678,7 @@ mod tests {
         let llm = ScriptedLlm::new(vec![echo("t1", "one"), echo("t2", "two"), echo("t3", "three"), says("done")], None);
         let log = SessionStore::new(home.path()).create(workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
-        let tuning = Arc::new(|_: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
+        let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
         // Searching is set up, so the model is offered `web_search` as well.
         let search: crate::web::SearchSource = Arc::new(|| Some(crate::web::SearchConfig { url: "http://127.0.0.1:9/web_search".into(), key: "k".into(), engine: "search_std".into() }));
@@ -1679,10 +1719,10 @@ mod tests {
         fixture.session.send("first".into());
         fixture.idle().await;
 
-        fixture.session.set_model(" scripted-large ").unwrap();
+        fixture.session.set_model("anthropic", " scripted-large ").unwrap();
         // Choosing the model it is already on changes nothing and logs nothing.
-        fixture.session.set_model("scripted-large").unwrap();
-        assert!(fixture.session.set_model("  ").is_err());
+        fixture.session.set_model("anthropic", "scripted-large").unwrap();
+        assert!(fixture.session.set_model("anthropic", "  ").is_err());
         assert_eq!(fixture.session.summary().model, "scripted-large");
         gate.add_permits(1);
         fixture.session.send("second".into());
@@ -1693,7 +1733,7 @@ mod tests {
         while fixture.llm.requests.lock().unwrap().len() < 3 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert!(fixture.session.set_model("scripted-small").unwrap_err().contains("is working"));
+        assert!(fixture.session.set_model("anthropic", "scripted-small").unwrap_err().contains("is working"));
         gate.add_permits(1);
         fixture.idle().await;
 
@@ -1702,6 +1742,44 @@ mod tests {
         // The earlier model's reasoning goes along untouched: the provider drops what the new model cannot read.
         assert_eq!(requests[1].messages[1]["content"][0], thinking);
         assert_eq!(fixture.kinds().iter().filter(|kind| *kind == "model/changed").count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn moves_to_another_provider_with_what_it_can_read_and_works_at_the_effort_set() {
+        // A first turn on Anthropic: signed reasoning, words, and a call whose id another provider gave it a shape of its own.
+        let thinking = json!({ "type": "thinking", "thinking": "hm", "signature": "sig-from-anthropic" });
+        let call = json!({ "type": "tool_use", "id": "functions.read_file:0", "name": "read_file", "input": { "path": "a.txt" }, "item": { "kept": "by its provider" } });
+        let first = Ok(AssistantTurn { content: vec![thinking, json!({ "type": "text", "text": "reading" }), call], stop_reason: Some("tool_use".into()), model: "scripted".into(), ..Default::default() });
+        let mut fixture = fixture(ScriptedLlm::new(vec![first, says("read it"), says("on deepseek now")], None));
+        std::fs::write(fixture.workspace.path().join("a.txt"), "hello\n").unwrap();
+        fixture.session.send("read a.txt".into());
+        fixture.idle().await;
+
+        assert!(fixture.session.set_model("nowhere", "m").unwrap_err().contains("no provider"));
+        fixture.session.set_model("deepseek", "deepseek-chat").unwrap();
+        assert!(fixture.session.set_effort("as hard as it likes").is_err());
+        fixture.session.set_effort("low").unwrap();
+        let summary = fixture.session.summary();
+        assert_eq!((summary.provider.as_str(), summary.model.as_str(), summary.effort.as_deref()), ("deepseek", "deepseek-chat", Some("low")));
+        fixture.session.send("go on".into());
+        fixture.idle().await;
+
+        let requests = fixture.llm.requests.lock().unwrap();
+        assert_eq!(requests.iter().map(|request| (request.provider.as_str(), request.effort.as_str())).collect::<Vec<_>>(), [("anthropic", "high"), ("anthropic", "high"), ("deepseek", "low")]);
+        // On the new provider, what Anthropic answered is its words and its call, plainly, the reasoning left out;
+        // the call's id takes only characters every provider allows, and its result follows it.
+        let moved = &requests[2].messages;
+        assert_eq!(moved[1]["content"], json!([{ "type": "text", "text": "reading" }, { "type": "tool_use", "id": "functions_read_file_0", "name": "read_file", "input": { "path": "a.txt" } }]));
+        assert_eq!(moved[2]["content"][0]["tool_use_id"], "functions_read_file_0");
+        // Before the move the same conversation went as it was.
+        assert_eq!(requests[1].messages[1]["content"][0]["signature"], "sig-from-anthropic");
+        assert_eq!(requests[1].messages[2]["content"][0]["tool_use_id"], "functions.read_file:0");
+        drop(requests);
+        // The log says where it moved, and the effort set, so that a session opened again reads both back.
+        let kinds = fixture.kinds();
+        assert!(kinds.contains(&"model/changed".to_string()) && kinds.contains(&"effort/changed".to_string()));
+        let events = fixture.session.snapshot();
+        assert_eq!((crate::session::provider(&events), crate::session::effort(&events)), ("deepseek".to_string(), Some("low".to_string())));
     }
 
     /// The texts of a request's messages, one list per message.

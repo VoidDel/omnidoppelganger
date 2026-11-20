@@ -94,12 +94,11 @@ struct SettingsView {
 impl App {
     fn wrap(&self, log: odg_core::session::SessionLog) -> Result<Session<Router>, String> {
         let store = self.settings.clone();
-        let (_, provider, _) = log.header();
-        // The window and the limit follow the model the session is on when the request is made.
-        let tuning = move |model: &str| {
+        // The window and the limit follow the provider and model the session is on when the request is made.
+        let tuning = move |provider: &str, model: &str| {
             let settings = store.load();
-            let window = store.context_window(&settings, &provider, model).tokens;
-            let (guardian, approval_wait) = (settings.guardian_model(&provider, model), settings.approval_wait());
+            let window = store.context_window(&settings, provider, model).tokens;
+            let (guardian, approval_wait) = (settings.guardian_model(provider, model), settings.approval_wait());
             Tuning { context_limit: settings.context_limit_within(window), context_window: window, effort: settings.effort, guardian, approval_wait }
         };
         let searching = self.settings.clone();
@@ -435,11 +434,19 @@ async fn search_sessions(app: State<'_, App>, query: String) -> Result<Vec<Strin
         .collect())
 }
 
-/// Move the session to another model of its provider. Fails while its agent is working.
+/// Move the session to another model, of its provider or another. Fails while its agent is working.
 #[tauri::command]
-async fn set_model(app: State<'_, App>, id: String, model: String) -> Result<SessionItem, String> {
+async fn set_model(app: State<'_, App>, id: String, provider: String, model: String) -> Result<SessionItem, String> {
     let session = app.live(&id)?;
-    session.set_model(&model)?;
+    session.set_model(&provider, &model)?;
+    Ok(app.item(session.summary(), session.status()))
+}
+
+/// Set how hard the model works for this session, in place of the settings' default.
+#[tauri::command]
+async fn set_effort(app: State<'_, App>, id: String, effort: String) -> Result<SessionItem, String> {
+    let session = app.live(&id)?;
+    session.set_effort(&effort)?;
     Ok(app.item(session.summary(), session.status()))
 }
 
@@ -603,6 +610,7 @@ pub fn run() {
             resolve_approval,
             set_mode,
             set_model,
+            set_effort,
             list_models,
             undo_turn,
             cancel_turn,
