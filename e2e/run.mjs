@@ -523,7 +523,7 @@ try {
     sentBlocks.length === 4 && sentBlocks[0] === `<attached_file path="${attachedNotes}">\n# 要点\n先读配置\n</attached_file>` && sentBlocks[1].startsWith(`<attached_file path="${attachedLog}" bytes="120023">`) && !sentBlocks[1].includes("first line of the log") && sentBlocks[3] === "看看这两份",
     "the small file's text went to the model with the message, the large one by its path alone, both ahead of the words",
   );
-  check(sentBlocks[2].startsWith(`<attached_file path="${attachedPdf}" pages="1">\n[A PDF: this is its text`) && sentBlocks[2].includes("Pin 1 is VIN") && sentBlocks[2].includes("Pin 2 is GND"), "the PDF went to the model as the text of its page");
+  check(sentBlocks[2].startsWith(`<attached_file path="${attachedPdf}">\n[It is a PDF of 1 page. This is its text`) && sentBlocks[2].includes("Pin 1 is VIN") && sentBlocks[2].includes("Pin 2 is GND"), "the PDF went to the model as the text of its page");
   const readBack = afterRead.messages[afterRead.messages.length - 1].content.find((block) => block.type === "tool_result");
   check(!readBack.is_error && readBack.content.includes("first line of the log") && !(await page.evaluate(`document.body.innerText.includes("请本尊定夺")`)), "the 分身 read the attached file outside the workspace without asking");
   check((await page.evaluate(`[...document.querySelectorAll(".said-files .file-chip-name")].map((name) => name.textContent).join()`)) === "要点.md,build.log,sheet.pdf", "the conversation shows what was attached under the message");

@@ -1,87 +1,33 @@
-//! The text of a PDF, for the model to read: a datasheet, a paper, a manual.
+//! The words of a PDF, page by page: a datasheet, a paper, a manual. See
+//! [`crate::documents`], which this is one kind of.
 //!
-//! Only the words are taken out, page by page; drawings, pictures, and where
-//! things stand on the page are not kept. A PDF of scanned pages has no words
-//! to take, and is refused as such. Used by `read_file`, by files attached to
-//! a message, and by `fetch_url`.
-
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+//! Drawings, pictures, and where things stand on the page are not kept. A PDF
+//! of scanned pages has no words to take, and is refused as such.
 
 use pdf_extract::{Document, PlainTextOutput, output_doc_page};
 
-/// The largest PDF read: datasheets and manuals run to tens of megabytes, far more than their words.
-pub const PDF_BYTES: u64 = 50 * 1024 * 1024;
+use crate::documents::DocError;
 
 /// Whether these bytes are a PDF: its header is to open the file, though readers look for it in the first kilobyte.
 pub fn is_pdf(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(1024)].windows(5).any(|window| window == b"%PDF-")
 }
 
-/// Whether the file at `path` is a PDF, by its first kilobyte.
-pub fn is_pdf_file(path: &Path) -> bool {
-    use std::io::Read;
-    let mut start = vec![0; 1024];
-    std::fs::File::open(path).and_then(|mut file| file.read(&mut start)).is_ok_and(|read| is_pdf(&start[..read]))
-}
-
-/// A PDF's words: how many pages it has, and the text of each under a line that numbers it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PdfText {
-    pub pages: usize,
-    pub text: String,
-}
-
-/// Why a PDF's words could not be had.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PdfError {
-    /// Not a PDF this can make sense of: damaged, cut short, or of a kind not understood.
-    Unreadable,
-    /// Locked with a password.
-    Locked,
-    /// Pages without words: scanned, or only drawings.
-    NoText,
-}
-
-impl PdfError {
-    /// The word for it among the reasons an attachment is refused; see [`crate::events::Picked`].
-    pub fn word(self) -> &'static str {
-        match self {
-            PdfError::Unreadable => "pdf_unreadable",
-            PdfError::Locked => "pdf_locked",
-            PdfError::NoText => "pdf_no_text",
-        }
-    }
-
-    /// What it means, for the model.
-    pub fn describe(self) -> &'static str {
-        match self {
-            PdfError::Unreadable => "is a PDF whose text cannot be read: it may be damaged or cut short",
-            PdfError::Locked => "is a PDF locked with a password, so its text cannot be read",
-            PdfError::NoText => "is a PDF with no text in it: its pages are likely scanned images or drawings, which cannot be read here",
-        }
-    }
-}
-
-/// The words of a PDF, page by page. A page whose words cannot be read is
-/// said to be so, and the others are still read.
-pub fn text(bytes: &[u8]) -> Result<PdfText, PdfError> {
-    // The reader is new to some PDFs it is given, and may panic on one: that is a PDF it cannot read, not a crash.
-    std::panic::catch_unwind(|| read(bytes)).unwrap_or(Err(PdfError::Unreadable))
-}
-
-fn read(bytes: &[u8]) -> Result<PdfText, PdfError> {
-    let mut document = Document::load_mem(bytes).map_err(|_| PdfError::Unreadable)?;
+/// The words of a PDF, each page's under a line that numbers it, and how many
+/// pages there are. A page whose words cannot be read is said to be so, and
+/// the others are still read.
+pub(crate) fn read(bytes: &[u8]) -> Result<(usize, String), DocError> {
+    let mut document = Document::load_mem(bytes).map_err(|_| DocError::Unreadable)?;
     // Many PDFs are locked against changes only, with an empty password to open them.
     if document.is_encrypted() && document.decrypt("").is_err() {
-        return Err(PdfError::Locked);
+        return Err(DocError::Locked);
     }
     let numbers: Vec<u32> = document.get_pages().keys().copied().collect();
     let mut text = String::new();
     let mut worded = false;
     for (at, number) in numbers.iter().enumerate() {
         let mut page = String::new();
+        // The reader is new to some PDFs it is given, and may panic on a page: that page cannot be read, the rest still can.
         let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut output = PlainTextOutput::new(&mut page);
             output_doc_page(&document, &mut output, *number)
@@ -98,9 +44,9 @@ fn read(bytes: &[u8]) -> Result<PdfText, PdfError> {
         text.push_str("\n\n");
     }
     if !worded {
-        return Err(PdfError::NoText);
+        return Err(DocError::NoText);
     }
-    Ok(PdfText { pages: numbers.len(), text: text.trim_end().to_string() })
+    Ok((numbers.len(), text.trim_end().to_string()))
 }
 
 /// The words of a page as lines: no spaces at their ends, no more than one
@@ -166,31 +112,6 @@ fn plain(character: char) -> char {
     RADICALS.iter().find(|(radical, _)| *radical == character).map_or(character, |(_, written)| *written)
 }
 
-/// The PDF last read from disk, as it was then, so that reading it on in
-/// parts does not take its words out again each time.
-type Kept = (PathBuf, u64, Option<SystemTime>, Arc<PdfText>);
-static LAST: Mutex<Option<Kept>> = Mutex::new(None);
-
-/// The words of the PDF at `path`, which must be [`PDF_BYTES`] or smaller.
-/// `Err` carries what to tell of a file that cannot be read at all.
-pub fn file_text(path: &Path) -> Result<Result<Arc<PdfText>, PdfError>, std::io::Error> {
-    let metadata = std::fs::metadata(path)?;
-    let (bytes, modified) = (metadata.len(), metadata.modified().ok());
-    if let Some((kept, size, time, text)) = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref()
-        && kept == path
-        && *size == bytes
-        && *time == modified
-        && modified.is_some()
-    {
-        return Ok(Ok(text.clone()));
-    }
-    let read = text(&std::fs::read(path)?).map(Arc::new);
-    if let Ok(text) = &read {
-        *LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((path.to_path_buf(), bytes, modified, text.clone()));
-    }
-    Ok(read)
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -227,9 +148,9 @@ pub(crate) mod tests {
     fn takes_the_words_of_each_page_under_its_number() {
         let pdf = sample(&[&["Pin 1 is VIN", "Pin 2 is GND"], &[], &["Absolute maximum 42 V"]]);
         assert!(is_pdf(&pdf));
-        let read = text(&pdf).unwrap();
-        assert_eq!(read.pages, 3);
-        let at = |words: &str| read.text.find(words).unwrap_or_else(|| panic!("{words} not in {}", read.text));
+        let (pages, text) = read(&pdf).unwrap();
+        assert_eq!(pages, 3);
+        let at = |words: &str| text.find(words).unwrap_or_else(|| panic!("{words} not in {text}"));
         assert!(at("[page 1 of 3]") < at("Pin 1 is VIN") && at("Pin 1 is VIN") < at("Pin 2 is GND"));
         assert!(at("Pin 2 is GND") < at("[page 2 of 3]") && at("[page 2 of 3]") < at("(no text on this page)"));
         assert!(at("[page 3 of 3]") < at("Absolute maximum 42 V"));
@@ -243,23 +164,11 @@ pub(crate) mod tests {
 
     #[test]
     fn says_why_a_pdf_has_no_words_to_give() {
-        assert_eq!(text(&sample(&[&[], &[]])), Err(PdfError::NoText));
-        assert_eq!(text(b"%PDF-1.7\nnot really"), Err(PdfError::Unreadable));
+        assert_eq!(read(&sample(&[&[], &[]])), Err(DocError::NoText));
+        assert_eq!(read(b"%PDF-1.7\nnot really"), Err(DocError::Unreadable));
         let mut cut = sample(&[&["words"]]);
         cut.truncate(cut.len() / 3);
-        assert!(text(&cut).is_err());
+        assert!(read(&cut).is_err());
         assert!(!is_pdf(b"plain words"));
-    }
-
-    #[test]
-    fn reads_a_file_again_only_when_it_has_changed() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("sheet.pdf");
-        std::fs::write(&path, sample(&[&["first edition"]])).unwrap();
-        assert!(is_pdf_file(&path));
-        assert!(file_text(&path).unwrap().unwrap().text.contains("first edition"));
-        std::fs::write(&path, sample(&[&["second edition, longer"]])).unwrap();
-        assert!(file_text(&path).unwrap().unwrap().text.contains("second edition"));
-        assert!(file_text(&directory.path().join("gone.pdf")).is_err());
     }
 }

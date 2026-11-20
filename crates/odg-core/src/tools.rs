@@ -99,7 +99,7 @@ pub fn specs() -> Vec<Value> {
     vec![
         json!({
             "name": "read_file",
-            "description": "Read a text file, or the text of a PDF. Returns numbered lines. Read a file before editing it. One read returns at most 2000 lines and 100,000 characters; use offset and limit to read the rest.",
+            "description": "Read a text file, or the text of a document: a PDF, Word, Excel, or PowerPoint file. Returns numbered lines. Read a file before editing it. One read returns at most 2000 lines and 100,000 characters; use offset and limit to read the rest.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -201,7 +201,7 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "fetch_url",
-            "description": "Get a web page and return its text: documentation, an issue, a raw file, a PDF. HTML comes back as its words, without markup; a PDF as the text of its pages. The user may have to approve the site first. A long page is cut; pass `offset` to read on. It reads the one address it is given.",
+            "description": "Get a web page and return its text: documentation, an issue, a raw file, a document. HTML comes back as its words, without markup; a PDF, Word, Excel, or PowerPoint file as the text taken out of it. The user may have to approve the site first. A long page is cut; pass `offset` to read on. It reads the one address it is given.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -459,12 +459,13 @@ async fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, T
     if metadata.is_dir() {
         return Err(ToolOutput::error(format!("{shown} is a directory. Use `find_files` to list it.")));
     }
-    // A PDF is read for its words, which take a while to take out of a large one: off the thread the agent runs on.
-    if crate::pdf::is_pdf_file(&path) {
-        if metadata.len() > crate::pdf::PDF_BYTES {
-            return Err(ToolOutput::error(format!("{shown} is a PDF of {} bytes, over the {}-byte limit.", metadata.len(), crate::pdf::PDF_BYTES)));
+    // A PDF or an Office file is read for its words, which take a while to take out of a large one: off the thread the agent runs on.
+    if let Some(found) = crate::documents::kind_of_file(&path) {
+        let kind = found.map_err(|why| ToolOutput::error(format!("{shown} {}.", why.describe())))?;
+        if metadata.len() > crate::documents::DOCUMENT_BYTES {
+            return Err(ToolOutput::error(format!("{shown} is a document of {} bytes, over the {}-byte limit.", metadata.len(), crate::documents::DOCUMENT_BYTES)));
         }
-        let taken = tokio::task::spawn_blocking(move || crate::pdf::file_text(&path)).await;
+        let taken = tokio::task::spawn_blocking(move || crate::documents::file_text(&path, kind)).await;
         let read = match taken {
             Ok(Ok(Ok(read))) => read,
             Ok(Ok(Err(why))) => return Err(ToolOutput::error(format!("{shown} {}.", why.describe()))),
@@ -472,8 +473,8 @@ async fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, T
             Err(error) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
         };
         let (content, lines, selected) = numbered(&read.text, input, &shown);
-        let content = format!("[{shown} is a PDF of {} pages. This is its text, taken out page by page: its drawings, pictures, and layout are not kept.]\n{content}", read.pages);
-        return Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected, "pages": read.pages })));
+        let content = format!("[{shown} is {}]\n{content}", read.describe());
+        return Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected, "document": read.kind, "parts": read.parts })));
     }
     if metadata.len() > READ_FILE_BYTES {
         return Err(ToolOutput::error(format!("{shown} is {} bytes, over the {READ_FILE_BYTES}-byte limit.", metadata.len())));
@@ -1044,15 +1045,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reads_the_text_of_a_pdf_in_numbered_lines() {
+    async fn reads_the_text_of_a_document_in_numbered_lines() {
         let (directory, context) = context();
         // Named as anything: a PDF is known by its first bytes.
         std::fs::write(directory.path().join("sheet.dat"), crate::pdf::tests::sample(&[&["Pin 1 is VIN", "Pin 2 is GND"], &["Absolute maximum 42 V"]])).unwrap();
         let all = execute("read_file", &json!({ "path": "sheet.dat" }), &context).await;
         assert!(!all.is_error, "{}", all.content);
-        assert!(all.content.starts_with("[sheet.dat is a PDF of 2 pages."), "{}", all.content);
+        assert!(all.content.starts_with("[sheet.dat is a PDF of 2 pages. This is its text"), "{}", all.content);
         assert!(all.content.contains("     1\t[page 1 of 2]\n     2\tPin 1 is VIN") && all.content.contains("\t[page 2 of 2]\n"), "{}", all.content);
-        assert_eq!(all.meta["pages"].as_u64(), Some(2));
+        assert_eq!((all.meta["document"].as_str(), all.meta["parts"].as_u64()), (Some("pdf"), Some(2)));
         // Read on from a line, as a text file is: here from where the second page starts.
         let second = all.content.lines().find(|line| line.ends_with("\t[page 2 of 2]")).and_then(|line| line.trim().split('\t').next()?.parse::<u64>().ok()).unwrap();
         let part = execute("read_file", &json!({ "path": "sheet.dat", "offset": second, "limit": 2 }), &context).await;
@@ -1062,6 +1063,14 @@ mod tests {
         std::fs::write(directory.path().join("scan.pdf"), crate::pdf::tests::sample(&[&[]])).unwrap();
         let scan = execute("read_file", &json!({ "path": "scan.pdf" }), &context).await;
         assert!(scan.is_error && scan.content.contains("no text in it"), "{}", scan.content);
+        // A Word document, and an old one that is not read, with what would make it readable.
+        use crate::documents::tests::{paragraph, word_document};
+        std::fs::write(directory.path().join("说明.docx"), word_document(&[paragraph(Some("1"), "安装"), paragraph(None, "先装驱动。")].concat())).unwrap();
+        let word = execute("read_file", &json!({ "path": "说明.docx" }), &context).await;
+        assert_eq!(word.content, "[说明.docx is a Word document. This is its text: paragraphs in order, headings marked with #, list items with -, and tables as rows of cells split by |. Its pictures, charts, and formatting are not kept.]\n     1\t# 安装\n     2\t先装驱动。");
+        std::fs::write(directory.path().join("old.doc"), [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0]).unwrap();
+        let old = execute("read_file", &json!({ "path": "old.doc" }), &context).await;
+        assert!(old.is_error && old.content.contains("saved as .docx or .pptx"), "{}", old.content);
     }
 
     #[tokio::test]

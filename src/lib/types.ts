@@ -49,21 +49,27 @@ export interface Attached {
   path: string;
   bytes: number;
   content?: string;
-  /** For a PDF, how many pages it has; its `content` is then the text taken out of them. */
-  pages?: number;
+  /** For a document, what kind it is; its `content` is then the text taken out of it. */
+  document?: DocumentKind;
+  /** For a document, how many pages, sheets, or slides it has; none for Word. */
+  parts?: number;
 }
+
+/** The kinds of document whose text is taken out to be read: see `crates/odg-core/src/documents.rs`. */
+export type DocumentKind = "pdf" | "word" | "excel" | "powerpoint";
 
 /**
  * What a path the user picked to attach turned out to be: a file (`inline` when its text will go with the
- * message; otherwise the 分身 reads it in parts; `pages` for a PDF), a picture to send as one, or neither, with why.
+ * message; otherwise the 分身 reads it in parts; `document` and `parts` for a document), a picture to send as
+ * one, or neither, with why.
  */
 export type Picked =
-  | { kind: "file"; path: string; name: string; bytes: number; inline: boolean; pages?: number }
+  | { kind: "file"; path: string; name: string; bytes: number; inline: boolean; document?: DocumentKind; parts?: number }
   | { kind: "image"; name: string; image: Image }
   | {
       kind: "refused";
       name: string;
-      why: "missing" | "directory" | "binary" | "too_large" | "image_too_large" | "pdf_unreadable" | "pdf_locked" | "pdf_no_text";
+      why: "missing" | "directory" | "binary" | "too_large" | "image_too_large" | "doc_unreadable" | "doc_locked" | "doc_no_text" | "doc_old_format";
     };
 
 export interface DiffHunk {

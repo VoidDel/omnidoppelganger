@@ -1,7 +1,7 @@
 import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { launchFrom } from "../lib/flight";
-import { type ChangedFile, type ToolItem, type Usage, fileSize, shortCount } from "../lib/fold";
+import { type ChangedFile, type ToolItem, type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Picked, Provider, SessionItem, Status, Todo } from "../lib/types";
 import { ago } from "../lib/when";
@@ -860,12 +860,13 @@ type Pending = Extract<Picked, { kind: "file" }>;
 const REFUSALS: Record<Extract<Picked, { kind: "refused" }>["why"], (name: string) => string> = {
   missing: (name) => `「${name}」读不到，可能已经不在了。`,
   directory: (name) => `「${name}」是个文件夹，只能附文件。要分身看整个文件夹，直接把路径告诉它。`,
-  binary: (name) => `「${name}」不是文本文件，附不了（Word、压缩包这类眼下还不行）。`,
-  too_large: (name) => `「${name}」太大了，分身读不了：文本文件最多 10 MB，PDF 最多 50 MB。`,
+  binary: (name) => `「${name}」不是文本文件，也不是 PDF、Word、Excel、PPT 这类文档，附不了。`,
+  too_large: (name) => `「${name}」太大了，分身读不了：文本文件最多 10 MB，文档最多 50 MB。`,
   image_too_large: (name) => `「${name}」这张图超过 3.7 MB，太大了，缩小或截小一点再附。`,
-  pdf_unreadable: (name) => `「${name}」这份 PDF 读不出来，可能已经损坏或不完整。`,
-  pdf_locked: (name) => `「${name}」这份 PDF 设了打开密码，分身读不了。`,
-  pdf_no_text: (name) => `「${name}」这份 PDF 里没有文字，多半是扫描件或整页是图，分身读不了。可以截图附上。`,
+  doc_unreadable: (name) => `「${name}」读不出来，可能已经损坏或不完整。`,
+  doc_locked: (name) => `「${name}」设了打开密码，分身读不了。去掉密码再附。`,
+  doc_no_text: (name) => `「${name}」里没有文字，多半是扫描件或整页是图，分身读不了。可以截图附上。`,
+  doc_old_format: (name) => `「${name}」是老版本的 Word 或 PPT 格式，分身读不了。用 Office 另存为 .docx 或 .pptx 再附。`,
 };
 
 /** A sheet of paper with its corner turned: a file. */
@@ -1146,13 +1147,13 @@ export function Composer(props: ComposerProps) {
               <span
                 className="attachment file"
                 key={file.path}
-                title={`${file.path}\n${file.inline ? (file.pages ? "取出的文字会随这句话一起发给分身，图和排版不在其中" : "它的内容会随这句话一起发给分身") : "它太大，不随消息发送：分身会自己分段去读，不用请示"}`}
+                title={`${file.path}\n${file.inline ? (file.document ? "取出的文字会随这句话一起发给分身，图和排版不在其中" : "它的内容会随这句话一起发给分身") : "它太大，不随消息发送：分身会自己分段去读，不用请示"}`}
               >
                 {FILE_ICON}
                 <span className="file-chip-name">{file.name}</span>
                 <span className="file-chip-size">
                   {fileSize(file.bytes)}
-                  {file.pages ? `，${file.pages} 页` : ""}
+                  {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
                   {!file.inline && "，分身自读"}
                 </span>
                 <button type="button" aria-label={`去掉 ${file.name}`} onClick={() => setFiles(files.filter((had) => had.path !== file.path))}>

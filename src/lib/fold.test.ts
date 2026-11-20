@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, changedFiles, commandRuns, fileSize, fold, pendingApproval, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, changedFiles, commandRuns, documentLabel, fileSize, fold, pendingApproval, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -67,6 +67,10 @@ describe("attached files", () => {
 
   it("says a file's size in the unit that suits it", () => {
     expect([0, 900, 1024, 99_500, 3_400_000].map(fileSize)).toEqual(["0 B", "900 B", "1 KB", "97 KB", "3.2 MB"]);
+  });
+
+  it("says what a document attached is by its kind and how many parts it has", () => {
+    expect([documentLabel("pdf", 3), documentLabel("word"), documentLabel("excel", 2), documentLabel("powerpoint", 12)]).toEqual(["3 页", "Word 文档", "2 个工作表", "12 张幻灯片"]);
   });
 });
 

@@ -144,8 +144,8 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).unwrap_or_default().to_lowercase();
         let (kind, encoding) = (header("content-type"), header("content-encoding"));
         let landed = response.url().to_string();
-        // A PDF is read whole or not at all, and runs larger than a page of HTML.
-        let limit = if kind.contains("pdf") { crate::pdf::PDF_BYTES as usize } else { BODY_BYTES };
+        // A document is read whole or not at all, and runs larger than a page of HTML.
+        let limit = if is_document_type(&kind) { crate::documents::DOCUMENT_BYTES as usize } else { BODY_BYTES };
         let mut body: Vec<u8> = Vec::new();
         let mut whole = true;
         while let Some(chunk) = response.chunk().await.map_err(|error| format!("The download of {url} broke off: {error}"))? {
@@ -186,19 +186,25 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         }
         return failed(message);
     }
-    let (title, text, pages) = if kind.contains("pdf") || crate::pdf::is_pdf(&body) {
-        if !whole {
-            return failed(format!("{url} is a PDF larger than {} MB, too large to read here.", crate::pdf::PDF_BYTES / 1024 / 1024));
-        }
-        // Taking the words out of a long PDF takes a while: off the thread the agent runs on.
-        match tokio::task::spawn_blocking(move || crate::pdf::text(&body)).await {
-            Ok(Ok(read)) => (None, format!("[A PDF of {} pages: this is its text, taken out page by page. Its drawings, pictures, and layout are not kept.]\n{}", read.pages, read.text), Some(read.pages)),
+    // A document cut short cannot be read, and a cut zip is not even known for one: its list of parts is at its end.
+    if !whole && is_document_type(&kind) {
+        return failed(format!("{url} is a document larger than {} MB, too large to read here.", crate::documents::DOCUMENT_BYTES / 1024 / 1024));
+    }
+    let (title, text, document) = if let Some(found) = crate::documents::kind_of_bytes(&body, &landed) {
+        let document = match found {
+            Ok(document) if whole => document,
+            Ok(_) => return failed(format!("{url} is a document larger than {} MB, too large to read here.", crate::documents::DOCUMENT_BYTES / 1024 / 1024)),
+            Err(why) => return failed(format!("{url} {}.", why.describe())),
+        };
+        // Taking the words out of a long document takes a while: off the thread the agent runs on.
+        match tokio::task::spawn_blocking(move || crate::documents::text(&body, document)).await {
+            Ok(Ok(read)) => (None, format!("[It is {}]\n{}", read.describe(), read.text), Some(read)),
             Ok(Err(why)) => return failed(format!("{url} {}.", why.describe())),
-            Err(error) => return failed(format!("Cannot read the PDF at {url}: {error}")),
+            Err(error) => return failed(format!("Cannot read the document at {url}: {error}")),
         }
     } else {
         if !textual || binary {
-            return failed(format!("{url} is {}, not text or a PDF; it cannot be read here.", if kind.is_empty() { "binary data" } else { kind.as_str() }));
+            return failed(format!("{url} is {}, not text or a document; it cannot be read here.", if kind.is_empty() { "binary data" } else { kind.as_str() }));
         }
         let raw = String::from_utf8_lossy(&body);
         let looks_like_html = kind.contains("html") || raw.trim_start().get(..15).is_some_and(|start| start.to_lowercase().starts_with("<!doctype html") || start.to_lowercase().starts_with("<html"));
@@ -225,10 +231,16 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         }
     }
     let mut meta = json!({ "url": landed, "title": title, "characters": total });
-    if let Some(pages) = pages {
-        meta["pages"] = json!(pages);
+    if let Some(read) = document {
+        meta["document"] = json!(read.kind);
+        meta["parts"] = json!(read.parts);
     }
     Fetched { content, is_error: false, meta }
+}
+
+/// Whether a content type is that of a document: a PDF, or an Office or OpenDocument file.
+fn is_document_type(kind: &str) -> bool {
+    ["pdf", "officedocument", "msword", "ms-excel", "ms-powerpoint", "opendocument"].iter().any(|word| kind.contains(word))
 }
 
 /// Where a search is sent. Today the one source is Zhipu's Web Search API,
@@ -418,6 +430,12 @@ mod tests {
             answer("200 OK", "content-type: text/html\r\ncontent-encoding: gzip\r\n", &zipped.finish().unwrap()),
             answer("200 OK", "content-type: application/zip\r\n", &[b'P', b'K', 3, 4, 0, 0]),
             answer("200 OK", "content-type: application/octet-stream\r\n", &crate::pdf::tests::sample(&[&[]])),
+            // A type that says xml, which is not to be read as text.
+            answer(
+                "200 OK",
+                "content-type: application/vnd.openxmlformats-officedocument.wordprocessingml.document\r\n",
+                &crate::documents::tests::word_document(&crate::documents::tests::paragraph(Some("1"), "Errata")),
+            ),
         ])
         .await;
         let got = fetch(&format!("{address}/docs?page=1"), 0, &cancel).await;
@@ -426,9 +444,9 @@ mod tests {
         assert_eq!(fetch(&format!("{address}/data.json"), 0, &cancel).await.content, "{\"ok\": true}");
         // A PDF comes back as its words, page by page.
         let pdf = fetch(&format!("{address}/a.pdf"), 0, &cancel).await;
-        assert!(!pdf.is_error && pdf.content.starts_with("[A PDF of 2 pages: this is its text"), "{}", pdf.content);
+        assert!(!pdf.is_error && pdf.content.starts_with("[It is a PDF of 2 pages. This is its text"), "{}", pdf.content);
         assert!(pdf.content.contains("[page 1 of 2]\nPin 1 is VIN") && pdf.content.contains("[page 2 of 2]\nAbsolute maximum 42 V"), "{}", pdf.content);
-        assert_eq!(pdf.meta["pages"].as_u64(), Some(2));
+        assert_eq!((pdf.meta["document"].as_str(), pdf.meta["parts"].as_u64()), (Some("pdf"), Some(2)));
         // A missing page says so, with what to do instead and what the site's own page said.
         let missing = fetch(&format!("{address}/missing"), 0, &cancel).await;
         assert!(missing.is_error && missing.content.contains("answered HTTP 404. There is no page at this address") && missing.content.contains("rather than guessing"), "{}", missing.content);
@@ -443,9 +461,11 @@ mod tests {
         // A page sent gzipped is unzipped; an archive is still refused; a PDF of scans says why it gives nothing.
         assert_eq!(fetch(&format!("{address}/zipped"), 0, &cancel).await.content, "Title: Zipped\n\nSmall and squeezed");
         let archive = fetch(&format!("{address}/a.zip"), 0, &cancel).await;
-        assert!(archive.is_error && archive.content.ends_with("is application/zip, not text or a PDF; it cannot be read here."), "{}", archive.content);
+        assert!(archive.is_error && archive.content.ends_with("is application/zip, not text or a document; it cannot be read here."), "{}", archive.content);
         let scan = fetch(&format!("{address}/scan"), 0, &cancel).await;
         assert!(scan.is_error && scan.content.contains("no text in it"), "{}", scan.content);
+        let word = fetch(&format!("{address}/errata.docx"), 0, &cancel).await;
+        assert!(!word.is_error && word.content.starts_with("[It is a Word document.") && word.content.ends_with("]\n# Errata"), "{}", word.content);
 
         // Asked for as a browser asks: some sites turn away anything else.
         let requests = requests.await.unwrap();

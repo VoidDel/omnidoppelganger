@@ -1,7 +1,7 @@
 // Folds the session log into what the window draws. The log is the only input,
 // so reopening a session shows exactly what was on screen before.
 
-import type { ContentBlock, Decision, DiffHunk, Envelope, Image, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
+import type { ContentBlock, Decision, DiffHunk, DocumentKind, Envelope, Image, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
 
 export interface ToolItem {
   kind: "tool";
@@ -37,8 +37,14 @@ export interface Row {
   key: string;
   /** The turn the message opened or, for a steering message, joined. */
   turn: number;
-  /** `files`: what was attached, each with whether its text went with the message, and for a PDF its pages. */
-  prompt: { text: string; ts: string; steering: boolean; images: Image[]; files: { path: string; bytes: number; inline: boolean; pages?: number }[] };
+  /** `files`: what was attached, each with whether its text went with the message, and for a document what kind and its parts. */
+  prompt: {
+    text: string;
+    ts: string;
+    steering: boolean;
+    images: Image[];
+    files: { path: string; bytes: number; inline: boolean; document?: DocumentKind; parts?: number }[];
+  };
   items: Item[];
 }
 
@@ -83,7 +89,13 @@ export function fold(events: Envelope[]): Row[] {
             ts: event.ts,
             steering: event.data.steering,
             images: event.data.images ?? [],
-            files: (event.data.files ?? []).map((file) => ({ path: file.path, bytes: file.bytes, inline: file.content !== undefined, pages: file.pages })),
+            files: (event.data.files ?? []).map((file) => ({
+              path: file.path,
+              bytes: file.bytes,
+              inline: file.content !== undefined,
+              document: file.document,
+              parts: file.parts,
+            })),
           },
           items: [],
         });
@@ -236,6 +248,20 @@ export function fileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** What a document attached is, as its chip says it: `3 页`, `Word 文档`, `2 个工作表`, `12 张幻灯片`. */
+export function documentLabel(document: DocumentKind, parts?: number): string {
+  switch (document) {
+    case "pdf":
+      return `${parts ?? 0} 页`;
+    case "word":
+      return "Word 文档";
+    case "excel":
+      return `${parts ?? 0} 个工作表`;
+    case "powerpoint":
+      return `${parts ?? 0} 张幻灯片`;
+  }
 }
 
 export interface ChangedFile {
