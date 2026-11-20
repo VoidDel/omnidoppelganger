@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MODES, modeOf } from "../lib/modes";
 import { Combo } from "./Combo";
+import { ConfirmBubble } from "./ConfirmBubble";
 import { WEEKDAYS, blank, clock, describeWhen, draftOf, scheduleOf, type Draft } from "../lib/schedule";
 import type { Mode, Schedule, SessionItem } from "../lib/types";
 import { ahead } from "../lib/when";
@@ -236,25 +237,7 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
                   <strong>{schedule.name}</strong>
                   {!schedule.enabled && <span className="chip pending">已停课</span>}
                   <span className="spacer" />
-                  {deleting === schedule.id ? (
-                    <span className="undo-confirm">
-                      这门功课就此作罢；它化出过的分身还留着。
-                      <button
-                        type="button"
-                        className="button outline red small"
-                        onClick={() => {
-                          setDeleting(null);
-                          act(onDelete(schedule.id));
-                        }}
-                      >
-                        确认删除
-                      </button>
-                      <button type="button" className="button text small" onClick={() => setDeleting(null)}>
-                        算了
-                      </button>
-                    </span>
-                  ) : (
-                    <>
+                  <>
                       {/* Pictures, each named in its title and for a screen reader. */}
                       <button type="button" className="icon-button" title="现在就办：不等时辰，现在就化一个分身去办；下次的时辰照旧" onClick={() => act(onRun(schedule.id))}>
                         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
@@ -285,14 +268,34 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
                         </svg>
                         <span className="sr-only">改</span>
                       </button>
-                      <button type="button" className="icon-button danger" title="删除这门功课" onClick={() => setDeleting(schedule.id)}>
-                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M2.8 4.2h10.4M6.2 4.2V2.8h3.6v1.4M4.2 4.2l.7 9h6.2l.7-9M6.7 6.7v4.2M9.3 6.7v4.2" />
-                        </svg>
-                        <span className="sr-only">删除</span>
-                      </button>
-                    </>
-                  )}
+                      <span className="bubble-anchor">
+                        <button
+                          type="button"
+                          className="icon-button danger"
+                          aria-expanded={deleting === schedule.id}
+                          title="删除这门功课"
+                          onClick={() => setDeleting(deleting === schedule.id ? null : schedule.id)}
+                        >
+                          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M2.8 4.2h10.4M6.2 4.2V2.8h3.6v1.4M4.2 4.2l.7 9h6.2l.7-9M6.7 6.7v4.2M9.3 6.7v4.2" />
+                          </svg>
+                          <span className="sr-only">删除</span>
+                        </button>
+                        {deleting === schedule.id && (
+                          <ConfirmBubble
+                            label="删除这门功课"
+                            confirm="确认删除"
+                            onConfirm={() => {
+                              setDeleting(null);
+                              act(onDelete(schedule.id));
+                            }}
+                            onCancel={() => setDeleting(null)}
+                          >
+                            <p>这门功课就此作罢；它化出过的分身还留着。</p>
+                          </ConfirmBubble>
+                        )}
+                      </span>
+                  </>
                 </div>
                 <p className="schedule-task">{schedule.prompt}</p>
                 {/* When it next comes due, large, and how far off that is; or why it will not. */}

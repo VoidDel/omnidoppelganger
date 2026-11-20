@@ -80,6 +80,23 @@ export interface DiffHunk {
 }
 
 /** Presentation data a tool attaches to its result. Each tool fills its own fields. */
+/** How the document runtime stands, as the settings show it. */
+export interface RuntimeView {
+  status: { state: "ready"; python: string; version: string } | { state: "missing"; outdated: boolean };
+  python_version: string;
+  download_mb: number;
+  libreoffice: string | null;
+  supported: boolean;
+}
+
+/** A step of setting up the document runtime. */
+export type RuntimeProgress =
+  | { step: "downloading"; done: number; total: number | null }
+  | { step: "unpacking" }
+  | { step: "installing" }
+  | { step: "checking" }
+  | { step: "done" };
+
 export interface ToolMeta {
   path?: string;
   /** The absolute path of the file an edit wrote. */
@@ -91,8 +108,12 @@ export interface ToolMeta {
   /** How many files or directory entries `find_files` returned. */
   entries?: number;
   matches?: number;
-  files?: number;
+  /** How many files `search` found in; or, for `deliver_files`, the absolute paths of the files handed over. */
+  files?: number | string[];
   truncated?: boolean;
+  /** For `document_runtime`: its interpreter, and LibreOffice's command if there is one; `state` says whether it is set up. */
+  python?: string;
+  libreoffice?: string | null;
   created?: boolean;
   added?: number;
   removed?: number;
@@ -115,9 +136,9 @@ export interface ToolMeta {
   skill?: string;
   directory?: string;
   scope?: "project" | "user";
-  /** The MCP server `add_mcp_server` added, how it stands, and the tools it offers. */
+  /** The MCP server `add_mcp_server` added, how it stands, and the tools it offers; for `document_runtime`, whether it is set up. */
   server?: string;
-  state?: "ready" | "failed" | "connecting";
+  state?: "ready" | "failed" | "connecting" | "missing";
   tools?: string[];
   /** The call went to a tool of an MCP server. */
   mcp?: boolean;

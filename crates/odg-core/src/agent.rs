@@ -87,6 +87,8 @@ pub struct Services {
     pub sandbox: Option<crate::sandbox::SandboxSource>,
     /// The folder kept for conversations (闲谈): a session there is told it is one, not work on a project.
     pub chat: Option<PathBuf>,
+    /// Where the document runtime is kept; see [`crate::runtime`]. `None` means it is not offered.
+    pub runtime: Option<PathBuf>,
 }
 
 /// What the model is asked when the conversation is compacted. It follows
@@ -139,6 +141,8 @@ struct Inner<L: Llm> {
     skill_roots: Vec<PathBuf>,
     search: Option<crate::web::SearchSource>,
     sandbox: Option<crate::sandbox::SandboxSource>,
+    /// Where the document runtime is kept; `None` means it is not offered.
+    documents: Option<PathBuf>,
     /// Where Git keeps the workspace's repository, found when a command is first confined.
     git_directory: std::sync::OnceLock<Option<PathBuf>>,
     /// The session works in the folder kept for conversations.
@@ -270,7 +274,7 @@ impl<L: Llm> Session<L> {
         let worktree = crate::session::worktree(log.events()).cloned();
         let granted_in = worktree.as_ref().map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
         let store = SessionStore::of(&log);
-        let Services { grants: kept, mcp, skills, search, sandbox, chat } = services.clone();
+        let Services { grants: kept, mcp, skills, search, sandbox, chat, runtime: documents } = services.clone();
         let chatting = chat.is_some_and(|folder| same_folder(&folder, &workspace));
         let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
         Ok(Self {
@@ -291,6 +295,7 @@ impl<L: Llm> Session<L> {
                 skill_roots,
                 search,
                 sandbox,
+                documents,
                 git_directory: std::sync::OnceLock::new(),
                 chatting,
                 provider: Mutex::new(provider),
@@ -625,6 +630,7 @@ impl<L: Llm> Inner<L> {
             skills: self.skill_roots.clone(),
             search: self.search_config(),
             sandbox: self.sandbox_now(),
+            runtime: self.documents.clone(),
         }
     }
 
@@ -1227,7 +1233,7 @@ mod tests {
             Tuning { effort: "high".to_string(), context_limit, context_window, guardian, approval_wait }
         };
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
-        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None, sandbox: sandbox.then(|| Arc::new(|| Some(Vec::new())) as crate::sandbox::SandboxSource), chat: None };
+        let services = Services { grants: kept, mcp: None, skills: Some(home.path().join("skills")), search: None, sandbox: sandbox.then(|| Arc::new(|| Some(Vec::new())) as crate::sandbox::SandboxSource), chat: None, runtime: None };
         let session = Session::new(log, llm.clone(), Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).unwrap();
         Fixture { _home: home, limits, guard, workspace, session, llm, events }
     }
@@ -1460,7 +1466,7 @@ mod tests {
         let log = SessionStore::new(&home).create(fixture.workspace.path(), "anthropic", "scripted").unwrap();
         let (sender, events) = unbounded_channel();
         let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
-        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None, chat: None };
+        let services = Services { grants: Arc::new(GrantStore::new(home.join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None, chat: None, runtime: None };
         let later = Session::new(log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         fixture.session = later;
         fixture.events = events;
@@ -1704,7 +1710,7 @@ mod tests {
         let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
         // Searching is set up, so the model is offered `web_search` as well.
         let search: crate::web::SearchSource = Arc::new(|| Some(crate::web::SearchConfig { url: "http://127.0.0.1:9/web_search".into(), key: "k".into(), engine: "search_std".into() }));
-        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search), sandbox: None, chat: None };
+        let services = Services { grants: kept.clone(), mcp: Some(hub), skills: None, search: Some(search), sandbox: None, chat: None, runtime: None };
         let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
         // Auto mode lets safe commands through, but never a server's tool.
         session.set_mode(Mode::Auto);

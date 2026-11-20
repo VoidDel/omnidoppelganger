@@ -115,6 +115,7 @@ impl App {
             search: Some(Arc::new(move || searching.search())),
             sandbox: Some(Arc::new(move || confining.sandbox())),
             chat: Some(settings::chat_folder()),
+            runtime: Some(settings::home().join("runtime")),
         };
         Session::new(log, self.llm.clone(), Arc::new(tuning), services, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
     }
@@ -391,7 +392,12 @@ const RUNNABLE: &[&str] = &[
 fn session_file(session: &Session<Router>, path: &str) -> bool {
     session.snapshot().iter().any(|envelope| match &envelope.event {
         Event::UserMessage { files, .. } => files.iter().any(|file| file.path == path),
-        Event::ToolResult { tool, is_error: false, meta, .. } => matches!(tool.as_str(), "edit_file" | "write_file") && meta["file"].as_str() == Some(path),
+        Event::ToolResult { tool, is_error: false, meta, .. } => match tool.as_str() {
+            "edit_file" | "write_file" => meta["file"].as_str() == Some(path),
+            // What the 分身 handed over, having made it some other way, such as with a script.
+            "deliver_files" => meta["files"].as_array().is_some_and(|files| files.iter().any(|file| file.as_str() == Some(path))),
+            _ => false,
+        },
         _ => false,
     })
 }
@@ -420,6 +426,51 @@ async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: 
         tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| format!("没能打开它：{error}"))?;
     }
     Ok("opened".to_string())
+}
+
+/// What the page shows of the document runtime: how it stands, and what LibreOffice it would use.
+#[derive(Serialize)]
+struct RuntimeView {
+    status: odg_core::runtime::Status,
+    python_version: &'static str,
+    download_mb: u32,
+    libreoffice: Option<String>,
+    /// Whether this system has a build of it at all.
+    supported: bool,
+}
+
+fn runtime_view() -> RuntimeView {
+    RuntimeView {
+        status: odg_core::runtime::status(&settings::home().join("runtime")),
+        python_version: odg_core::runtime::PYTHON_VERSION,
+        download_mb: odg_core::runtime::DOWNLOAD_MB,
+        libreoffice: odg_core::runtime::libreoffice().map(|path| path.display().to_string()),
+        supported: odg_core::runtime::target().is_some(),
+    }
+}
+
+/// The event that says how far setting up the document runtime has got.
+const RUNTIME_EVENT: &str = "runtime-progress";
+
+#[tauri::command]
+async fn runtime_status() -> Result<RuntimeView, String> {
+    Ok(runtime_view())
+}
+
+/// Download and set up the document runtime, telling the page how far it has got.
+#[tauri::command]
+async fn install_runtime(handle: tauri::AppHandle) -> Result<RuntimeView, String> {
+    let watch = move |step: odg_core::runtime::Progress| {
+        let _ = handle.emit(RUNTIME_EVENT, step);
+    };
+    odg_core::runtime::install(&settings::home().join("runtime"), &watch, &tokio_util::sync::CancellationToken::new()).await?;
+    Ok(runtime_view())
+}
+
+#[tauri::command]
+async fn remove_runtime() -> Result<RuntimeView, String> {
+    odg_core::runtime::remove(&settings::home().join("runtime"))?;
+    Ok(runtime_view())
 }
 
 /// Kinds of picture the conversation shows from what the 分身 wrote, and the media type each is shown as.
@@ -794,6 +845,9 @@ pub fn run() {
             remove_skill,
             open_attachment,
             picture,
+            runtime_status,
+            install_runtime,
+            remove_runtime,
             add_provider,
             remove_provider,
             install_skill,

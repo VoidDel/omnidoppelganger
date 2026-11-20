@@ -131,6 +131,11 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("frontend-design", include_str!("../skills/frontend-design/SKILL.md")),
     ("release-notes", include_str!("../skills/release-notes/SKILL.md")),
     ("security-review", include_str!("../skills/security-review/SKILL.md")),
+    // Documents, made with the document runtime's Python; see `crate::runtime`.
+    ("docx", include_str!("../skills/docx/SKILL.md")),
+    ("xlsx", include_str!("../skills/xlsx/SKILL.md")),
+    ("pptx", include_str!("../skills/pptx/SKILL.md")),
+    ("pdf", include_str!("../skills/pdf/SKILL.md")),
 ];
 
 /// A skill as the 秘籍 page lists it: one of the app's, on or off, or one of the user's own.

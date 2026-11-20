@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import type { ListedSkill, SkillsView } from "../lib/types";
+import { ConfirmBubble } from "./ConfirmBubble";
 import { FormDialog, Row } from "./FormDialog";
 import { Info } from "./Hint";
 
@@ -15,6 +16,10 @@ const LOOKS: Record<string, { title: string; seal: string }> = {
   "frontend-design": { title: "界面设计", seal: "绘" },
   "release-notes": { title: "发布说明", seal: "告" },
   "security-review": { title: "安全审查", seal: "防" },
+  docx: { title: "Word 文档", seal: "文" },
+  xlsx: { title: "Excel 表格", seal: "表" },
+  pptx: { title: "PPT 演示", seal: "演" },
+  pdf: { title: "PDF 文件", seal: "印" },
 };
 
 interface CardProps {
@@ -61,34 +66,31 @@ function Card({ skill, held, onChange }: CardProps) {
             {wrong}
           </p>
         )}
-        {confirming && (
-          <p className="undo-confirm">
-            {skill.builtin ? "这部秘籍改过，关掉会连改动一起删掉。" : "删掉这部秘籍，连同它文件夹里的东西。"}
-            <button type="button" className="button outline red small" onClick={() => change(false, true)}>
-              {skill.builtin ? "仍然关掉" : "确认删除"}
-            </button>
-            <button type="button" className="button text small" onClick={() => setConfirming(false)}>
-              算了
-            </button>
-          </p>
-        )}
       </div>
-      {skill.builtin ? (
-        <label className="mcp-switch" title={skill.installed ? `收起「${look?.title ?? skill.name}」` : `收入「${look?.title ?? skill.name}」：所有分身都能研读它`}>
-          <input type="checkbox" role="switch" checked={skill.installed} disabled={held} onChange={(event) => change(event.target.checked)} />
-          <span className="track" aria-hidden="true" />
-          <span className="sr-only">
-            {skill.installed ? "收起" : "收入"} {look?.title ?? skill.name}
-          </span>
-        </label>
-      ) : (
-        <button type="button" className="icon-button danger" title="删掉这部秘籍" disabled={held} onClick={() => setConfirming(true)}>
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
-          </svg>
-          <span className="sr-only">删掉 {skill.name}</span>
-        </button>
-      )}
+      {/* What loses something asks in a bubble from the switch or the icon that asked for it. */}
+      <span className="bubble-anchor">
+        {skill.builtin ? (
+          <label className="mcp-switch" title={skill.installed ? `收起「${look?.title ?? skill.name}」` : `收入「${look?.title ?? skill.name}」：所有分身都能研读它`}>
+            <input type="checkbox" role="switch" checked={skill.installed} disabled={held} onChange={(event) => change(event.target.checked)} />
+            <span className="track" aria-hidden="true" />
+            <span className="sr-only">
+              {skill.installed ? "收起" : "收入"} {look?.title ?? skill.name}
+            </span>
+          </label>
+        ) : (
+          <button type="button" className="icon-button danger" aria-expanded={confirming} title="删掉这部秘籍" disabled={held} onClick={() => setConfirming(!confirming)}>
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
+            </svg>
+            <span className="sr-only">删掉 {skill.name}</span>
+          </button>
+        )}
+        {confirming && (
+          <ConfirmBubble label={skill.builtin ? "关掉改过的秘籍" : "删掉这部秘籍"} confirm={skill.builtin ? "仍然关掉" : "确认删除"} onConfirm={() => change(false, true)} onCancel={() => setConfirming(false)}>
+            <p>{skill.builtin ? "这部秘籍改过，关掉会连改动一起删掉。" : "删掉这部秘籍，连同它文件夹里的东西。"}</p>
+          </ConfirmBubble>
+        )}
+      </span>
     </div>
   );
 }

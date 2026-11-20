@@ -929,38 +929,6 @@ pre,
   gap: 12px;
 }
 
-/* What deleting a 分身 asks, on a card hung from the bar's right end, where the button that asked is: it is
-   for 本尊 to decide, and cannot be undone, so its edge is cinnabar. */
-.header-confirm {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 24px;
-  width: min(440px, calc(100% - 48px));
-  padding: var(--s-3) var(--s-4);
-  border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--cinnabar);
-  border-radius: var(--r-control);
-  background: var(--sheet);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  font-size: var(--t-small);
-  line-height: 1.6;
-  color: var(--ink-2);
-  animation: come var(--d-move) var(--ease-out);
-}
-
-.header-confirm p {
-  margin: 0;
-}
-
-.header-confirm .actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--s-2);
-}
-
 /* The title, and under it the folder. */
 .title-block {
   flex: 0 1 auto;
@@ -1189,6 +1157,11 @@ pre,
 .said-top .icon-button {
   width: 22px;
   height: 22px;
+}
+
+/* Over the message the bubble reads as the page's own words, not the message's. */
+.said-top .confirm-bubble {
+  font-weight: 400;
 }
 
 .said-when {
@@ -3191,20 +3164,10 @@ button.did-head:not(:disabled):hover {
 }
 
 .composer-status .button.small,
-.main-header .button.small,
-.turn-said .button.small {
+.main-header .button.small {
   min-height: 32px;
   padding: 0 12px;
   font-size: var(--t-small);
-}
-
-.undo-confirm {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--t-small);
-  color: var(--ink-2);
 }
 
 /* The 禁制 picker: a button in the composer row, its menu opening upward over the transcript. */
@@ -3788,6 +3751,245 @@ button.select-button svg {
 .file-line:hover .file-acts,
 .file-acts:focus-within {
   opacity: 1;
+}
+
+/* The document runtime in the settings: a card of two lines, Python and LibreOffice, each with its lamp, what it
+   is and where, and at its right what can be done. */
+.runtime-card {
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.runtime-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 14px;
+}
+
+.runtime-row + .runtime-row,
+.runtime-note + .runtime-row {
+  border-top: 1px solid var(--line);
+}
+
+.runtime-what {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.runtime-what strong {
+  font-weight: 500;
+}
+
+.runtime-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.runtime-detail.mono {
+  font-size: var(--t-micro);
+}
+
+.runtime-detail.missing {
+  color: var(--cinnabar-ink);
+}
+
+.runtime-acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* What can be done to a line is an icon at its end; setting up, what the line is waiting for, is in jade. */
+.runtime-acts .icon-button.go {
+  color: var(--jade);
+}
+
+/* What asks before something is taken away for good (ConfirmBubble): a slip of the page's paper under the icon that
+   asked, its point at the icon, on its own layer over what follows. The icon stays lit in cinnabar while it asks. */
+.bubble-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.bubble-anchor > .icon-button.danger[aria-expanded="true"] {
+  border-color: var(--line);
+  background: var(--sheet);
+  color: var(--cinnabar-ink);
+}
+
+.confirm-bubble {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: -6px;
+  z-index: 30;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 48px));
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgb(16 27 29 / 0.16);
+  animation: bubble-in var(--d-quick) var(--ease-out);
+}
+
+/* Its point: a small square of the same paper, turned, its two outer edges drawn, over the middle of what asked;
+   --point, half that one's width, is measured when the bubble opens. */
+.confirm-bubble::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  right: calc(var(--point, 16px) + 1px);
+  width: 10px;
+  height: 10px;
+  border-top: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
+  background: var(--sheet);
+  transform: rotate(45deg);
+}
+
+/* With no room under what asked (the foot of a dialog): over it, its point down. */
+.confirm-bubble.up {
+  top: auto;
+  bottom: calc(100% + 10px);
+  animation-name: bubble-in-up;
+}
+
+.confirm-bubble.up::before {
+  top: auto;
+  bottom: -6px;
+  border: 0;
+  border-right: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.confirm-bubble p {
+  margin: 0;
+  font-size: var(--t-small);
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.confirm-bubble p + p {
+  margin-top: 6px;
+}
+
+.confirm-bubble-acts {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Its two pills, alike wherever the bubble hangs: one step more particular than the rules that size a place's own
+   small buttons (a 功课's head, the bar, a dialog's foot), which would otherwise reach into it. */
+.confirm-bubble .confirm-bubble-acts .button.small {
+  min-height: 28px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: var(--t-small);
+  font-weight: 400;
+}
+
+.confirm-bubble .confirm-bubble-acts .button.text.small {
+  border: 1px solid var(--line-strong);
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.confirm-bubble .confirm-bubble-acts .button.danger-fill {
+  border: 1px solid var(--cinnabar);
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+}
+
+.confirm-bubble .confirm-bubble-acts .button.danger-fill:hover {
+  filter: brightness(1.06);
+}
+
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes bubble-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* How far setting up has got: a ring where the download icon was, the size of the icon, filling with jade from the
+   top as the download comes in; a quarter of jade going round while how long is not known. */
+.runtime-ring {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.runtime-ring svg {
+  transform: rotate(-90deg);
+}
+
+.runtime-ring circle {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.runtime-ring .track {
+  stroke: var(--line);
+}
+
+.runtime-ring .arc {
+  stroke: var(--jade);
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--d-move) var(--ease-out);
+}
+
+.runtime-ring.turning svg {
+  animation: ring-turn 0.9s linear infinite;
+}
+
+@keyframes ring-turn {
+  from {
+    transform: rotate(-90deg);
+  }
+  to {
+    transform: rotate(270deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runtime-ring.turning svg {
+    animation-duration: 3s;
+  }
+}
+
+.runtime-note {
+  margin: 0;
+  padding: 0 14px 10px 34px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.runtime-note.failed {
+  color: var(--cinnabar-ink);
+  white-space: pre-wrap;
 }
 
 .file-row > .file-note {
@@ -5028,12 +5230,6 @@ button.select-button svg {
   gap: 2px;
 }
 
-.key-list .undo-confirm .button {
-  min-height: 32px;
-  padding: 0 10px;
-  font-size: var(--t-small);
-}
-
 /* A window over the page for one small job. Paper with the talisman showing under it, as 本尊's own orders are. */
 .dialog {
   width: min(520px, calc(100vw - 48px));
@@ -5576,8 +5772,7 @@ button.select-button svg {
   overflow-wrap: anywhere;
 }
 
-.schedule-head .button.small,
-.schedule-head .undo-confirm .button {
+.schedule-head .button.small {
   min-height: 32px;
   padding: 0 8px;
   font-size: var(--t-small);

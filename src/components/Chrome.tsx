@@ -7,6 +7,7 @@ import { type ChangedFile, type ToolItem, type Usage, documentLabel, fileSize, s
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Picked, Provider, SessionItem, Status, Todo } from "../lib/types";
 import { ago } from "../lib/when";
+import { ConfirmBubble } from "./ConfirmBubble";
 import { Info } from "./Hint";
 import { Viewer, imageSource } from "./Viewer";
 import { Light } from "./Light";
@@ -951,26 +952,6 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
       </div>
       </div>
       <span className="spacer" />
-      {/* Deleting asks on a card hung under the bar, whose height is fixed: what it says runs to several lines. */}
-      {deleting && (
-        <div className="header-confirm" role="alertdialog" aria-label="删除这个分身" onKeyDown={(event) => event.key === "Escape" && setDeleting(false)}>
-          <p>这个分身的全部记录和改文件前存的原样都会删掉，找不回来。</p>
-          {session.worktree && !session.parent && (
-            <p>
-              它的独立工作树也一并删掉：没提交的改动就没了，提交过但没并回的留在分支 <span className="mono">{session.worktree.branch}</span> 上。
-            </p>
-          )}
-          <div className="actions">
-            <button type="button" className="button outline red small" onClick={onDelete}>
-              确认删除
-            </button>
-            {/* Where the keys start: Enter at once keeps the 分身. */}
-            <button type="button" className="button text small" autoFocus onClick={() => setDeleting(false)}>
-              算了
-            </button>
-          </div>
-        </div>
-      )}
       {draft === null && (
           <>
             {/* Pictures to look at, words for a screen reader and for the pointer that rests on one. */}
@@ -1007,12 +988,24 @@ export function SessionHeader({ session, parent, onOpenParent, source, onOpenSou
                 <span className="sr-only">并回</span>
               </button>
             )}
-            <button type="button" className="icon-button danger" disabled={busy} aria-expanded={deleting} title={busy ? "分身还在运功，先收回它" : "删除这个分身"} onClick={() => setDeleting(!deleting)}>
-              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
-              </svg>
-              <span className="sr-only">删除</span>
-            </button>
+            <span className="bubble-anchor">
+              <button type="button" className="icon-button danger" disabled={busy} aria-expanded={deleting} title={busy ? "分身还在运功，先收回它" : "删除这个分身"} onClick={() => setDeleting(!deleting)}>
+                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
+                </svg>
+                <span className="sr-only">删除</span>
+              </button>
+              {deleting && (
+                <ConfirmBubble label="删除这个分身" confirm="确认删除" onConfirm={onDelete} onCancel={() => setDeleting(false)}>
+                  <p>这个分身的全部记录和改文件前存的原样都会删掉，找不回来。</p>
+                  {session.worktree && !session.parent && (
+                    <p>
+                      它的独立工作树也一并删掉：没提交的改动就没了，提交过但没并回的留在分支 <span className="mono">{session.worktree.branch}</span> 上。
+                    </p>
+                  )}
+                </ConfirmBubble>
+              )}
+            </span>
             <button type="button" className="icon-button panel-toggle" aria-pressed={!panelHidden} title={panelHidden ? "展开右边的改动、终端、计划一栏" : "收起右边的改动、终端、计划一栏"} onClick={onTogglePanel}>
               {/* The window with its right-hand column: filled in while the column is showing. */}
               <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">

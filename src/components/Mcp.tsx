@@ -17,6 +17,7 @@ import {
   type ServerForm,
 } from "../lib/mcp";
 import type { McpServer } from "../lib/types";
+import { ConfirmBubble } from "./ConfirmBubble";
 import { FormDialog, Pairs, Row, Segmented } from "./FormDialog";
 import { Info } from "./Hint";
 
@@ -333,21 +334,14 @@ function ServerDialog({ config, editing, onSave, onClose }: ServerDialogProps) {
             算了
           </button>
           {editing && (
-            <span className="form-dialog-end">
-              {removing ? (
-                <>
-                  从清单里删掉它？
-                  <button type="button" className="button outline red small" disabled={saving} onClick={() => remove(close)}>
-                    删掉
-                  </button>
-                  <button type="button" className="button text small" onClick={() => setRemoving(false)}>
-                    留着
-                  </button>
-                </>
-              ) : (
-                <button type="button" className="button text small danger-text" onClick={() => setRemoving(true)}>
-                  删掉这件法器
-                </button>
+            <span className="form-dialog-end bubble-anchor">
+              <button type="button" className="button text small danger-text" disabled={saving} aria-expanded={removing} onClick={() => setRemoving(!removing)}>
+                删掉这件法器
+              </button>
+              {removing && (
+                <ConfirmBubble label={`删掉「${editing}」`} confirm="确认删除" onConfirm={() => remove(close)} onCancel={() => setRemoving(false)}>
+                  <p>从清单里删掉「{editing}」，分身就不再用它带来的工具。</p>
+                </ConfirmBubble>
               )}
             </span>
           )}

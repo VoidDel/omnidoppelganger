@@ -98,6 +98,15 @@ fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
             let into = if input["scope"] == "user" { "~/.odg/skills" } else { ".odg/skills" };
             format!("{}{path}\n→ {into}", input["source"].as_str().unwrap_or_default())
         }
+        "document_runtime" if input["install"] == true => {
+            let modules: Vec<&str> = crate::runtime::MODULES.iter().map(|(_, what)| what.split(':').next().unwrap_or(what)).collect();
+            format!(
+                "下载 Python {} 及 {}（约 {} MB，只下载一次）\n→ ~/.odg/runtime",
+                crate::runtime::PYTHON_VERSION,
+                modules.join("、"),
+                crate::runtime::DOWNLOAD_MB
+            )
+        }
         "add_mcp_server" => {
             let entry: serde_json::Map<String, Value> =
                 ["command", "args", "env", "url", "headers"].iter().filter(|field| !input[**field].is_null()).map(|field| (field.to_string(), input[*field].clone())).collect();
@@ -109,7 +118,12 @@ fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
     if mode == Mode::Plan {
         return Some(Verdict::Refuse("Nothing is installed in plan mode. Put the installation in the plan, for the user to carry out."));
     }
-    Some(Verdict::Ask { reason: if tool == "install_skill" { "install_skill" } else { "add_mcp_server" }, detail, grant: None })
+    let reason = match tool {
+        "install_skill" => "install_skill",
+        "document_runtime" => "install_runtime",
+        _ => "add_mcp_server",
+    };
+    Some(Verdict::Ask { reason, detail, grant: None })
 }
 
 pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict {
@@ -210,6 +224,21 @@ mod tests {
         ] {
             assert_eq!(check_in(Mode::Bypass, tool, &input, workspace, true), Verdict::Allow, "{tool} {input}");
         }
+    }
+
+    #[test]
+    fn setting_up_the_document_runtime_asks_every_time_and_asking_about_it_does_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Bypass, Mode::Plan] {
+            assert_eq!(check_in(mode, "document_runtime", &json!({}), workspace, false), Verdict::Allow, "{mode:?}");
+        }
+        for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Bypass] {
+            let Verdict::Ask { reason, detail, grant } = check_in(mode, "document_runtime", &json!({ "install": true }), workspace, false) else { panic!("{mode:?} did not ask") };
+            assert_eq!((reason, grant), ("install_runtime", None), "{mode:?}");
+            assert!(detail.contains("python-docx") && detail.contains("约 70 MB") && detail.contains("~/.odg/runtime"), "{detail}");
+        }
+        assert_eq!(reason(check_in(Mode::Plan, "document_runtime", &json!({ "install": true }), workspace, false)), Some("refused"));
     }
 
     #[test]

@@ -4,6 +4,7 @@ import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
+import { ConfirmBubble } from "./ConfirmBubble";
 import { Light } from "./Light";
 import { type Item, type Row, type StreamBlock, type ToolItem, documentLabel, editsFiles, fileSize, mcpTool, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, DiffHunk, Image, Mode, SessionItem, Status } from "../lib/types";
@@ -274,6 +275,10 @@ function sealOf(tool: ToolItem): string {
       return "习";
     case "add_mcp_server":
       return "纳";
+    case "document_runtime":
+      return "备";
+    case "deliver_files":
+      return "交";
     case "fetch_url":
       return "网";
     case "web_search":
@@ -342,6 +347,21 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         target: text("path") ? `${text("source")}  ${text("path")}` : text("source"),
         outcome: waiting || (result!.isError ? "没装成" : `「${meta?.skill ?? ""}」装给${meta?.scope === "user" ? "所有分身" : "这处洞府"}`),
       };
+    case "document_runtime":
+      return {
+        verb: tool.input.install === true ? "备置文房" : "查看文房",
+        target: "Word、Excel、PPT、PDF 用的 Python",
+        outcome: waiting || (result!.isError ? "没备成" : meta?.state === "ready" ? (meta.libreoffice ? "已就绪，有 LibreOffice" : "已就绪") : "还没安装"),
+      };
+    case "deliver_files": {
+      const handed = Array.isArray(meta?.files) ? meta.files : [];
+      const named = (Array.isArray(tool.input.paths) ? (tool.input.paths as unknown[]) : []).filter((path): path is string => typeof path === "string");
+      return {
+        verb: "交付文件",
+        target: (handed.length ? handed : named).map((path) => path.replace(/^.*[\\/]/, "")).join("、"),
+        outcome: waiting || (result!.isError ? "没交成" : `${handed.length} 个`),
+      };
+    }
     case "add_mcp_server":
       return {
         verb: "收纳法器",
@@ -445,6 +465,8 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
   // The file an edit wrote, by where it is: what can be opened from under the act.
   const written = editsFiles(tool.name) && result && !result.isError && result.meta?.file ? result.meta.file : null;
+  // What was handed over, made some other way: each opened from under the act as a written file is.
+  const handed = tool.name === "deliver_files" && result && !result.isError && Array.isArray(result.meta?.files) ? result.meta.files : [];
   // A change and a failure are open until closed, even when they come in after the line they belong to; but a
   // picture's text is not what is looked at, the picture is.
   const [chosen, setOpen] = useState<boolean | null>(null);
@@ -471,6 +493,9 @@ function ToolCard({ tool }: { tool: ToolItem }) {
       )}
       {body && open && <div className="did-body">{body}</div>}
       {written && !voided(tool) && <Written path={written} name={written.replace(/^.*[\\/]/, "")} />}
+      {handed.map((path) => (
+        <Written key={path} path={path} name={path.replace(/^.*[\\/]/, "")} />
+      ))}
     </div>
   );
 }
@@ -500,6 +525,11 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
   install_skill: {
     title: "分身要装一部秘籍，请本尊定夺",
     note: "秘籍是一份做事说明，装上以后分身遇到对得上的事会照着做；里面也可能带着脚本。下面是从哪里装、装到哪里：.odg/skills 只对这处洞府生效，~/.odg/skills 对所有分身生效。从网上的仓库装时会先下载下来。无论哪种禁制，每次都要请示。",
+    always: "",
+  },
+  install_runtime: {
+    title: "分身要下载文档运行环境，请本尊定夺",
+    note: "做 Word、Excel、PPT、PDF 要用到一套 Python 和几个库。准了之后，会从 Python 官方构建的发布处和 PyPI 下载下面这些，逐个按事先定好的校验码核对，装到 ~/.odg/runtime，不动你电脑上已有的 Python。只下载这一次，以后所有分身都能用；在设置的「神通」里可以查看或移除。无论哪种禁制，每次都要请示。",
     always: "",
   },
   add_mcp_server: {
@@ -840,25 +870,22 @@ interface Props {
   onPicture?: (path: string) => Promise<Image>;
 }
 
-/** Undoing cannot itself be undone, so the button asks once more before it acts. */
+/** Undoing cannot itself be undone, so the icon asks once more, in a bubble, before it acts. */
 function UndoButton({ turn, onUndo }: { turn: number; onUndo: (turn: number) => void }) {
   const [asking, setAsking] = useState(false);
-  if (!asking) {
-    return (
-      <button type="button" className="button text small" onClick={() => setAsking(true)}>
-        撤回这一轮起的改动
-      </button>
-    );
-  }
   return (
-    <span className="undo-confirm">
-      分身从这一轮起改的文件都会恢复原样，它新建的会删掉。
-      <button type="button" className="button outline red small" onClick={() => (setAsking(false), onUndo(turn))}>
-        确认撤回
+    <span className="bubble-anchor">
+      <button type="button" className="icon-button danger" aria-expanded={asking} title="撤回这一轮起的改动：分身从这一轮起改的文件恢复原样" onClick={() => setAsking(!asking)}>
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5.5 6.5H10a3 3 0 0 1 0 6H6.5M7.6 4 5 6.5 7.6 9" />
+        </svg>
+        <span className="sr-only">撤回这一轮起的改动</span>
       </button>
-      <button type="button" className="button text small" onClick={() => setAsking(false)}>
-        算了
-      </button>
+      {asking && (
+        <ConfirmBubble label="撤回这一轮起的改动" confirm="确认撤回" onConfirm={() => (setAsking(false), onUndo(turn))} onCancel={() => setAsking(false)}>
+          <p>分身从这一轮起改的文件都会恢复原样，它新建的会删掉。</p>
+        </ConfirmBubble>
+      )}
     </span>
   );
 }
@@ -1012,8 +1039,9 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                   ))}
                 </div>
               )}
-              {/* Over the card's right end, small: the way to fork from here, and when it was said. */}
+              {/* Over the card's right end, small: the way to undo the work from here, to fork from here, and when it was said. */}
               <div className="said-top">
+                {canUndo && <UndoButton turn={row.turn} onUndo={onUndo} />}
                 {canFork && (
                   <button
                     type="button"
@@ -1072,12 +1100,6 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                 <p className={`file-note ${fileNote.failed ? "failed" : ""}`} role="status">
                   {fileNote.text}
                 </p>
-              )}
-              {/* Under the message, at its right: what can be done from it. */}
-              {canUndo && (
-                <div className="said-foot">
-                  <UndoButton turn={row.turn} onUndo={onUndo} />
-                </div>
               )}
               {/* Words sent after the order while the 分身 works wait here, under what it is working on, until it hears them. */}
               {last && queued.map((text, at) => <Queued key={at} text={text} />)}

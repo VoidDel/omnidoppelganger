@@ -52,6 +52,8 @@ pub struct ToolContext {
     pub search: Option<crate::web::SearchConfig>,
     /// What confines the commands that run. `None` means they are not confined.
     pub sandbox: Option<crate::sandbox::Sandbox>,
+    /// Where the document runtime is kept; see [`crate::runtime`]. `None` means it is not offered.
+    pub runtime: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -259,6 +261,27 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "document_runtime",
+            "description": "The Python to make and read Word, Excel, PowerPoint and PDF files with: OmniDoppelganger's own, apart from the system's, with python-docx, openpyxl, XlsxWriter, python-pptx, reportlab, pypdf, pandas and Pillow. Returns the interpreter's absolute path, to run your scripts with through run_command, and where LibreOffice is if it is installed. Not installed yet, it says so: then call it with `install` true, which asks the user first and downloads about 70 MB once. Never install these libraries into another Python, and never run pip on this one.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "install": { "type": "boolean", "description": "Download and set it up if it is not there. The user is asked first. Default false." }
+                }
+            }
+        }),
+        json!({
+            "name": "deliver_files",
+            "description": "Hand the user files you made other than with write_file or edit_file, such as a document a script wrote: they are shown under this step, each with a way to open it and to its folder, and a picture as the picture. Call it once the files are finished and checked.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "The files, absolute or relative to the workspace." }
+                },
+                "required": ["paths"]
+            }
+        }),
+        json!({
             "name": "add_mcp_server",
             "description": "Add an MCP server to the user's list in OmniDoppelganger (its 法器), as the server's documentation gives its configuration: a program to start (`command`, `args`, `env`) or an address (`url`, `headers`). The user is asked first and sees all of it. It is connected to at once, and this returns its tools, which you are offered from your next step on, each call asking the user. Never edit the list's file yourself, or follow another app's way of adding servers. Put a key or token in `env` or `headers` only when the user gave it to you.",
             "input_schema": {
@@ -451,6 +474,8 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "stop_command" => stop_command(input, context).await,
         "update_todos" => update_todos(input),
         "install_skill" => install_skill(input, context).await,
+        "document_runtime" => document_runtime(input, context).await,
+        "deliver_files" => deliver_files(input, context),
         "add_mcp_server" => add_mcp_server(input, context).await,
         "web_search" => match (string_arg(input, "query"), &context.search) {
             (Ok(query), Some(config)) => {
@@ -539,6 +564,70 @@ async fn install_skill(input: &Value, context: &ToolContext) -> Result<ToolOutpu
         format!("Installed the skill `{}` ({}) in {directory}. Read it now with load_skill if the task calls for it; it is listed in your instructions from the next turn on.", skill.name, skill.description),
         json!({ "skill": skill.name, "directory": directory, "scope": if user { "user" } else { "project" } }),
     ))
+}
+
+/// The document runtime's interpreter, and LibreOffice's; or, asked to, set the runtime up. See [`crate::runtime`].
+async fn document_runtime(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let Some(root) = &context.runtime else {
+        return Err(ToolOutput::error("There is no document runtime here: use a Python the user has, and ask the user before installing anything into it."));
+    };
+    let python = match crate::runtime::python(root) {
+        Some(python) => python,
+        None if input["install"] == true => crate::runtime::install(root, &|_| {}, &context.cancel).await.map_err(ToolOutput::error)?,
+        None => {
+            let outdated = matches!(crate::runtime::status(root), crate::runtime::Status::Missing { outdated: true });
+            return Ok(ToolOutput::ok(
+                format!(
+                    "The document runtime is {}. Call document_runtime with `install` true to set it up: the user is asked first, and about {} MB is downloaded once.",
+                    if outdated { "from an earlier version and must be set up again" } else { "not installed" },
+                    crate::runtime::DOWNLOAD_MB
+                ),
+                json!({ "state": "missing" }),
+            ));
+        }
+    };
+    let libreoffice = crate::runtime::libreoffice();
+    let libraries: Vec<&str> = crate::runtime::MODULES.iter().map(|(_, what)| *what).collect();
+    let shown = |path: &Path| path.to_string_lossy().into_owned();
+    // How a program at a quoted path is run in this machine's shell: PowerShell takes a quoted string for a value
+    // unless it is called with `&`.
+    let call = |path: &Path| match crate::safety::Dialect::of_this_machine() {
+        crate::safety::Dialect::PowerShell => format!("& \"{}\"", shown(path)),
+        crate::safety::Dialect::Posix => format!("\"{}\"", shown(path)),
+    };
+    Ok(ToolOutput::ok(
+        format!(
+            "Python {} for documents: {}\nRun scripts with it through run_command, exactly so: {} make_report.py\nLibraries: {}.\nLibreOffice: {}",
+            crate::runtime::PYTHON_VERSION,
+            shown(&python),
+            call(&python),
+            libraries.join("; "),
+            libreoffice.as_deref().map_or_else(
+                || "not installed. Skip the steps that need it, and say so; do not install it.".to_string(),
+                |path| format!("{} (run it headless, exactly so: {} --headless --convert-to pdf --outdir <folder> <file>)", shown(path), call(path))
+            )
+        ),
+        json!({ "state": "ready", "python": shown(&python), "libreoffice": libreoffice.as_deref().map(shown) }),
+    ))
+}
+
+/// The files a step hands the user: each must be there, and is named by its absolute path.
+fn deliver_files(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let paths: Vec<&str> = input["paths"].as_array().map(|paths| paths.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if paths.is_empty() {
+        return Err(ToolOutput::error("`paths` names no file."));
+    }
+    let mut files = Vec::new();
+    let mut missing = Vec::new();
+    for path in paths {
+        let file = resolve(&context.workspace, path);
+        if file.is_file() { files.push(file.to_string_lossy().into_owned()) } else { missing.push(path.to_string()) }
+    }
+    if !missing.is_empty() {
+        return Err(ToolOutput::error(format!("Not files that are there: {}. Nothing was handed over; deliver them once they are made.", missing.join(", "))));
+    }
+    let names: Vec<String> = files.iter().map(|file| display(&context.workspace, Path::new(file))).collect();
+    Ok(ToolOutput::ok(format!("Handed to the user: {}. They can open each from here.", names.join(", ")), json!({ "files": files })))
 }
 
 /// Add an MCP server to the user's list and connect to it; see [`crate::mcp::McpHub::add`].
@@ -1112,8 +1201,35 @@ mod tests {
 
     fn context() -> (tempfile::TempDir, ToolContext) {
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None };
+        let context = ToolContext { workspace: directory.path().to_path_buf(), cancel: CancellationToken::new(), snapshots: None, jobs: None, mcp: None, skills: Vec::new(), search: None, sandbox: None, runtime: None };
         (directory, context)
+    }
+
+    #[tokio::test]
+    async fn says_where_the_document_runtime_is_or_how_to_set_it_up_and_hands_over_files() {
+        let (directory, context) = context();
+        // Not offered here: a Python the user has is to be used, with leave.
+        assert!(execute("document_runtime", &json!({}), &context).await.is_error);
+        let root = directory.path().join("runtime");
+        let context = ToolContext { runtime: Some(root.clone()), ..context };
+        let missing = execute("document_runtime", &json!({}), &context).await;
+        assert!(!missing.is_error && missing.content.contains("`install` true") && missing.meta["state"] == "missing", "{}", missing.content);
+        // Set up as an install leaves it: the interpreter is named, quoted, to run scripts with.
+        let python = if cfg!(windows) { root.join("python").join("python.exe") } else { root.join("python").join("bin").join("python3") };
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(root.join("runtime.json"), serde_json::to_vec(&crate::runtime::Installed { edition: 1, python: "3.12.16".into(), target: "t".into() }).unwrap()).unwrap();
+        let ready = execute("document_runtime", &json!({}), &context).await;
+        let call = if cfg!(windows) { format!("& \"{}\" make_report.py", python.display()) } else { format!("\"{}\" make_report.py", python.display()) };
+        assert!(ready.content.contains(&call) && ready.meta["python"] == python.to_string_lossy().as_ref(), "{}", ready.content);
+        assert!(ready.content.contains("LibreOffice:"));
+
+        std::fs::write(directory.path().join("report.docx"), "x").unwrap();
+        let handed = execute("deliver_files", &json!({ "paths": ["report.docx"] }), &context).await;
+        assert_eq!(handed.meta["files"], json!([directory.path().join("report.docx").to_string_lossy()]));
+        let refused = execute("deliver_files", &json!({ "paths": ["report.docx", "missing.pdf"] }), &context).await;
+        assert!(refused.is_error && refused.content.contains("missing.pdf"));
+        assert!(execute("deliver_files", &json!({ "paths": [] }), &context).await.is_error);
     }
 
     #[tokio::test]

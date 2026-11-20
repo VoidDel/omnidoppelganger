@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
+import { ConfirmBubble } from "./ConfirmBubble";
 import { Info } from "./Hint";
 import { setUp } from "../lib/providers";
+import { RuntimeSection } from "./Runtime";
 import { EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { mcpTool, shortCount } from "../lib/fold";
 import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
@@ -265,17 +267,7 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
                   {shown}
                 </div>
               )}
-              {removing === provider.id ? (
-                <span className="undo-confirm">
-                  <button type="button" className="button outline red small" onClick={() => void remove(provider)}>
-                    确认删除
-                  </button>
-                  <button type="button" className="button text small" onClick={() => setRemoving(null)}>
-                    算了
-                  </button>
-                </span>
-              ) : (
-                <span className="key-acts">
+              <span className="key-acts">
                   <button type="button" className="icon-button" title={`改 ${provider.name} 的密钥或地址`} onClick={() => setEditing(provider.id)}>
                     <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M10.6 2.9 13.1 5.4 5.6 12.9 2.6 13.4 3.1 10.4Z" />
@@ -283,20 +275,27 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
                     </svg>
                     <span className="sr-only">改 {provider.name}</span>
                   </button>
-                  <button
-                    type="button"
-                    className="icon-button danger"
-                    disabled={!removable}
-                    title={removable ? `删掉 ${provider.name}：存着的密钥、地址和名字` : status.source === "env" ? "密钥来自环境变量，这里删不了" : "没有可删的"}
-                    onClick={() => setRemoving(provider.id)}
-                  >
-                    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
-                    </svg>
-                    <span className="sr-only">删除 {provider.name}</span>
-                  </button>
+                  <span className="bubble-anchor">
+                    <button
+                      type="button"
+                      className="icon-button danger"
+                      disabled={!removable}
+                      aria-expanded={removing === provider.id}
+                      title={removable ? `删掉 ${provider.name}：存着的密钥、地址和名字` : status.source === "env" ? "密钥来自环境变量，这里删不了" : "没有可删的"}
+                      onClick={() => setRemoving(removing === provider.id ? null : provider.id)}
+                    >
+                      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
+                      </svg>
+                      <span className="sr-only">删除 {provider.name}</span>
+                    </button>
+                    {removing === provider.id && (
+                      <ConfirmBubble label={`删掉 ${provider.name}`} confirm="确认删除" onConfirm={() => void remove(provider)} onCancel={() => setRemoving(null)}>
+                        <p>{provider.name} 存着的密钥、地址和名字都会删掉。</p>
+                      </ConfirmBubble>
+                    )}
+                  </span>
                 </span>
-              )}
             </li>
           );
         })}
@@ -767,6 +766,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             )}
           </div>
         </section>
+        <RuntimeSection />
           </>
         )}
         {tab === "look" && (
