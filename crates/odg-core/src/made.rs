@@ -45,10 +45,10 @@ pub fn since(root: &Path, since: SystemTime) -> Vec<PathBuf> {
         if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("~$")) {
             continue;
         }
-        if let Some(changed) = entry.metadata().ok().and_then(|metadata| metadata.modified().ok()) {
-            if changed >= from {
-                found.push((changed, path.to_path_buf()));
-            }
+        if let Some(changed) = entry.metadata().ok().and_then(|metadata| metadata.modified().ok())
+            && changed >= from
+        {
+            found.push((changed, path.to_path_buf()));
         }
     }
     found.sort_by(|one, other| other.0.cmp(&one.0).then_with(|| one.1.cmp(&other.1)));
