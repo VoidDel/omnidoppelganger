@@ -4,6 +4,9 @@
 //! A session keeps the provider it was created with, so its log only ever
 //! holds one provider's content blocks and nothing is converted between them.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
@@ -103,8 +106,18 @@ pub const PROVIDERS: &[Provider] = &[
     },
     Provider {
         id: "custom",
-        name: "其他 OpenAI 兼容服务",
+        name: "OpenAI 兼容服务",
         protocol: Protocol::Chat(Flavor::Generic),
+        base_url: "",
+        other_urls: &[],
+        key_env: None,
+        models: &[],
+    },
+    // A gateway or another provider's endpoint that speaks Anthropic's Messages API.
+    Provider {
+        id: "custom_anthropic",
+        name: "Anthropic 兼容服务",
+        protocol: Protocol::Anthropic,
         base_url: "",
         other_urls: &[],
         key_env: None,
@@ -112,8 +125,54 @@ pub const PROVIDERS: &[Provider] = &[
     },
 ];
 
+/// The kind of provider `id` names: a kind's own id, which is also the first
+/// of that kind, or `<kind>-<n>` (n from 2) for another one the user added,
+/// with a key and address of its own.
 pub fn provider(id: &str) -> Option<&'static Provider> {
-    PROVIDERS.iter().find(|provider| provider.id == id)
+    PROVIDERS.iter().find(|provider| {
+        provider.id == id || id.strip_prefix(provider.id).and_then(|rest| rest.strip_prefix('-')).is_some_and(|n| !n.starts_with('0') && n.parse::<u32>().is_ok_and(|n| n >= 2))
+    })
+}
+
+/// The id of the kind of provider `id` names; `id` itself where it names none.
+pub fn kind_id(id: &str) -> &str {
+    provider(id).map_or(id, |kind| kind.id)
+}
+
+/// Whether `id` names a provider the user added beside the first of its kind.
+pub fn is_added(id: &str) -> bool {
+    provider(id).is_some_and(|kind| kind.id != id)
+}
+
+/// A provider as the settings list it: one of a kind, under the name the user
+/// gave it or its kind's, with the kind's protocol and models.
+#[derive(Debug, Clone, Serialize)]
+pub struct Instance {
+    pub id: String,
+    /// The id of its kind, which is its own id for the first of a kind.
+    pub kind: &'static str,
+    pub name: String,
+    pub protocol: Protocol,
+    pub base_url: &'static str,
+    pub other_urls: &'static [(&'static str, &'static str)],
+    /// The environment variable its key is read from when none is saved: only the first of a kind has one.
+    pub key_env: Option<&'static str>,
+    pub models: &'static [(&'static str, &'static str)],
+}
+
+/// The provider `id` as the settings list it, under `name`, or its kind's name when none is given.
+pub fn instance(id: &str, name: Option<&str>) -> Option<Instance> {
+    let kind = provider(id)?;
+    Some(Instance {
+        id: id.to_string(),
+        kind: kind.id,
+        name: name.map(str::trim).filter(|name| !name.is_empty()).unwrap_or(kind.name).to_string(),
+        protocol: kind.protocol,
+        base_url: kind.base_url,
+        other_urls: kind.other_urls,
+        key_env: if kind.id == id { kind.key_env } else { None },
+        models: kind.models,
+    })
 }
 
 /// The context window assumed for a model no provider here documents.
@@ -123,7 +182,7 @@ pub const UNKNOWN_CONTEXT_WINDOW: u64 = 128_000;
 /// documentation as of November 2026. `None` for a model that is not listed:
 /// a newer one typed in by hand, or anything on a custom service.
 pub fn documented_window(provider: &str, model: &str) -> Option<u64> {
-    match (provider, model) {
+    match (kind_id(provider), model) {
         ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => Some(1_000_000),
         ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(1_050_000),
         ("deepseek", "deepseek-v4-pro" | "deepseek-flash") => Some(1_000_000),
@@ -165,7 +224,7 @@ const WINDOW_FIELDS: [&str; 3] = ["max_input_tokens", "context_window", "context
 /// `None` where it does not say (a model typed in by hand, a custom service),
 /// in which case a picture is sent and the provider decides.
 pub fn vision(provider: &str, model: &str) -> Option<bool> {
-    match (provider, model) {
+    match (kind_id(provider), model) {
         ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => Some(true),
         ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(true),
         ("deepseek", "deepseek-flash") => Some(true),
@@ -244,13 +303,32 @@ pub struct Router {
     anthropic: AnthropicClient,
     chat: ChatClient,
     responses: ResponsesClient,
+    endpoints: EndpointSource,
+    /// A client for each Anthropic provider the user added, by id, with the address it was made for.
+    added: Mutex<HashMap<String, (String, Arc<AnthropicClient>)>>,
 }
 
 impl Router {
     /// `anthropic` is built on its own: its address comes from `ANTHROPIC_BASE_URL`.
-    /// `endpoints` gives every other provider's address and key per request.
+    /// `endpoints` gives every other provider's address and key per request,
+    /// Anthropic ones the user added among them.
     pub fn new(anthropic: AnthropicClient, endpoints: EndpointSource) -> Result<Self, LlmError> {
-        Ok(Self { anthropic, chat: ChatClient::new(endpoints.clone())?, responses: ResponsesClient::new(endpoints)? })
+        Ok(Self { anthropic, chat: ChatClient::new(endpoints.clone())?, responses: ResponsesClient::new(endpoints.clone())?, endpoints, added: Mutex::default() })
+    }
+
+    /// The client for an Anthropic provider other than the first, made again when its address changed.
+    fn added_anthropic(&self, id: &str) -> Result<Arc<AnthropicClient>, LlmError> {
+        let base_url = (self.endpoints)(id).base_url;
+        let mut added = self.added.lock().unwrap();
+        if let Some((made_for, client)) = added.get(id)
+            && *made_for == base_url
+        {
+            return Ok(client.clone());
+        }
+        let (endpoints, key_of) = (self.endpoints.clone(), id.to_string());
+        let client = Arc::new(AnthropicClient::new(base_url.clone(), Arc::new(move || endpoints(&key_of).key))?);
+        added.insert(id.to_string(), (base_url, client.clone()));
+        Ok(client)
     }
 }
 
@@ -260,6 +338,11 @@ impl Llm for Router {
             return Err(LlmError::Protocol(format!("this build does not know the provider `{}`", request.provider)));
         };
         match provider.protocol {
+            // Any but the first Anthropic provider, whose address comes from the environment, has an address of its own.
+            Protocol::Anthropic if request.provider != DEFAULT_PROVIDER => {
+                let client = self.added_anthropic(&request.provider)?;
+                client.stream(request, deltas, cancel).await
+            }
             Protocol::Anthropic => self.anthropic.stream(request, deltas, cancel).await,
             Protocol::Responses => self.responses.stream(request, deltas, cancel).await,
             Protocol::Chat(flavor) => self.chat.stream(flavor, request, deltas, cancel).await,
@@ -293,11 +376,34 @@ mod tests {
     fn every_provider_is_reachable_and_has_a_default_model_or_asks_for_one() {
         for provider in PROVIDERS {
             assert_eq!(super::provider(provider.id).map(|found| found.id), Some(provider.id));
-            assert_eq!(provider.base_url.is_empty(), provider.id == "custom", "{}", provider.id);
-            assert_eq!(provider.models.is_empty(), provider.id == "custom", "{}", provider.id);
+            // Only the services the user names have no address and no models of their own.
+            let custom = provider.id.starts_with("custom");
+            assert_eq!(provider.base_url.is_empty(), custom, "{}", provider.id);
+            assert_eq!(provider.models.is_empty(), custom, "{}", provider.id);
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);
+        assert_eq!(provider("custom_anthropic").unwrap().protocol, Protocol::Anthropic);
         assert!(provider("nobody").is_none());
+    }
+
+    #[test]
+    fn names_another_provider_of_a_kind_by_its_number() {
+        // `<kind>-<n>` from 2 is another of the kind; anything else is not, nor is one kind taken for another.
+        for (id, kind) in [("zhipu-2", "zhipu"), ("custom-17", "custom"), ("custom_anthropic-3", "custom_anthropic"), ("anthropic-2", "anthropic")] {
+            assert_eq!(provider(id).map(|found| found.id), Some(kind), "{id}");
+            assert!(is_added(id) && kind_id(id) == kind, "{id}");
+        }
+        for id in ["zhipu-1", "zhipu-02", "zhipu-x", "zhipu-", "zhipu2", "custom_anthropic_2"] {
+            assert!(provider(id).is_none(), "{id}");
+        }
+        assert!(!is_added("zhipu") && kind_id("nobody") == "nobody");
+        // What is known of a kind's models holds for each of it.
+        assert_eq!(documented_window("zhipu-2", "glm-5.3"), documented_window("zhipu", "glm-5.3"));
+        assert_eq!(vision("deepseek-2", "deepseek-v4-pro"), Some(false));
+        let added = instance("openai-2", Some("  公司账号 ")).unwrap();
+        assert_eq!((added.kind, added.name.as_str(), added.key_env), ("openai", "公司账号", None));
+        let first = instance("openai", None).unwrap();
+        assert_eq!((first.name.as_str(), first.key_env), ("OpenAI", Some("OPENAI_API_KEY")));
     }
 
     #[test]

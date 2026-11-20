@@ -17,7 +17,7 @@ use crate::anthropic::DEFAULT_MODEL;
 use crate::fsutil::write_atomically;
 use crate::llm::Endpoint;
 use crate::policy::Mode;
-use crate::providers::{DEFAULT_PROVIDER, Listed, PROVIDERS, Protocol, Provider, UNKNOWN_CONTEXT_WINDOW, documented_window, provider};
+use crate::providers::{DEFAULT_PROVIDER, Instance, Listed, PROVIDERS, Provider, UNKNOWN_CONTEXT_WINDOW, documented_window, instance, is_added, provider};
 use crate::web::{INTERNATIONAL_ENGINE, SEARCH_ENGINES, SearchConfig};
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -96,6 +96,11 @@ pub struct Settings {
     /// address comes from `ANTHROPIC_BASE_URL` instead.
     #[serde(default)]
     pub base_urls: BTreeMap<String, String>,
+    /// The names the user gave providers, by provider id. Every provider the
+    /// user added beside the first of its kind (`<kind>-<n>`) is here: that
+    /// is what keeps it in the list.
+    #[serde(default)]
+    pub provider_names: BTreeMap<String, String>,
     /// Whether the commands the agent runs are confined to writing under the
     /// workspace; see [`crate::sandbox`]. Has no effect where the system cannot confine them.
     #[serde(default)]
@@ -134,6 +139,7 @@ impl Default for Settings {
             search_engine: default_search_engine(),
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
+            provider_names: BTreeMap::new(),
             sandbox: false,
             sandbox_paths: Vec::new(),
             context_windows: BTreeMap::new(),
@@ -148,7 +154,14 @@ impl Settings {
     /// Replace any value this build does not offer with its default.
     fn valid(mut self) -> Self {
         let default = Settings::default();
-        let chosen = match provider(&self.provider) {
+        self.provider_names = std::mem::take(&mut self.provider_names)
+            .into_iter()
+            .map(|(id, name)| (id, name.trim().to_string()))
+            .filter(|(id, name)| !name.is_empty() && provider(id).is_some())
+            .collect();
+        // One the user added is known while it is in the list; taken out, nothing of it is kept.
+        let listed = |id: &str| !is_added(id) || self.provider_names.contains_key(id);
+        let chosen = match provider(&self.provider).filter(|_| listed(&self.provider)) {
             Some(chosen) => chosen,
             None => {
                 self.provider = default.provider;
@@ -156,8 +169,10 @@ impl Settings {
             }
         };
         self.model = self.model.trim().to_string();
-        // A model another provider offers, left over from switching provider, is replaced too.
-        let belongs_elsewhere = PROVIDERS.iter().any(|other| other.id != chosen.id && other.models.iter().any(|(id, _)| *id == self.model))
+        // A model another provider offers, left over from switching provider, is replaced too; but a compatible
+        // service, which lists no models of its own, may well serve another provider's.
+        let belongs_elsewhere = !chosen.models.is_empty()
+            && PROVIDERS.iter().any(|other| other.id != chosen.id && other.models.iter().any(|(id, _)| *id == self.model))
             && !chosen.models.iter().any(|(id, _)| *id == self.model);
         if self.model.is_empty() || belongs_elsewhere {
             self.model = chosen.models.first().map(|(id, _)| id.to_string()).unwrap_or_default();
@@ -168,7 +183,9 @@ impl Settings {
         if !THEMES.contains(&self.theme.as_str()) {
             self.theme = default.theme;
         }
-        self.guardian_models.retain(|provider, model| !provider.is_empty() && !model.trim().is_empty());
+        let names = self.provider_names.clone();
+        let listed = |id: &str| !is_added(id) || names.contains_key(id);
+        self.guardian_models.retain(|provider, model| !provider.is_empty() && !model.trim().is_empty() && listed(provider));
         for model in self.guardian_models.values_mut() {
             *model = model.trim().to_string();
         }
@@ -188,9 +205,25 @@ impl Settings {
         self.base_urls = std::mem::take(&mut self.base_urls)
             .into_iter()
             .map(|(id, url)| (id, url.trim().trim_end_matches('/').to_string()))
-            .filter(|(id, url)| !url.is_empty() && provider(id).is_some_and(|known| known.protocol != Protocol::Anthropic))
+            // The first Anthropic provider's address comes from the environment; every other has its own.
+            .filter(|(id, url)| !url.is_empty() && listed(id) && provider(id).is_some() && id != DEFAULT_PROVIDER)
             .collect();
         self
+    }
+
+    /// Every provider there is to choose from: the first of each kind, then
+    /// those the user added, each kind's together, by the order they were added.
+    pub fn instances(&self) -> Vec<Instance> {
+        let number = |id: &str| id.rsplit_once('-').and_then(|(_, n)| n.parse::<u32>().ok()).unwrap_or(0);
+        PROVIDERS
+            .iter()
+            .flat_map(|kind| {
+                let mut added: Vec<&String> = self.provider_names.keys().filter(|id| is_added(id) && provider(id).is_some_and(|of| of.id == kind.id)).collect();
+                added.sort_by_key(|id| number(id));
+                std::iter::once(kind.id.to_string()).chain(added.into_iter().cloned())
+            })
+            .filter_map(|id| instance(&id, self.provider_names.get(&id).map(String::as_str)))
+            .collect()
     }
 }
 
@@ -424,10 +457,10 @@ impl SettingsStore {
         vaulted.map(|key| (key, false)).or_else(|| self.credentials().get(&name)?.as_str().map(str::to_string).and_then(usable).map(|key| (key, true)))
     }
 
-    /// The key a provider's requests use: the saved one, else the provider's environment variable.
+    /// The key a provider's requests use: the saved one, else, for the first of its kind, the kind's environment variable.
     pub fn api_key(&self, provider_id: &str) -> Option<String> {
         self.saved_key(provider_id).map(|(key, _)| key).or_else(|| {
-            let variable = provider(provider_id)?.key_env?;
+            let variable = provider(provider_id).filter(|kind| kind.id == provider_id)?.key_env?;
             std::env::var(variable).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
         })
     }
@@ -447,7 +480,51 @@ impl SettingsStore {
 
     /// Every provider's key status, by provider id.
     pub fn key_statuses(&self) -> BTreeMap<String, KeyStatus> {
-        PROVIDERS.iter().map(|provider| (provider.id.to_string(), self.key_status(provider.id))).collect()
+        self.load().instances().iter().map(|provider| (provider.id.clone(), self.key_status(&provider.id))).collect()
+    }
+
+    /// Put a provider of `kind` in the list, under `name`, and return its id:
+    /// the first of the kind while that is not set up (no key, no address of
+    /// its own, not the default), else a new one beside it, with a key and an
+    /// address of its own.
+    pub fn add_provider(&self, kind: &str, name: &str) -> std::io::Result<String> {
+        let known = PROVIDERS.iter().find(|known| known.id == kind).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("unknown provider `{kind}`")))?;
+        let mut settings = self.load();
+        let unused = self.key_status(known.id).source == "none" && !settings.base_urls.contains_key(known.id) && settings.provider != known.id && !settings.provider_names.contains_key(known.id);
+        let id = if unused {
+            known.id.to_string()
+        } else {
+            (2..).map(|n| format!("{}-{n}", known.id)).find(|id| !settings.provider_names.contains_key(id) && self.saved_key(id).is_none()).expect("there is always a free number")
+        };
+        let name = name.trim();
+        if !name.is_empty() && name != known.name {
+            settings.provider_names.insert(id.clone(), name.to_string());
+        } else if id != known.id {
+            // One added must be named to stay in the list; its kind's name, numbered, tells it apart.
+            let n = id.rsplit_once('-').map_or("", |(_, n)| n);
+            settings.provider_names.insert(id.clone(), format!("{} {n}", known.name));
+        }
+        self.save(settings)?;
+        Ok(id)
+    }
+
+    /// Take a provider out of the list: its saved key, its address, its name
+    /// and the guardian chosen for it. The first of a kind stays known, as
+    /// every kind is, with nothing set for it. New 分身 that came from it come
+    /// from the default provider instead.
+    pub fn remove_provider(&self, id: &str) -> std::io::Result<Settings> {
+        known(id)?;
+        self.delete_api_key(id)?;
+        let mut settings = self.load();
+        settings.base_urls.remove(id);
+        settings.provider_names.remove(id);
+        settings.guardian_models.remove(id);
+        settings.context_windows.retain(|key, _| !key.starts_with(&format!("{id}/")));
+        if settings.provider == id {
+            settings.provider = DEFAULT_PROVIDER.to_string();
+            settings.model = String::new();
+        }
+        self.save(settings)
     }
 
     /// Where a provider's next request goes and with which key.
@@ -618,6 +695,81 @@ mod tests {
         assert_eq!(store.key_status("deepseek").source, "saved");
         store.delete_api_key("deepseek").unwrap();
         assert!(!directory.path().join("credentials.json").exists());
+    }
+
+    #[test]
+    fn adds_several_providers_of_a_kind_each_with_its_own_key_and_address() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(directory.path());
+        // The first of a kind not yet set up is the one put in the list, as before.
+        assert_eq!(store.add_provider("custom", "").unwrap(), "custom");
+        store.save_api_key("custom", "key-of-the-first-000000").unwrap();
+        // Then another beside it, named as asked, or for its kind and number.
+        assert_eq!(store.add_provider("custom", "本地中转").unwrap(), "custom-2");
+        assert_eq!(store.add_provider("custom", "").unwrap(), "custom-3");
+        assert!(store.add_provider("nobody", "x").is_err() && store.add_provider("custom-2", "x").is_err());
+        let mut settings = store.load();
+        settings.base_urls.insert("custom".into(), "http://127.0.0.1:1/v1".into());
+        settings.base_urls.insert("custom-2".into(), "http://127.0.0.1:2/v1/".into());
+        settings.provider = "custom-2".into();
+        settings.model = "my-model".into();
+        let settings = store.save(settings).unwrap();
+        let listed: Vec<(String, String)> = settings.instances().iter().filter(|one| one.kind == "custom").map(|one| (one.id.clone(), one.name.clone())).collect();
+        assert_eq!(listed, [("custom".into(), "OpenAI 兼容服务".into()), ("custom-2".into(), "本地中转".into()), ("custom-3".into(), "OpenAI 兼容服务 3".into())]);
+        assert_eq!((settings.provider.as_str(), settings.model.as_str()), ("custom-2", "my-model"));
+
+        // Each its own address and key; the one added has none until one is saved for it.
+        store.save_api_key("custom-2", "key-of-the-second-00000").unwrap();
+        let (first, second, third) = (store.endpoint("custom"), store.endpoint("custom-2"), store.endpoint("custom-3"));
+        assert_eq!((first.base_url.as_str(), first.key.as_deref()), ("http://127.0.0.1:1/v1", Some("key-of-the-first-000000")));
+        assert_eq!((second.base_url.as_str(), second.key.as_deref()), ("http://127.0.0.1:2/v1", Some("key-of-the-second-00000")));
+        assert_eq!((third.base_url.as_str(), third.key), ("", None));
+        assert!(store.key_statuses().contains_key("custom-3"));
+        // A compatible service may serve another provider's model, which is kept as chosen.
+        let mut through = store.load();
+        (through.provider, through.model) = ("custom".into(), "deepseek-v4-pro".into());
+        let mut through = store.save(through).unwrap();
+        assert_eq!(through.model, "deepseek-v4-pro");
+        (through.provider, through.model) = ("custom-2".into(), "my-model".into());
+        store.save(through).unwrap();
+
+        // Taken out, nothing of it is kept, and the default falls back to a provider still there.
+        store.remove_provider("custom-2").unwrap();
+        let settings = store.load();
+        assert!(!settings.provider_names.contains_key("custom-2") && !settings.base_urls.contains_key("custom-2"));
+        assert_eq!(store.api_key("custom-2"), None);
+        assert_eq!(settings.provider, DEFAULT_PROVIDER);
+        assert!(!settings.instances().iter().any(|one| one.id == "custom-2"));
+        // Its number is free again.
+        assert_eq!(store.add_provider("custom", "").unwrap(), "custom-2");
+        // The first of a kind taken out while new 分身 come from it: they come from the default provider again.
+        let mut first = store.load();
+        (first.provider, first.model) = ("custom".into(), "my-model".into());
+        store.save(first).unwrap();
+        let after = store.remove_provider("custom").unwrap();
+        assert_eq!((after.provider.as_str(), after.model.as_str()), (DEFAULT_PROVIDER, DEFAULT_MODEL));
+        assert!(!after.base_urls.contains_key("custom") && store.api_key("custom").is_none());
+    }
+
+    #[test]
+    fn reads_the_environment_key_only_for_the_first_of_a_kind() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(directory.path());
+        // SAFETY: no other test reads this variable, which is set only here.
+        unsafe { std::env::set_var("MOONSHOT_API_KEY", "moonshot-from-the-environment") };
+        let added = store.add_provider("moonshot", "国际站").unwrap();
+        assert_eq!(added, "moonshot-2", "the first is set up by the environment's key, so another is added beside it");
+        assert_eq!(store.api_key("moonshot").as_deref(), Some("moonshot-from-the-environment"));
+        assert_eq!((store.api_key("moonshot-2"), store.key_status("moonshot-2").source.as_str()), (None, "none"));
+        // An Anthropic provider other than the first takes an address of its own; the first's comes from the environment.
+        let compatible = store.add_provider("custom_anthropic", "").unwrap();
+        let mut settings = store.load();
+        settings.base_urls.insert(compatible.clone(), "https://gateway.example.com/anthropic".into());
+        settings.base_urls.insert("anthropic".into(), "https://ignored.example.com".into());
+        let settings = store.save(settings).unwrap();
+        assert_eq!(settings.base_urls.get(&compatible).map(String::as_str), Some("https://gateway.example.com/anthropic"));
+        assert!(!settings.base_urls.contains_key("anthropic"));
+        unsafe { std::env::remove_var("MOONSHOT_API_KEY") };
     }
 
     /// A vault in memory that can be told to fail.

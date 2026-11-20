@@ -259,6 +259,10 @@ impl AnthropicClient {
             .header("x-api-key", key.trim())
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json");
+        // Gateways and other providers' Anthropic endpoints often take the key as a bearer token instead.
+        if !self.official() {
+            builder = builder.bearer_auth(key.trim());
+        }
         if self.official() && supports_server_fallback(&request.model) {
             builder = builder.header("anthropic-beta", FALLBACK_BETA);
         }

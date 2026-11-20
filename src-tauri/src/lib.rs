@@ -13,7 +13,7 @@ use odg_core::events::{Decision, Envelope, FILES_PER_MESSAGE, Image, Picked, att
 use odg_core::grants::{GrantStore, Grants};
 use odg_core::mcp::{McpHub, ServerStatus};
 use odg_core::policy::Mode;
-use odg_core::providers::{PROVIDERS, Provider, Router, provider, vision};
+use odg_core::providers::{Instance, PROVIDERS, Provider, Router, vision};
 use odg_core::schedule::{self, Run, Schedule, ScheduleStore};
 use odg_core::session::{NewSession, SessionStore, SessionSummary};
 use odg_core::worktree::{self, Landed};
@@ -71,7 +71,10 @@ struct SettingsView {
     settings: Settings,
     /// Each provider's key status, by provider id.
     keys: BTreeMap<String, KeyStatus>,
-    providers: &'static [Provider],
+    /// Every provider there is to choose from: the first of each kind, and those the user added.
+    providers: Vec<Instance>,
+    /// The kinds of provider, which one is added as.
+    kinds: &'static [Provider],
     efforts: &'static [&'static str],
     home: String,
     /// The command approvals given for good, by workspace.
@@ -135,7 +138,7 @@ impl App {
         }
         let settings = self.settings.load();
         if settings.model.is_empty() {
-            let name = provider(&settings.provider).map_or(settings.provider.as_str(), |known| known.name);
+            let name = settings.instances().into_iter().find(|known| known.id == settings.provider).map_or_else(|| settings.provider.clone(), |known| known.name);
             return Err(format!("{name} has no model chosen: enter a model id in settings"));
         }
         let (workspace, made) = match isolated {
@@ -207,10 +210,12 @@ impl App {
     }
 
     fn settings_view(&self) -> SettingsView {
+        let settings = self.settings.load();
         SettingsView {
-            settings: self.settings.load(),
+            providers: settings.instances(),
+            settings,
             keys: self.settings.key_statuses(),
-            providers: PROVIDERS,
+            kinds: PROVIDERS,
             efforts: EFFORTS,
             home: settings::home().display().to_string(),
             grants: self.grants.all(),
@@ -605,6 +610,27 @@ fn delete_api_key(app: State<'_, App>, provider: String) -> Result<SettingsView,
     Ok(app.settings_view())
 }
 
+/// A provider put in the list, and the settings as they now are.
+#[derive(Serialize)]
+struct AddedProvider {
+    id: String,
+    view: SettingsView,
+}
+
+/// Put a provider of `kind` in the list under `name`: the first of the kind while that is not set up, else another beside it.
+#[tauri::command]
+fn add_provider(app: State<'_, App>, kind: String, name: String) -> Result<AddedProvider, String> {
+    let id = app.settings.add_provider(&kind, &name).map_err(|error| error.to_string())?;
+    Ok(AddedProvider { id, view: app.settings_view() })
+}
+
+/// Take a provider out of the list, with its key, address and name.
+#[tauri::command]
+fn remove_provider(app: State<'_, App>, id: String) -> Result<SettingsView, String> {
+    app.settings.remove_provider(&id).map_err(|error| error.to_string())?;
+    Ok(app.settings_view())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -677,6 +703,8 @@ pub fn run() {
             list_skills,
             switch_skill,
             remove_skill,
+            add_provider,
+            remove_provider,
             install_skill,
             write_skill,
             list_models,
