@@ -426,6 +426,11 @@ pub enum Event {
         allowed: bool,
         /// Why, in a sentence; or, when the guardian could not be asked, what went wrong.
         reason: String,
+        /// The verdict line as the guardian wrote it, up to 200 characters; empty when it could
+        /// not be asked, and in logs written before it was kept. A build that does not know it
+        /// ignores it, so it needs no new format.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        verdict: String,
         /// The guardian could not be asked, so the user is.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,

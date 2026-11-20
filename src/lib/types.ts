@@ -38,7 +38,7 @@ export type SessionEvent =
   | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
   | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string; expires_at?: string } }
   | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision; timed_out?: boolean } }
-  | { type: "guardian/reviewed"; data: { tool_use_id: string; model: string; allowed: boolean; reason: string; failed?: boolean; tokens?: Tokens } }
+  | { type: "guardian/reviewed"; data: { tool_use_id: string; model: string; allowed: boolean; reason: string; verdict?: string; failed?: boolean; tokens?: Tokens } }
   | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
   | { type: "files/restored"; data: { turn: number; restored: string[]; skipped: string[] } }
   | { type: "files/made"; data: { turn: number; files: string[] } }
