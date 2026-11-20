@@ -581,6 +581,8 @@ const CHECK = (
 interface ModelListProps {
   /** Every provider this build knows. */
   providers: Provider[];
+  /** Whether a provider is in the list the user keeps: only those are offered. */
+  listed: (provider: string) => boolean;
   /** Whether a provider has a key to be asked with: one without cannot be moved to. */
   keyed: (provider: string) => boolean;
   /** The provider and model the session is on. */
@@ -591,10 +593,10 @@ interface ModelListProps {
 }
 
 /**
- * The models to choose from, a provider at a time: the session's own first, then any other that has a key. Each
- * lists what it says it serves, or its built-in suggestions while that is unknown.
+ * The models to choose from, a provider at a time: the session's own first, then the others the user added, under
+ * the names given them. Each lists what it says it serves, or its built-in suggestions while that is unknown.
  */
-function ModelList({ providers, keyed, providerId, model, onPick, listModels }: ModelListProps) {
+function ModelList({ providers, listed, keyed, providerId, model, onPick, listModels }: ModelListProps) {
   /** The provider whose models are listed. */
   const [showing, setShowing] = useState(providerId);
   const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: [string, string][]; why?: string }>({ state: "asking", models: [] });
@@ -618,8 +620,8 @@ function ModelList({ providers, keyed, providerId, model, onPick, listModels }: 
   const models = !home || known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
   const shown = models.filter(([id, name]) => `${id} ${name}`.toLowerCase().includes(filter.trim().toLowerCase()));
   const name = (id: string) => providers.find((known) => known.id === id)?.name ?? id;
-  // The session's own provider first, even one this build no longer lists.
-  const tabs = [providerId, ...providers.map((known) => known.id).filter((id) => id !== providerId)];
+  // The session's own provider first, even one no longer in the list; then the others in it. Kinds not added are left out.
+  const tabs = [providerId, ...providers.map((known) => known.id).filter((id) => id !== providerId && listed(id))];
   return (
     <>
       {tabs.length > 1 && (
@@ -981,8 +983,9 @@ const readBase64 = (file: File) =>
 
 interface ComposerProps {
   status: Status;
-  /** Every provider this build knows, and whether each has a key: the 心法 menu offers those that do. */
+  /** Every provider this build knows, whether each is in the list the user keeps, and whether each has a key: the 心法 menu offers those in the list. */
   providers: Provider[];
+  listed: (provider: string) => boolean;
   keyed: (provider: string) => boolean;
   /** The id of the provider the session is on, which this build may no longer list. */
   providerId: string;
@@ -1070,7 +1073,7 @@ function useBoxHeight() {
 }
 
 export function Composer(props: ComposerProps) {
-  const { status, providers, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
+  const { status, providers, listed, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
   const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, commands: given } = props;
   const provider = providers.find((known) => known.id === providerId);
   const providerName = provider?.name ?? providerId;
@@ -1522,6 +1525,7 @@ export function Composer(props: ComposerProps) {
             {(close) => (
               <ModelList
                 providers={providers}
+                listed={listed}
                 keyed={keyed}
                 providerId={providerId}
                 model={model}

@@ -9,6 +9,7 @@ import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
+import { isSetUp } from "./lib/providers";
 import { api } from "./lib/api";
 import { applyDelta, changedFiles, commandRuns, fold, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
@@ -644,7 +645,8 @@ export default function App() {
             <Composer
               status={state.status}
               providers={providers}
-              // A provider can be moved to once it has a key; a compatible service (a local server) may need none.
+              // The 宗门 the user added are offered; one can be moved to once it has a key, but a compatible service (a local server) may need none.
+              listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isSetUp(state.settings!, known))}
               keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || !!providers.find((known) => known.id === provider)?.kind.startsWith("custom")}
               providerId={active.provider}
               model={active.model}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
 import { Info } from "./Hint";
+import { setUp } from "../lib/providers";
 import { EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { mcpTool, shortCount } from "../lib/fold";
 import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
@@ -189,17 +190,6 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
         </div>
       </form>
     </dialog>
-  );
-}
-
-/**
- * The providers that are set up: those with a key, or an address of their own, those the user added, and the one the
- * default 分身 uses, so that a missing key shows. They are what the list holds, and what the default can be picked from.
- */
-function setUp(view: SettingsView): Provider[] {
-  const { settings } = view;
-  return view.providers.filter(
-    (provider) => (view.keys[provider.id] ?? NO_KEY).source !== "none" || !!settings.base_urls[provider.id] || provider.id !== provider.kind || provider.id === settings.provider,
   );
 }
 
