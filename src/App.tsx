@@ -288,6 +288,10 @@ export default function App() {
   const spent = useMemo(() => usage(state.events), [state.events]);
   const plan = useMemo(() => todos(rows), [rows]);
   const active = state.sessions.find((session) => session.id === state.activeId);
+  // Through the session on the page, steady while it is the one: the conversation's cards are not drawn again for them.
+  const activeId = state.activeId;
+  const openFile = useCallback((path: string, reveal: boolean) => (activeId ? api.openAttachment(activeId, path, reveal) : Promise.reject("没有打开的分身")), [activeId]);
+  const pictureOf = useCallback((path: string) => (activeId ? api.picture(activeId, path) : Promise.reject("没有打开的分身")), [activeId]);
 
   const open = (id: string) => {
     dispatch({ type: "opening", id });
@@ -622,6 +626,8 @@ export default function App() {
                 onDecide={decide}
                 onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)}
                 onFork={active.parent ? undefined : forkFrom}
+                onOpenFile={openFile}
+                onPicture={pictureOf}
               />
               </Guard>
             )}
@@ -727,7 +733,7 @@ export default function App() {
       )}
       {showPanel && (
         <Guard name="侧栏" className="panel" resetKey={state.activeId}>
-          <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} working={state.status === "running"} />
+          <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} working={state.status === "running"} onOpenFile={openFile} />
         </Guard>
       )}
     </div>

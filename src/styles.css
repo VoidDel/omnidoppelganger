@@ -1910,6 +1910,47 @@ button.did-head:not(:disabled):hover {
   color: var(--amber-ink);
 }
 
+/* Under an act that wrote a file: the picture it is, if it is one, and the ways to open it and to its folder. */
+.written {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin: 2px 0 var(--s-1);
+}
+
+.written-shot img {
+  display: block;
+  max-width: min(100%, 420px);
+  max-height: 260px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.written-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--s-3);
+}
+
+.written-acts .button.small {
+  min-height: 26px;
+  padding: 0;
+  font-size: var(--t-small);
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.written-acts .button.small:hover {
+  color: var(--jade);
+}
+
+.written-acts .file-note {
+  margin: 0;
+}
+
 .did-body {
   margin: var(--s-1) 0 var(--s-2);
   border: 1px solid var(--line);
@@ -2898,6 +2939,79 @@ button.did-head:not(:disabled):hover {
   border-color: var(--line);
 }
 
+/* A file under a message that opens when pressed, with at its end the way to its folder: two buttons on one slip,
+   the slip itself setting them apart from the words around. */
+.file-chip.openable {
+  padding: 0;
+  gap: 0;
+}
+
+.file-chip-open,
+.file-chip-reveal {
+  min-height: 26px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.file-chip-open {
+  min-width: 0;
+  padding: 2px 6px 2px var(--s-2);
+  gap: 6px;
+}
+
+.file-chip-reveal {
+  flex: none;
+  padding: 0 7px;
+  border-left: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+.file-chip-reveal svg {
+  color: currentColor;
+}
+
+.file-chip.openable:hover {
+  border-color: var(--jade);
+}
+
+.file-chip-open:hover .file-chip-name {
+  color: var(--jade);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.file-chip-reveal:hover {
+  color: var(--jade);
+  background: var(--control);
+}
+
+.file-chip-open:focus-visible,
+.file-chip-reveal:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: -2px;
+}
+
+.file-chip-open:disabled,
+.file-chip-reveal:disabled {
+  cursor: default;
+}
+
+/* What came of opening one: why it could not be, or that it was shown in its folder instead. */
+.file-note {
+  margin: 4px 0 0;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.file-note.failed {
+  color: var(--cinnabar-ink);
+}
+
 /* Files dragged over the window: the box says it will take them. */
 .composer-box.dropping {
   border-color: var(--jade);
@@ -2988,8 +3102,12 @@ button.did-head:not(:disabled):hover {
 }
 
 .viewer img {
-  max-width: 100%;
-  max-height: 100%;
+  /* Held to the window, less the room round it, in the window's own measure: a percentage would be of a row that
+     takes its height from the picture, and a tall picture would run off the window and be cut. */
+  max-width: calc(100vw - 144px);
+  max-height: calc(100vh - 96px);
+  width: auto;
+  height: auto;
   object-fit: contain;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-paper);
@@ -3639,6 +3757,45 @@ button.select-button svg {
 
 .file-head:not(:disabled):hover,
 .file-row.open .file-head {
+  background: var(--sheet);
+}
+
+/* The line of a file, and at its end the ways to open it: quiet until the line is pointed at. */
+.file-line {
+  display: flex;
+  align-items: center;
+}
+
+.file-line .file-head {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-acts {
+  flex: none;
+  display: flex;
+  padding-right: 2px;
+  opacity: 0.45;
+  transition: opacity var(--d-quick) var(--ease-out);
+}
+
+.file-acts .icon-button {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+.file-line:hover .file-acts,
+.file-acts:focus-within {
+  opacity: 1;
+}
+
+.file-row > .file-note {
+  margin: 0;
+  padding: 0 10px 8px 12px;
+}
+
+.file-row.open .file-line {
   background: var(--sheet);
 }
 

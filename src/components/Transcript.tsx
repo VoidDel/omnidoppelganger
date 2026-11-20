@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { inFlight, land } from "../lib/flight";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
@@ -141,6 +141,71 @@ export function Diff({ hunk }: { hunk: DiffHunk }) {
  * arrives while the page is watched is stamped onto it; a page of old acts is simply shown.
  */
 const Live = createContext<{ current: boolean }>({ current: false });
+
+/** What the cards may do with the files of the session: open one, or show it in its folder; and fetch a picture the 分身 wrote. */
+interface Files {
+  open: (path: string, reveal: boolean) => Promise<string>;
+  picture: (path: string) => Promise<Image>;
+}
+
+const FilesContext = createContext<Files | null>(null);
+
+/** Kinds of file shown as a picture under the act that wrote them. */
+const PICTURE_KINDS = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+
+/**
+ * Under an act that wrote a file: the way to open it with the system's program for it and to its folder, and for a
+ * picture, the picture as it is now, which opens at full size when pressed.
+ */
+function Written({ path, name }: { path: string; name: string }) {
+  const files = useContext(FilesContext);
+  const picture = PICTURE_KINDS.test(path);
+  const [image, setImage] = useState<Image | null>(null);
+  const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
+  const [viewing, setViewing] = useState(false);
+  useEffect(() => {
+    if (!files || !picture) return;
+    let current = true;
+    files.picture(path).then(
+      (got) => current && setImage(got),
+      (error) => current && setNote({ text: String(error), failed: true }),
+    );
+    return () => {
+      current = false;
+    };
+  }, [files, path, picture]);
+  if (!files) return null;
+  const open = (reveal: boolean) => {
+    setNote(null);
+    files.open(path, reveal).then(
+      (done) => done === "revealed" && !reveal && setNote({ text: "这是可执行文件，不从这里直接运行，已在文件夹中显示。", failed: false }),
+      (error) => setNote({ text: String(error), failed: true }),
+    );
+  };
+  return (
+    <div className="written">
+      {image && (
+        <button type="button" className="shot written-shot" title="点开看大图（显示的是文件眼下的样子）" onClick={() => setViewing(true)}>
+          <img src={imageSource(image)} alt={`分身写的 ${name}`} />
+        </button>
+      )}
+      <div className="written-acts">
+        <button type="button" className="button text small" title={`${path}\n用系统默认的程序打开`} onClick={() => open(false)}>
+          打开
+        </button>
+        <button type="button" className="button text small" title="在文件夹中显示" onClick={() => open(true)}>
+          在文件夹中显示
+        </button>
+        {note && (
+          <span className={`file-note ${note.failed ? "failed" : ""}`} role="status">
+            {note.text}
+          </span>
+        )}
+      </div>
+      {viewing && image && <Viewer images={[image]} at={0} whose="分身写的" onClose={() => setViewing(false)} />}
+    </div>
+  );
+}
 
 /** The things that came onto the page together last, counted, so that each can follow the one before it. */
 const arrivals = { at: 0, count: 0 };
@@ -378,9 +443,12 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const returned = (result?.meta?.mcp || tool.name === "web_search") && !result?.isError ? result?.content : undefined;
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
-  // A change and a failure are open until closed, even when they come in after the line they belong to.
+  // The file an edit wrote, by where it is: what can be opened from under the act.
+  const written = editsFiles(tool.name) && result && !result.isError && result.meta?.file ? result.meta.file : null;
+  // A change and a failure are open until closed, even when they come in after the line they belong to; but a
+  // picture's text is not what is looked at, the picture is.
   const [chosen, setOpen] = useState<boolean | null>(null);
-  const open = chosen ?? (!!hunk || !!failure || (!!output && !!result?.isError));
+  const open = chosen ?? ((!!hunk && !(written && PICTURE_KINDS.test(written))) || !!failure || (!!output && !!result?.isError));
   return (
     <div className={`did ${weigh(tool)} ${voided(tool) ? "void" : ""} ${fresh.className}`} style={style}>
       <button type="button" className="did-head" aria-expanded={body ? open : undefined} disabled={!body} onClick={() => setOpen(!open)}>
@@ -402,6 +470,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
         </div>
       )}
       {body && open && <div className="did-body">{body}</div>}
+      {written && !voided(tool) && <Written path={written} name={written.replace(/^.*[\\/]/, "")} />}
     </div>
   );
 }
@@ -765,6 +834,10 @@ interface Props {
   onUndo: (turn: number) => void;
   /** Start a fork that goes on from before this turn, with the turn's message to send again or change. Absent where a fork cannot be made. */
   onFork?: (turn: number, text: string) => void;
+  /** Open a file attached to a message or written by the 分身 with the system's program for it, or with `reveal` show it in its folder; answers what was done. */
+  onOpenFile?: (path: string, reveal: boolean) => Promise<string>;
+  /** A picture the 分身 wrote, as it is now. */
+  onPicture?: (path: string) => Promise<Image>;
 }
 
 /** Undoing cannot itself be undone, so the button asks once more before it acts. */
@@ -833,7 +906,7 @@ function Queued({ text }: { text: string }) {
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onUndo, onFork }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onUndo, onFork, onOpenFile, onPicture }: Props) {
   const family = { sessions, onOpen };
   const undoable = undoableTurns(rows, copied);
   /** Where a fork's own conversation begins: said once, between what it copied and what it did itself. */
@@ -846,6 +919,24 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
   useLayoutEffect(() => {
     seen.current = count;
   });
+  /** What came of opening an attached file, under its message, for a moment: why it could not be, or that it was shown in its folder instead. */
+  const [fileNote, setFileNote] = useState<{ path: string; text: string; failed: boolean } | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(noteTimer.current), []);
+  const openFile = (path: string, reveal: boolean) => {
+    if (!onOpenFile) return;
+    clearTimeout(noteTimer.current);
+    setFileNote(null);
+    onOpenFile(path, reveal).then(
+      (done) => {
+        // A program is not run from here: it is shown in its folder, and that is said.
+        if (done === "revealed" && !reveal) setFileNote({ path, text: "这是可执行文件，不从这里直接运行，已在文件夹中显示。", failed: false });
+      },
+      (error) => setFileNote({ path, text: String(error), failed: true }),
+    ).finally(() => {
+      noteTimer.current = setTimeout(() => setFileNote(null), 5000);
+    });
+  };
   /** The pictures of a message being looked at full size, and which of them. */
   const [viewing, setViewing] = useState<{ images: Image[]; at: number } | null>(null);
   /** For a moment after the 分身 finishes: the light on the turn's thread goes back up to the order. */
@@ -886,7 +977,10 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
       land(messages[messages.length - 1] ?? null);
     }
   });
+  // One for the life of the page's callbacks, so the cards under it are not drawn again for nothing.
+  const files = useMemo<Files | null>(() => (onOpenFile && onPicture ? { open: onOpenFile, picture: onPicture } : null), [onOpenFile, onPicture]);
   return (
+    <FilesContext.Provider value={files}>
     <Live.Provider value={live}>
     <div
       className="transcript"
@@ -949,23 +1043,35 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
               {/* Under the message: the files that came with it, each by its name. */}
               {row.prompt.files.length > 0 && (
                 <div className="said-files">
-                  {row.prompt.files.map((file) => (
-                    <span
-                      key={file.path}
-                      className="file-chip"
-                      title={`${file.path}\n${file.inline ? (file.document ? "取出的文字随这句话一起给了分身，图和排版不在其中" : "它的内容随这句话一起给了分身") : "它太大，没有随消息发送：分身自己分段去读"}`}
-                    >
-                      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
-                      </svg>
-                      <span className="file-chip-name">{file.path.replace(/^.*[\\/]/, "")}</span>
-                      <span className="file-chip-size">
-                        {fileSize(file.bytes)}
-                        {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
+                  {row.prompt.files.map((file) => {
+                    const how = file.inline ? (file.document ? "取出的文字随这句话一起给了分身，图和排版不在其中" : "它的内容随这句话一起给了分身") : "它太大，没有随这句话发出，分身按路径自己去读";
+                    return (
+                      <span key={file.path} className="file-chip openable">
+                        <button type="button" className="file-chip-open" disabled={!onOpenFile} title={`${file.path}\n${how}\n点开：用系统默认的程序打开`} onClick={() => openFile(file.path, false)}>
+                          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
+                          </svg>
+                          <span className="file-chip-name">{file.path.replace(/^.*[\\/]/, "")}</span>
+                          <span className="file-chip-size">
+                            {fileSize(file.bytes)}
+                            {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
+                          </span>
+                        </button>
+                        <button type="button" className="file-chip-reveal" disabled={!onOpenFile} title="在文件夹中显示" onClick={() => openFile(file.path, true)}>
+                          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
+                          </svg>
+                          <span className="sr-only">在文件夹中显示 {file.path.replace(/^.*[\\/]/, "")}</span>
+                        </button>
                       </span>
-                    </span>
-                  ))}
+                    );
+                  })}
                 </div>
+              )}
+              {fileNote && row.prompt.files.some((file) => file.path === fileNote.path) && (
+                <p className={`file-note ${fileNote.failed ? "failed" : ""}`} role="status">
+                  {fileNote.text}
+                </p>
               )}
               {/* Under the message, at its right: what can be done from it. */}
               {canUndo && (
@@ -1010,5 +1116,6 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
       {viewing && <Viewer images={viewing.images} at={viewing.at} whose="本尊附的" onClose={() => setViewing(null)} />}
     </div>
     </Live.Provider>
+    </FilesContext.Provider>
   );
 }

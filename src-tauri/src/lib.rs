@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use odg_core::agent::{Services, Session, Status, Tuning, UiEvent};
 use odg_core::anthropic::{AnthropicClient, DEFAULT_BASE_URL};
-use odg_core::events::{Decision, Envelope, FILES_PER_MESSAGE, Image, Picked, attach, check_images, pick};
+use odg_core::events::{Decision, Envelope, Event, FILES_PER_MESSAGE, Image, Picked, attach, check_images, pick};
 use odg_core::grants::{GrantStore, Grants};
 use odg_core::mcp::{McpHub, ServerStatus};
 use odg_core::policy::Mode;
@@ -379,6 +379,95 @@ async fn open_session(app: State<'_, App>, id: String) -> Result<SessionView, St
     Ok(view(&app, &app.live(&id)?))
 }
 
+/// Kinds of file that are programs, or that run one when opened: pressed under a message, they are shown in their
+/// folder rather than opened, so that a slip of the hand runs nothing.
+const RUNNABLE: &[&str] = &[
+    "exe", "com", "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "msi", "msp", "msc", "scr", "cpl", "lnk",
+    "url", "reg", "jar", "appref-ms", "sh", "bash", "zsh", "command", "app", "run", "bin",
+];
+
+/// Whether `path` is a file this session has to do with: attached to one of its messages, or written by its 分身.
+/// Only such a file is opened or shown from the conversation: the page cannot name any path at all.
+fn session_file(session: &Session<Router>, path: &str) -> bool {
+    session.snapshot().iter().any(|envelope| match &envelope.event {
+        Event::UserMessage { files, .. } => files.iter().any(|file| file.path == path),
+        Event::ToolResult { tool, is_error: false, meta, .. } => matches!(tool.as_str(), "edit_file" | "write_file") && meta["file"].as_str() == Some(path),
+        _ => false,
+    })
+}
+
+/// Open a file attached to a message in this session, or written by its 分身, with the system's own program for
+/// it, or with `reveal`, show it in its folder. A program is only shown in its folder. Answers `opened` or `revealed`.
+#[tauri::command]
+async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: bool) -> Result<String, String> {
+    let session = app.live(&id)?;
+    if !session_file(&session, &path) {
+        return Err("这个文件不是这段对话里附过或写过的，不能从这里打开。".to_string());
+    }
+    let file = std::path::PathBuf::from(&path);
+    if !file.exists() {
+        return Err(format!("找不到这个文件了，可能已经移走或删掉：{path}"));
+    }
+    // The end-to-end test asks what would be done, and has nothing opened on the machine it runs on.
+    let dry = std::env::var_os("ODG_E2E_DRY_OPEN").is_some();
+    if reveal || runnable(&file) || file.is_dir() {
+        if !dry {
+            tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
+        }
+        return Ok("revealed".to_string());
+    }
+    if !dry {
+        tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| format!("没能打开它：{error}"))?;
+    }
+    Ok("opened".to_string())
+}
+
+/// Kinds of picture the conversation shows from what the 分身 wrote, and the media type each is shown as.
+const PICTURES: &[(&str, &str)] = &[("png", "image/png"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("gif", "image/gif"), ("webp", "image/webp"), ("svg", "image/svg+xml"), ("bmp", "image/bmp"), ("ico", "image/x-icon")];
+
+/// The largest picture shown in the conversation.
+const PICTURE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// A picture this session's 分身 wrote, as it is now on disk, to be shown under the act that wrote it. It is shown as
+/// an image, so an SVG's scripts never run.
+#[tauri::command]
+async fn picture(app: State<'_, App>, id: String, path: String) -> Result<Image, String> {
+    let session = app.live(&id)?;
+    if !session_file(&session, &path) {
+        return Err("这个文件不是这段对话里写过的。".to_string());
+    }
+    let file = std::path::PathBuf::from(&path);
+    let extension = file.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let media_type = PICTURES.iter().find(|(kind, _)| *kind == extension).map(|(_, media)| media.to_string()).ok_or("这不是能显示的图片。")?;
+    let size = std::fs::metadata(&file).map_err(|_| format!("找不到这个文件了，可能已经移走或删掉：{path}"))?.len();
+    if size > PICTURE_BYTES {
+        return Err(format!("这张图有 {} MB，太大，不在这里显示。", size / 1024 / 1024));
+    }
+    let bytes = std::fs::read(&file).map_err(|error| format!("读不了这张图：{error}"))?;
+    Ok(Image { media_type, data: odg_core::events::base64(&bytes) })
+}
+
+/// Whether a file is a program, or runs one when opened; see [`RUNNABLE`].
+fn runnable(file: &std::path::Path) -> bool {
+    file.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| RUNNABLE.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runnable;
+    use std::path::Path;
+
+    #[test]
+    fn a_program_is_known_by_its_kind_whatever_its_case() {
+        for program in ["setup.exe", "RUN.BAT", "build.cmd", "tool.ps1", "install.msi", "shortcut.lnk", "site.url", "script.sh", "a.Exe"] {
+            assert!(runnable(Path::new(program)), "{program}");
+        }
+        for document in ["notes.md", "report.pdf", "sheet.xlsx", "build.log", "photo.png", "README", "archive.tar.gz", ".exe-notes.txt"] {
+            assert!(!runnable(Path::new(document)), "{document}");
+        }
+    }
+}
+
 /// Returns true when the message was queued behind a running turn.
 #[tauri::command]
 async fn send_message(app: State<'_, App>, id: String, text: String, images: Vec<Image>, files: Vec<String>) -> Result<bool, String> {
@@ -703,6 +792,8 @@ pub fn run() {
             list_skills,
             switch_skill,
             remove_skill,
+            open_attachment,
+            picture,
             add_provider,
             remove_provider,
             install_skill,

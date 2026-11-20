@@ -82,6 +82,8 @@ export interface DiffHunk {
 /** Presentation data a tool attaches to its result. Each tool fills its own fields. */
 export interface ToolMeta {
   path?: string;
+  /** The absolute path of the file an edit wrote. */
+  file?: string;
   lines?: number;
   shown?: number;
   pattern?: string;

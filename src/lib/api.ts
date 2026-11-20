@@ -87,6 +87,10 @@ export const api = {
     const picked = await open({ directory: true, multiple: false, title: "选一个文件夹作洞府" });
     return typeof picked === "string" ? picked : null;
   },
+  /** Open a file attached to a message in the session with the system's program for it, or with `reveal` show it in its folder; resolves `opened` or `revealed`. */
+  openAttachment: (id: string, path: string, reveal: boolean) => invoke<string>("open_attachment", { id, path, reveal }),
+  /** A picture the session's 分身 wrote, as it is now on disk. */
+  picture: (id: string, path: string) => invoke<Image>("picture", { id, path }),
   /** Ask for a folder with the system dialog, titled `title`. Resolves null when the user closes it. */
   pickFolder: async (title: string): Promise<string | null> => {
     const picked = await open({ directory: true, multiple: false, title });

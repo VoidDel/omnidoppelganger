@@ -148,6 +148,8 @@ const app = spawn(executable, [], {
     ODG_E2E_WORKSPACE: workspace,
     ANTHROPIC_BASE_URL: mock.url,
     ANTHROPIC_API_KEY: "e2e-key",
+    // Opening an attached file says what it would do and opens nothing on the machine the test runs on.
+    ODG_E2E_DRY_OPEN: "1",
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEBUG_PORT}`,
     WEBVIEW2_USER_DATA_FOLDER: join(scratch, "webview"),
   },
@@ -552,6 +554,22 @@ try {
   check(await page.evaluate(`!!document.querySelector("#composer-input") && !document.querySelector(".broken")`), "the / menu's choice moves with the arrow keys and the pointer, and the message box stays whole");
   await pressed("Escape");
   await page.waitFor("the / menu to be put away", `!document.querySelector(".slash-menu")`);
+
+  // A file under a message opens with the system's program for it, or is shown in its folder; only a file the
+  // session's messages name, and one that is gone is said to be gone.
+  const attachedTo = logs().find((events) => events.some((envelope) => envelope.type === "user/message" && envelope.data.files?.length));
+  const sessionId = attachedTo[0].data.id;
+  const opening = (path, reveal) => page.evaluate(`window.__TAURI_INTERNALS__.invoke("open_attachment", { id: ${JSON.stringify(sessionId)}, path: ${JSON.stringify(path)}, reveal: ${reveal} }).catch((error) => "refused: " + error)`);
+  check((await opening(attachedNotes, false)) === "opened" && (await opening(attachedNotes, true)) === "revealed", "an attached file opens with its program, or is shown in its folder");
+  check((await opening(join(workspace, "hello.txt"), false)).startsWith("refused: 这个文件不是这段对话里附过或写过的"), "a file the conversation never attached is not opened from it");
+  const fileChip = (name) => `[...document.querySelectorAll(".said-files .file-chip")].find((one) => one.querySelector(".file-chip-name").textContent === ${JSON.stringify(name)})`;
+  await page.evaluate(`${fileChip("要点.md")}.querySelector(".file-chip-open").click()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  check(!(await page.evaluate(`!!document.querySelector(".file-note")`)), "pressing an attached file opens it without a word");
+  rmSync(attachedLog);
+  await page.evaluate(`${fileChip("build.log")}.querySelector(".file-chip-open").click()`);
+  await page.waitFor("the note that the file is gone", `document.querySelector(".file-note.failed")?.textContent.includes("找不到这个文件了")`);
+  check(true, "a file moved or deleted since is said to be gone, under its message");
 
   // A right click keeps the webview's own menu away, but for a field (cut and paste) and words picked out (copy).
   const menuKept = (selector) => page.evaluate(`(() => { const target = document.querySelector(${JSON.stringify(selector)}); const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }); target.dispatchEvent(event); return !event.defaultPrevented; })()`);

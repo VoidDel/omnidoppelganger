@@ -111,7 +111,9 @@ export function ridge({ step, peak, pass, crown }: RangeShape, random: () => num
   let up = random() < 0.5;
   points.push([0, between(up ? peak : pass)]);
   for (let x = 0; x < 1200; ) {
-    x = Math.min(1200, x + between(step));
+    x += between(step);
+    // Close enough to the edge, it is the edge: a sliver of a step there would round onto it.
+    if (x > 1200 - step[0] / 2) x = 1200;
     up = !up;
     const [fromX, fromY] = points[points.length - 1];
     const y = between(up ? peak : pass);
@@ -1838,12 +1840,24 @@ const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
 ];
 
 /** A file the 分身 changed: where it is, how much it changed, and, opened, the changes themselves. */
-function FileRow({ file }: { file: ChangedFile }) {
+function FileRow({ file, onOpenFile }: { file: ChangedFile; onOpenFile?: (path: string, reveal: boolean) => Promise<string> }) {
   const [open, setOpen] = useState(false);
+  /** What came of opening it: why it could not be, or that a program was shown in its folder instead. */
+  const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
   const cut = Math.max(file.path.lastIndexOf("/"), file.path.lastIndexOf("\\")) + 1;
   const total = file.added + file.removed;
+  const where = file.file;
+  const openIt = (reveal: boolean) => {
+    if (!where || !onOpenFile) return;
+    setNote(null);
+    onOpenFile(where, reveal).then(
+      (done) => done === "revealed" && !reveal && setNote({ text: "这是可执行文件，不从这里直接运行，已在文件夹中显示。", failed: false }),
+      (error) => setNote({ text: String(error), failed: true }),
+    );
+  };
   return (
     <div className={`file-row ${open ? "open" : ""}`}>
+      <div className="file-line">
       <button type="button" className="file-head" aria-expanded={file.hunks.length ? open : undefined} disabled={!file.hunks.length} title={file.path} onClick={() => setOpen(!open)}>
         <span className="file-where">
           <span className="file-name">{file.path.slice(cut)}</span>
@@ -1859,6 +1873,29 @@ function FileRow({ file }: { file: ChangedFile }) {
           <span className="in">+{file.added}</span> <span className="out">−{file.removed}</span>
         </span>
       </button>
+      {/* At the line's end: the file opened with the system's program for it, and its folder. */}
+      {where && onOpenFile && (
+        <span className="file-acts">
+          <button type="button" className="icon-button" title="用系统默认的程序打开" onClick={() => openIt(false)}>
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
+            </svg>
+            <span className="sr-only">打开 {file.path.slice(cut)}</span>
+          </button>
+          <button type="button" className="icon-button" title="在文件夹中显示" onClick={() => openIt(true)}>
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
+            </svg>
+            <span className="sr-only">在文件夹中显示 {file.path.slice(cut)}</span>
+          </button>
+        </span>
+      )}
+      </div>
+      {note && (
+        <p className={`file-note ${note.failed ? "failed" : ""}`} role="status">
+          {note.text}
+        </p>
+      )}
       {open && (
         <div className="file-diff">
           {file.hunks.map((hunk, at) => (
@@ -1885,9 +1922,11 @@ interface SidePanelProps {
   onWiden: () => void;
   /** The 分身 is at work now: the step of the plan it has in hand is lit. */
   working: boolean;
+  /** Open a file the 分身 changed with the system's program for it, or with `reveal` show it in its folder. */
+  onOpenFile?: (path: string, reveal: boolean) => Promise<string>;
 }
 
-export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden, working }: SidePanelProps) {
+export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden, working, onOpenFile }: SidePanelProps) {
   const [tab, setTab] = useState<PanelTab>("files");
   const counts: Record<PanelTab, number> = { files: files.length, terminal: runs.length, plan: todos.length };
   // When the first thing comes into a panel that held nothing, it opens on that.
@@ -2030,7 +2069,7 @@ export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden
           {files.length === 0 && <p className="muted">分身还没有改过文件。</p>}
           <div className="file-list">
             {files.map((file) => (
-              <FileRow key={file.path} file={file} />
+              <FileRow key={file.path} file={file} onOpenFile={onOpenFile} />
             ))}
           </div>
         </div>

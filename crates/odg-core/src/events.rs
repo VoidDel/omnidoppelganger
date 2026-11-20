@@ -125,7 +125,7 @@ fn image_type(path: &Path) -> Option<&'static str> {
 }
 
 /// Bytes as base64 text, padded.
-fn base64(bytes: &[u8]) -> String {
+pub fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

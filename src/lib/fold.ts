@@ -270,6 +270,8 @@ export interface ChangedFile {
   removed: number;
   /** The 分身 made the file, rather than changing one that was there. */
   created: boolean;
+  /** Where it is on disk, to be opened from the list; absent in logs from before it was kept. */
+  file?: string;
   /** Each edit's change, in the order they were made. */
   hunks: DiffHunk[];
 }
@@ -281,7 +283,8 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
     if (item.kind !== "tool" || !editsFiles(item.name) || !item.result || item.result.isError || item.undone) continue;
     const meta = item.result.meta;
     if (!meta?.path) continue;
-    const file = files.get(meta.path) ?? { path: meta.path, added: 0, removed: 0, created: !!meta.created, hunks: [] };
+    const file = files.get(meta.path) ?? { path: meta.path, added: 0, removed: 0, created: !!meta.created, hunks: [], file: meta.file };
+    file.file ??= meta.file;
     file.added += meta.added ?? 0;
     file.removed += meta.removed ?? 0;
     if (meta.hunk) file.hunks.push(meta.hunk);
