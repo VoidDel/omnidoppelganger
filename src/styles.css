@@ -3933,30 +3933,32 @@ button.select-button svg {
   background: radial-gradient(ellipse 50% 50% at center, color-mix(in srgb, var(--bg) 94%, transparent) 0, color-mix(in srgb, var(--bg) 60%, transparent) 45%, transparent 100%);
 }
 
+/* Each band's height, breadth, depth and pace, and where along its way it is when the screen opens, are set by the
+   page afresh each time (--lift, --span, --deep, --pace, --phase); these are what they are near. */
 .mist.slow {
-  bottom: calc(112 * var(--u));
-  width: 78cqw;
-  height: calc(86 * var(--u));
+  bottom: calc((112 + var(--lift, 0)) * var(--u));
+  width: var(--span, 78cqw);
+  height: calc(var(--deep, 86) * var(--u));
   animation:
-    drift 64s linear -12s infinite,
+    drift var(--pace, 64s) linear var(--phase, -12s) infinite,
     come 2600ms ease 600ms backwards;
 }
 
 .mist.fast {
-  bottom: calc(72 * var(--u));
-  width: 60cqw;
-  height: calc(68 * var(--u));
+  bottom: calc((72 + var(--lift, 0)) * var(--u));
+  width: var(--span, 60cqw);
+  height: calc(var(--deep, 68) * var(--u));
   animation:
-    drift 41s linear -27s infinite,
+    drift var(--pace, 41s) linear var(--phase, -27s) infinite,
     come 2600ms ease 800ms backwards;
 }
 
 .mist.low {
-  bottom: calc(18 * var(--u));
-  width: 68cqw;
-  height: calc(64 * var(--u));
+  bottom: calc((18 + var(--lift, 0)) * var(--u));
+  width: var(--span, 68cqw);
+  height: calc(var(--deep, 64) * var(--u));
   animation:
-    drift 53s linear -40s infinite,
+    drift var(--pace, 53s) linear var(--phase, -40s) infinite,
     come 2600ms ease 1000ms backwards;
 }
 
@@ -3983,6 +3985,83 @@ button.select-button svg {
 .mote-rise.gold {
   background: radial-gradient(circle, #fffdf2 0 22%, var(--gold) 50%, transparent 72%);
   box-shadow: 0 0 8px 2px color-mix(in srgb, var(--gold) 50%, transparent);
+}
+
+/* Two wild geese crossing the sky, east to west, once a minute or so: a stroke each, the wings beating slowly and
+   the body rising and falling a little. Each is a layer moved whole; the wings beat by being squashed and let go,
+   which costs nothing to draw. Off the right edge until their hour comes, and off the left once they have passed. */
+.geese {
+  position: absolute;
+  right: -90px;
+  /* Set by the page, in the drawings' unit, so they keep to the same place among the mountains however the window is sized. */
+  bottom: calc(var(--lift, 180) * var(--u));
+  width: 80px;
+  height: 40px;
+  pointer-events: none;
+  animation: migrate var(--pace, 64s) linear infinite both;
+}
+
+.goose {
+  position: absolute;
+  display: block;
+  color: var(--ink);
+  opacity: 0.45;
+  animation: bob 3.2s ease-in-out infinite alternate;
+}
+
+/* How big each is and where the second keeps to the first are set by the page afresh each time. */
+.goose.lead {
+  left: 0;
+  top: 0;
+  width: var(--size, 34px);
+}
+
+.goose.follow {
+  left: var(--behind, 44px);
+  top: var(--aside, 16px);
+  width: var(--size, 25px);
+  opacity: 0.35;
+  animation-delay: -1.3s;
+}
+
+.goose svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform-origin: 50% 70%;
+  animation: flap 0.95s ease-in-out infinite alternate;
+}
+
+.goose.follow svg {
+  animation-delay: -0.45s;
+}
+
+@keyframes migrate {
+  from {
+    transform: translateX(0);
+  }
+  70%,
+  to {
+    transform: translateX(calc(-100cqw - 180px));
+  }
+}
+
+@keyframes flap {
+  to {
+    transform: scaleY(0.35);
+  }
+}
+
+@keyframes bob {
+  to {
+    transform: translateY(-5px);
+  }
 }
 
 @keyframes ascend {

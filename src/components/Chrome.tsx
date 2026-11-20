@@ -82,18 +82,90 @@ function Bagua() {
   );
 }
 
+/** How a range of mountains is drawn, in the 1200×420 frame the backdrop's drawings share: y counts down from its top. */
+interface RangeShape {
+  /** How far apart a peak and the pass beside it stand. */
+  step: [number, number];
+  /** How high a peak and a pass reach. */
+  peak: [number, number];
+  pass: [number, number];
+  /** One peak raised above the others by this much, to stand for the range: the far range has one. */
+  crown?: [number, number];
+}
+
+export const RANGES: Record<"far" | "mid" | "near", RangeShape> = {
+  far: { step: [80, 140], peak: [160, 220], pass: [235, 290], crown: [30, 55] },
+  mid: { step: [80, 125], peak: [250, 292], pass: [305, 338] },
+  near: { step: [105, 150], peak: [322, 350], pass: [368, 394] },
+};
+
+/**
+ * A range drawn afresh: peaks and passes in turn across the frame, each as high and as far apart as chance has it
+ * within what the range allows, and now and then a shoulder part way up a slope, as real ridges have. Straight
+ * strokes from point to point, as the brush draws them.
+ */
+export function ridge({ step, peak, pass, crown }: RangeShape, random: () => number = Math.random): string {
+  const between = ([low, high]: [number, number]) => low + (high - low) * random();
+  const points: [number, number][] = [];
+  let up = random() < 0.5;
+  points.push([0, between(up ? peak : pass)]);
+  for (let x = 0; x < 1200; ) {
+    x = Math.min(1200, x + between(step));
+    up = !up;
+    const [fromX, fromY] = points[points.length - 1];
+    const y = between(up ? peak : pass);
+    if (x - fromX > 70 && random() < 0.35) {
+      // A shoulder: a point part way along, set a little higher than the straight line would put it.
+      const t = 0.4 + 0.2 * random();
+      points.push([fromX + (x - fromX) * t, fromY + (y - fromY) * t - between([6, 16])]);
+    }
+    points.push([x, y]);
+  }
+  if (crown) {
+    // The highest of the peaks, not at either edge, raised to stand over the rest.
+    const peaks = points.map(([, y], at) => [y, at] as const).filter(([, at]) => at > 1 && at < points.length - 2);
+    const [, top] = peaks.reduce((best, one) => (one[0] < best[0] ? one : best), peaks[0] ?? [0, -1]);
+    if (top > 0) points[top] = [points[top][0], points[top][1] - between(crown)];
+  }
+  return `M${points.map(([x, y]) => `${Math.round(x)} ${Math.round(y)}`).join(" L")} L1200 420 L0 420 Z`;
+}
+
 /**
  * The home screen's backdrop: mountains in three washes of ink under an open sky. In the sky's upper corner
  * stands the 太极, with the eight trigrams in a ring about it, each turning slowly its own way: golden by day
  * as the sun is, and by night (the dark theme) pale as the moon, among stars. The
  * mountains rise into place when the screen opens, and the 太极 comes up from behind them to where it
  * stands, clear of what is written on the screen. Then mist drifts between the ranges, points of light rise
- * from the valleys, and now and then a stroke of light crosses the sky, as a sword in flight does. Everything
+ * from the valleys, now and then a stroke of light crosses the sky, as a sword in flight does, and a pair of wild
+ * geese flies across it. The mountains, the mist and the geese are drawn afresh each time the screen opens. Everything
  * that moves is a layer of its own, moved or faded whole.
  */
 export function Mountains() {
   // Every drawing has the same frame, so they lie on one another exactly.
   const frame = { viewBox: "0 0 1200 420", preserveAspectRatio: "xMidYMax slice" } as const;
+  // The ranges are drawn afresh each time the screen opens: no two openings show the same mountains.
+  const [ranges] = useState(() => ({ far: ridge(RANGES.far), mid: ridge(RANGES.mid), near: ridge(RANGES.near) }));
+  // A pair of wild geese crosses the sky, at a height, a pace and in a order of their own each time; and the mist
+  // lies at its own heights and drifts at its own pace.
+  const [sky] = useState(() => {
+    const between = (low: number, high: number) => low + (high - low) * Math.random();
+    const lead = between(28, 38);
+    const geese = {
+      // How high above the foot of the mountains, in the drawings' unit: along the middle range's slopes, about the
+      // height of the near range's peaks.
+      lift: between(85, 135),
+      "--pace": `${between(52, 76)}s`,
+      animationDelay: `${between(2, 6)}s`,
+      lead: { "--size": `${lead}px` },
+      // The second a little behind, above or below the first, and smaller, being farther off.
+      follow: { "--size": `${lead * between(0.62, 0.8)}px`, "--behind": `${between(34, 58)}px`, "--aside": `${between(-16, 20)}px` },
+    };
+    const mist = (pace: number, span: number, deep: number) => {
+      const drift = pace * between(0.75, 1.3);
+      return { "--lift": between(-14, 14), "--span": `${span * between(0.8, 1.25)}cqw`, "--deep": deep * between(0.8, 1.25), "--pace": `${drift}s`, "--phase": `${-between(0, drift)}s` };
+    };
+    return { geese, mists: { slow: mist(64, 78, 86), fast: mist(41, 60, 68), low: mist(53, 68, 64) } };
+  });
   return (
     <div className="scene" aria-hidden="true">
       {STARS.map(([x, y, size, seconds, delay], at) => (
@@ -120,22 +192,33 @@ export function Mountains() {
       <div className="mountains">
         <div className="range far">
           <svg {...frame}>
-            <path d="M0 300 L120 210 L210 262 L330 150 L430 236 L520 190 L640 270 L760 170 L880 250 L980 205 L1090 262 L1200 215 L1200 420 L0 420 Z" />
+            <path d={ranges.far} />
           </svg>
         </div>
-        <span className="mist slow" />
+        <span className="mist slow" style={sky.mists.slow as CSSProperties} />
         <div className="range mid">
           <svg {...frame}>
-            <path d="M0 350 L90 292 L190 330 L300 250 L390 312 L500 268 L610 330 L720 262 L830 318 L950 276 L1060 326 L1200 286 L1200 420 L0 420 Z" />
+            <path d={ranges.mid} />
           </svg>
         </div>
-        <span className="mist fast" />
+        <span className="mist fast" style={sky.mists.fast as CSSProperties} />
+        {/* Two wild geese, a stroke of the brush each, flying west together: the one ahead larger, nearer. Low among the
+            mountains: in front of the middle range and behind the near one, whose higher peaks they pass behind. */}
+        <div className="geese" style={{ "--lift": sky.geese.lift, "--pace": sky.geese["--pace"], animationDelay: sky.geese.animationDelay } as CSSProperties}>
+          {(["lead", "follow"] as const).map((which) => (
+            <span key={which} className={`goose ${which}`} style={sky.geese[which] as CSSProperties}>
+              <svg viewBox="0 0 40 16">
+                <path d="M2 11 Q11 2 20 10 Q29 2 38 11" />
+              </svg>
+            </span>
+          ))}
+        </div>
         <div className="range near">
           <svg {...frame}>
-            <path d="M0 392 L140 340 L260 378 L380 322 L500 372 L640 336 L770 384 L900 344 L1030 388 L1200 352 L1200 420 L0 420 Z" />
+            <path d={ranges.near} />
           </svg>
         </div>
-        <span className="mist low" />
+        <span className="mist low" style={sky.mists.low as CSSProperties} />
         {MOTES.map(([x, y, size, seconds, delay, sway, gold], at) => (
           <span
             key={at}
