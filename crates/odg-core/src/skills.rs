@@ -10,6 +10,10 @@
 //! skill of the same name, the workspace's is used.
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
 
 use crate::events::SkillInfo;
 
@@ -38,12 +42,31 @@ fn parse(text: &str) -> (Option<String>, Option<String>, &str) {
     let field = |key: &str| {
         rest[..end].lines().find_map(|line| {
             let value = line.strip_prefix(key)?.trim_start().strip_prefix(':')?.trim();
-            // A value may be quoted, as YAML allows.
-            let value = value.strip_prefix('"').and_then(|inner| inner.strip_suffix('"')).or_else(|| value.strip_prefix('\'').and_then(|inner| inner.strip_suffix('\''))).unwrap_or(value);
-            (!value.is_empty()).then(|| value.to_string())
+            // A value may be quoted, as YAML allows; in double quotes, `\"` and `\\` stand for themselves.
+            let value = match value.strip_prefix('"').and_then(|inner| inner.strip_suffix('"')) {
+                Some(inner) => unescape(inner),
+                None => value.strip_prefix('\'').and_then(|inner| inner.strip_suffix('\'')).unwrap_or(value).to_string(),
+            };
+            (!value.is_empty()).then_some(value)
         })
     };
     (field("name"), field("description"), body)
+}
+
+/// The text of a double-quoted value, with the escapes a skill's own `SKILL.md` is written with undone.
+fn unescape(quoted: &str) -> String {
+    let mut text = String::with_capacity(quoted.len());
+    let mut characters = quoted.chars();
+    while let Some(c) = characters.next() {
+        match (c, characters.clone().next()) {
+            ('\\', Some(next @ ('"' | '\\'))) => {
+                text.push(next);
+                characters.next();
+            }
+            _ => text.push(c),
+        }
+    }
+    text
 }
 
 fn read(directory: &Path) -> Option<(Skill, String)> {
@@ -299,6 +322,108 @@ pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, Strin
     Ok(Skill { directory: destination, ..skill })
 }
 
+/// Remove a folder and all in it, though some files in it are read-only, as
+/// Git leaves its objects on Windows, where that stops a plain removal.
+fn remove_tree(root: &Path) {
+    let mut walk = vec![root.to_path_buf()];
+    while let Some(directory) = walk.pop() {
+        for entry in std::fs::read_dir(&directory).into_iter().flatten().filter_map(Result::ok) {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                walk.push(entry.path());
+            } else if let Ok(metadata) = entry.metadata() {
+                let mut permissions = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = std::fs::set_permissions(entry.path(), permissions);
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Fetch a Git repository's latest commit into a folder of its own, for a skill to be installed from.
+async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &CancellationToken) -> Result<(), String> {
+    let mut command = tokio::process::Command::new("git");
+    command.args(["clone", "--depth", "1", "--quiet"]);
+    if let Some(branch) = branch {
+        command.args(["--branch", branch]);
+    }
+    // Nobody is at a terminal to give a password: a repository that wants one fails at once rather than waits.
+    command.arg(url).arg(into).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let output = tokio::select! {
+        output = tokio::time::timeout(Duration::from_secs(180), command.output()) => output,
+        () = cancel.cancelled() => return Err("The download was cancelled.".to_string()),
+    };
+    match output {
+        Ok(Ok(output)) if output.status.success() => Ok(()),
+        Ok(Ok(output)) => Err(format!("`git clone {url}` failed: {}", String::from_utf8_lossy(&output.stderr).trim())),
+        Ok(Err(error)) => Err(format!("Cannot run git ({error}): it must be installed to install a skill from a repository.")),
+        Err(_) => Err(format!("`git clone {url}` took more than three minutes and was stopped.")),
+    }
+}
+
+/// Install a skill into `into` from `source`: a Git address (see
+/// [`git_source`]), fetched into a folder of its own that is taken away
+/// after, or else the folder `local` on this computer. `within` is the
+/// folder inside it that holds the skill, when that is not its top.
+pub async fn fetch(source: &str, local: PathBuf, within: Option<&str>, into: &Path, replace: bool, cancel: &CancellationToken) -> Result<Skill, String> {
+    let fetched = match git_source(source) {
+        Some((url, branch, folder)) => {
+            let temporary = std::env::temp_dir().join(format!("odg-skill-{}", uuid::Uuid::now_v7()));
+            if let Err(error) = clone(&url, branch.as_deref(), &temporary, cancel).await {
+                remove_tree(&temporary);
+                return Err(error);
+            }
+            Some((temporary, folder))
+        }
+        None => None,
+    };
+    let top = match &fetched {
+        Some((temporary, folder)) => folder.as_ref().map_or_else(|| temporary.clone(), |folder| temporary.join(folder)),
+        None => local,
+    };
+    let from = within.map_or_else(|| top.clone(), |within| top.join(within));
+    let target = into.to_path_buf();
+    let installed = tokio::task::spawn_blocking(move || install(&from, &target, replace)).await;
+    if let Some((temporary, _)) = &fetched {
+        remove_tree(temporary);
+    }
+    installed.map_err(|error| format!("The install stopped: {error}"))?
+}
+
+/// Whether `name` will do for a skill written here: lower-case letters, digits and `-`, as skills are named everywhere.
+pub fn valid_name(name: &str) -> bool {
+    name.len() <= 64 && !name.starts_with('-') && !name.ends_with('-') && !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Write a skill of the user's own into `into`: a `SKILL.md` in a folder
+/// named for it. One of that name already there is written over only with
+/// `replace`, and then only its `SKILL.md`: the files beside it are kept.
+pub fn write(into: &Path, name: &str, description: &str, body: &str, replace: bool) -> Result<Skill, String> {
+    if !valid_name(name) {
+        return Err(format!("The name `{name}` will not do: lower-case letters, digits and `-` only, at most 64."));
+    }
+    if BUILTINS.iter().any(|(builtin, _)| *builtin == name) {
+        return Err(format!("`{name}` is the name of a skill that comes with the app."));
+    }
+    // One line: it is what the model is told of the skill, in the list sent with every request.
+    let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if description.is_empty() || body.trim().is_empty() {
+        return Err("A skill needs a description and instructions.".to_string());
+    }
+    let directory = into.join(name);
+    if directory.join(FILE_NAME).exists() && !replace {
+        return Err(format!("A skill is already installed at {}. Pass `replace` to put this one in its place.", directory.display()));
+    }
+    std::fs::create_dir_all(&directory).map_err(|error| format!("Cannot make {}: {error}", directory.display()))?;
+    let quoted = description.replace('\\', "\\\\").replace('"', "\\\"");
+    let text = format!("---\nname: {name}\ndescription: \"{quoted}\"\n---\n\n{}\n", body.trim());
+    std::fs::write(directory.join(FILE_NAME), text).map_err(|error| format!("Cannot write {}: {error}", directory.join(FILE_NAME).display()))?;
+    read(&directory).map(|(skill, _)| skill).ok_or_else(|| format!("{} was written and cannot be read back.", directory.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +491,30 @@ mod tests {
         assert_eq!((own.name.as_str(), own.installed), ("mine", true));
         remove(&root, "mine").unwrap();
         assert!(!root.join("mine").exists() && remove(&root, "mine").is_err());
+    }
+
+    #[test]
+    fn writes_a_skill_of_the_users_own_and_reads_it_back_as_written() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("skills");
+        // A description with quotes, a colon and a line break comes back as one line, as it was typed.
+        let written = write(&root, "weekly-report", "Write the weekly report: \"short\",\nwith C:\\ paths", "## Steps\n\nList what shipped.\n", false).unwrap();
+        assert_eq!((written.name.as_str(), written.directory.clone()), ("weekly-report", root.join("weekly-report")));
+        assert_eq!(written.description, "Write the weekly report: \"short\", with C:\\ paths");
+        assert_eq!(load(std::slice::from_ref(&root), "weekly-report").unwrap().lines().next(), Some("## Steps"));
+        assert!(catalog(&root).iter().any(|skill| skill.name == "weekly-report" && !skill.builtin));
+        // Not over one there unless asked, and then the files beside it stay.
+        std::fs::write(root.join("weekly-report/template.md"), "x").unwrap();
+        assert!(write(&root, "weekly-report", "Again.", "Again.", false).unwrap_err().contains("replace"));
+        write(&root, "weekly-report", "Again.", "Again.", true).unwrap();
+        assert!(root.join("weekly-report/template.md").is_file());
+        assert_eq!(discover(std::slice::from_ref(&root))[0].description, "Again.");
+        // Names as skills are named, not one of the app's, and something to say.
+        for name in ["Weekly", "weekly report", "-weekly", "周报", ""] {
+            assert!(write(&root, name, "x", "x", false).is_err(), "{name}");
+        }
+        assert!(write(&root, "debugging", "x", "x", false).unwrap_err().contains("comes with the app"));
+        assert!(write(&root, "empty", "  ", "x", false).is_err() && write(&root, "empty", "x", "\n", false).is_err());
     }
 
     #[test]

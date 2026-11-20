@@ -520,49 +520,7 @@ async fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, T
     Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected })))
 }
 
-/// Remove a folder and all in it, though some files in it are read-only, as
-/// Git leaves its objects on Windows, where that stops a plain removal.
-fn remove_tree(root: &Path) {
-    let mut walk = vec![root.to_path_buf()];
-    while let Some(directory) = walk.pop() {
-        for entry in std::fs::read_dir(&directory).into_iter().flatten().filter_map(Result::ok) {
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                walk.push(entry.path());
-            } else if let Ok(metadata) = entry.metadata() {
-                let mut permissions = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                permissions.set_readonly(false);
-                let _ = std::fs::set_permissions(entry.path(), permissions);
-            }
-        }
-    }
-    let _ = std::fs::remove_dir_all(root);
-}
-
-/// Fetch a Git repository's latest commit into a folder of its own, for a skill to be installed from.
-async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &CancellationToken) -> Result<(), String> {
-    let mut command = tokio::process::Command::new("git");
-    command.args(["clone", "--depth", "1", "--quiet"]);
-    if let Some(branch) = branch {
-        command.args(["--branch", branch]);
-    }
-    // Nobody is at a terminal to give a password: a repository that wants one fails at once rather than waits.
-    command.arg(url).arg(into).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000);
-    let output = tokio::select! {
-        output = tokio::time::timeout(Duration::from_secs(180), command.output()) => output,
-        () = cancel.cancelled() => return Err("The download was cancelled.".to_string()),
-    };
-    match output {
-        Ok(Ok(output)) if output.status.success() => Ok(()),
-        Ok(Ok(output)) => Err(format!("`git clone {url}` failed: {}", String::from_utf8_lossy(&output.stderr).trim())),
-        Ok(Err(error)) => Err(format!("Cannot run git ({error}): it must be installed to install a skill from a repository.")),
-        Err(_) => Err(format!("`git clone {url}` took more than three minutes and was stopped.")),
-    }
-}
-
-/// Install a skill from a folder or a Git repository; see [`crate::skills::install`].
+/// Install a skill from a folder or a Git repository; see [`crate::skills::fetch`].
 async fn install_skill(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let source = string_arg(input, "source")?.trim().to_string();
     let within = input["path"].as_str().map(str::trim).filter(|path| !path.is_empty()).map(str::to_string);
@@ -574,33 +532,8 @@ async fn install_skill(input: &Value, context: &ToolContext) -> Result<ToolOutpu
     } else {
         project
     };
-    // From Git, the repository is fetched into a folder of its own, read from there, and taken away after.
-    let fetched = match crate::skills::git_source(&source) {
-        Some((url, branch, folder)) => {
-            let temporary = std::env::temp_dir().join(format!("odg-skill-{}", uuid::Uuid::now_v7()));
-            if let Err(error) = clone(&url, branch.as_deref(), &temporary, &context.cancel).await {
-                remove_tree(&temporary);
-                return Err(ToolOutput::error(error));
-            }
-            Some((temporary, folder))
-        }
-        None => None,
-    };
-    let top = match &fetched {
-        Some((temporary, folder)) => folder.as_ref().map_or_else(|| temporary.clone(), |folder| temporary.join(folder)),
-        None => resolve(&context.workspace, &source),
-    };
-    let from = within.map_or_else(|| top.clone(), |within| top.join(within));
-    let target = into.clone();
-    let installed = tokio::task::spawn_blocking(move || crate::skills::install(&from, &target, replace)).await;
-    if let Some((temporary, _)) = &fetched {
-        remove_tree(temporary);
-    }
-    let skill = match installed {
-        Ok(Ok(skill)) => skill,
-        Ok(Err(why)) => return Err(ToolOutput::error(why)),
-        Err(error) => return Err(ToolOutput::error(format!("The install stopped: {error}"))),
-    };
+    let local = resolve(&context.workspace, &source);
+    let skill = crate::skills::fetch(&source, local, within.as_deref(), &into, replace, &context.cancel).await.map_err(ToolOutput::error)?;
     let directory = display(&context.workspace, &skill.directory);
     Ok(ToolOutput::ok(
         format!("Installed the skill `{}` ({}) in {directory}. Read it now with load_skill if the task calls for it; it is listed in your instructions from the next turn on.", skill.name, skill.description),

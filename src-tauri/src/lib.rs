@@ -285,6 +285,24 @@ async fn switch_skill(name: String, on: bool, force: Option<bool>) -> Result<Ski
     Ok(skills_view())
 }
 
+/// Put a skill in the user's skills directory from a folder on this computer or a Git address; `path` is the folder in it that holds the skill.
+#[tauri::command]
+async fn install_skill(source: String, path: Option<String>, replace: Option<bool>) -> Result<SkillsView, String> {
+    let source = source.trim().to_string();
+    let within = path.map(|path| path.trim().trim_matches('/').to_string()).filter(|path| !path.is_empty());
+    let local = std::path::PathBuf::from(&source);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    odg_core::skills::fetch(&source, local, within.as_deref(), &settings::home().join("skills"), replace == Some(true), &cancel).await?;
+    Ok(skills_view())
+}
+
+/// Write a skill of the user's own, from its name, description and instructions.
+#[tauri::command]
+async fn write_skill(name: String, description: String, body: String, replace: Option<bool>) -> Result<SkillsView, String> {
+    odg_core::skills::write(&settings::home().join("skills"), name.trim(), &description, &body, replace == Some(true))?;
+    Ok(skills_view())
+}
+
 /// Take one of the user's own skills out of their skills directory.
 #[tauri::command]
 async fn remove_skill(name: String) -> Result<SkillsView, String> {
@@ -659,6 +677,8 @@ pub fn run() {
             list_skills,
             switch_skill,
             remove_skill,
+            install_skill,
+            write_skill,
             list_models,
             undo_turn,
             cancel_turn,
