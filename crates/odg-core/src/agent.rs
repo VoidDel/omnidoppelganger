@@ -216,6 +216,7 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
          - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
          - For work of several steps, keep a to-do list with `update_todos` and mark items as you go; the user follows it beside the conversation.{delegating}\n\
          - After changing code, verify it when the project gives you a way to: build it, run its tests.\n\
+         - When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation.\n\
          - When something fails, or you could not verify a change, say so plainly.\n\
          - Reply in the language the user writes in.",
         workspace.display(),
@@ -808,6 +809,7 @@ impl<L: Llm> Inner<L> {
 
     async fn run_turn(&self, (text, images, files): Said, cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
+        let started = std::time::SystemTime::now();
         let opened = self
             .append(Event::TurnStart { turn })
             .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images, files }))
@@ -824,6 +826,14 @@ impl<L: Llm> Inner<L> {
         let unanswered = unanswered_tool_uses(self.log.lock().unwrap().events());
         for (tool_use_id, tool) in unanswered {
             let _ = self.tool_result(&tool_use_id, &tool, "The turn stopped before this tool ran.".to_string(), true, Value::Null);
+        }
+        // What the turn left for the user that no tool told of, such as a document a script wrote: looked for once,
+        // off the async threads, since a workspace can be large.
+        let root = self.workspace.clone();
+        let made = tokio::task::spawn_blocking(move || crate::made::since(&root, started)).await.unwrap_or_default();
+        if !made.is_empty() {
+            let files = made.iter().map(|path| path.display().to_string()).collect();
+            let _ = self.append(Event::FilesMade { turn, files });
         }
         let _ = self.append(Event::TurnEnd { turn, reason: reason.to_string(), error });
     }

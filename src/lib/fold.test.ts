@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, changedFiles, commandRuns, documentLabel, fileSize, fold, pendingApproval, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, changedFiles, commandRuns, documentLabel, fileSize, fold, pendingApproval, products, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -39,6 +39,33 @@ describe("the guardian", () => {
     expect(first.review).toEqual({ allowed: true, reason: "只写一个文件", model: "small", failed: false });
     expect([second.review?.allowed, second.approval?.expiresAt, second.approval?.timedOut]).toEqual([false, "2026-11-19T10:00:30.000Z", true]);
     expect(usage(events).spent).toEqual(tokens);
+  });
+});
+
+describe("what the 分身 made", () => {
+  it("lists what it handed over and what a turn left, newest first, each once, and says in the turn only what no act showed", () => {
+    const events = log(
+      { type: "turn/start", data: { turn: 1 } },
+      user("make the report"),
+      said(call("w", "write_file", { path: "chart.svg" })),
+      result("w", "write_file", { path: "chart.svg", added: 3, removed: 0, created: true, file: "D:\\p\\chart.svg" }),
+      said(call("r", "run_command", { command: "python make.py" })),
+      result("r", "run_command", { command: "python make.py", exit_code: 0 }),
+      said(call("d", "deliver_files", { paths: ["report.docx"] })),
+      result("d", "deliver_files", { files: ["D:\\p\\report.docx"] }),
+      { type: "files/made", data: { turn: 1, files: ["D:\\p\\report.docx", "D:\\p\\chart.svg", "D:\\p\\data.xlsx"] } },
+      { type: "turn/end", data: { turn: 1, reason: "completed", error: null } },
+      { type: "turn/start", data: { turn: 2 } },
+      user("again"),
+      { type: "files/made", data: { turn: 2, files: ["D:\\p\\report.docx"] } },
+    );
+    const rows = fold(events);
+    expect(rows[0].items.filter((item) => item.kind === "made")).toEqual([{ kind: "made", turn: 1, files: ["D:\\p\\data.xlsx"] }]);
+    expect(rows[1].items).toEqual([{ kind: "made", turn: 2, files: ["D:\\p\\report.docx"] }]);
+    expect(products(rows)).toEqual([
+      { path: "D:\\p\\data.xlsx", turn: 1, delivered: false },
+      { path: "D:\\p\\report.docx", turn: 2, delivered: true },
+    ]);
   });
 });
 

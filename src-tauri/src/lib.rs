@@ -387,7 +387,8 @@ const RUNNABLE: &[&str] = &[
     "url", "reg", "jar", "appref-ms", "sh", "bash", "zsh", "command", "app", "run", "bin",
 ];
 
-/// Whether `path` is a file this session has to do with: attached to one of its messages, or written by its 分身.
+/// Whether `path` is a file this session has to do with: attached to one of its messages, or written, handed over or
+/// left in its workspace by its 分身.
 /// Only such a file is opened or shown from the conversation: the page cannot name any path at all.
 fn session_file(session: &Session<Router>, path: &str) -> bool {
     session.snapshot().iter().any(|envelope| match &envelope.event {
@@ -398,6 +399,8 @@ fn session_file(session: &Session<Router>, path: &str) -> bool {
             "deliver_files" => meta["files"].as_array().is_some_and(|files| files.iter().any(|file| file.as_str() == Some(path))),
             _ => false,
         },
+        // What a turn left in the workspace without a tool telling of it, found when the turn ended.
+        Event::FilesMade { files, .. } => files.iter().any(|file| file == path),
         _ => false,
     })
 }

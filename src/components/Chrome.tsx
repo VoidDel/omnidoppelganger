@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { type Offer, type SlashChoice, type SlashCommand, completion, offers, parse } from "../lib/slash";
 import { launchFrom } from "../lib/flight";
-import { type ChangedFile, type ToolItem, type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
+import { type ChangedFile, type Product, type ToolItem, type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
 import type { Image, Mode, Picked, Provider, SessionItem, Status, Todo } from "../lib/types";
 import { ago } from "../lib/when";
@@ -1792,10 +1792,10 @@ export function Composer(props: ComposerProps) {
 /** The seal on a step of the plan: nothing yet for one to come, 办 for the one in hand, 毕 for one done. */
 const TODO_SEALS: Record<Todo["status"], string> = { pending: "", in_progress: "办", done: "毕" };
 
-/** The panel's width while there is nothing in it: a strip that holds its three tabs. */
+/** The panel's width while there is nothing in it: a strip that holds its tabs. */
 export const PANEL_STRIP = 56;
 
-type PanelTab = "files" | "terminal" | "plan";
+type PanelTab = "files" | "terminal" | "plan" | "products";
 
 const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
   {
@@ -1830,7 +1830,80 @@ const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
       </svg>
     ),
   },
+  {
+    id: "products",
+    name: "产物",
+    title: "产物：分身做出来的文档、图片等文件，交付的和这一轮留在洞府里的",
+    icon: (
+      // A parcel, tied: what is handed over.
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M2.5 4.9 8 2.2l5.5 2.7v6.2L8 13.8l-5.5-2.7z" />
+        <path d="M2.5 4.9 8 7.6l5.5-2.7M8 7.6v6.2M5.2 3.5l5.5 2.8" />
+      </svg>
+    ),
+  },
 ];
+
+/** A file the 分身 made for 本尊: its name, opened when pressed, where it is, and its folder. */
+function ProductRow({ product, workspace, onOpenFile }: { product: Product; workspace?: string; onOpenFile?: (path: string, reveal: boolean) => Promise<string> }) {
+  const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
+  // Where it is, from the workspace when it is in it: the folders that tell one file from another, not the drive's.
+  const root = workspace?.replace(/[\\/]+$/, "");
+  const inside = !!root && product.path.length > root.length + 1 && product.path.slice(0, root.length).toLowerCase() === root.toLowerCase() && /[\\/]/.test(product.path[root.length]);
+  const shown = inside ? product.path.slice(root!.length + 1) : product.path;
+  const cut = Math.max(shown.lastIndexOf("/"), shown.lastIndexOf("\\")) + 1;
+  const name = shown.slice(cut);
+  const openIt = (reveal: boolean) => {
+    if (!onOpenFile) return;
+    setNote(null);
+    onOpenFile(product.path, reveal).then(
+      (done) => done === "revealed" && !reveal && setNote({ text: "这是可执行文件，不从这里直接运行，已在文件夹中显示。", failed: false }),
+      (error) => setNote({ text: String(error), failed: true }),
+    );
+  };
+  return (
+    <div className="file-row product-row">
+      <div className="file-line">
+        <button type="button" className="file-head" disabled={!onOpenFile} title={`${product.path}\n用系统默认的程序打开`} onClick={() => openIt(false)}>
+          <span className="file-where">
+            <span className="file-name">{name}</span>
+            {cut > 0 && <span className="file-dir">{shown.slice(0, cut - 1)}</span>}
+          </span>
+          {product.delivered ? (
+            <span className="chip done" title="分身做好之后交付的">
+              交付
+            </span>
+          ) : (
+            <span className="chip kin" title={`第 ${product.turn} 轮结束时在洞府里找到的：分身用脚本或命令做出来，没有说交付`}>
+              留下
+            </span>
+          )}
+        </button>
+        {onOpenFile && (
+          <span className="file-acts">
+            <button type="button" className="icon-button" title="用系统默认的程序打开" onClick={() => openIt(false)}>
+              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
+              </svg>
+              <span className="sr-only">打开 {name}</span>
+            </button>
+            <button type="button" className="icon-button" title="在文件夹中显示" onClick={() => openIt(true)}>
+              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
+              </svg>
+              <span className="sr-only">在文件夹中显示 {name}</span>
+            </button>
+          </span>
+        )}
+      </div>
+      {note && (
+        <p className={`file-note ${note.failed ? "failed" : ""}`} role="status">
+          {note.text}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /** A file the 分身 changed: where it is, how much it changed, and, opened, the changes themselves. */
 function FileRow({ file, onOpenFile }: { file: ChangedFile; onOpenFile?: (path: string, reveal: boolean) => Promise<string> }) {
@@ -1908,6 +1981,10 @@ interface SidePanelProps {
   files: ChangedFile[];
   runs: ToolItem[];
   todos: Todo[];
+  /** What the 分身 made for 本尊: handed over, or left in the workspace. */
+  products: Product[];
+  /** The folder the 分身 works in, which what it made is shown from. */
+  workspace?: string;
   width: number;
   onResize: (width: number) => void;
   /** Nothing in it to show, so it stands as a strip; a tab pressed there asks for it to open anyway. */
@@ -1919,18 +1996,20 @@ interface SidePanelProps {
   onOpenFile?: (path: string, reveal: boolean) => Promise<string>;
 }
 
-export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden, working, onOpenFile }: SidePanelProps) {
+export function SidePanel({ files, runs, todos, products, workspace, width, onResize, narrow, onWiden, working, onOpenFile }: SidePanelProps) {
   const [tab, setTab] = useState<PanelTab>("files");
-  const counts: Record<PanelTab, number> = { files: files.length, terminal: runs.length, plan: todos.length };
+  const counts: Record<PanelTab, number> = { files: files.length, terminal: runs.length, plan: todos.length, products: products.length };
   // When the first thing comes into a panel that held nothing, it opens on that.
   const had = useRef(counts);
   useEffect(() => {
     const before = had.current;
     had.current = counts;
-    if (before.files + before.terminal + before.plan > 0) return;
+    // Something made for 本尊 is what the work was for: the panel turns to it when the first of it comes.
+    if (before.products === 0 && counts.products > 0) return setTab("products");
+    if (before.files + before.terminal + before.plan + before.products > 0) return;
     const first = TABS.find((each) => before[each.id] === 0 && counts[each.id] > 0);
     if (first) setTab(first.id);
-  }, [files.length, runs.length, todos.length]);
+  }, [files.length, runs.length, todos.length, products.length]);
   // The steps done while the page was watched, for a moment: their ink is drawn through them as it happens.
   const [struck, setStruck] = useState<Set<string>>(new Set());
   const steps = useRef(new Map(todos.map((todo) => [todo.text, todo.status])));
@@ -2011,8 +2090,9 @@ export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden
         {TABS.map((each) => (
           <button type="button" key={each.id} className="tab" aria-pressed={tab === each.id} title={each.title} onClick={() => setTab(each.id)}>
             {each.icon}
-            <span className="sr-only">{each.id === "plan" ? `${each.name} ` : each.name}</span>
+            <span className="sr-only">{each.id === "plan" || each.id === "products" ? `${each.name} ` : each.name}</span>
             {each.id === "plan" && todos.length > 0 && <span className="count">{`${done}/${todos.length}`}</span>}
+            {each.id === "products" && products.length > 0 && <span className="count">{products.length}</span>}
           </button>
         ))}
       </div>
@@ -2048,6 +2128,19 @@ export function SidePanel({ files, runs, todos, width, onResize, narrow, onWiden
               </li>
             ))}
           </ol>
+        </div>
+      ) : tab === "products" ? (
+        <div className="panel-body">
+          <div className="panel-head">
+            <h2>分身的产物</h2>
+            {products.length > 0 && <span className="panel-meta">{products.length} 个</span>}
+          </div>
+          {products.length === 0 && <p className="muted">分身还没有做出文件。它交付的文档、图片，和每一轮结束时在洞府里找到的新文件，都会列在这里。</p>}
+          <div className="file-list">
+            {products.map((product) => (
+              <ProductRow key={product.path} product={product} workspace={workspace} onOpenFile={onOpenFile} />
+            ))}
+          </div>
         </div>
       ) : tab === "files" ? (
         <div className="panel-body">

@@ -41,6 +41,7 @@ export type SessionEvent =
   | { type: "guardian/reviewed"; data: { tool_use_id: string; model: string; allowed: boolean; reason: string; failed?: boolean; tokens?: Tokens } }
   | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
   | { type: "files/restored"; data: { turn: number; restored: string[]; skipped: string[] } }
+  | { type: "files/made"; data: { turn: number; files: string[] } }
   | { type: "turn/end"; data: { turn: number; reason: string; error: string | null } };
 
 export type Envelope = { seq: number; ts: string } & SessionEvent;

@@ -28,6 +28,8 @@ export type Item =
   | { kind: "fallback"; from: string; to: string }
   | { kind: "compacted"; summary: string; tokensBefore: number }
   | { kind: "restored"; turn: number; restored: string[]; skipped: string[] }
+  /** Files the turn left in the workspace that no tool told of, such as a document a script wrote: absolute paths. */
+  | { kind: "made"; turn: number; files: string[] }
   /** The project's instructions for agents were read; empty `content` means the file is gone. */
   | { kind: "instructions"; path: string; content: string }
   | { kind: "notice"; reason: string; error: string | null };
@@ -145,6 +147,13 @@ export function fold(events: Envelope[]): Row[] {
       case "instructions/loaded":
         current()?.items.push({ kind: "instructions", path: event.data.path, content: event.data.content });
         break;
+      case "files/made": {
+        // What the turn's own acts already show (a file written, or handed over) is not said twice.
+        const shown = new Set(current()?.items.flatMap((item) => (item.kind === "tool" && item.result && !item.result.isError ? toldOf(item) : [])) ?? []);
+        const files = event.data.files.filter((path) => !shown.has(path));
+        if (files.length) current()?.items.push({ kind: "made", turn: event.data.turn, files });
+        break;
+      }
       case "context/compacted":
         current()?.items.push({ kind: "compacted", summary: event.data.summary, tokensBefore: event.data.tokens_before });
         break;
@@ -291,6 +300,35 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
     files.set(meta.path, file);
   }
   return [...files.values()];
+}
+
+/** The files on disk an act tells of: the one it wrote, or those it handed over. */
+function toldOf(item: ToolItem): string[] {
+  const meta = item.result?.meta;
+  if (item.name === "deliver_files") return Array.isArray(meta?.files) ? meta.files : [];
+  return editsFiles(item.name) && meta?.file ? [meta.file] : [];
+}
+
+/** A file the 分身 made for 本尊: handed over with `deliver_files`, or found in the workspace when its turn ended. */
+export interface Product {
+  /** Where it is on disk. */
+  path: string;
+  turn: number;
+  /** Handed over by the 分身, rather than found. */
+  delivered: boolean;
+}
+
+/** What the 分身 made for 本尊 in this session, the newest first, each once. */
+export function products(rows: Row[]): Product[] {
+  const made = new Map<string, Product>();
+  for (const item of rows.flatMap((row) => row.items)) {
+    if (item.kind === "made") {
+      for (const path of item.files) made.set(path, { path, turn: item.turn, delivered: made.get(path)?.delivered ?? false });
+    } else if (item.kind === "tool" && item.name === "deliver_files" && item.result && !item.result.isError) {
+      for (const path of toldOf(item)) made.set(path, { path, turn: item.turn, delivered: true });
+    }
+  }
+  return [...made.values()].reverse();
 }
 
 /** An edit the user can still undo: it succeeded, has a snapshot, and was not undone. */

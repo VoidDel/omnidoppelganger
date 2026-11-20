@@ -453,6 +453,11 @@ pub enum Event {
         /// Files left alone because they changed after the agent's last edit.
         skipped: Vec<String>,
     },
+    /// Files of the kinds a 分身 makes for the user (documents, pictures, media, archives) that were new or changed in
+    /// the workspace when the turn ended, found by looking, not told by a tool: what a script or a command left there.
+    /// Absolute paths. Never sent to the model. Since format 16.
+    #[serde(rename = "files/made")]
+    FilesMade { turn: u64, files: Vec<String> },
     #[serde(rename = "turn/end")]
     TurnEnd {
         turn: u64,

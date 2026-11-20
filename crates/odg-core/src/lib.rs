@@ -11,6 +11,7 @@ pub mod fsutil;
 pub mod grants;
 pub mod jobs;
 pub mod llm;
+pub mod made;
 pub mod mcp;
 pub mod openai_chat;
 mod office;

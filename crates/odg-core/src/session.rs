@@ -28,9 +28,9 @@ use crate::providers::DEFAULT_PROVIDER;
 /// `timed_out` on its answer. Format 13 adds `files` on a user message, and
 /// format 14 a document's kind and parts on an attached file. Format 15 adds
 /// `provider` on `model/changed`, for a move to another provider, and the
-/// `effort/changed` event. A build from before a format refuses its sessions
-/// rather than misread them.
-pub const FORMAT_VERSION: u32 = 15;
+/// `effort/changed` event. Format 16 adds the `files/made` event. A build from
+/// before a format refuses its sessions rather than misread them.
+pub const FORMAT_VERSION: u32 = 16;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]

@@ -11,7 +11,7 @@ import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { isSetUp } from "./lib/providers";
 import { api } from "./lib/api";
-import { applyDelta, changedFiles, commandRuns, fold, todos, usage, type StreamBlock } from "./lib/fold";
+import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
 import type { SlashCommand } from "./lib/slash";
@@ -285,6 +285,7 @@ export default function App() {
   const rows = useMemo(() => fold(shown), [shown]);
   const files = useMemo(() => changedFiles(rows), [rows]);
   const runs = useMemo(() => commandRuns(rows), [rows]);
+  const made = useMemo(() => products(rows), [rows]);
   const spent = useMemo(() => usage(state.events), [state.events]);
   const plan = useMemo(() => todos(rows), [rows]);
   const active = state.sessions.find((session) => session.id === state.activeId);
@@ -368,7 +369,7 @@ export default function App() {
   // With nothing in it, the panel stands as a strip, until a tab there is pressed; the next 分身 starts again.
   const [peek, setPeek] = useState(false);
   useEffect(() => setPeek(false), [state.activeId]);
-  const strip = files.length === 0 && runs.length === 0 && plan.length === 0 && !peek;
+  const strip = files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
   /** To the 功课 page and the settings, each read again on the way: either may have changed since it was last shown. */
   const toSchedules = () => {
     api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
@@ -733,7 +734,7 @@ export default function App() {
       )}
       {showPanel && (
         <Guard name="侧栏" className="panel" resetKey={state.activeId}>
-          <SidePanel files={files} runs={runs} todos={plan} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} working={state.status === "running"} onOpenFile={openFile} />
+          <SidePanel files={files} runs={runs} todos={plan} products={made} workspace={active?.workspace} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} working={state.status === "running"} onOpenFile={openFile} />
         </Guard>
       )}
     </div>

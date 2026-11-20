@@ -1924,6 +1924,41 @@ button.did-head:not(:disabled):hover {
   margin: 0;
 }
 
+/* What a turn left in the workspace without a tool telling of it: a slip at the turn's end, edged in gold as the
+   分身's own work is, each file by name with its ways to open. */
+.made {
+  margin: var(--s-1) 0 var(--s-2);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.made-head {
+  margin: 0;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.made-file {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.made-name {
+  font-size: var(--t-small);
+  overflow-wrap: anywhere;
+}
+
+.made-file .written {
+  margin: 0;
+}
+
 .did-body {
   margin: var(--s-1) 0 var(--s-2);
   border: 1px solid var(--line);
@@ -3688,15 +3723,22 @@ button.select-button svg {
   color: var(--ink-2);
 }
 
+/* The files, as the lines of a ledger in a frame of its own, its corners rounded as the page's other cards are. */
 .file-list {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  overflow: hidden;
+}
+
+.file-list:empty {
+  display: none;
 }
 
 /* A file, as a line of a ledger: its name, where it is, how much changed. Opened, its changes under it. */
-.file-row {
-  border-bottom: 1px solid var(--line);
+.file-row + .file-row {
+  border-top: 1px solid var(--line);
 }
 
 .file-head {
@@ -3750,6 +3792,11 @@ button.select-button svg {
 
 .file-line:hover .file-acts,
 .file-acts:focus-within {
+  opacity: 1;
+}
+
+/* What was made for 本尊 is there to be opened: its ways to open are always at full strength. */
+.product-row .file-acts {
   opacity: 1;
 }
 

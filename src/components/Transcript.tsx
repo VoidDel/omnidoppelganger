@@ -712,7 +712,29 @@ function ItemView({ item, mode, family, frozen, onDecide }: { item: Item; mode: 
       );
     case "notice":
       return <div className="notice">{notice(item.reason, item.error)}</div>;
+    case "made":
+      return <Made files={item.files} />;
   }
+}
+
+/** What the turn left in the workspace without saying so, such as a document a script wrote: each with the way to open it and to its folder. */
+function Made({ files }: { files: string[] }) {
+  return (
+    <div className="made">
+      <p className="made-head">这一轮在洞府里留下了 {files.length} 个文件</p>
+      {files.map((path) => {
+        const name = path.replace(/^.*[\\/]/, "");
+        return (
+          <div className="made-file" key={path}>
+            <span className="made-name mono" title={path}>
+              {name}
+            </span>
+            <Written path={path} name={name} />
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /**
