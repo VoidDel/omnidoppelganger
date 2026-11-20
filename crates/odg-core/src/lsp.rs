@@ -7,6 +7,10 @@
 //! rust-analyzer runs no build scripts, proc macros or `cargo check`, gopls fetches no modules. The TypeScript server
 //! loads the project's own TypeScript, which is code from the project; so starting it is asked about first (see
 //! [`crate::policy`]).
+//!
+//! A server is looked for on the `PATH`, and used only if it runs: rustup puts a stand-in for rust-analyzer there
+//! that fails when the component is not installed. Where it is not there, rust-analyzer can be downloaded for the app
+//! with the user's leave, as the document runtime is: one build, by its checksum, kept in the app's home.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -20,9 +24,47 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
+/// A build of a language server the app can download where it is not installed: its version, where its release is,
+/// and for each target the archive's name, its SHA-256 and its size, from the release's published digests.
+#[derive(Debug)]
+pub struct Download {
+    pub version: &'static str,
+    address: &'static str,
+    builds: &'static [(&'static str, &'static str, &'static str, u64)],
+}
+
+impl Download {
+    /// This machine's build: the archive's name, its SHA-256, and its size.
+    fn build(&self) -> Option<(&'static str, &'static str, u64)> {
+        let target = crate::runtime::target()?;
+        self.builds.iter().find(|(triple, ..)| *triple == target).map(|(_, file, sha256, bytes)| (*file, *sha256, *bytes))
+    }
+
+    /// About how many megabytes this machine's build downloads.
+    pub fn megabytes(&self) -> Option<u64> {
+        self.build().map(|(_, _, bytes)| bytes.div_ceil(1_000_000))
+    }
+}
+
+/// rust-analyzer's weekly release of 2026-11-16, from <https://github.com/rust-lang/rust-analyzer/releases/tag/2026-11-16>.
+static RUST_ANALYZER: Download = Download {
+    version: "2026-11-16",
+    address: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-11-16",
+    builds: &[
+        ("aarch64-apple-darwin", "rust-analyzer-aarch64-apple-darwin.gz", "608b7c7d6bec1fcd6c964578b1f8234888afe6d6c0e7915284f1e2fd36ef1343", 14_345_012),
+        ("x86_64-apple-darwin", "rust-analyzer-x86_64-apple-darwin.gz", "6901d956b4f2b091343eaf3570944098488f3ffec018987145285ed8253c07d2", 15_080_897),
+        ("x86_64-unknown-linux-gnu", "rust-analyzer-x86_64-unknown-linux-gnu.gz", "4a08727a03094e5114db4438e4bd1d6182cc26eff37d6962115ea1ec1a491ca3", 15_663_964),
+        ("aarch64-unknown-linux-gnu", "rust-analyzer-aarch64-unknown-linux-gnu.gz", "73d8b9b87384b3115a183a8a51db9f7c205ce4c89ea511f3c8c8fea863038a50", 15_120_173),
+        ("x86_64-pc-windows-msvc", "rust-analyzer-x86_64-pc-windows-msvc.zip", "dbf0c36ec54cf727d34cc40c9994fe71b7d52e3c28a3112c3deca1aba46fbc8f", 18_054_633),
+        ("aarch64-pc-windows-msvc", "rust-analyzer-aarch64-pc-windows-msvc.zip", "2e8fd876300eeee87afd6de18c79eb17bab425a9b755043c63d5023d58de37b7", 16_197_678),
+    ],
+};
+
 /// A language a server is known for, and how that server is started.
 #[derive(Debug)]
 pub struct Language {
+    /// How `language_server` names it.
+    pub key: &'static str,
     /// The language, as the agent and the user are told of it.
     pub name: &'static str,
     /// The server's program, looked for on the `PATH`.
@@ -34,11 +76,24 @@ pub struct Language {
     /// The server runs code from the project, so starting it is asked about first.
     pub runs_project_code: bool,
     env: &'static [(&'static str, &'static str)],
+    /// The build the app can download where the server is not installed; `None` where it cannot.
+    pub download: Option<&'static Download>,
 }
 
 pub const LANGUAGES: &[Language] = &[
-    Language { name: "Rust", program: "rust-analyzer", args: &[], extensions: &["rs"], install: "rustup component add rust-analyzer", runs_project_code: false, env: &[] },
     Language {
+        key: "rust",
+        name: "Rust",
+        program: "rust-analyzer",
+        args: &[],
+        extensions: &["rs"],
+        install: "rustup component add rust-analyzer",
+        runs_project_code: false,
+        env: &[],
+        download: Some(&RUST_ANALYZER),
+    },
+    Language {
+        key: "c",
         name: "C/C++",
         program: "clangd",
         args: &["--log=error"],
@@ -46,8 +101,10 @@ pub const LANGUAGES: &[Language] = &[
         install: "install clangd (it comes with LLVM, and with Xcode's command line tools on macOS)",
         runs_project_code: false,
         env: &[],
+        download: None,
     },
     Language {
+        key: "typescript",
         name: "TypeScript/JavaScript",
         program: "typescript-language-server",
         args: &["--stdio"],
@@ -55,9 +112,21 @@ pub const LANGUAGES: &[Language] = &[
         install: "npm install -g typescript-language-server typescript",
         runs_project_code: true,
         env: &[],
+        download: None,
     },
-    Language { name: "Python", program: "pyright-langserver", args: &["--stdio"], extensions: &["py", "pyi"], install: "npm install -g pyright", runs_project_code: false, env: &[] },
     Language {
+        key: "python",
+        name: "Python",
+        program: "pyright-langserver",
+        args: &["--stdio"],
+        extensions: &["py", "pyi"],
+        install: "npm install -g pyright",
+        runs_project_code: false,
+        env: &[],
+        download: None,
+    },
+    Language {
+        key: "go",
         name: "Go",
         program: "gopls",
         args: &[],
@@ -66,8 +135,169 @@ pub const LANGUAGES: &[Language] = &[
         runs_project_code: false,
         // No module is fetched, and no other Go is downloaded to run.
         env: &[("GOPROXY", "off"), ("GOTOOLCHAIN", "local")],
+        download: None,
     },
 ];
+
+/// The language `language_server` names by its key.
+pub fn language_by_key(key: &str) -> Option<&'static Language> {
+    LANGUAGES.iter().find(|language| language.key == key)
+}
+
+/// Where a language's server is found: on the `PATH`, downloaded for the app, or nowhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Located {
+    System(PathBuf),
+    Downloaded(PathBuf),
+    Missing,
+}
+
+/// The program's file name on this system.
+fn executable(program: &str) -> String {
+    if cfg!(windows) { format!("{program}.exe") } else { program.to_string() }
+}
+
+/// Where the app keeps its download of a server, under `root` (the app's `lsp` folder), when there is one.
+pub fn downloaded(root: &Path, language: &Language) -> Option<PathBuf> {
+    let download = language.download?;
+    let path = root.join(language.program).join(download.version).join(executable(language.program));
+    path.is_file().then_some(path)
+}
+
+/// Whether a program answers `--version`: a stand-in that fails, such as rustup's for a component not installed, does
+/// not. Asked once for each program while the app runs.
+async fn works(program: &Path) -> bool {
+    static ASKED: std::sync::LazyLock<Mutex<HashMap<PathBuf, bool>>> = std::sync::LazyLock::new(Mutex::default);
+    if let Some(known) = ASKED.lock().unwrap().get(program) {
+        return *known;
+    }
+    let mut command = tokio::process::Command::new(program);
+    command.arg("--version").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let answered = matches!(tokio::time::timeout(Duration::from_secs(15), command.status()).await, Ok(Ok(status)) if status.success());
+    ASKED.lock().unwrap().insert(program.to_path_buf(), answered);
+    answered
+}
+
+/// Where a language's server is: on the `PATH` if it runs, else downloaded under `root`, else nowhere.
+pub async fn locate(root: Option<&Path>, language: &Language) -> Located {
+    if let Some(program) = installed(language.program)
+        && works(&program).await
+    {
+        return Located::System(program);
+    }
+    match root.and_then(|root| downloaded(root, language)) {
+        Some(program) => Located::Downloaded(program),
+        None => Located::Missing,
+    }
+}
+
+/// Download this machine's build of a language's server into `root`, checked against its SHA-256, and unpack it.
+/// `address` stands in for the release's own, for tests. Returns where the program is.
+async fn install_from(root: &Path, language: &Language, address: &str, cancel: &CancellationToken) -> Result<PathBuf, String> {
+    let download = language.download.ok_or_else(|| format!("{} cannot be downloaded by the app. Ask the user to install it: {}.", language.program, language.install))?;
+    let (file, sha256, _) = download.build().ok_or_else(|| format!("There is no build of {} for this machine to download.", language.program))?;
+    let folder = root.join(language.program);
+    let into = folder.join(download.version);
+    std::fs::create_dir_all(&into).map_err(|error| format!("Cannot create {}: {error}", into.display()))?;
+    let archive = folder.join(format!("{file}.part"));
+    let fetched = crate::runtime::download(&format!("{address}/{file}"), sha256, &archive, &|_| {}, cancel).await;
+    let unpacked = fetched.and_then(|()| unpack_program(&archive, &into, language.program));
+    let _ = std::fs::remove_file(&archive);
+    let program = match unpacked {
+        Ok(program) => program,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&into);
+            return Err(error);
+        }
+    };
+    // Earlier versions are taken away: only the one in use is kept.
+    for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+        if entry.path() != into && entry.path().is_dir() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    Ok(program)
+}
+
+/// The program out of its archive: a gzipped program on its own, or a zip holding it. Made runnable.
+fn unpack_program(archive: &Path, into: &Path, program: &str) -> Result<PathBuf, String> {
+    let name = executable(program);
+    let target = into.join(&name);
+    let failed = |error: String| format!("Cannot unpack {program}: {error}");
+    let bytes = std::fs::read(archive).map_err(|error| failed(error.to_string()))?;
+    let unpacked: Vec<u8> = if archive.to_string_lossy().ends_with(".zip.part") {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| failed(error.to_string()))?;
+        let mut entry = zip.by_name(&name).map_err(|_| failed(format!("{name} is not in the archive")))?;
+        let mut read = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut read).map_err(|error| failed(error.to_string()))?;
+        read
+    } else {
+        let mut read = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(bytes.as_slice()), &mut read).map_err(|error| failed(error.to_string()))?;
+        read
+    };
+    crate::fsutil::write_atomically(&target, &unpacked).map_err(|error| failed(error.to_string()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).map_err(|error| failed(error.to_string()))?;
+    }
+    Ok(target)
+}
+
+/// Download a language's server for the app; see [`install_from`].
+pub async fn install(root: &Path, language: &Language, cancel: &CancellationToken) -> Result<PathBuf, String> {
+    let address = language.download.map(|download| download.address).unwrap_or_default();
+    install_from(root, language, address, cancel).await
+}
+
+/// Take away the app's download of a language's server.
+pub fn remove(root: &Path, language: &Language) -> Result<(), String> {
+    let folder = root.join(language.program);
+    if folder.exists() {
+        std::fs::remove_dir_all(&folder).map_err(|error| format!("Cannot remove {}: {error}", folder.display()))?;
+    }
+    Ok(())
+}
+
+/// What the agent is told when a language's server is nowhere: how it can be had.
+fn missing(language: &Language) -> String {
+    match language.download.and_then(|download| download.megabytes().map(|megabytes| (download, megabytes))) {
+        Some((download, megabytes)) => format!(
+            "{} is not installed, so {} code cannot be navigated yet. It can be downloaded for this app: call `language_server` with `language` \"{}\" and `install` true (rust-analyzer {}, about {megabytes} MB; the user is asked first). Or the user can install it: {}.",
+            language.program, language.name, language.key, download.version, language.install
+        ),
+        None => format!("{} is not installed, so {} code cannot be navigated here. Ask the user to install it ({}), or use `search` instead.", language.program, language.name, language.install),
+    }
+}
+
+/// Answer `language_server`: whether a language's server is here, and with `install`, download it.
+pub async fn server_tool(hub: &LspHub, input: &Value, cancel: &CancellationToken) -> Result<crate::tools::ToolOutput, String> {
+    let key = input["language"].as_str().unwrap_or_default();
+    let language = language_by_key(key).ok_or_else(|| format!("`language` must be one of {}.", LANGUAGES.iter().map(|language| language.key).collect::<Vec<_>>().join(", ")))?;
+    let root = hub.root.as_deref();
+    let located = locate(root, language).await;
+    let mut meta = json!({ "language": language.key, "server": language.program });
+    let content = match (&located, input["install"] == true, root) {
+        (Located::System(path), ..) => format!("{} is installed on this machine ({}); `code_nav` uses it.", language.program, path.display()),
+        (Located::Downloaded(path), ..) => format!("{} was downloaded for this app ({}); `code_nav` uses it.", language.program, path.display()),
+        (Located::Missing, true, Some(root)) => {
+            let program = install(root, language, cancel).await?;
+            meta["installed"] = json!(true);
+            format!("Downloaded {} {} for this app ({}). `code_nav` can use it now.", language.program, language.download.map(|download| download.version).unwrap_or_default(), program.display())
+        }
+        (Located::Missing, ..) => missing(language),
+    };
+    meta["state"] = json!(match located {
+        Located::System(_) => "system",
+        Located::Downloaded(_) => "downloaded",
+        Located::Missing if meta["installed"] == true => "downloaded",
+        Located::Missing => "missing",
+    });
+    Ok(crate::tools::ToolOutput::ok(content, meta))
+}
 
 /// The language of a file, by its extension.
 pub fn language_for(path: &Path) -> Option<&'static Language> {
@@ -479,9 +709,21 @@ impl Client {
 #[derive(Default)]
 pub struct LspHub {
     clients: tokio::sync::Mutex<HashMap<(PathBuf, &'static str), Arc<Client>>>,
+    /// Where servers downloaded for the app are kept; `None` where nothing is downloaded.
+    root: Option<PathBuf>,
 }
 
 impl LspHub {
+    /// A hub whose downloaded servers are kept under `root`.
+    pub fn new(root: PathBuf) -> Self {
+        Self { clients: tokio::sync::Mutex::default(), root: Some(root) }
+    }
+
+    /// Where servers downloaded for the app are kept.
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+
     /// The server for `language` in `root`: the one running, or a new one, started now.
     pub async fn client(&self, root: &Path, language: &'static Language) -> Result<Arc<Client>, String> {
         let mut clients = self.clients.lock().await;
@@ -489,9 +731,10 @@ impl LspHub {
         if let Some(client) = clients.get(&key).filter(|client| !client.closed()) {
             return Ok(client.clone());
         }
-        let program = installed(language.program).ok_or_else(|| {
-            format!("{} is not installed, so {} code cannot be navigated here. Ask the user to install it ({}), or use `search` instead.", language.program, language.name, language.install)
-        })?;
+        let program = match locate(self.root.as_deref(), language).await {
+            Located::System(program) | Located::Downloaded(program) => program,
+            Located::Missing => return Err(missing(language)),
+        };
         let mut command = tokio::process::Command::new(program);
         command.args(language.args).envs(language.env.iter().copied()).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         #[cfg(windows)]
@@ -525,7 +768,7 @@ impl LspHub {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 let said = said.lock().unwrap().trim().to_string();
                 let said = if said.is_empty() { String::new() } else { format!(" It said: {said}") };
-                return Err(format!("{error}.{said} If it is not installed, ask the user to install it ({}), or use `search` instead.", language.install));
+                return Err(format!("{error}.{said} {}", missing(language)));
             }
         };
         clients.insert(key, client.clone());
@@ -1016,15 +1259,110 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_server_that_will_not_start_says_why_and_how_to_install_it() {
-        // rustup's stand-in for rust-analyzer when the component is not installed is the case to cover; a program
-        // that exits at once stands in for it everywhere.
-        static FAILING: Language = Language { name: "Test", program: "false", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[] };
-        if installed("false").is_none() {
+    async fn a_stand_in_that_fails_is_not_taken_for_a_server_and_one_that_will_not_serve_says_so() {
+        // rustup's stand-in for rust-analyzer, when the component is not installed, fails at `--version`: `false` does
+        // the same, and is not taken for an installed server.
+        static FAILING: Language = Language { key: "test", name: "Test", program: "false", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[], download: None };
+        // `true` answers `--version`, then exits rather than serve.
+        static SILENT: Language = Language { key: "test", name: "Test", program: "true", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[], download: None };
+        if installed("false").is_none() || installed("true").is_none() {
             return;
         }
         let directory = tempfile::tempdir().unwrap();
-        let error = LspHub::default().client(directory.path(), &FAILING).await.err().unwrap();
-        assert!(error.contains("false would not start") && error.contains("install it somehow"), "{error}");
+        assert_eq!(locate(None, &FAILING).await, Located::Missing);
+        let missing = LspHub::default().client(directory.path(), &FAILING).await.err().unwrap();
+        assert!(missing.starts_with("false is not installed") && missing.contains("install it somehow"), "{missing}");
+        let silent = LspHub::default().client(directory.path(), &SILENT).await.err().unwrap();
+        assert!(silent.starts_with("true would not start") && silent.contains("install it somehow"), "{silent}");
+    }
+
+    /// A server's archive as its release would have it on this system: a zip holding the program on Windows, the
+    /// program gzipped elsewhere. With its name and SHA-256.
+    fn archive(program: &str, bytes: &[u8]) -> (String, Vec<u8>, String) {
+        use sha2::Digest;
+        let (name, packed) = if cfg!(windows) {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zip.start_file(executable(program), zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
+            (format!("{program}.zip"), zip.finish().unwrap().into_inner())
+        } else {
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut gz, bytes).unwrap();
+            (format!("{program}.gz"), gz.finish().unwrap())
+        };
+        let sha256 = sha2::Sha256::digest(&packed).iter().map(|byte| format!("{byte:02x}")).collect();
+        (name, packed, sha256)
+    }
+
+    /// A language whose server is downloaded from `archive`, pinned to `sha256`, for this machine.
+    fn downloadable(program: &'static str, file: String, sha256: String) -> &'static Language {
+        let target = crate::runtime::target().expect("a target with builds");
+        let builds: &'static [(&'static str, &'static str, &'static str, u64)] = Box::leak(vec![(target, &*Box::leak(file.into_boxed_str()), &*Box::leak(sha256.into_boxed_str()), 1_000)].into_boxed_slice());
+        let download: &'static Download = Box::leak(Box::new(Download { version: "1.0", address: "", builds }));
+        Box::leak(Box::new(Language { key: "fake", name: "Fake", program, args: &[], extensions: &["fake"], install: "install it somehow", runs_project_code: false, env: &[], download: Some(download) }))
+    }
+
+    fn ok(body: &[u8]) -> Vec<u8> {
+        [format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()).into_bytes(), body.to_vec()].concat()
+    }
+
+    #[tokio::test]
+    async fn downloads_a_server_checked_against_its_checksum_and_keeps_only_that_version() {
+        if crate::runtime::target().is_none() {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let (file, packed, sha256) = archive("odg-fake-server", b"#!/bin/sh\necho fake\n");
+        let language = downloadable("odg-fake-server", file.clone(), sha256);
+        // A version from before, to be taken away.
+        std::fs::create_dir_all(root.join("odg-fake-server/0.9")).unwrap();
+        let (address, requests) = crate::testing::serve_bytes(vec![ok(&packed)]).await;
+        let program = install_from(root, language, &address, &CancellationToken::new()).await.unwrap();
+        assert_eq!(program, root.join("odg-fake-server/1.0").join(executable("odg-fake-server")));
+        assert_eq!(std::fs::read(&program).unwrap(), b"#!/bin/sh\necho fake\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&program).unwrap().permissions().mode() & 0o777, 0o755);
+        }
+        assert!(requests.await.unwrap()[0].starts_with(&format!("GET /{file} ")));
+        assert!(!root.join("odg-fake-server/0.9").exists() && !root.join(format!("odg-fake-server/{file}.part")).exists());
+        // Not on the PATH, it is found where it was downloaded; and taken away, it is nowhere.
+        assert_eq!(locate(Some(root), language).await, Located::Downloaded(program));
+        remove(root, language).unwrap();
+        assert_eq!(locate(Some(root), language).await, Located::Missing);
+    }
+
+    #[tokio::test]
+    async fn refuses_a_download_whose_checksum_does_not_match_and_leaves_nothing() {
+        if crate::runtime::target().is_none() {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let (file, packed, _) = archive("odg-other-server", b"anything");
+        let language = downloadable("odg-other-server", file, "0".repeat(64));
+        let (address, _) = crate::testing::serve_bytes(vec![ok(&packed)]).await;
+        let error = install_from(root, language, &address, &CancellationToken::new()).await.unwrap_err();
+        assert!(error.contains("校验不符"), "{error}");
+        assert!(!root.join("odg-other-server/1.0").exists());
+        assert_eq!(std::fs::read_dir(root.join("odg-other-server")).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn says_how_a_missing_server_can_be_had() {
+        let rust = language_by_key("rust").unwrap();
+        // Downloadable, with this machine's size, unless rust-analyzer is installed here.
+        if !matches!(locate(None, rust).await, Located::System(_)) && RUST_ANALYZER.megabytes().is_some() {
+            let directory = tempfile::tempdir().unwrap();
+            let told = server_tool(&LspHub::new(directory.path().to_path_buf()), &json!({ "language": "rust" }), &CancellationToken::new()).await.unwrap();
+            assert!(told.content.contains("call `language_server` with `language` \"rust\" and `install` true") && told.content.contains("about 1"), "{}", told.content);
+            assert_eq!(told.meta["state"], "missing");
+        }
+        // One the app cannot download: how the user installs it.
+        assert!(missing(language_by_key("python").unwrap()).contains("npm install -g pyright"));
+        let wrong = server_tool(&LspHub::default(), &json!({ "language": "cobol" }), &CancellationToken::new()).await.unwrap_err();
+        assert!(wrong.contains("`language` must be one of rust, c, typescript, python, go"), "{wrong}");
     }
 }

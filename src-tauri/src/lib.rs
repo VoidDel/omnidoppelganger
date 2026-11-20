@@ -482,6 +482,69 @@ async fn install_runtime(handle: tauri::AppHandle) -> Result<RuntimeView, String
     Ok(runtime_view())
 }
 
+/// A language's server, as the settings page lists it: where it is found, and whether the app can download it.
+#[derive(Serialize)]
+struct LanguageServerView {
+    key: &'static str,
+    name: &'static str,
+    program: &'static str,
+    /// `system` (on the `PATH`), `downloaded` (for the app), or `missing`.
+    state: &'static str,
+    location: Option<String>,
+    /// The version the app downloads, and about how many megabytes; absent where it cannot.
+    version: Option<&'static str>,
+    download_mb: Option<u64>,
+    /// How the user installs it themselves.
+    install: &'static str,
+}
+
+async fn language_server_views(root: Option<&std::path::Path>) -> Vec<LanguageServerView> {
+    let mut views = Vec::new();
+    for language in odg_core::lsp::LANGUAGES {
+        let (state, location) = match odg_core::lsp::locate(root, language).await {
+            odg_core::lsp::Located::System(path) => ("system", Some(path.to_string_lossy().into_owned())),
+            odg_core::lsp::Located::Downloaded(path) => ("downloaded", Some(path.to_string_lossy().into_owned())),
+            odg_core::lsp::Located::Missing => ("missing", None),
+        };
+        views.push(LanguageServerView {
+            key: language.key,
+            name: language.name,
+            program: language.program,
+            state,
+            location,
+            version: language.download.map(|download| download.version),
+            download_mb: language.download.and_then(|download| download.megabytes()),
+            install: language.install,
+        });
+    }
+    views
+}
+
+/// The language servers `code_nav` uses, and where each is.
+#[tauri::command]
+async fn language_servers(app: State<'_, App>) -> Result<Vec<LanguageServerView>, String> {
+    Ok(language_server_views(app.lsp.root()).await)
+}
+
+/// Download a language's server for the app, checked against its pinned checksum.
+#[tauri::command]
+async fn install_language_server(app: State<'_, App>, key: String) -> Result<Vec<LanguageServerView>, String> {
+    let language = odg_core::lsp::language_by_key(&key).ok_or("没有这种语言")?;
+    let root = app.lsp.root().ok_or("这里不能下载语言服务")?.to_path_buf();
+    odg_core::lsp::install(&root, language, &tokio_util::sync::CancellationToken::new()).await?;
+    Ok(language_server_views(Some(&root)).await)
+}
+
+/// Take away the app's download of a language's server. The servers running are ended first, so none holds it open.
+#[tauri::command]
+async fn remove_language_server(app: State<'_, App>, key: String) -> Result<Vec<LanguageServerView>, String> {
+    let language = odg_core::lsp::language_by_key(&key).ok_or("没有这种语言")?;
+    let root = app.lsp.root().ok_or("这里没有下载的语言服务")?.to_path_buf();
+    app.lsp.shutdown();
+    odg_core::lsp::remove(&root, language)?;
+    Ok(language_server_views(Some(&root)).await)
+}
+
 #[tauri::command]
 async fn remove_runtime() -> Result<RuntimeView, String> {
     odg_core::runtime::remove(&settings::home().join("runtime"))?;
@@ -832,7 +895,7 @@ pub fn run() {
                     let _ = odg_core::runtime::install(&root, &watch, &tokio_util::sync::CancellationToken::new()).await;
                 });
             }
-            let lsp = Arc::new(odg_core::lsp::LspHub::default());
+            let lsp = Arc::new(odg_core::lsp::LspHub::new(home.join("lsp")));
             app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, lsp, llm, sessions: Mutex::new(HashMap::new()), events });
 
             // The clock: whatever has come due is started, with or without a window to show it in.
@@ -872,6 +935,9 @@ pub fn run() {
             send_message,
             resolve_approval,
             answer_questions,
+            language_servers,
+            install_language_server,
+            remove_language_server,
             set_mode,
             set_model,
             set_effort,

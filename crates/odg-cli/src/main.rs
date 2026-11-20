@@ -102,6 +102,7 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
     let subject = match name {
         "read_file" | "edit_file" | "write_file" | "delete_file" => text("path"),
         "move_file" => format!("{} → {}", text("path"), text("to")),
+        "language_server" => format!("{}{}", text("language"), if input["install"] == true { " (install)" } else { "" }),
         "code_nav" => {
             let line = input["line"].as_u64().map(|line| format!(":{line}")).unwrap_or_default();
             let what = [text("symbol"), text("query")].into_iter().find(|what| !what.is_empty()).map(|what| format!(" {what}")).unwrap_or_default();
@@ -132,6 +133,7 @@ fn ask(reason: &str, detail: &str, session_wide: bool) -> Decision {
         "git_write" => "change this file in .git",
         "outside_read" => "read outside the workspace",
         "lsp" => "start a language server that loads the project's own code",
+        "install_lsp" => "download a language server for code navigation",
         _ => "change a file outside the workspace",
     };
     let mut stderr = std::io::stderr();
@@ -232,7 +234,7 @@ async fn run(options: Options) -> Result<bool, String> {
 
     // The model can only be offered the tools of servers that are connected, so they get a moment to.
     let mcp = Arc::new(McpHub::new(home.join("mcp.json"), tokio::runtime::Handle::current()));
-    let lsp = Arc::new(odg_core::lsp::LspHub::default());
+    let lsp = Arc::new(odg_core::lsp::LspHub::new(home.join("lsp")));
     mcp.reload();
     for _ in 0..100 {
         if mcp.statuses().iter().all(|server| server.state != "connecting") {

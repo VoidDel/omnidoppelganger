@@ -294,6 +294,8 @@ function sealOf(tool: ToolItem): string {
       return "问";
     case "code_nav":
       return "察";
+    case "language_server":
+      return "备";
     default:
       // A tool of an MCP server: an instrument borrowed from outside.
       return mcpTool(tool.name) ? "器" : "术";
@@ -413,6 +415,10 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       };
     case "ask_user":
       return { verb: "请教本尊", target: "", outcome: waiting || (result!.isError ? "没问成" : "已答") };
+    case "language_server": {
+      const state = meta?.state === "missing" ? "没装" : meta?.state === "downloaded" ? (tool.input.install === true ? "已下载" : "用下载的") : "已装";
+      return { verb: tool.input.install === true ? "下载语言服务" : "看语言服务", target: meta?.server ?? text("language"), outcome: waiting || (result!.isError ? "没成" : state) };
+    }
     case "code_nav": {
       const operation = text("operation");
       const verb = CODE_NAV[operation] ?? "察看代码";
@@ -600,6 +606,11 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
   edit: { title: "分身要改一个文件，请本尊定夺", note: "眼下的禁制是步步请示，每次改文件都先请示。整文件写入时，下面是它要写进去的全部内容。", always: "之后改文件都准" },
   outside_write: { title: "分身要改洞府之外的文件，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类修改都准" },
   outside_read: { title: "分身要读洞府之外的内容，请本尊定夺", note: "这个路径不在当前文件夹里。", always: "之后这类读取都准" },
+  install_lsp: {
+    title: "分身要下载语言服务，请本尊定夺",
+    note: "代码导航要用这门语言的语言服务，这台电脑上没装。准了之后，从它的官方发布处下载下面这一份，按事先定好的校验码核对后放进 ~/.odg/lsp，不动系统里的东西。只下载这一次，以后所有分身都能用；在设置的「神通」里可以查看或移除。无论哪种禁制，每次都要请示。",
+    always: "",
+  },
   lsp: {
     title: "分身要启动语言服务来察看代码，请本尊定夺",
     note: "TypeScript 的语言服务会加载项目 node_modules 里的 TypeScript 来分析代码，这算是运行项目里的代码。准了之后，查定义、查引用这类不改文件的操作就能用。别的语言的服务都设成不运行项目代码，不用请示。",

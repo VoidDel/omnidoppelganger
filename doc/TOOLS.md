@@ -41,6 +41,7 @@
 | 事项 | 工作量 |
 |---|---|
 | ~~代码导航：跳到定义、查引用、看编译器诊断。要按语言接 rust-analyzer、tsserver 这类语言服务~~ 已完成。`code_nav` 一个工具七种问法：定义、引用、实现、类型和文档、文件大纲、按名找符号、一个文件的错误和警告。支持 Rust（rust-analyzer）、C/C++（clangd）、TypeScript/JavaScript（typescript-language-server）、Python（pyright）、Go（gopls），要本机装好对应的语言服务，没装时告诉分身怎么装。语言服务按洞府和语言各起一个，所有分身共用，应用关闭时一并结束。能不运行项目代码的都设成不运行：rust-analyzer 不跑构建脚本、过程宏和 `cargo check`（所以它报的错只是它自己分析出来的），gopls 不下载模块；TypeScript 的语言服务会加载项目里的 TypeScript，启动前要请示，可以"此府永准"。clangd 用真实服务测过；rust-analyzer 这台机器上没装，只用模拟的服务测过，其余三种没有实测 | 大 |
+| 语言服务按需下载：没装时由应用下载，经本尊同意，按事先定好的版本和校验码核对，放进 `~/.odg/lsp`。先查 `PATH` 上能运行的（rustup 在组件没装时放的替身不算），没有再用下载的。已完成 rust-analyzer（2026-11-16，约 15 MB），分身用 `language_server` 工具查看或下载，设置的「神通」里也能下载和移除。还没做：clangd（官方包约 30–118 MB，macOS 那一份支持哪种 CPU 还没核实；macOS 装了 Xcode 命令行工具就自带）；gopls（没有官方预编译包，只能 `go install`）；pyright 和 TypeScript（要 Node，打算借文档运行时那套 Python 用 pip 装 basedpyright 和 nodejs-wheel）。真实的下载还没在应用里试过 | 中 |
 | 给后台命令写输入（`write_stdin`）：交互式脚手架、REPL、要按 y 确认的命令现在只能绕开 | 中 |
 | 呈上计划（`present_plan`）：先谋后动现在靠一轮结束来判断计划写完了；改成工具后计划单独成卡，"照计划动手"有明确依据 | 小 |
 | MCP 资源（`list_mcp_resources`、`read_mcp_resource`）：有些服务把文档、表结构放在资源里，现在用不上 | 小 |

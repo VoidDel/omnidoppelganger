@@ -98,6 +98,13 @@ fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
             let into = if input["scope"] == "user" { "~/.odg/skills" } else { ".odg/skills" };
             format!("{}{path}\n→ {into}", input["source"].as_str().unwrap_or_default())
         }
+        // Only a server the app can download is installed by it; for the others the tool only says how.
+        "language_server" if input["install"] == true => {
+            let language = crate::lsp::language_by_key(input["language"].as_str().unwrap_or_default())?;
+            let download = language.download?;
+            let megabytes = download.megabytes()?;
+            format!("下载 {} {}（约 {megabytes} MB，只下载一次）\n→ ~/.odg/lsp", language.program, download.version)
+        }
         "document_runtime" if input["install"] == true => {
             let modules: Vec<&str> = crate::runtime::MODULES.iter().map(|(_, what)| what.split(':').next().unwrap_or(what)).collect();
             format!(
@@ -121,6 +128,7 @@ fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
     let reason = match tool {
         "install_skill" => "install_skill",
         "document_runtime" => "install_runtime",
+        "language_server" => "install_lsp",
         _ => "add_mcp_server",
     };
     Some(Verdict::Ask { reason, detail, grant: None })
@@ -482,5 +490,20 @@ mod tests {
         let typescript = check("code_nav", &json!({ "operation": "definition", "path": "src/a.ts" }), workspace);
         assert!(matches!(&typescript, Verdict::Ask { reason: "lsp", grant: Some(grant), .. } if grant == "lsp:typescript-language-server"), "{typescript:?}");
         assert!(crate::grants::GrantStore::keeps("lsp:typescript-language-server"));
+    }
+
+    #[test]
+    fn downloading_a_language_server_is_asked_about_every_time_and_not_done_in_plan_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let install = json!({ "language": "rust", "install": true });
+        if crate::lsp::language_by_key("rust").and_then(|rust| rust.download).and_then(|download| download.megabytes()).is_some() {
+            let asked = super::check(Mode::Bypass, "language_server", &install, workspace);
+            assert!(matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 rust-analyzer 2026-11-16（约 ") && detail.ends_with("→ ~/.odg/lsp")), "{asked:?}");
+            assert_eq!(reason(super::check(Mode::Plan, "language_server", &install, workspace)), Some("refused"));
+        }
+        // Only looking, or a server the app does not download, asks nothing.
+        assert_eq!(check("language_server", &json!({ "language": "rust" }), workspace), Verdict::Allow);
+        assert_eq!(check("language_server", &json!({ "language": "python", "install": true }), workspace), Verdict::Allow);
     }
 }

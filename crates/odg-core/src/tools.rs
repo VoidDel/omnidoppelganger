@@ -201,6 +201,18 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "language_server",
+            "description": "See whether the language server `code_nav` needs for a language is here, and with `install`, download it for this app. Only rust-analyzer can be downloaded so far, and the user is asked first every time; for the other languages it says how the user installs the server. Use it when `code_nav` says a server is missing.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "language": { "type": "string", "enum": ["rust", "c", "typescript", "python", "go"], "description": "The language whose server to look for." },
+                    "install": { "type": "boolean", "description": "Download the server if it is not here. Default false." }
+                },
+                "required": ["language"]
+            }
+        }),
+        json!({
             "name": "delete_file",
             "description": "Delete one file. A copy is kept so the user can undo it with the turn's other changes; use this rather than `rm` or `del` in a command. It takes a file, not a folder.",
             "input_schema": {
@@ -705,6 +717,10 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "edit_file" => edit_file(input, context),
         "write_file" => write_file(input, context),
         "delete_file" => delete_file(input, context),
+        "language_server" => match &context.lsp {
+            Some(hub) => crate::lsp::server_tool(hub, input, &context.cancel).await.map_err(ToolOutput::error),
+            None => Err(ToolOutput::error("Language servers are not available here.")),
+        },
         "code_nav" => match &context.lsp {
             Some(hub) => crate::lsp::navigate(hub, &context.workspace, input, &context.cancel).await.map_err(ToolOutput::error),
             None => Err(ToolOutput::error("Code navigation is not available here. Use `search` instead.")),

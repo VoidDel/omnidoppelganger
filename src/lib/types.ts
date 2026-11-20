@@ -168,7 +168,8 @@ export interface ToolMeta {
   scope?: "project" | "user";
   /** The MCP server `add_mcp_server` added, how it stands, and the tools it offers; for `document_runtime`, whether it is set up. */
   server?: string;
-  state?: "ready" | "failed" | "connecting" | "missing";
+  /** …; for `language_server`, whether the server is on the machine (`system`), downloaded for the app, or `missing`. */
+  state?: "ready" | "failed" | "connecting" | "missing" | "system" | "downloaded";
   tools?: string[];
   /** The call went to a tool of an MCP server. */
   mcp?: boolean;
@@ -197,6 +198,21 @@ export interface ToolMeta {
   height?: number | null;
   /** The subagents a `delegate` call set off, and why each one's turn ended; `session` is null for one that could not start. */
   agents?: { session: string | null; name: string; reason: string }[];
+}
+
+/** A language's server for `code_nav`, as the settings page lists it. */
+export interface LanguageServerView {
+  key: string;
+  name: string;
+  program: string;
+  /** On the `PATH`, downloaded for the app, or nowhere. */
+  state: "system" | "downloaded" | "missing";
+  location: string | null;
+  /** The version the app downloads and about how many megabytes; null where it cannot download it. */
+  version: string | null;
+  download_mb: number | null;
+  /** How the user installs it themselves. */
+  install: string;
 }
 
 /** A skill as the 分身 is told of it: instructions it can load when a task calls for them. */

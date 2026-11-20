@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Decision, Image, Mode, Picked, Reply, RuntimeProgress, RuntimeView, Schedule, SessionItem, SessionView, Settings, SettingsView, SkillsView, UiEvent } from "./types";
+import type { Decision, Image, LanguageServerView, Mode, Picked, Reply, RuntimeProgress, RuntimeView, Schedule, SessionItem, SessionView, Settings, SettingsView, SkillsView, UiEvent } from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
@@ -102,6 +102,10 @@ export const api = {
   openExternal: (url: string) => openUrl(url),
   onSessionEvent: (handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),
   /** The document runtime: how it stands, setting it up (how far it has got comes as events), and taking it away. */
+  /** The language servers `code_nav` uses: where each is, downloading one the app can, and taking a download away. */
+  languageServers: () => invoke<LanguageServerView[]>("language_servers"),
+  installLanguageServer: (key: string) => invoke<LanguageServerView[]>("install_language_server", { key }),
+  removeLanguageServer: (key: string) => invoke<LanguageServerView[]>("remove_language_server", { key }),
   runtimeStatus: () => invoke<RuntimeView>("runtime_status"),
   installRuntime: () => invoke<RuntimeView>("install_runtime"),
   removeRuntime: () => invoke<RuntimeView>("remove_runtime"),

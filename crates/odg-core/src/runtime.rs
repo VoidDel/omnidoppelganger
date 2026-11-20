@@ -162,7 +162,7 @@ pub fn libreoffice() -> Option<PathBuf> {
 }
 
 /// Read an archive from `address` into `into`, checking that its SHA-256 is `sha256`; `watch` is told how far it is.
-async fn download(address: &str, sha256: &str, into: &Path, watch: &(dyn Fn(Progress) + Send + Sync), cancel: &CancellationToken) -> Result<(), String> {
+pub(crate) async fn download(address: &str, sha256: &str, into: &Path, watch: &(dyn Fn(Progress) + Send + Sync), cancel: &CancellationToken) -> Result<(), String> {
     let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).build().map_err(|error| error.to_string())?;
     let response = tokio::select! {
         response = http.get(address).send() => response.map_err(|error| format!("连不上下载地址（{address}）：{error}"))?,
