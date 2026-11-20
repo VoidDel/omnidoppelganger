@@ -1,6 +1,7 @@
 import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
+import { type Offer, type SlashChoice, type SlashCommand, completion, offers, parse } from "../lib/slash";
 import { launchFrom } from "../lib/flight";
 import { type ChangedFile, type ToolItem, type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { BYPASS, MODES, modeOf, nextMode } from "../lib/modes";
@@ -512,12 +513,17 @@ interface PopupProps {
   name: string;
   /** The menu's contents, given a function that closes it. */
   children: (close: () => void) => ReactNode;
+  /** Opens the menu each time it changes from what it was: for a "/" command that opens it. */
+  summon?: number;
 }
 
 /** A button in the composer row whose menu opens above it, and closes on Escape or a click elsewhere. */
-function Popup({ label, title, disabled, name, children }: PopupProps) {
+function Popup({ label, title, disabled, name, children, summon = 0 }: PopupProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (summon > 0 && !disabled) setOpen(true);
+  }, [summon, disabled]);
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent) => !root.current?.contains(event.target as Node) && setOpen(false);
@@ -987,7 +993,12 @@ interface ComposerProps {
   trustable: boolean;
   /** Words to put in the box, as when a fork brings back the message it starts before; a new `id` puts them in. */
   seed: { id: number; text: string } | null;
+  /** The "/" commands the window gives, beside the box's own (功法, 境界, 禁制, 凝练); skills among them. */
+  commands: SlashCommand[];
 }
+
+/** The order the "/" menu lists the commands in; any not named here (a skill's) come after, as given. */
+const COMMAND_ORDER = ["new", "fork", "compact", "model", "effort", "mode", "rename", "replay", "init", "review", "mcp", "schedule", "settings"];
 
 /**
  * How full the conversation is, as five 灵石 lit one after another: each stands for a fifth of the room there is
@@ -1032,7 +1043,7 @@ function useBoxHeight() {
 
 export function Composer(props: ComposerProps) {
   const { status, providers, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
-  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable } = props;
+  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, commands: given } = props;
   const provider = providers.find((known) => known.id === providerId);
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
@@ -1077,6 +1088,77 @@ export function Composer(props: ComposerProps) {
     setImages([]);
     setFiles([]);
     setRefused(null);
+  };
+
+  // The "/" commands: the box's own, for what it holds the controls of, and the window's.
+  /** Changed to open the 功法 menu, from "/model". */
+  const [modelSummon, setModelSummon] = useState(0);
+  const effortChoices: SlashChoice[] = efforts.map((level) => ({ value: level, label: EFFORT_NAMES[level] ?? level, hint: EFFORT_HINTS[level] }));
+  const modeChoices: SlashChoice[] = MODES.map((one) => ({ value: one.value, label: one.name, hint: one.hint }));
+  const picked = (choices: SlashChoice[], arg: string, what: string) =>
+    choices.find((choice) => choice.value === arg.toLowerCase() || choice.label === arg) ?? `没有「${arg}」这一${what}：可选 ${choices.map((choice) => choice.label).join("、")}。`;
+  const own: SlashCommand[] = [
+    {
+      name: "compact",
+      aliases: ["凝练", "摘要", "压缩"],
+      hint: "现在就把前情凝成摘要，之后的请求省灵石",
+      unavailable: busy ? "分身运功时不能凝练，等它收功" : usage.context === 0 ? "还没有前情可凝" : undefined,
+      run: () => onCompact(),
+    },
+    { name: "model", aliases: ["功法", "模型"], hint: "换功法，也能换到别的宗门", unavailable: busy ? "分身运功时不能换功法，等它收功" : undefined, run: () => setModelSummon((count) => count + 1) },
+    {
+      name: "effort",
+      aliases: ["境界"],
+      hint: "换这个分身的境界：推演深浅",
+      arg: "<境界>",
+      choices: effortChoices,
+      run: (arg) => {
+        const choice = picked(effortChoices, arg, "档境界");
+        if (typeof choice === "string") return choice;
+        onEffort(choice.value);
+      },
+    },
+    {
+      name: "mode",
+      aliases: ["禁制"],
+      hint: "换禁制：分身不问就能做什么",
+      arg: "<禁制>",
+      choices: modeChoices,
+      run: (arg) => {
+        const choice = picked(modeChoices, arg, "种禁制");
+        if (typeof choice === "string") return choice;
+        onMode(choice.value as Mode);
+      },
+    },
+  ];
+  const rank = (command: SlashCommand) => (COMMAND_ORDER.includes(command.name) ? COMMAND_ORDER.indexOf(command.name) : COMMAND_ORDER.length);
+  const commands = [...own, ...given].sort((a, b) => rank(a) - rank(b));
+  /** The text the menu was put away for with Escape: shown again once the text changes. */
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const menu = dismissed === text ? [] : offers(commands, text);
+  const [chosen, setChosen] = useState(0);
+  useEffect(() => setChosen(0), [text]);
+  const menuList = useRef<HTMLDivElement>(null);
+  useEffect(() => menuList.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }), [chosen]);
+  /** Do a command with what follows it, and empty the box; or say why it was not done. */
+  const perform = (command: SlashCommand, arg: string) => {
+    if (command.unavailable) return setRefused(command.unavailable);
+    const why = command.run(arg);
+    if (typeof why === "string") return setRefused(why);
+    setText("");
+    setRefused(null);
+  };
+  /** Take an offer: a value is done at once; a command is done, unless it wants something yet to be written, which it is completed to wait for. */
+  const accept = (offer: Offer) => {
+    if (offer.command.unavailable) return setRefused(offer.command.unavailable);
+    if (offer.kind === "choice") return perform(offer.command, offer.choice.value);
+    const typed = parse(text);
+    if ((!typed?.named && (offer.command.arg || offer.command.choices)) || (offer.command.choices && !typed?.arg)) {
+      setText(completion(offer));
+      input.current?.focus();
+      return;
+    }
+    perform(offer.command, typed?.arg ?? "");
   };
   const blind = `${model} 这门功法只认字，看不了图。点左下的功法，换一门能看图的。`;
   /** Attach the pictures pasted into the box, saying why when one cannot be sent. */
@@ -1234,6 +1316,44 @@ export function Composer(props: ComposerProps) {
             )}
           </div>
         )}
+        {/* The "/" menu: what the typed name may be, or, a command named, the values it takes. */}
+        {menu.length > 0 && (
+          <div className="slash-menu" id="slash-menu" role="listbox" aria-label="命令" ref={menuList}>
+            {menu[0].kind === "choice" && <div className="mode-menu-head">{`/${menu[0].command.name}：${menu[0].command.hint}`}</div>}
+            {menu.map((offer, at) => (
+              <div
+                key={offer.kind === "choice" ? offer.choice.value : offer.command.name}
+                id={`slash-${at}`}
+                role="option"
+                aria-selected={at === Math.min(chosen, menu.length - 1)}
+                aria-disabled={!!offer.command.unavailable}
+                className="slash-option"
+                title={offer.command.unavailable}
+                onMouseEnter={() => setChosen(at)}
+                // Taken on the press, so that the box keeps the focus the menu was opened from.
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  accept(offer);
+                }}
+              >
+                {offer.kind === "choice" ? (
+                  <>
+                    <span className="slash-name">{offer.choice.label}</span>
+                    <span className="slash-arg mono">{offer.choice.value}</span>
+                    <span className="slash-hint">{offer.choice.hint}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="slash-name mono">/{offer.command.name}</span>
+                    {offer.command.arg && <span className="slash-arg">{offer.command.arg}</span>}
+                    <span className="slash-hint">{offer.command.unavailable ?? offer.command.hint}</span>
+                  </>
+                )}
+              </div>
+            ))}
+            <p className="menu-note">↑↓ 选，Tab 补全，回车执行，Esc 收起</p>
+          </div>
+        )}
         <label htmlFor="composer-input" className="sr-only">
           给分身的法旨
         </label>
@@ -1242,7 +1362,9 @@ export function Composer(props: ComposerProps) {
           ref={input}
           rows={2}
           value={text}
-          placeholder={busy ? "给分身传一句音" : "吩咐一件事，回车传令"}
+          placeholder={busy ? "给分身传一句音" : "吩咐一件事，回车传令；打 / 唤出命令"}
+          aria-controls={menu.length > 0 ? "slash-menu" : undefined}
+          aria-activedescendant={menu.length > 0 ? `slash-${Math.min(chosen, menu.length - 1)}` : undefined}
           onChange={(event) => setText(event.target.value)}
           onPaste={(event) => {
             // A pasted screenshot is attached; pasted text goes into the box as usual.
@@ -1252,6 +1374,29 @@ export function Composer(props: ComposerProps) {
             void attach(files);
           }}
           onKeyDown={(event) => {
+            // While the "/" menu is up, the arrows go through it, Tab completes, Enter takes, Escape puts it away.
+            if (menu.length > 0 && !event.nativeEvent.isComposing) {
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                setChosen((at) => (at + (event.key === "ArrowDown" ? 1 : menu.length - 1)) % menu.length);
+                return;
+              }
+              if (event.key === "Tab" && !event.shiftKey) {
+                event.preventDefault();
+                setText(completion(menu[Math.min(chosen, menu.length - 1)]));
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                accept(menu[Math.min(chosen, menu.length - 1)]);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setDismissed(text);
+                return;
+              }
+            }
             // Enter sends; Shift+Enter breaks the line. Enter that confirms an input-method candidate does neither.
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
@@ -1278,8 +1423,59 @@ export function Composer(props: ComposerProps) {
             </svg>
             <span className="sr-only">附件</span>
           </button>
+          {/* The "/" commands, for a hand on the pointer: those that take something put themselves in the box to be finished. */}
+          <Popup
+            name="命令"
+            title="命令：也可以在输入框行首打 / 唤出"
+            label={
+              <>
+                <span className="slash-glyph" aria-hidden="true">
+                  /
+                </span>
+                <span className="label sr-only">命令</span>
+              </>
+            }
+          >
+            {(close) => (
+              <>
+                <div className="mode-menu-head">
+                  <span>命令</span>
+                  <span>行首打 / 也能唤出</span>
+                </div>
+                <div className="menu-scroll">
+                  {commands.map((command) => (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      key={command.name}
+                      className="mode-option plain"
+                      disabled={!!command.unavailable}
+                      title={command.unavailable}
+                      onClick={() => {
+                        close();
+                        if (command.arg || command.choices) {
+                          setText(`/${command.name} `);
+                          input.current?.focus();
+                        } else perform(command, "");
+                      }}
+                    >
+                      <span className="mode-text">
+                        <span className="name">
+                          <span className="mono">/{command.name}</span>
+                          {command.arg && <span className="slash-arg">{command.arg}</span>}
+                        </span>
+                        <span className="hint">{command.unavailable ?? command.hint}</span>
+                      </span>
+                      <span />
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </Popup>
           <Popup
             name="功法"
+            summon={modelSummon}
             disabled={busy}
             title={busy ? `功法：${providerName} · ${model}。分身运功时不能换，等它收功` : `功法：${providerName} · ${model}。点开换一门`}
             label={

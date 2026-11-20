@@ -2527,8 +2527,7 @@ button.did-head:not(:disabled):hover {
   min-width: 0;
 }
 
-.composer-row .mode-picker + .mode-picker,
-.composer-row .attach + .mode-picker {
+.composer-row .mode-picker + .mode-picker {
   margin-left: var(--s-1);
   padding-left: var(--s-1);
   border-left: 1px solid var(--line);
@@ -2938,6 +2937,85 @@ button.select-button svg {
   margin: 0 4px 4px;
   width: auto;
   font-size: var(--t-small);
+}
+
+/* The "/" menu, over the top of the box while a command is typed: one to a line, its name, what follows it, and
+   what it does. */
+.slash-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  width: min(560px, 100%);
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-option {
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: var(--r-paper);
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  cursor: pointer;
+}
+
+.slash-option[aria-selected="true"] {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.slash-option[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.slash-name {
+  flex: none;
+  font-weight: 700;
+}
+
+.slash-arg {
+  flex: none;
+  margin-left: 6px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.slash-hint {
+  min-width: 0;
+  margin-left: auto;
+  padding-left: var(--s-2);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.slash-option[aria-selected="true"] .slash-arg,
+.slash-option[aria-selected="true"] .slash-hint {
+  color: inherit;
+}
+
+/* The "/" button's face: the character the menu is called up with. */
+.slash-glyph {
+  display: inline-block;
+  width: 18px;
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
 }
 
 /* The providers along the top of the 功法 menu, one of which lists its models below: the session's own first. */

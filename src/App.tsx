@@ -12,7 +12,15 @@ import { api } from "./lib/api";
 import { applyDelta, changedFiles, commandRuns, fold, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
+import type { SlashCommand } from "./lib/slash";
 import type { Decision, Envelope, Image, Mode, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
+
+/** What "/init" hands the 分身: learn the project, and write down what a 分身 needs to know of it. */
+const INIT_TASK =
+  "读懂这个项目，在洞府根目录写一份 AGENTS.md，给以后在这里干活的分身看：项目是做什么的，目录怎么分，怎么构建、测试、运行，代码有哪些约定，哪里容易出错。只写读代码读不出来、或者要读很久才明白的；已经有 AGENTS.md 的话，补上缺的、改掉过时的，别的照旧。";
+/** What "/review" hands the 分身: look over what has changed and not been committed, and change nothing. */
+const REVIEW_TASK =
+  "审查洞府里还没提交的改动（git diff，连同暂存的）：找出 bug、漏掉的边界情况、和项目约定不符的地方，以及缺了的测试。按严重程度列出，每条写明文件和行号、会出什么问题、怎么改。只看不改。";
 
 interface State {
   sessions: SessionItem[];
@@ -363,6 +371,64 @@ export default function App() {
     api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
     dispatch({ type: "page", page: "mcp" });
   };
+  // The skills the 分身 was last told of, its project's among them; before its first turn, the user's own.
+  const listedSkills = useMemo(() => {
+    for (let at = state.events.length - 1; at >= 0; at--) {
+      const event = state.events[at];
+      if (event.type === "skills/listed") return event.data.skills;
+    }
+    return null;
+  }, [state.events]);
+  /** The "/" commands the window gives the box: what acts on this 分身, the pages, tasks to hand it, and its skills. */
+  const slashCommands = (session: SessionItem): SlashCommand[] => {
+    const working = state.status !== "idle" ? "分身运功时用不了，等它收功，或先收回它" : undefined;
+    const builtIn: SlashCommand[] = [
+      {
+        name: "new",
+        aliases: ["新分身", "化出"],
+        hint: "在这处洞府再化出一个分身",
+        run: () => {
+          api.createSession(session.worktree?.origin ?? session.workspace, false).then((view) => dispatch({ type: "opened", view }), fail);
+        },
+      },
+      { name: "fork", aliases: ["分叉"], hint: "分叉：另起一个分身，带着到现在的全部对话", unavailable: session.parent ? "子分身的会话不能分叉" : undefined, run: () => forkFrom() },
+      {
+        name: "rename",
+        aliases: ["改名"],
+        hint: "给这个分身改名；不写名字就用第一句话作名",
+        arg: "<新名字>",
+        run: (title) => {
+          api.renameSession(session.id, title).then((item) => dispatch({ type: "session", item }), fail);
+        },
+      },
+      {
+        name: "replay",
+        aliases: ["回溯"],
+        hint: "回溯：从头一步步看这个分身做过什么",
+        unavailable: stops.length === 0 ? "这个分身还没做过什么，没有可回溯的" : undefined,
+        run: () => setReplay({ at: 0, playing: true, speed: 1 }),
+      },
+      { name: "init", aliases: ["规矩", "立规矩"], hint: "让分身读懂这个项目，写一份 AGENTS.md", unavailable: working, run: () => send(INIT_TASK) },
+      { name: "review", aliases: ["审查"], hint: "让分身审查还没提交的改动，只看不改", unavailable: working, run: () => send(REVIEW_TASK) },
+      { name: "mcp", aliases: ["法器"], hint: "打开法器页：MCP 服务", run: toMcp },
+      { name: "schedule", aliases: ["功课"], hint: "打开功课页：到点自行去办的事", run: toSchedules },
+      { name: "settings", aliases: ["设置"], hint: "打开设置", run: toSettings },
+    ];
+    const taken = new Set([...builtIn.map((command) => command.name), "compact", "model", "effort", "mode"]);
+    // Each skill by its name, with what it is to do after it; one named as a command is reached by its alias.
+    const skills: SlashCommand[] = (listedSkills ?? state.settings?.skills ?? []).map((skill) => {
+      const name = skill.name.trim().replace(/\s+/g, "-");
+      return {
+        name: taken.has(name.toLowerCase()) ? `skill-${name}` : name,
+        aliases: [skill.name],
+        hint: `技能：${skill.description}`,
+        arg: "<要办的事>",
+        unavailable: working,
+        run: (task) => send(task ? `按技能「${skill.name}」办：${task}` : `按技能「${skill.name}」办。`),
+      };
+    });
+    return [...builtIn, ...skills];
+  };
   const banners = (
     <>
         {state.error && (
@@ -568,6 +634,7 @@ export default function App() {
               onCompact={() => api.compactSession(active.id).catch(fail)}
               trustable={!!active.worktree}
               seed={seed}
+              commands={slashCommands(active)}
             />
             </Guard>
             </div>
