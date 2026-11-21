@@ -9,8 +9,11 @@
 //! [`crate::policy`]).
 //!
 //! A server is looked for on the `PATH`, and used only if it runs: rustup puts a stand-in for rust-analyzer there
-//! that fails when the component is not installed. Where it is not there, rust-analyzer can be downloaded for the app
-//! with the user's leave, as the document runtime is: one build, by its checksum, kept in the app's home.
+//! that fails when the component is not installed. Where it is not there, a server can be downloaded for the app for
+//! Rust, TypeScript and Python, with the user's leave, as the document runtime is: one build, by its checksum, kept
+//! in the app's home. Each is a program of its own, needing no Node or Python: rust-analyzer; TypeScript 7, whose
+//! `tsc` is a language server itself, and which loads nothing of the project to run, unlike the
+//! typescript-language-server on the `PATH`; and ty, Astral's type checker for Python, in place of pyright.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,10 +27,17 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
-/// A build of a language server the app can download where it is not installed: its version, where its release is,
-/// and for each target the archive's name, its SHA-256 and its size, from the release's published digests.
+/// A build of a language server the app can download where it is not installed: what it is, how it is started, its
+/// version, where its release is, and for each target the archive (its path under the release's address), its SHA-256
+/// and its size, from the release's published digests. The archive is the program alone, gzipped, or a `.tar.gz`,
+/// `.tgz` or `.zip` holding it: then the program is kept with everything beside it in the archive's folder.
 #[derive(Debug)]
 pub struct Download {
+    /// What is downloaded, as the user is told of it.
+    pub name: &'static str,
+    /// The program downloaded, which need not be the one looked for on the `PATH`, and what it is started with.
+    pub program: &'static str,
+    args: &'static [&'static str],
     pub version: &'static str,
     address: &'static str,
     builds: &'static [(&'static str, &'static str, &'static str, u64)],
@@ -48,6 +58,9 @@ impl Download {
 
 /// rust-analyzer's weekly release of 2026-11-16, from <https://github.com/rust-lang/rust-analyzer/releases/tag/2026-11-16>.
 static RUST_ANALYZER: Download = Download {
+    name: "rust-analyzer",
+    program: "rust-analyzer",
+    args: &[],
     version: "2026-11-16",
     address: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-11-16",
     builds: &[
@@ -57,6 +70,41 @@ static RUST_ANALYZER: Download = Download {
         ("aarch64-unknown-linux-gnu", "rust-analyzer-aarch64-unknown-linux-gnu.gz", "73d8b9b87384b3115a183a8a51db9f7c205ce4c89ea511f3c8c8fea863038a50", 15_120_173),
         ("x86_64-pc-windows-msvc", "rust-analyzer-x86_64-pc-windows-msvc.zip", "dbf0c36ec54cf727d34cc40c9994fe71b7d52e3c28a3112c3deca1aba46fbc8f", 18_054_633),
         ("aarch64-pc-windows-msvc", "rust-analyzer-aarch64-pc-windows-msvc.zip", "2e8fd876300eeee87afd6de18c79eb17bab425a9b755043c63d5023d58de37b7", 16_197_678),
+    ],
+};
+
+/// TypeScript 7.0.2, from npm: its native compiler for each system, which serves the language protocol with `--lsp`.
+/// Digests are the SHA-256 of each package's tarball, checked against the registry's own SHA-512 integrity.
+static TYPESCRIPT: Download = Download {
+    name: "TypeScript",
+    program: "tsc",
+    args: &["--lsp", "--stdio"],
+    version: "7.0.2",
+    address: "https://registry.npmjs.org/@typescript",
+    builds: &[
+        ("aarch64-apple-darwin", "typescript-darwin-arm64/-/typescript-darwin-arm64-7.0.2.tgz", "902e2fe1cf0799198ef902c6b8c310a450fef629a6baba41d45641ef75c04ebd", 9_270_373),
+        ("x86_64-apple-darwin", "typescript-darwin-x64/-/typescript-darwin-x64-7.0.2.tgz", "eba158cb54050f723d5ff781438f33de5640054440bb4f2bd170cfe9bc2eb551", 10_057_523),
+        ("x86_64-unknown-linux-gnu", "typescript-linux-x64/-/typescript-linux-x64-7.0.2.tgz", "7ecad6f67377e831856367ab062ef394f21506a611405bf8ac0ff039348637d3", 9_669_334),
+        ("aarch64-unknown-linux-gnu", "typescript-linux-arm64/-/typescript-linux-arm64-7.0.2.tgz", "c83d931ac9dd7549cde6e71246aa9d6a9812843023df3e277fe3b5dcf41dd0ea", 8_900_516),
+        ("x86_64-pc-windows-msvc", "typescript-win32-x64/-/typescript-win32-x64-7.0.2.tgz", "61fc4e141d2bc687db580e71bbfa63b9c209f0310645d82ca1b457eb3a24fd19", 9_776_626),
+        ("aarch64-pc-windows-msvc", "typescript-win32-arm64/-/typescript-win32-arm64-7.0.2.tgz", "0a73534e6ee50cdbb2a29ac48657ca0ad13cf0f424cf63808e4df7baeb87b8be", 8_900_840),
+    ],
+};
+
+/// ty 0.0.107, Astral's type checker for Python, from <https://github.com/astral-sh/ty/releases/tag/0.0.107>.
+static TY: Download = Download {
+    name: "ty",
+    program: "ty",
+    args: &["server"],
+    version: "0.0.107",
+    address: "https://github.com/astral-sh/ty/releases/download/0.0.107",
+    builds: &[
+        ("aarch64-apple-darwin", "ty-aarch64-apple-darwin.tar.gz", "5b514ec3271383263250481b139c2eb59021ca674866b267f37bb988dbea52c9", 13_896_972),
+        ("x86_64-apple-darwin", "ty-x86_64-apple-darwin.tar.gz", "5bff07e2e802815a303cdb7864b7034347bebb63ad159e22a514b5555d87aae5", 14_469_364),
+        ("x86_64-unknown-linux-gnu", "ty-x86_64-unknown-linux-gnu.tar.gz", "f93e1f3e45ec81b3ce21473d541eb94470546928499415fc263f2858d65f28af", 17_385_552),
+        ("aarch64-unknown-linux-gnu", "ty-aarch64-unknown-linux-gnu.tar.gz", "952097983ff6b6b3235b4b5ec8077c1b8bf5c485679fd794ee70ca2007a3cf7f", 14_291_303),
+        ("x86_64-pc-windows-msvc", "ty-x86_64-pc-windows-msvc.zip", "3ba361f2edda769040daffb52580d4a9a5f54f7c6040d222fd634aa70d2b9145", 14_846_532),
+        ("aarch64-pc-windows-msvc", "ty-aarch64-pc-windows-msvc.zip", "e09566dd2727d8ec45d39c572040b9b6b4123ea308c1c6200a98e83c65b5c036", 13_982_334),
     ],
 };
 
@@ -73,7 +121,8 @@ pub struct Language {
     extensions: &'static [&'static str],
     /// How to install the server, said when it is missing.
     pub install: &'static str,
-    /// The server runs code from the project, so starting it is asked about first.
+    /// The server on the `PATH` runs code from the project, so starting it is asked about first. The one downloaded
+    /// never does.
     pub runs_project_code: bool,
     env: &'static [(&'static str, &'static str)],
     /// The build the app can download where the server is not installed; `None` where it cannot.
@@ -111,8 +160,9 @@ pub const LANGUAGES: &[Language] = &[
         extensions: &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
         install: "npm install -g typescript-language-server typescript",
         runs_project_code: true,
-        env: &[],
-        download: None,
+        // The server fetches type packages for plain JavaScript with npm, unasked: npm is kept offline, so it does not.
+        env: &[("npm_config_offline", "true")],
+        download: Some(&TYPESCRIPT),
     },
     Language {
         key: "python",
@@ -123,7 +173,7 @@ pub const LANGUAGES: &[Language] = &[
         install: "npm install -g pyright",
         runs_project_code: false,
         env: &[],
-        download: None,
+        download: Some(&TY),
     },
     Language {
         key: "go",
@@ -160,7 +210,7 @@ fn executable(program: &str) -> String {
 /// Where the app keeps its download of a server, under `root` (the app's `lsp` folder), when there is one.
 pub fn downloaded(root: &Path, language: &Language) -> Option<PathBuf> {
     let download = language.download?;
-    let path = root.join(language.program).join(download.version).join(executable(language.program));
+    let path = root.join(download.program).join(download.version).join(executable(download.program));
     path.is_file().then_some(path)
 }
 
@@ -197,13 +247,21 @@ pub async fn locate(root: Option<&Path>, language: &Language) -> Located {
 /// `address` stands in for the release's own, for tests. Returns where the program is.
 async fn install_from(root: &Path, language: &Language, address: &str, cancel: &CancellationToken) -> Result<PathBuf, String> {
     let download = language.download.ok_or_else(|| format!("{} cannot be downloaded by the app. Ask the user to install it: {}.", language.program, language.install))?;
-    let (file, sha256, _) = download.build().ok_or_else(|| format!("There is no build of {} for this machine to download.", language.program))?;
-    let folder = root.join(language.program);
+    let (file, sha256, _) = download.build().ok_or_else(|| format!("There is no build of {} for this machine to download.", download.name))?;
+    let folder = root.join(download.program);
     let into = folder.join(download.version);
     std::fs::create_dir_all(&into).map_err(|error| format!("Cannot create {}: {error}", into.display()))?;
-    let archive = folder.join(format!("{file}.part"));
+    let name = file.rsplit('/').next().unwrap_or(file);
+    let archive = folder.join(format!("{name}.part"));
     let fetched = crate::runtime::download(&format!("{address}/{file}"), sha256, &archive, &|_| {}, cancel).await;
-    let unpacked = fetched.and_then(|()| unpack_program(&archive, &into, language.program));
+    let program = download.program;
+    let unpacked = match fetched {
+        Ok(()) => {
+            let (archive, into) = (archive.clone(), into.clone());
+            tokio::task::spawn_blocking(move || unpack_program(&archive, &into, program)).await.map_err(|error| error.to_string()).and_then(|unpacked| unpacked)
+        }
+        Err(error) => Err(error),
+    };
     let _ = std::fs::remove_file(&archive);
     let program = match unpacked {
         Ok(program) => program,
@@ -221,24 +279,59 @@ async fn install_from(root: &Path, language: &Language, address: &str, cancel: &
     Ok(program)
 }
 
-/// The program out of its archive: a gzipped program on its own, or a zip holding it. Made runnable.
+/// The program out of its archive (`….part`): a gzipped program on its own, or a `.tar.gz`, `.tgz` or `.zip` holding
+/// it, from which the program's folder is kept, all in it. Only plain files are written, and only inside `into`.
+/// The program is made runnable.
 fn unpack_program(archive: &Path, into: &Path, program: &str) -> Result<PathBuf, String> {
     let name = executable(program);
-    let target = into.join(&name);
     let failed = |error: String| format!("Cannot unpack {program}: {error}");
     let bytes = std::fs::read(archive).map_err(|error| failed(error.to_string()))?;
-    let unpacked: Vec<u8> = if archive.to_string_lossy().ends_with(".zip.part") {
+    let archive_name = archive.file_name().map(|name| name.to_string_lossy().trim_end_matches(".part").to_string()).unwrap_or_default();
+    // Every file in the archive, by its path in it.
+    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let inside = |path: &Path| !path.as_os_str().is_empty() && path.components().all(|component| matches!(component, std::path::Component::Normal(_)));
+    if archive_name.ends_with(".zip") {
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| failed(error.to_string()))?;
-        let mut entry = zip.by_name(&name).map_err(|_| failed(format!("{name} is not in the archive")))?;
-        let mut read = Vec::new();
-        std::io::Read::read_to_end(&mut entry, &mut read).map_err(|error| failed(error.to_string()))?;
-        read
+        for index in 0..zip.len() {
+            let mut entry = zip.by_index(index).map_err(|error| failed(error.to_string()))?;
+            let Some(path) = entry.enclosed_name().filter(|path| entry.is_file() && inside(path)) else { continue };
+            let mut read = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut read).map_err(|error| failed(error.to_string()))?;
+            files.push((path, read));
+        }
+    } else if archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz") {
+        let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+        for entry in tar.entries().map_err(|error| failed(error.to_string()))? {
+            let mut entry = entry.map_err(|error| failed(error.to_string()))?;
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            let path = entry.path().map_err(|error| failed(error.to_string()))?.into_owned();
+            if !inside(&path) {
+                continue;
+            }
+            let mut read = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut read).map_err(|error| failed(error.to_string()))?;
+            files.push((path, read));
+        }
     } else {
         let mut read = Vec::new();
         std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(bytes.as_slice()), &mut read).map_err(|error| failed(error.to_string()))?;
-        read
-    };
-    crate::fsutil::write_atomically(&target, &unpacked).map_err(|error| failed(error.to_string()))?;
+        files.push((PathBuf::from(&name), read));
+    }
+    // The program nearest the top, and everything in its folder.
+    let found = files.iter().filter(|(path, _)| path.file_name().is_some_and(|file| file.to_string_lossy() == name)).map(|(path, _)| path.clone()).min_by_key(|path| path.components().count());
+    let found = found.ok_or_else(|| failed(format!("{name} is not in the archive")))?;
+    let folder = found.parent().map(Path::to_path_buf).unwrap_or_default();
+    for (path, content) in &files {
+        let Ok(relative) = path.strip_prefix(&folder) else { continue };
+        let target = into.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| failed(error.to_string()))?;
+        }
+        crate::fsutil::write_atomically(&target, content).map_err(|error| failed(error.to_string()))?;
+    }
+    let target = into.join(&name);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -255,7 +348,8 @@ pub async fn install(root: &Path, language: &Language, cancel: &CancellationToke
 
 /// Take away the app's download of a language's server.
 pub fn remove(root: &Path, language: &Language) -> Result<(), String> {
-    let folder = root.join(language.program);
+    let Some(download) = language.download else { return Ok(()) };
+    let folder = root.join(download.program);
     if folder.exists() {
         std::fs::remove_dir_all(&folder).map_err(|error| format!("Cannot remove {}: {error}", folder.display()))?;
     }
@@ -266,8 +360,8 @@ pub fn remove(root: &Path, language: &Language) -> Result<(), String> {
 fn missing(language: &Language) -> String {
     match language.download.and_then(|download| download.megabytes().map(|megabytes| (download, megabytes))) {
         Some((download, megabytes)) => format!(
-            "{} is not installed, so {} code cannot be navigated yet. It can be downloaded for this app: call `language_server` with `language` \"{}\" and `install` true (rust-analyzer {}, about {megabytes} MB; the user is asked first). Or the user can install it: {}.",
-            language.program, language.name, language.key, download.version, language.install
+            "{} is not installed, so {} code cannot be navigated yet. A server can be downloaded for this app: call `language_server` with `language` \"{}\" and `install` true ({} {}, about {megabytes} MB; the user is asked first). Or the user can install {} themselves: {}.",
+            language.program, language.name, language.key, download.name, download.version, language.program, language.install
         ),
         None => format!("{} is not installed, so {} code cannot be navigated here. Ask the user to install it ({}), or use `search` instead.", language.program, language.name, language.install),
     }
@@ -282,11 +376,12 @@ pub async fn server_tool(hub: &LspHub, input: &Value, cancel: &CancellationToken
     let mut meta = json!({ "language": language.key, "server": language.program });
     let content = match (&located, input["install"] == true, root) {
         (Located::System(path), ..) => format!("{} is installed on this machine ({}); `code_nav` uses it.", language.program, path.display()),
-        (Located::Downloaded(path), ..) => format!("{} was downloaded for this app ({}); `code_nav` uses it.", language.program, path.display()),
+        (Located::Downloaded(path), ..) => format!("{} was downloaded for this app ({}); `code_nav` uses it.", language.download.map(|download| download.name).unwrap_or(language.program), path.display()),
         (Located::Missing, true, Some(root)) => {
             let program = install(root, language, cancel).await?;
             meta["installed"] = json!(true);
-            format!("Downloaded {} {} for this app ({}). `code_nav` can use it now.", language.program, language.download.map(|download| download.version).unwrap_or_default(), program.display())
+            let (name, version) = language.download.map(|download| (download.name, download.version)).unwrap_or_default();
+            format!("Downloaded {name} {version} for this app ({}). `code_nav` can use it now.", program.display())
         }
         (Located::Missing, ..) => missing(language),
     };
@@ -323,11 +418,14 @@ fn language_id(path: &Path) -> &'static str {
     }
 }
 
-/// What a server is told it may be set to, as `initializationOptions` and as the answer to `workspace/configuration`.
-fn settings(language: &Language) -> Value {
-    match language.program {
+/// What a server, by its program, is told it may be set to, as `initializationOptions` and as the answer to
+/// `workspace/configuration`.
+fn settings(program: &str) -> Value {
+    match program {
         // Analysis only: nothing of the project is built or run.
         "rust-analyzer" => json!({ "cargo": { "buildScripts": { "enable": false } }, "procMacro": { "enable": false }, "checkOnSave": false }),
+        // TypeScript 7 runs no outside program a project's settings name; said all the same, as it is off by default.
+        "tsc" => json!({ "runExternalCode": false }),
         _ => Value::Null,
     }
 }
@@ -463,7 +561,8 @@ type Writer = Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>>;
 
 /// One running language server.
 pub struct Client {
-    language: &'static Language,
+    /// The program that serves: the language's own, or the one downloaded in its place.
+    program: &'static str,
     writer: Writer,
     next: AtomicI64,
     pending: Pending,
@@ -518,14 +617,14 @@ impl Client {
     /// Start talking to a server on these streams: answer what it asks, note what it says, and initialize it for
     /// `root`. `child` is the process, kept so that dropping the client ends it.
     pub async fn start(
-        language: &'static Language,
+        program: &'static str,
         root: &Path,
         reader: Box<dyn AsyncRead + Send + Unpin>,
         writer: Box<dyn AsyncWrite + Send + Unpin>,
         child: Option<tokio::process::Child>,
     ) -> Result<Arc<Self>, String> {
         let client = Arc::new(Client {
-            language,
+            program,
             writer: Arc::new(tokio::sync::Mutex::new(writer)),
             next: AtomicI64::new(1),
             pending: Arc::default(),
@@ -559,7 +658,7 @@ impl Client {
                         let answer = match method {
                             "workspace/configuration" => {
                                 let items = message["params"]["items"].as_array().cloned().unwrap_or_default();
-                                json!({ "jsonrpc": "2.0", "id": id, "result": items.iter().map(|item| if item["section"].as_str() == Some(language.program) { settings(language) } else { Value::Null }).collect::<Vec<_>>() })
+                                json!({ "jsonrpc": "2.0", "id": id, "result": items.iter().map(|item| if item["section"].as_str() == Some(program) { settings(program) } else { Value::Null }).collect::<Vec<_>>() })
                             }
                             "workspace/workspaceFolders" => json!({ "jsonrpc": "2.0", "id": id, "result": folder }),
                             "window/workDoneProgress/create" | "client/registerCapability" | "client/unregisterCapability" | "window/showMessageRequest" | "workspace/diagnostic/refresh" | "workspace/semanticTokens/refresh" | "workspace/inlayHint/refresh" | "workspace/codeLens/refresh" => {
@@ -627,11 +726,11 @@ impl Client {
         let initialized = client
             .request(
                 "initialize",
-                json!({ "processId": std::process::id(), "rootUri": uri(root), "workspaceFolders": folder, "capabilities": capabilities, "initializationOptions": settings(language), "clientInfo": { "name": "OmniDoppelganger" } }),
+                json!({ "processId": std::process::id(), "rootUri": uri(root), "workspaceFolders": folder, "capabilities": capabilities, "initializationOptions": settings(program), "clientInfo": { "name": "OmniDoppelganger" } }),
                 Duration::from_secs(60),
             )
             .await
-            .map_err(|error| format!("{} would not start: {}", language.program, error.message))?;
+            .map_err(|error| format!("{program} would not start: {}", error.message))?;
         *client.capabilities.lock().unwrap() = initialized["capabilities"].clone();
         send(&client.writer, &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} })).await?;
         Ok(client)
@@ -671,7 +770,7 @@ impl Client {
     /// Whether the server is at work: indexing, loading the project, or not yet said to be done.
     fn busy(&self) -> bool {
         let watch = self.watch.lock().unwrap();
-        watch.closed.is_none() && (!watch.progress.is_empty() || watch.quiescent == Some(false) || (self.language.program == "rust-analyzer" && watch.quiescent.is_none()))
+        watch.closed.is_none() && (!watch.progress.is_empty() || watch.quiescent == Some(false) || (self.program == "rust-analyzer" && watch.quiescent.is_none()))
     }
 
     /// Wait, at most `most`, until the server has been quiet a moment: no work under way. Returns whether it is.
@@ -745,6 +844,7 @@ impl Client {
 /// The language servers running, one per workspace and language, shared by every session.
 #[derive(Default)]
 pub struct LspHub {
+    /// By workspace and language key.
     clients: tokio::sync::Mutex<HashMap<(PathBuf, &'static str), Arc<Client>>>,
     /// Where servers downloaded for the app are kept; `None` where nothing is downloaded.
     root: Option<PathBuf>,
@@ -764,21 +864,22 @@ impl LspHub {
     /// The server for `language` in `root`: the one running, or a new one, started now.
     pub async fn client(&self, root: &Path, language: &'static Language) -> Result<Arc<Client>, String> {
         let mut clients = self.clients.lock().await;
-        let key = (root.to_path_buf(), language.program);
+        let key = (root.to_path_buf(), language.key);
         if let Some(client) = clients.get(&key).filter(|client| !client.closed()) {
             return Ok(client.clone());
         }
-        let program = match locate(self.root.as_deref(), language).await {
-            Located::System(program) | Located::Downloaded(program) => program,
-            Located::Missing => return Err(missing(language)),
+        let (path, name, args) = match (locate(self.root.as_deref(), language).await, language.download) {
+            (Located::System(path), _) => (path, language.program, language.args),
+            (Located::Downloaded(path), Some(download)) => (path, download.program, download.args),
+            (Located::Downloaded(_) | Located::Missing, _) => return Err(missing(language)),
         };
-        let mut command = tokio::process::Command::new(program);
-        command.args(language.args).envs(language.env.iter().copied()).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        let mut command = tokio::process::Command::new(path);
+        command.args(args).envs(language.env.iter().copied()).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
-        let mut child = command.spawn().map_err(|error| format!("Cannot start {}: {error}", language.program))?;
+        let mut child = command.spawn().map_err(|error| format!("Cannot start {name}: {error}"))?;
         let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
-            return Err(format!("Cannot talk to {}.", language.program));
+            return Err(format!("Cannot talk to {name}."));
         };
         // What it says on its error stream, the last of it kept: why it would not start, if it would not.
         let said = Arc::new(Mutex::new(String::new()));
@@ -798,7 +899,7 @@ impl LspHub {
                 }
             });
         }
-        let client = match Client::start(language, root, Box::new(stdout), Box::new(stdin), Some(child)).await {
+        let client = match Client::start(name, root, Box::new(stdout), Box::new(stdin), Some(child)).await {
             Ok(client) => client,
             Err(error) => {
                 // A moment for the last of what it said to be read.
@@ -820,8 +921,8 @@ impl LspHub {
     }
 
     #[cfg(test)]
-    pub async fn insert(&self, root: &Path, client: Arc<Client>) {
-        self.clients.lock().await.insert((root.to_path_buf(), client.language.program), client);
+    pub async fn insert(&self, root: &Path, language: &'static Language, client: Arc<Client>) {
+        self.clients.lock().await.insert((root.to_path_buf(), language.key), client);
     }
 }
 
@@ -987,7 +1088,7 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
         _ => None,
     };
     let mut lines = Lines::new(workspace);
-    let mut meta = json!({ "operation": asked.operation, "path": asked.shown, "server": language.program });
+    let mut meta = json!({ "operation": asked.operation, "path": asked.shown, "server": client.program });
     if let Some((line, _)) = place {
         meta["line"] = json!(line + 1);
     }
@@ -1015,9 +1116,9 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
         listed.sort_by_key(|(level, _)| *level);
         meta["results"] = json!(listed.len());
         meta["errors"] = json!(listed.iter().filter(|(level, _)| *level == 1).count());
-        let note = if language.program == "rust-analyzer" { "\n[rust-analyzer here runs no `cargo check`, so only what it finds by itself is listed: run `cargo check` for the compiler's full say.]" } else { "" };
+        let note = if client.program == "rust-analyzer" { "\n[rust-analyzer here runs no `cargo check`, so only what it finds by itself is listed: run `cargo check` for the compiler's full say.]" } else { "" };
         let content = if listed.is_empty() {
-            format!("{} has no errors or warnings that {} reports.{note}{still}", asked.shown, language.program)
+            format!("{} has no errors or warnings that {} reports.{note}{still}", asked.shown, client.program)
         } else {
             format!("{} problems in {}:\n{}{note}{still}", listed.len(), asked.shown, listed.into_iter().map(|(_, line)| line).take(LISTED).collect::<Vec<_>>().join("\n"))
         };
@@ -1035,7 +1136,7 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
             Err(error) if matches!(error.code, CONTENT_MODIFIED | SERVER_CANCELLED) && attempt < 2 => {
                 client.settle(LATER_SETTLE, cancel).await;
             }
-            Err(error) => return Err(format!("{} could not answer: {}", language.program, error.message)),
+            Err(error) => return Err(format!("{} could not answer: {}", client.program, error.message)),
         }
     }
 
@@ -1044,7 +1145,7 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
             let text = hover_text(&answer["contents"]);
             meta["results"] = json!(usize::from(!text.trim().is_empty()));
             if text.trim().is_empty() {
-                format!("{} has nothing to say about that place.{still}", language.program)
+                format!("{} has nothing to say about that place.{still}", client.program)
             } else {
                 let text: String = text.trim().chars().take(4000).collect();
                 text + still
@@ -1054,7 +1155,7 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
             let mut listed = Vec::new();
             outline(answer.as_array().map(Vec::as_slice).unwrap_or_default(), 0, &mut listed);
             meta["results"] = json!(listed.len());
-            if listed.is_empty() { format!("{} found no symbols in {}.{still}", language.program, asked.shown) } else { format!("{}:\n{}{still}", asked.shown, listed.join("\n")) }
+            if listed.is_empty() { format!("{} found no symbols in {}.{still}", client.program, asked.shown) } else { format!("{}:\n{}{still}", asked.shown, listed.join("\n")) }
         }
         "find_symbol" => {
             let mut listed = Vec::new();
@@ -1087,7 +1188,7 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
                 "implementations" => "Implemented at",
                 _ => "Used at",
             };
-            if listed.is_empty() { format!("{} found none.{still}", language.program) } else { format!("{what} ({}):\n{}{still}", found.len(), listed.join("\n")) }
+            if listed.is_empty() { format!("{} found none.{still}", client.program) } else { format!("{what} ({}):\n{}{still}", found.len(), listed.join("\n")) }
         }
     };
     Ok(crate::tools::ToolOutput::ok(content, meta))
@@ -1194,8 +1295,7 @@ mod tests {
                 }
             }
         });
-        let rust = &LANGUAGES[0];
-        Client::start(rust, root, Box::new(client_read), Box::new(client_write), None).await.unwrap()
+        Client::start("rust-analyzer", root, Box::new(client_read), Box::new(client_write), None).await.unwrap()
     }
 
     #[tokio::test]
@@ -1206,7 +1306,7 @@ mod tests {
         let hub = LspHub::default();
         let configured = Arc::new(Mutex::new(Value::Null));
         let client = scripted(root, configured.clone()).await;
-        hub.insert(root, client.clone()).await;
+        hub.insert(root, &LANGUAGES[0], client.clone()).await;
         let cancel = CancellationToken::new();
         // rust-analyzer's own word counts: until it says it is done, it is at work.
         assert!(client.busy());
@@ -1350,10 +1450,150 @@ mod tests {
 
     /// A language whose server is downloaded from `archive`, pinned to `sha256`, for this machine.
     fn downloadable(program: &'static str, file: String, sha256: String) -> &'static Language {
+        downloadable_in_place(program, program, file, sha256)
+    }
+
+    /// A language whose server on the `PATH` is `program`, and in whose place `downloaded` is downloaded.
+    fn downloadable_in_place(program: &'static str, downloaded: &'static str, file: String, sha256: String) -> &'static Language {
         let target = crate::runtime::target().expect("a target with builds");
         let builds: &'static [(&'static str, &'static str, &'static str, u64)] = Box::leak(vec![(target, &*Box::leak(file.into_boxed_str()), &*Box::leak(sha256.into_boxed_str()), 1_000)].into_boxed_slice());
-        let download: &'static Download = Box::leak(Box::new(Download { version: "1.0", address: "", builds }));
+        let download: &'static Download = Box::leak(Box::new(Download { name: "Fake", program: downloaded, args: &["--serve"], version: "1.0", address: "", builds }));
         Box::leak(Box::new(Language { key: "fake", name: "Fake", program, args: &[], extensions: &["fake"], install: "install it somehow", runs_project_code: false, env: &[], download: Some(download) }))
+    }
+
+    fn sha256_of(bytes: &[u8]) -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn every_download_is_pinned_for_each_system_the_app_runs_on() {
+        let targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"];
+        let downloads: Vec<&Download> = LANGUAGES.iter().filter_map(|language| language.download).collect();
+        assert_eq!(downloads.iter().map(|download| download.program).collect::<Vec<_>>(), ["rust-analyzer", "tsc", "ty"]);
+        for download in downloads {
+            assert_eq!(download.builds.iter().map(|(target, ..)| *target).collect::<Vec<_>>(), targets, "{}", download.name);
+            for (target, file, sha256, bytes) in download.builds {
+                assert!(sha256.len() == 64 && sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{target} {file}");
+                assert!((1_000_000..40_000_000).contains(bytes), "{target} {file}");
+                assert!([".gz", ".tgz", ".tar.gz", ".zip"].iter().any(|end| file.ends_with(end)), "{file}");
+                assert!(download.address.starts_with("https://"));
+            }
+        }
+        // TypeScript and Python are served by programs of their own when downloaded, started as servers.
+        assert_eq!((TYPESCRIPT.program, TYPESCRIPT.args), ("tsc", &["--lsp", "--stdio"][..]));
+        assert_eq!((TY.program, TY.args), ("ty", &["server"][..]));
+        assert_eq!(settings("tsc")["runExternalCode"], false);
+    }
+
+    #[tokio::test]
+    async fn keeps_the_program_with_its_folder_from_a_tarball_and_nothing_outside_it() {
+        if crate::runtime::target().is_none() {
+            return;
+        }
+        // As an npm package has it: the program in `package/lib`, beside the files it reads; other files above.
+        let program = executable("odg-fake-tsc");
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+        let mut add = |path: &str, bytes: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.as_gnu_mut().unwrap().name[..path.len()].copy_from_slice(path.as_bytes());
+            header.set_cksum();
+            tar.append(&header, bytes).unwrap();
+        };
+        add("package/README.md", b"readme");
+        add(&format!("package/lib/{program}"), b"the program");
+        add("package/lib/lib.d.ts", b"declare var x: number;");
+        add("package/lib/sub/more.d.ts", b"more");
+        add("package/../../escaped", b"out");
+        let packed = tar.into_inner().unwrap().finish().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("lsp");
+        let language = downloadable_in_place("odg-fake-tsls", "odg-fake-tsc", "pkg/-/odg-fake-tsc-1.0.tgz".to_string(), sha256_of(&packed));
+        let (address, requests) = crate::testing::serve_bytes(vec![ok(&packed)]).await;
+        let got = install_from(&root, language, &address, &CancellationToken::new()).await.unwrap();
+        assert!(requests.await.unwrap()[0].starts_with("GET /pkg/-/odg-fake-tsc-1.0.tgz "));
+        let into = root.join("odg-fake-tsc/1.0");
+        assert_eq!(got, into.join(&program));
+        assert_eq!(std::fs::read(&got).unwrap(), b"the program");
+        assert_eq!(std::fs::read(into.join("lib.d.ts")).unwrap(), b"declare var x: number;");
+        assert_eq!(std::fs::read(into.join("sub/more.d.ts")).unwrap(), b"more");
+        assert!(!into.join("README.md").exists() && !directory.path().join("escaped").exists() && !root.join("escaped").exists());
+        assert!(!root.join("odg-fake-tsc/odg-fake-tsc-1.0.tgz.part").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&got).unwrap().permissions().mode() & 0o777, 0o755);
+        }
+        // Found by the program downloaded, though the language's own program is another; and taken away by it.
+        assert_eq!(locate(Some(&root), language).await, Located::Downloaded(got));
+        assert_eq!(downloaded(&root, language_by_key("rust").unwrap()), None);
+        remove(&root, language).unwrap();
+        assert!(!root.join("odg-fake-tsc").exists());
+    }
+
+    /// Downloads the real TypeScript and ty, as the app does, and asks each about a small project. It fetches about
+    /// 25 MB and runs what it fetched, so it runs only when `ODG_TEST_DOWNLOADS` is set.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigates_with_the_servers_it_downloads() {
+        if std::env::var_os("ODG_TEST_DOWNLOADS").is_none() || crate::runtime::target().is_none() {
+            return;
+        }
+        let downloads = tempfile::tempdir().unwrap();
+        let hub = LspHub::new(downloads.path().to_path_buf());
+        let cancel = CancellationToken::new();
+        let projects = [
+            ("typescript", "a.ts", "export function greet(name: string): string {\n    return name;\n}\n", "b.ts", "import { greet } from \"./a\";\ngreet(\"x\");\nconst n: number = \"oops\";\n"),
+            ("python", "a.py", "def greet(name: str) -> str:\n    return name\n", "b.py", "from a import greet\ngreet(\"x\")\nn: int = \"oops\"\n"),
+        ];
+        for (key, defined_in, defining, used_in, using) in projects {
+            let language = language_by_key(key).unwrap();
+            if matches!(locate(None, language).await, Located::System(_)) {
+                continue;
+            }
+            let installed = server_tool(&hub, &json!({ "language": key, "install": true }), &cancel).await.unwrap();
+            assert_eq!(installed.meta["state"], "downloaded", "{}", installed.content);
+            let project = tempfile::tempdir().unwrap();
+            let root = project.path();
+            std::fs::write(root.join(defined_in), defining).unwrap();
+            std::fs::write(root.join(used_in), using).unwrap();
+            if key == "typescript" {
+                std::fs::write(root.join("tsconfig.json"), r#"{ "compilerOptions": { "strict": true } }"#).unwrap();
+            }
+            let defined = navigate(&hub, root, &json!({ "operation": "definition", "path": used_in, "line": 2, "symbol": "greet" }), &cancel).await.unwrap();
+            assert!(defined.content.contains(&format!("{defined_in}:1:")), "{key}: {}", defined.content);
+            let hover = navigate(&hub, root, &json!({ "operation": "hover", "path": used_in, "line": 2, "symbol": "greet" }), &cancel).await.unwrap();
+            assert!(hover.content.contains("str"), "{key}: {}", hover.content);
+            let outline = navigate(&hub, root, &json!({ "operation": "symbols", "path": defined_in }), &cancel).await.unwrap();
+            assert!(outline.content.contains("greet"), "{key}: {}", outline.content);
+            let found = navigate(&hub, root, &json!({ "operation": "diagnostics", "path": used_in }), &cancel).await.unwrap();
+            assert!(found.meta["errors"].as_u64().unwrap_or(0) >= 1, "{key}: {}", found.content);
+            let referenced = navigate(&hub, root, &json!({ "operation": "references", "path": defined_in, "line": 1, "symbol": "greet" }), &cancel).await.unwrap();
+            assert!(referenced.content.contains(used_in), "{key}: {}", referenced.content);
+        }
+        hub.shutdown();
+    }
+
+    #[test]
+    fn keeps_the_program_from_a_zip_and_nothing_that_would_climb_out() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = executable("odg-zipped");
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in [(program.as_str(), &b"zipped"[..]), ("../outside", b"out"), ("notes.txt", b"notes")] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
+        }
+        let archive = directory.path().join("odg-zipped.zip.part");
+        std::fs::write(&archive, zip.finish().unwrap().into_inner()).unwrap();
+        let into = directory.path().join("into");
+        let got = unpack_program(&archive, &into, "odg-zipped").unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"zipped");
+        assert_eq!(std::fs::read(into.join("notes.txt")).unwrap(), b"notes");
+        assert!(!directory.path().join("outside").exists());
+        // An archive without the program is refused.
+        let wrong = unpack_program(&archive, &into, "odg-elsewhere").unwrap_err();
+        assert!(wrong.contains("is not in the archive"), "{wrong}");
     }
 
     fn ok(body: &[u8]) -> Vec<u8> {
@@ -1414,8 +1654,13 @@ mod tests {
             assert!(told.content.contains("call `language_server` with `language` \"rust\" and `install` true") && told.content.contains("about 1"), "{}", told.content);
             assert_eq!(told.meta["state"], "missing");
         }
+        // Python: ty can be downloaded in pyright's place, or the user installs pyright.
+        let python = missing(language_by_key("python").unwrap());
+        assert!(python.contains("`language` \"python\" and `install` true (ty 0.0.107") && python.contains("npm install -g pyright"), "{python}");
+        let typescript = missing(language_by_key("typescript").unwrap());
+        assert!(typescript.contains("(TypeScript 7.0.2"), "{typescript}");
         // One the app cannot download: how the user installs it.
-        assert!(missing(language_by_key("python").unwrap()).contains("npm install -g pyright"));
+        assert!(missing(language_by_key("go").unwrap()).contains("go install golang.org/x/tools/gopls@latest"));
         let wrong = server_tool(&LspHub::default(), &json!({ "language": "cobol" }), &CancellationToken::new()).await.unwrap_err();
         assert!(wrong.contains("`language` must be one of rust, c, typescript, python, go"), "{wrong}");
     }

@@ -39,7 +39,7 @@ export function LanguageServersSection() {
         语言服务（代码导航）
         <Info>
           <p>
-            分身用 code_nav 借语言服务看代码：查定义、查引用、看类型、看大纲、查错。先找这台电脑上装好的（PATH 里能运行的那个），没有再用为本应用下载的。rust-analyzer 可以由本应用下载，按事先定好的校验码核对后放在 ~/.odg/lsp；别的语言请自行安装。
+            分身用 code_nav 借语言服务看代码：查定义、查引用、看类型、看大纲、查错。先找这台电脑上装好的（PATH 里能运行的那个），没有再用为本应用下载的。Rust、TypeScript/JavaScript、Python 的语言服务可以由本应用下载，按事先定好的校验码核对后放在 ~/.odg/lsp：Rust 是 rust-analyzer；TypeScript 是 TypeScript 7 自带的语言服务，不加载项目里的代码，所以不用请示；Python 是 Astral 的 ty（代替 pyright，还在测试版）。都是独立的程序，不用装 Node 或 Python。C/C++ 和 Go 请自行安装。
           </p>
         </Info>
       </h2>
@@ -63,18 +63,20 @@ export function LanguageServersSection() {
                     {server.location}
                   </span>
                 ) : server.download_mb ? (
-                  <span className="runtime-detail missing">没装。可以下载 {server.version}（约 {server.download_mb} MB），或自行安装：{server.install}</span>
+                  <span className="runtime-detail missing">
+                    没装。可以下载 {server.download} {server.version}（约 {server.download_mb} MB），或自行安装 {server.program}：{server.install}
+                  </span>
                 ) : (
                   <span className="runtime-detail missing">没装。自行安装：{server.install}</span>
                 )}
               </div>
               <div className="runtime-acts">
                 {server.state === "missing" && server.download_mb !== null && (
-                  <button type="button" className="icon-button go" disabled={!!busy} title={`下载 ${server.program} ${server.version}（约 ${server.download_mb} MB）`} onClick={() => act(server.key, api.installLanguageServer)}>
+                  <button type="button" className="icon-button go" disabled={!!busy} title={`下载 ${server.download} ${server.version}（约 ${server.download_mb} MB）`} onClick={() => act(server.key, api.installLanguageServer)}>
                     <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M8 2.5v7.6M4.8 7 8 10.2 11.2 7M2.8 11.2v1.4a.9.9 0 0 0 .9.9h8.6a.9.9 0 0 0 .9-.9v-1.4" />
                     </svg>
-                    <span className="sr-only">下载 {server.program}</span>
+                    <span className="sr-only">下载 {server.download}</span>
                   </button>
                 )}
                 {server.state === "downloaded" && (

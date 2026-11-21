@@ -487,11 +487,13 @@ async fn install_runtime(handle: tauri::AppHandle) -> Result<RuntimeView, String
 struct LanguageServerView {
     key: &'static str,
     name: &'static str,
+    /// The program that serves: the one downloaded, when that is what is used.
     program: &'static str,
     /// `system` (on the `PATH`), `downloaded` (for the app), or `missing`.
     state: &'static str,
     location: Option<String>,
-    /// The version the app downloads, and about how many megabytes; absent where it cannot.
+    /// What the app downloads, its version, and about how many megabytes; absent where it cannot.
+    download: Option<&'static str>,
     version: Option<&'static str>,
     download_mb: Option<u64>,
     /// How the user installs it themselves.
@@ -509,9 +511,13 @@ async fn language_server_views(root: Option<&std::path::Path>) -> Vec<LanguageSe
         views.push(LanguageServerView {
             key: language.key,
             name: language.name,
-            program: language.program,
+            program: match (state, language.download) {
+                ("downloaded", Some(download)) => download.program,
+                _ => language.program,
+            },
             state,
             location,
+            download: language.download.map(|download| download.name),
             version: language.download.map(|download| download.version),
             download_mb: language.download.and_then(|download| download.megabytes()),
             install: language.install,

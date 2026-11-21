@@ -103,7 +103,7 @@ fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
             let language = crate::lsp::language_by_key(input["language"].as_str().unwrap_or_default())?;
             let download = language.download?;
             let megabytes = download.megabytes()?;
-            format!("下载 {} {}（约 {megabytes} MB，只下载一次）\n→ ~/.odg/lsp", language.program, download.version)
+            format!("下载 {} {}（约 {megabytes} MB，只下载一次）\n→ ~/.odg/lsp", download.name, download.version)
         }
         "document_runtime" if input["install"] == true => {
             let modules: Vec<&str> = crate::runtime::MODULES.iter().map(|(_, what)| what.split(':').next().unwrap_or(what)).collect();
@@ -178,9 +178,10 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
         },
         // Reading code through its language's server: outside the workspace as reading there is; and the one server
         // that loads code of the project to run (see `crate::lsp`) is asked about, once for good if the user says so.
+        // Only where that server is on the `PATH`: the one downloaded in its place runs nothing of the project.
         "code_nav" => match (outside("path"), crate::lsp::language_for(&path("path"))) {
             (Some(path), _) => ask("outside_read", path),
-            (None, Some(language)) if language.runs_project_code => Verdict::Ask {
+            (None, Some(language)) if language.runs_project_code && crate::lsp::installed(language.program).is_some() => Verdict::Ask {
                 reason: "lsp",
                 detail: format!("{} ({})", language.program, workspace.display()),
                 grant: Some(format!("lsp:{}", language.program)),
@@ -502,9 +503,14 @@ mod tests {
         assert_eq!(check("code_nav", &json!({ "operation": "definition", "path": "src/a.rs" }), workspace), Verdict::Allow);
         assert_eq!(super::check(Mode::Plan, "code_nav", &json!({ "operation": "symbols", "path": "a.py" }), workspace), Verdict::Allow);
         assert_eq!(reason(check("code_nav", &json!({ "operation": "hover", "path": "../x.rs" }), workspace)), Some("outside_read"));
-        // The TypeScript server loads the project's own TypeScript: asked about, and allowed for good by its grant.
+        // The TypeScript server on the `PATH` loads the project's own TypeScript: asked about, and allowed for good by
+        // its grant. Where it is not there, the TypeScript downloaded in its place runs nothing of the project.
         let typescript = check("code_nav", &json!({ "operation": "definition", "path": "src/a.ts" }), workspace);
-        assert!(matches!(&typescript, Verdict::Ask { reason: "lsp", grant: Some(grant), .. } if grant == "lsp:typescript-language-server"), "{typescript:?}");
+        if crate::lsp::installed("typescript-language-server").is_some() {
+            assert!(matches!(&typescript, Verdict::Ask { reason: "lsp", grant: Some(grant), .. } if grant == "lsp:typescript-language-server"), "{typescript:?}");
+        } else {
+            assert_eq!(typescript, Verdict::Allow);
+        }
         assert!(crate::grants::GrantStore::keeps("lsp:typescript-language-server"));
     }
 
@@ -518,9 +524,16 @@ mod tests {
             assert!(matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 rust-analyzer 2026-11-16（约 ") && detail.ends_with("→ ~/.odg/lsp")), "{asked:?}");
             assert_eq!(reason(super::check(Mode::Plan, "language_server", &install, workspace)), Some("refused"));
         }
+        // What is downloaded in the place of a language's own server is named as itself.
+        if crate::lsp::language_by_key("python").and_then(|python| python.download).and_then(|download| download.megabytes()).is_some() {
+            let asked = super::check(Mode::Edit, "language_server", &json!({ "language": "python", "install": true }), workspace);
+            assert!(matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 ty 0.0.107（约 ")), "{asked:?}");
+            let asked = super::check(Mode::Edit, "language_server", &json!({ "language": "typescript", "install": true }), workspace);
+            assert!(matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 TypeScript 7.0.2（约 ")), "{asked:?}");
+        }
         // Only looking, or a server the app does not download, asks nothing.
         assert_eq!(check("language_server", &json!({ "language": "rust" }), workspace), Verdict::Allow);
-        assert_eq!(check("language_server", &json!({ "language": "python", "install": true }), workspace), Verdict::Allow);
+        assert_eq!(check("language_server", &json!({ "language": "go", "install": true }), workspace), Verdict::Allow);
     }
 
     #[test]

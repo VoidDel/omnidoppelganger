@@ -208,7 +208,8 @@ export interface LanguageServerView {
   /** On the `PATH`, downloaded for the app, or nowhere. */
   state: "system" | "downloaded" | "missing";
   location: string | null;
-  /** The version the app downloads and about how many megabytes; null where it cannot download it. */
+  /** What the app downloads (which may serve in place of `program`), its version and about how many megabytes; null where it cannot download it. */
+  download: string | null;
   version: string | null;
   download_mb: number | null;
   /** How the user installs it themselves. */

@@ -202,7 +202,7 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "language_server",
-            "description": "See whether the language server `code_nav` needs for a language is here, and with `install`, download it for this app. Only rust-analyzer can be downloaded so far, and the user is asked first every time; for the other languages it says how the user installs the server. Use it when `code_nav` says a server is missing.",
+            "description": "See whether the language server `code_nav` needs for a language is here, and with `install`, download it for this app. Rust (rust-analyzer), TypeScript and JavaScript (TypeScript 7), and Python (ty) can be downloaded, and the user is asked first every time; for C, C++ and Go it says how the user installs the server. Use it when `code_nav` says a server is missing.",
             "input_schema": {
                 "type": "object",
                 "properties": {
