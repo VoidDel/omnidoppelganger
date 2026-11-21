@@ -162,6 +162,16 @@ fn leaves_the_agent_s_questions_to_it_when_nobody_can_answer() {
 }
 
 #[test]
+fn prints_a_plan_presented_in_plan_mode_as_its_answer() {
+    let plan = json!({ "title": "Faster parser", "plan": "1. Cache the tokens.\n2. Run the tests." });
+    // One reply only: the plan ends the turn, and nothing more is asked of the model.
+    let run = odg(&["--mode", "plan", "plan", "it"], vec![Reply { text: "Here is the plan.", tool: Some(("present_plan", plan)) }]);
+    assert!(run.output.status.success(), "{}", run.stderr());
+    assert_eq!(run.stdout(), "Here is the plan.\n1. Cache the tokens.\n2. Run the tests.\n");
+    assert_eq!(run.requests.len(), 1);
+}
+
+#[test]
 fn runs_a_subagent_and_answers_what_it_asks() {
     let replies = vec![
         Reply { text: "Splitting it.", tool: Some(("delegate", json!({ "tasks": [{ "name": "runner", "task": "Run the command." }] }))) },

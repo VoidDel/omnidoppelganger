@@ -526,6 +526,104 @@ pub fn delegate_tasks(input: &Value) -> Result<Vec<(String, String)>, String> {
         .collect()
 }
 
+/// The definitions of `list_mcp_resources` and `read_mcp_resource`, offered while a connected MCP server has resources.
+pub fn mcp_resource_specs(servers: &[String]) -> Vec<Value> {
+    let named = servers.iter().map(|server| format!("`{server}`")).collect::<Vec<_>>().join(", ");
+    vec![
+        json!({
+            "name": "list_mcp_resources",
+            "description": format!("List what the user's MCP servers offer to be read: documents, files, records, schemas, each by an address (`uri`), with the templates some servers name addresses by. Servers with resources: {named}. Read one with `read_mcp_resource`."),
+            "input_schema": {
+                "type": "object",
+                "properties": { "server": { "type": "string", "description": "Only this server's. Default: every server's." } }
+            }
+        }),
+        json!({
+            "name": "read_mcp_resource",
+            "description": "Read a resource of one of the user's MCP servers by its address, as `list_mcp_resources` gave it or a template makes it. The user is asked first: the address goes to the server.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "server": { "type": "string", "description": "The server the resource is on." },
+                    "uri": { "type": "string", "description": "The resource's address." }
+                },
+                "required": ["server", "uri"]
+            }
+        }),
+    ]
+}
+
+/// The most resources listed from one server.
+const RESOURCES_LISTED: usize = 200;
+
+async fn list_mcp_resources(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let hub = context.mcp.as_ref().ok_or_else(|| ToolOutput::error("There are no MCP servers here."))?;
+    let wanted = input["server"].as_str().filter(|server| !server.is_empty());
+    let servers: Vec<_> = hub.resource_servers().into_iter().filter(|(name, _)| wanted.is_none_or(|wanted| wanted == name)).collect();
+    if servers.is_empty() {
+        return Err(ToolOutput::error(match wanted {
+            Some(server) => format!("No connected MCP server `{server}` offers resources."),
+            None => "No connected MCP server offers resources.".to_string(),
+        }));
+    }
+    let mut parts = Vec::new();
+    let mut counted = 0;
+    for (name, server) in servers {
+        match server.list_resources(RESOURCES_LISTED).await {
+            Ok((resources, templates)) => {
+                counted += resources.len();
+                let line = |item: &Value, address: &str| {
+                    let label = item["title"].as_str().or(item["name"].as_str()).unwrap_or_default();
+                    let kind = item["mimeType"].as_str().map(|kind| format!(" ({kind})")).unwrap_or_default();
+                    let about = item["description"].as_str().map(str::trim).filter(|about| !about.is_empty()).map(|about| format!(": {about}")).unwrap_or_default();
+                    format!("- {}{}{kind}{about}", item[address].as_str().unwrap_or_default(), if label.is_empty() { String::new() } else { format!(" — {label}") })
+                };
+                let mut part = format!("Resources of `{name}` ({}):", resources.len());
+                part.push_str(&resources.iter().map(|resource| format!("\n{}", line(resource, "uri"))).collect::<String>());
+                if !templates.is_empty() {
+                    part.push_str("\nTemplates of addresses:");
+                    part.push_str(&templates.iter().map(|template| format!("\n{}", line(template, "uriTemplate"))).collect::<String>());
+                }
+                parts.push(part);
+            }
+            Err(error) => parts.push(format!("`{name}` could not list its resources: {error}")),
+        }
+    }
+    Ok(ToolOutput::ok(parts.join("\n\n"), json!({ "results": counted })))
+}
+
+async fn read_mcp_resource(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let hub = context.mcp.as_ref().ok_or_else(|| ToolOutput::error("There are no MCP servers here."))?;
+    let name = string_arg(input, "server")?;
+    let uri = string_arg(input, "uri")?;
+    let (_, server) = hub.resource_servers().into_iter().find(|(server, _)| server == name).ok_or_else(|| ToolOutput::error(format!("No connected MCP server `{name}` offers resources.")))?;
+    let read = server.read_resource(uri, &context.cancel).await.map_err(|error| ToolOutput::error(format!("`{name}` could not give {uri}: {error}")))?;
+    // Pictures go to a model that can see them; to one that cannot, only what they are.
+    let seen = context.vision != Some(false);
+    let images: Vec<Image> = if seen { read.images.iter().map(|(media_type, data)| Image { media_type: media_type.clone(), data: data.clone() }).collect() } else { Vec::new() };
+    let meta = json!({ "server": name, "uri": uri, "pictures": read.images.len() });
+    Ok(ToolOutput { content: read.text, is_error: false, meta, images })
+}
+
+/// The name of the tool that presents a plan in plan mode. The agent loop runs it, since it ends the turn.
+pub const PRESENT_PLAN: &str = "present_plan";
+
+/// The definition of `present_plan`. A subagent is not offered it: it reports to the agent that set it off.
+pub fn present_plan_spec() -> Value {
+    json!({
+        "name": PRESENT_PLAN,
+        "description": "In plan mode, present your plan to the user: what you would change, where, and how you would verify it, in Markdown. It is shown as the plan, with a way for the user to have it carried out, and your turn ends with it: say nothing after it. Use it once the plan is complete, in place of writing the plan as your reply. Outside plan mode it is not needed: do the work.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "description": "The plan in a few words, shown over it." },
+                "plan": { "type": "string", "description": "The whole plan, in Markdown: the steps, the files each touches, and how the result is checked." }
+            },
+            "required": ["plan"]
+        }
+    })
+}
+
 /// The name of the tool that asks the user questions. The agent loop runs it, since it waits on the user.
 pub const ASK_USER: &str = "ask_user";
 /// The most questions one `ask_user` call asks, and the most options a question offers.
@@ -746,6 +844,8 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "run_command" => run_command(input, context).await,
         "command_output" => command_output(input, context).await,
         "command_input" => command_input(input, context).await,
+        "list_mcp_resources" => list_mcp_resources(input, context).await,
+        "read_mcp_resource" => read_mcp_resource(input, context).await,
         "stop_command" => stop_command(input, context).await,
         "update_todos" => update_todos(input),
         "install_skill" => install_skill(input, context).await,
@@ -2390,5 +2490,34 @@ mod tests {
         let reading = if cfg!(windows) { "$line = [Console]::In.ReadLine(); if ($line -eq $null) { 'none' } else { $line }" } else { "read line || echo none" };
         let ran = execute("run_command", &json!({ "command": reading, "timeout_seconds": 20 }), &context).await;
         assert!(ran.content.contains("none") && ran.meta["stopped"].is_null(), "{}", ran.content);
+    }
+
+    #[tokio::test]
+    async fn lists_and_reads_the_resources_of_the_users_mcp_servers() {
+        let (directory, mut context) = context();
+        let hub = Arc::new(crate::mcp::McpHub::new(directory.path().join("mcp.json"), tokio::runtime::Handle::current()));
+        hub.insert("notes", crate::mcp::testing::resource_server().await);
+        hub.insert("echo", crate::mcp::testing::echo_server().await);
+        context.mcp = Some(hub);
+        // Only the server with resources is named, and listed.
+        assert!(mcp_resource_specs(&["notes".to_string()])[0]["description"].as_str().unwrap().contains("Servers with resources: `notes`."));
+        let listed = execute("list_mcp_resources", &json!({}), &context).await;
+        assert_eq!(
+            listed.content,
+            "Resources of `notes` (2):\n- notes://today — Today's notes (text/markdown): What was done today.\n- notes://chart — chart (image/png)\nTemplates of addresses:\n- notes://day/{date} — day: One day's notes."
+        );
+        assert_eq!(listed.meta["results"], 2);
+        let read = execute("read_mcp_resource", &json!({ "server": "notes", "uri": "notes://today" }), &context).await;
+        assert!(!read.is_error && read.content == "# Today\nShipped 0.4.7.");
+        // A picture goes to a model that can see, and only its kind to one that cannot.
+        let chart = execute("read_mcp_resource", &json!({ "server": "notes", "uri": "notes://chart" }), &context).await;
+        assert_eq!(chart.images, [Image { media_type: "image/png".into(), data: "aGk=".into() }]);
+        context.vision = Some(false);
+        assert!(execute("read_mcp_resource", &json!({ "server": "notes", "uri": "notes://chart" }), &context).await.images.is_empty());
+        // What it will not do.
+        let unknown = execute("read_mcp_resource", &json!({ "server": "echo", "uri": "x" }), &context).await;
+        assert!(unknown.is_error && unknown.content.contains("No connected MCP server `echo` offers resources"), "{}", unknown.content);
+        let none = execute("list_mcp_resources", &json!({ "server": "gone" }), &context).await;
+        assert!(none.is_error && none.content.contains("`gone`"), "{}", none.content);
     }
 }

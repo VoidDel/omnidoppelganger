@@ -207,6 +207,12 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
                 None => Verdict::Allow,
             }
         }
+        // Reading a server's resource sends the address to it, which may be on another machine: asked about, as
+        // a call is, and allowed for that server for good if the user says so.
+        "read_mcp_resource" => {
+            let server = input["server"].as_str().unwrap_or_default();
+            Verdict::Ask { reason: "mcp_resource", detail: format!("{server} · {}", input["uri"].as_str().unwrap_or_default()), grant: Some(format!("mcp-resource:{server}")) }
+        }
         tool if crate::mcp::split_name(tool).is_some() => {
             let (server, name) = crate::mcp::split_name(tool).unwrap_or_default();
             // What the user is shown: whose tool, which one, and with what, cut to a readable length.
@@ -527,5 +533,18 @@ mod tests {
         assert_eq!(super::check(Mode::Bypass, "command_input", &input, workspace), Verdict::Allow);
         // Allowed for the session, it covers that job only, and is never kept for good.
         assert!(!crate::grants::GrantStore::keeps("input:b2"));
+    }
+
+    #[test]
+    fn reading_an_mcp_resource_is_asked_about_and_listing_them_is_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        assert_eq!(
+            check("read_mcp_resource", &json!({ "server": "notes", "uri": "notes://today" }), workspace),
+            Verdict::Ask { reason: "mcp_resource", detail: "notes · notes://today".into(), grant: Some("mcp-resource:notes".into()) }
+        );
+        assert!(crate::grants::GrantStore::keeps("mcp-resource:notes"));
+        assert_eq!(check("list_mcp_resources", &json!({}), workspace), Verdict::Allow);
+        assert_eq!(check("present_plan", &json!({ "plan": "x" }), workspace), Verdict::Allow);
     }
 }

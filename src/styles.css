@@ -2588,6 +2588,42 @@ button.did-head:not(:disabled):hover {
   outline-offset: -1px;
 }
 
+/* The plan the 分身 presented in 先谋后动: a sheet of its own in the thread, ruled in jade at its side. */
+.plan-card {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--jade);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.plan-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.plan-seal {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-paper);
+  background: var(--jade);
+  color: var(--jade-ink);
+  font-family: var(--brush);
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+.plan-title {
+  color: var(--ink);
+  font-size: var(--t-lead);
+}
+
 /* Once the questions are over: what was asked and what 本尊 said, kept quietly in the thread. */
 .asked {
   display: grid;

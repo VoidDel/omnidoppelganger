@@ -345,9 +345,10 @@ export default function App() {
       .then(() => api.sendMessage(id, "照这个计划动手。"))
       .catch(fail);
   };
-  // The last turn in plan mode ended with the 分身's answer, not a stop or an error.
+  // The last turn in plan mode ended with the 分身's plan, presented as one or written as its answer; not a stop or an error.
   const lastItems = rows[rows.length - 1]?.items ?? [];
-  const planReady = active?.mode === "plan" && lastItems[lastItems.length - 1]?.kind === "text";
+  const last = lastItems[lastItems.length - 1];
+  const planReady = active?.mode === "plan" && (last?.kind === "text" || (last?.kind === "tool" && last.name === "present_plan" && !!last.result && !last.result.isError));
   const refreshSettings = useCallback(() => {
     api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
   }, [fail]);

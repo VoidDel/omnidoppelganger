@@ -8,8 +8,11 @@
 //! `mcp__<server>__<tool>`, and every call asks the user first (see
 //! [`crate::policy`]): what such a tool does is the server's business.
 //!
-//! Only tools are used. A server's prompts and resources are not, and its
-//! requests to the client (sampling, roots) are declined.
+//! Tools are used, and resources: what a server offers to be read (files,
+//! documents, database schemas), listed and read with `list_mcp_resources`
+//! and `read_mcp_resource`, a read asked about as a call is. A server's
+//! prompts are not used, and its requests to the client (sampling, roots)
+//! are declined.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -238,6 +241,15 @@ pub struct Server {
     wire: Wire,
     next: AtomicU64,
     pub tools: Vec<McpTool>,
+    /// It offers resources to be read.
+    pub resources: bool,
+}
+
+/// What reading a resource gave: its text, and the pictures among it, in base64 with their types.
+#[derive(Debug, Default, PartialEq)]
+pub struct ReadResource {
+    pub text: String,
+    pub images: Vec<(String, String)>,
 }
 
 impl Server {
@@ -287,13 +299,14 @@ impl Server {
 
     /// Shake hands and list the server's tools, each request given `timeout` to be answered.
     async fn open(wire: Wire, timeout: Duration) -> Result<Self, String> {
-        let mut server = Self { wire, next: AtomicU64::new(0), tools: Vec::new() };
+        let mut server = Self { wire, next: AtomicU64::new(0), tools: Vec::new(), resources: false };
         let hello = json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": { "name": "omnidoppelganger", "version": env!("CARGO_PKG_VERSION") } });
         let welcome = server.request("initialize", hello, timeout).await?;
         if let (Wire::Http(wire), Some(version)) = (&server.wire, welcome["protocolVersion"].as_str()) {
             *wire.version.lock().unwrap() = Some(version.to_string());
         }
         server.notify("notifications/initialized").await?;
+        server.resources = welcome["capabilities"].get("resources").is_some();
         // A server without tools says so by not listing the capability.
         if welcome["capabilities"].get("tools").is_none() {
             return Ok(server);
@@ -350,6 +363,56 @@ impl Server {
             }
         });
         Self::open(Wire::Lines(wire), START_TIMEOUT).await
+    }
+
+    /// The resources the server offers, every page of them, at most `most`: each as the server described it
+    /// (`uri`, `name`, `mimeType`, `description`). Then its templates of addresses, which name resources by a pattern.
+    pub async fn list_resources(&self, most: usize) -> Result<(Vec<Value>, Vec<Value>), String> {
+        let mut listed = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = cursor.as_ref().map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let page = self.request("resources/list", params, CONNECT_TIMEOUT).await?;
+            listed.extend(page["resources"].as_array().cloned().unwrap_or_default());
+            cursor = page["nextCursor"].as_str().map(str::to_string);
+            if cursor.is_none() || listed.len() >= most {
+                listed.truncate(most);
+                break;
+            }
+        }
+        // Not every server has templates; one that does not may answer with an error.
+        let templates = self.request("resources/templates/list", json!({}), CONNECT_TIMEOUT).await.ok().and_then(|page| page["resourceTemplates"].as_array().cloned()).unwrap_or_default();
+        Ok((listed, templates))
+    }
+
+    /// Read a resource: its text parts joined, its pictures kept as pictures, anything else said to be there.
+    pub async fn read_resource(&self, uri: &str, cancel: &CancellationToken) -> Result<ReadResource, String> {
+        let answer = tokio::select! {
+            answer = self.request("resources/read", json!({ "uri": uri }), CALL_TIMEOUT) => answer?,
+            () = cancel.cancelled() => return Err("the read was cancelled".to_string()),
+        };
+        let mut read = ReadResource::default();
+        let mut parts = Vec::new();
+        for content in answer["contents"].as_array().map(Vec::as_slice).unwrap_or_default() {
+            let kind = content["mimeType"].as_str().unwrap_or_default();
+            if let Some(text) = content["text"].as_str() {
+                parts.push(text.to_string());
+            } else if let Some(blob) = content["blob"].as_str() {
+                if crate::events::IMAGE_TYPES.contains(&kind) {
+                    read.images.push((kind.to_string(), blob.to_string()));
+                    parts.push(format!("[a {kind} picture, shown to you here]"));
+                } else {
+                    parts.push(format!("[{} bytes of {} that are not text: {}]", blob.len() / 4 * 3, if kind.is_empty() { "data" } else { kind }, content["uri"].as_str().unwrap_or(uri)));
+                }
+            }
+        }
+        let mut text = parts.join("\n");
+        if text.chars().count() > RESULT_CHARS {
+            let total = text.chars().count();
+            text = format!("{}\n[... the resource is {total} characters; it is cut at {RESULT_CHARS} ...]", text.chars().take(RESULT_CHARS).collect::<String>());
+        }
+        read.text = if text.is_empty() { "(the resource is empty)".to_string() } else { text };
+        Ok(read)
     }
 
     /// Call a tool and flatten what it returns into text.
@@ -595,6 +658,18 @@ impl McpHub {
         specs
     }
 
+    /// The connected servers that offer resources, by name.
+    pub fn resource_servers(&self) -> Vec<(String, Arc<Server>)> {
+        let slots = self.slots.lock().unwrap();
+        slots
+            .iter()
+            .filter_map(|(name, entry)| match &entry.slot {
+                Slot::Ready(server) if server.resources => Some((name.clone(), server.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Call the tool the model named. A name no connected server offers comes back as an error result.
     pub async fn call(&self, name: &str, input: &Value, cancel: &CancellationToken) -> CallResult {
         let found = {
@@ -627,6 +702,38 @@ impl McpHub {
 #[cfg(test)]
 pub mod testing {
     use super::*;
+
+    /// A server with resources and no tools: two pages of them, a template, and a text, a picture and some bytes to read.
+    pub async fn resource_server() -> Server {
+        let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+        let (server_read, mut server_write) = tokio::io::split(server_side);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                let id = message["id"].clone();
+                let result = match message["method"].as_str() {
+                    Some("initialize") => json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": { "resources": {} }, "serverInfo": { "name": "notes", "version": "1" } }),
+                    Some("resources/list") if message["params"]["cursor"].is_null() => json!({
+                        "resources": [{ "uri": "notes://today", "name": "today", "title": "Today's notes", "mimeType": "text/markdown", "description": "What was done today." }],
+                        "nextCursor": "page-2",
+                    }),
+                    Some("resources/list") => json!({ "resources": [{ "uri": "notes://chart", "name": "chart", "mimeType": "image/png" }] }),
+                    Some("resources/templates/list") => json!({ "resourceTemplates": [{ "uriTemplate": "notes://day/{date}", "name": "day", "description": "One day's notes." }] }),
+                    Some("resources/read") => match message["params"]["uri"].as_str() {
+                        Some("notes://today") => json!({ "contents": [{ "uri": "notes://today", "mimeType": "text/markdown", "text": "# Today\nShipped 0.4.7." }] }),
+                        Some("notes://chart") => json!({ "contents": [{ "uri": "notes://chart", "mimeType": "image/png", "blob": "aGk=" }] }),
+                        _ => json!({ "contents": [{ "uri": "notes://data", "mimeType": "application/octet-stream", "blob": "AAAAAAAA" }] }),
+                    },
+                    _ => continue,
+                };
+                let reply = json!({ "jsonrpc": "2.0", "id": id, "result": result });
+                let _ = server_write.write_all(format!("{reply}\n").as_bytes()).await;
+            }
+        });
+        let (read, write) = tokio::io::split(client_side);
+        Server::over(read, write).await.unwrap()
+    }
 
     /// A server offering `echo` (returns its `text`) and `fail` (an error result), which also pings the client once.
     pub async fn echo_server() -> Server {
@@ -827,5 +934,23 @@ mod tests {
         let dies = ServerConfig { command: Some(program.into()), args, ..Default::default() };
         let error = Server::connect(&dies).await.err().unwrap();
         assert!(error.starts_with("the server closed the connection"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn lists_every_page_of_a_servers_resources_and_reads_them() {
+        let server = testing::resource_server().await;
+        assert!(server.resources && server.tools.is_empty());
+        let (resources, templates) = server.list_resources(200).await.unwrap();
+        assert_eq!(resources.iter().map(|resource| resource["uri"].as_str().unwrap()).collect::<Vec<_>>(), ["notes://today", "notes://chart"]);
+        assert_eq!(templates[0]["uriTemplate"], "notes://day/{date}");
+        assert_eq!(server.list_resources(1).await.unwrap().0.len(), 1);
+        let cancel = CancellationToken::new();
+        assert_eq!(server.read_resource("notes://today", &cancel).await.unwrap(), ReadResource { text: "# Today\nShipped 0.4.7.".into(), images: Vec::new() });
+        let chart = server.read_resource("notes://chart", &cancel).await.unwrap();
+        assert_eq!((chart.text.as_str(), chart.images), ("[a image/png picture, shown to you here]", vec![("image/png".to_string(), "aGk=".to_string())]));
+        let data = server.read_resource("notes://data", &cancel).await.unwrap();
+        assert_eq!(data.text, "[6 bytes of application/octet-stream that are not text: notes://data]");
+        // A server without the capability is not taken to have resources.
+        assert!(!testing::echo_server().await.resources);
     }
 }

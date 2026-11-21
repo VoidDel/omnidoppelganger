@@ -712,6 +712,7 @@ impl<L: Llm> Inner<L> {
         if self.parent.is_none() {
             specs.push(tools::delegate_spec());
             specs.push(tools::ask_user_spec());
+            specs.push(tools::present_plan_spec());
         }
         // Through Zhipu with a GLM key, or else through the session's own provider where it can search.
         if self.search_config().is_some() || crate::provider_search::can_search(&self.provider()) {
@@ -722,6 +723,11 @@ impl<L: Llm> Inner<L> {
         }
         if let Some(hub) = &self.mcp {
             specs.extend(hub.specs());
+            // What servers offer to be read, while one does.
+            let servers: Vec<String> = hub.resource_servers().into_iter().map(|(name, _)| name).collect();
+            if !servers.is_empty() {
+                specs.extend(tools::mcp_resource_specs(&servers));
+            }
         }
         specs
     }
@@ -1170,6 +1176,8 @@ impl<L: Llm> Inner<L> {
 
             // Reads that ran while an earlier call of this message waited for approval.
             let mut ran_early: HashSet<String> = HashSet::new();
+            // A plan presented in plan mode ends the turn once this message's calls are done.
+            let mut presented = false;
             for (index, (id, name, input)) in calls.iter().enumerate() {
                 let (id, name, input) = (id.clone(), name.clone(), input.clone());
                 if ran_early.contains(&id) {
@@ -1285,6 +1293,17 @@ impl<L: Llm> Inner<L> {
                         Some(output) => output,
                         None => return Ok("cancelled"),
                     },
+                    tools::PRESENT_PLAN => {
+                        let plan = input["plan"].as_str().map(str::trim).unwrap_or_default();
+                        if self.mode() != Mode::Plan {
+                            ToolOutput::error("Plan mode is off, so there is no plan to present: carry out the work, or say what you propose in your reply.")
+                        } else if plan.is_empty() {
+                            ToolOutput::error("`plan` is empty: give the whole plan.")
+                        } else {
+                            presented = true;
+                            ToolOutput::ok("The plan is shown to the user, who decides whether to have it carried out.", json!({ "presented": true }))
+                        }
+                    }
                     // Without Zhipu's search, the session's own provider searches, in a request of its own.
                     "web_search" if self.search_config().is_none() => match self.search_with_provider(&input, cancel).await {
                         Some(output) => output,
@@ -1293,6 +1312,10 @@ impl<L: Llm> Inner<L> {
                     _ => tools::execute(&name, &input, &self.tool_context(cancel)).await,
                 };
                 self.tool_output(&id, &name, output)?;
+            }
+            // The plan is the turn's answer: nothing more is asked of the model, unless the user said something meanwhile.
+            if presented && self.state.lock().unwrap().inbox.is_empty() {
+                return Ok("completed");
             }
         }
         Ok("step_limit")
@@ -1659,9 +1682,9 @@ mod tests {
         fixture.idle().await;
         let requests = fixture.llm.requests.lock().unwrap();
         assert!(requests[0].system.contains("A schedule the user set up started this session") && !requests[0].system.contains("You are a subagent"));
-        // It is still a session of the user's own, so it may hand work to subagents and ask the user; and on Anthropic
-        // it may search the web through it, with no GLM key saved.
-        assert_eq!(requests[0].tools.len(), tools::specs().len() + 3);
+        // It is still a session of the user's own, so it may hand work to subagents, ask the user and present a plan;
+        // and on Anthropic it may search the web through it, with no GLM key saved.
+        assert_eq!(requests[0].tools.len(), tools::specs().len() + 4);
         assert_eq!(fixture.session.summary().schedule.as_deref(), Some("nightly"));
     }
 
@@ -1680,9 +1703,9 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].effort, "high");
         assert_eq!((requests[0].provider.as_str(), requests[0].session.as_str()), ("anthropic", fixture.session.id()));
-        // The built-in tools, `delegate` and `ask_user`, which only a session the user started is offered, and
-        // `web_search`, which Anthropic answers with no GLM key saved.
-        assert_eq!(requests[0].tools.len(), tools::specs().len() + 3);
+        // The built-in tools; `delegate`, `ask_user` and `present_plan`, which only a session the user started is
+        // offered; and `web_search`, which Anthropic answers with no GLM key saved.
+        assert_eq!(requests[0].tools.len(), tools::specs().len() + 4);
         assert!(requests[0].system.contains(&fixture.workspace.path().display().to_string()) && !requests[0].system.contains("A schedule"));
         // The second request carries the whole conversation: user, assistant tool call, tool result.
         assert_eq!(requests[1].messages.len(), 3);
@@ -2024,7 +2047,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         let names: Vec<&str> = requests[0].tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
         assert_eq!(names[names.len() - 3..], ["web_search", "mcp__echo__echo", "mcp__echo__fail_now"]);
-        assert_eq!(names.len(), tools::specs().len() + 5);
+        assert_eq!(names.len(), tools::specs().len() + 6);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2136,7 +2159,7 @@ mod tests {
         let requests = fixture.llm.requests.lock().unwrap();
         // The summary is asked for at the end of the conversation as it was, tools included.
         assert_eq!(texts(&requests[1]), [vec!["one".to_string()], vec!["first answer".into()], vec!["two".into(), SUMMARIZE.into()]]);
-        assert_eq!(requests[1].tools.len(), tools::specs().len() + 3);
+        assert_eq!(requests[1].tools.len(), tools::specs().len() + 4);
         // The step then starts over from the summary and the message not yet answered.
         let summary = format!("{}\n\nThe user said one; I answered.", crate::session::COMPACTED);
         assert_eq!(texts(&requests[2]), [vec![summary, "two".to_string()]]);
@@ -2261,6 +2284,41 @@ mod tests {
         let (_, failed, told) = fixture.results().remove(1);
         assert!(!failed && told.contains("got hi"), "{told}");
         fixture.session.kill_jobs();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_plan_presented_in_plan_mode_ends_the_turn_with_it() {
+        let plan = json!({ "title": "Faster parser", "plan": "1. Cache the tokens in `lexer.rs`.\n2. Run `cargo test`." });
+        // One reply only: asking the model again after the plan would find the script empty.
+        let mut fixture = fixture(ScriptedLlm::new(vec![calls(&[("p1", "present_plan", plan)])], None));
+        fixture.session.set_mode(Mode::Plan);
+        fixture.session.send("plan a faster parser".into());
+        fixture.idle().await;
+        assert_eq!(fixture.llm.requests.lock().unwrap().len(), 1);
+        assert!(fixture.llm.requests.lock().unwrap()[0].tools.iter().any(|tool| tool["name"] == "present_plan"));
+        let (_, failed, told) = fixture.results().remove(0);
+        assert!(!failed && told.starts_with("The plan is shown to the user"), "{told}");
+        let ended = fixture.session.snapshot().into_iter().find_map(|envelope| if let Event::TurnEnd { reason, .. } = envelope.event { Some(reason) } else { None });
+        assert_eq!(ended.as_deref(), Some("completed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn outside_plan_mode_a_plan_is_not_presented_and_the_turn_goes_on() {
+        let script = vec![calls(&[("p1", "present_plan", json!({ "plan": "1. Do it." }))]), calls(&[("p2", "present_plan", json!({ "plan": " " }))]), says("doing it then")];
+        let mut fixture = fixture(ScriptedLlm::new(script, None));
+        fixture.session.send("speed up the parser".into());
+        fixture.idle().await;
+        let results = fixture.results();
+        assert!(results[0].1 && results[0].2.starts_with("Plan mode is off"), "{:?}", results[0]);
+        assert!(results[1].1 && results[1].2.starts_with("Plan mode is off"), "{:?}", results[1]);
+        assert_eq!(fixture.llm.requests.lock().unwrap().len(), 3);
+        // In plan mode an empty plan is refused, and the model asked again.
+        let mut planning = self::fixture(ScriptedLlm::new(vec![calls(&[("p1", "present_plan", json!({ "plan": "  " }))]), says("here it is in words")], None));
+        planning.session.set_mode(Mode::Plan);
+        planning.session.send("plan it".into());
+        planning.idle().await;
+        let (_, failed, told) = planning.results().remove(0);
+        assert!(failed && told.contains("`plan` is empty"), "{told}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2531,7 +2589,7 @@ mod tests {
         assert!(named(own[0], "delegate") && named(own[0], "ask_user") && own[0].system.contains("`delegate`") && !own[0].system.contains("You are a subagent"));
         for request in &theirs {
             // Nor may it ask the user: it reports to the agent that set it off.
-            assert!(!named(request, "delegate") && !named(request, "ask_user") && named(request, "read_file"));
+            assert!(!named(request, "delegate") && !named(request, "ask_user") && !named(request, "present_plan") && named(request, "read_file"));
             assert!(request.system.contains("You are a subagent") && !request.system.contains("`delegate`"));
             assert_eq!(request.messages.len(), 1);
         }

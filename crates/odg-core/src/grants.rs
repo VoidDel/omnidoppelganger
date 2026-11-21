@@ -33,7 +33,7 @@ impl GrantStore {
     /// Whether an approval of this grant can be kept for good.
     pub fn keeps(grant: &str) -> bool {
         // `search` covers every web search: there is one search service, and nothing narrower to name.
-        grant == "search" || ["command:", "mcp:", "web:", "lsp:"].iter().any(|kind| grant.starts_with(kind))
+        grant == "search" || ["command:", "mcp:", "mcp-resource:", "web:", "lsp:"].iter().any(|kind| grant.starts_with(kind))
     }
 
     /// Every kept grant. A missing or unreadable file holds none.

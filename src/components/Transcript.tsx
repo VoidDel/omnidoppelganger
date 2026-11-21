@@ -233,7 +233,7 @@ function useFresh(): { className: string; style: CSSProperties | undefined } {
 type Weight = "live" | "failed" | "wrote" | "act" | "quiet";
 
 /** Acts that only look: they change nothing and reach nowhere outside the machine. */
-const LOOKS = new Set(["read_file", "search", "find_files", "code_nav", "load_skill", "update_todos", "command_output"]);
+const LOOKS = new Set(["read_file", "search", "find_files", "code_nav", "list_mcp_resources", "read_mcp_resource", "load_skill", "update_todos", "command_output"]);
 
 /** Whether nothing came of an act because it was not let to, or was taken back. */
 const voided = (tool: ToolItem) => tool.approval?.decision === "deny" || !!tool.result?.meta?.refused || !!tool.undone;
@@ -270,6 +270,11 @@ function sealOf(tool: ToolItem): string {
       return "观";
     case "command_input":
       return "输";
+    case "list_mcp_resources":
+    case "read_mcp_resource":
+      return "器";
+    case "present_plan":
+      return "呈";
     case "stop_command":
       return "止";
     case "update_todos":
@@ -302,6 +307,26 @@ function sealOf(tool: ToolItem): string {
       // A tool of an MCP server: an instrument borrowed from outside.
       return mcpTool(tool.name) ? "器" : "术";
   }
+}
+
+/** Whether a call is a plan the 分身 presented, or is presenting: shown as the plan, not as a line. */
+const presented = (item: Item) => item.kind === "tool" && item.name === "present_plan" && !item.result?.isError && typeof item.input.plan === "string";
+
+/** The plan the 分身 presented in 先谋后动: its title, and the plan as Markdown, to be read and copied. */
+function PlanCard({ tool }: { tool: ToolItem }) {
+  const title = typeof tool.input.title === "string" && tool.input.title.trim() ? tool.input.title.trim() : null;
+  return (
+    <div className="plan-card">
+      <div className="plan-head">
+        <span className="plan-seal" aria-hidden="true">
+          呈
+        </span>
+        <span>分身呈上的计划</span>
+        {title && <strong className="plan-title">{title}</strong>}
+      </div>
+      <ModelText text={tool.input.plan as string} />
+    </div>
+  );
 }
 
 /** What each operation of `code_nav` is called in the conversation. */
@@ -363,6 +388,12 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       if (meta?.background) return { verb: "后台运行", target: text("command"), outcome: waiting || `${where}已起，编号 ${meta.job}` };
       return { verb: "运行", target: text("command"), outcome: waiting || (meta ? where + ended : "没有运行") };
     }
+    case "list_mcp_resources":
+      return { verb: "看法器资源", target: text("server"), outcome: waiting || (result!.isError ? "没看到" : `${meta?.results ?? 0} 项`) };
+    case "read_mcp_resource":
+      return { verb: "读法器资源", target: `${text("server")} · ${text("uri")}`, outcome: waiting || (result!.isError ? "没读到" : "已读") };
+    case "present_plan":
+      return { verb: "呈上计划", target: text("title"), outcome: waiting || (result!.isError ? "没呈上" : "已呈上") };
     case "command_input": {
       // What was typed, into which job; then how the job stands after it.
       const sent = text("text") ? `← ${text("text")}` : "";
@@ -526,7 +557,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "command_input" || tool.name === "stop_command" ? result?.meta?.output : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
   // What an MCP tool returned is its whole result, so it is kept one click away like a command's output.
-  const returned = (result?.meta?.mcp || tool.name === "web_search" || tool.name === "code_nav") && !result?.isError ? result?.content : undefined;
+  const returned = (result?.meta?.mcp || ["web_search", "code_nav", "list_mcp_resources", "read_mcp_resource"].includes(tool.name)) && !result?.isError ? result?.content : undefined;
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
   // The file an edit wrote, by where it is: what can be opened from under the act.
@@ -619,6 +650,11 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
     title: "分身要下载语言服务，请本尊定夺",
     note: "代码导航要用这门语言的语言服务，这台电脑上没装。准了之后，从它的官方发布处下载下面这一份，按事先定好的校验码核对后放进 ~/.odg/lsp，不动系统里的东西。只下载这一次，以后所有分身都能用；在设置的「神通」里可以查看或移除。无论哪种禁制，每次都要请示。",
     always: "",
+  },
+  mcp_resource: {
+    title: "分身要读身外法器里的资源，请本尊定夺",
+    note: "资源是法器（MCP 服务）拿出来给人读的东西，比如文档、记录、表结构。读的时候要把资源的地址发给那个服务，它可能在别的机器上。",
+    always: "之后读这个法器的资源都准",
   },
   input: {
     title: "分身要给正在运行的命令输入，请本尊定夺",
@@ -714,7 +750,7 @@ function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
             {alwaysLabel(approval.grant, ask.always)}
           </button>
         )}
-        {(approval.grant === "search" || ["command:", "mcp:", "web:", "lsp:"].some((kind) => approval.grant?.startsWith(kind))) && (
+        {(approval.grant === "search" || ["command:", "mcp:", "mcp-resource:", "web:", "lsp:"].some((kind) => approval.grant?.startsWith(kind))) && (
           <button type="button" className="button outline red" title="发一道通行符：重启应用之后也算数，可以在设置的「禁制」里收回" onClick={() => onDecide(tool.id, "allow_always")}>
             此府永准
           </button>
@@ -769,6 +805,7 @@ function ItemView({ item, mode, family, frozen, onDecide, onAnswer }: ItemViewPr
     case "tool":
       // What the 分身 asked 本尊: the form while it waits, the answers after.
       if (item.question) return <QuestionSheet tool={item} frozen={frozen} onAnswer={onAnswer} />;
+      if (presented(item)) return <PlanCard tool={item} />;
       if (item.approval && !item.approval.decision && !item.result) return <SignSheet tool={item} mode={mode} frozen={frozen} onDecide={onDecide} />;
       return item.name === "delegate" ? <DelegateCard tool={item} family={family} /> : <ToolCard tool={item} />;
     case "fallback":
@@ -892,7 +929,7 @@ const FOLD = 4;
 type Part = { kind: "item"; item: Item; key: string } | { kind: "act"; tool: ToolItem } | { kind: "fold"; tools: ToolItem[] };
 
 /** Whether a tool call is shown as a line: not a request waiting for 本尊, and not a party of 子分身. */
-const isLine = (item: Item): boolean => item.kind === "tool" && item.name !== "delegate" && !item.question && !(item.approval && !item.approval.decision && !item.result);
+const isLine = (item: Item): boolean => item.kind === "tool" && item.name !== "delegate" && !item.question && !presented(item) && !(item.approval && !item.approval.decision && !item.result);
 
 /** Whether an act only looked, and is done: such acts, several in a row, fold under one line. */
 const looked = (tool: ToolItem) => weigh(tool) === "quiet" && !voided(tool);

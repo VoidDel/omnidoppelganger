@@ -115,6 +115,9 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
         "web_search" => text("query"),
         "load_skill" => text("name"),
         "command_output" | "stop_command" => text("job"),
+        "list_mcp_resources" => text("server"),
+        "read_mcp_resource" => format!("{} {}", text("server"), text("uri")),
+        "present_plan" => text("title"),
         "command_input" => format!("{} ← {}{}", text("job"), text("text"), if input["close"] == true { " (end of input)" } else { "" }),
         "ask_user" => input["questions"].as_array().map(|questions| questions.iter().filter_map(|question| question["question"].as_str()).collect::<Vec<_>>().join(" / ")).unwrap_or_default(),
         _ => String::new(),
@@ -136,6 +139,7 @@ fn ask(reason: &str, detail: &str, session_wide: bool) -> Decision {
         "lsp" => "start a language server that loads the project's own code",
         "install_lsp" => "download a language server for code navigation",
         "input" => "type into a background command",
+        "mcp_resource" => "read a resource of an MCP server",
         _ => "change a file outside the workspace",
     };
     let mut stderr = std::io::stderr();
@@ -338,6 +342,12 @@ async fn run(options: Options) -> Result<bool, String> {
                     close_line(&mut mid_line);
                     for block in content.iter().filter(|block| block["type"] == "tool_use") {
                         eprintln!("> {}", describe(block["name"].as_str().unwrap_or_default(), &block["input"]));
+                        // A plan presented is the turn's answer: it goes to the output, as the agent's words do.
+                        if block["name"] == "present_plan"
+                            && let Some(plan) = block["input"]["plan"].as_str()
+                        {
+                            println!("{}", plan.trim_end());
+                        }
                     }
                 }
                 Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } => {

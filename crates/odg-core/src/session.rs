@@ -377,7 +377,7 @@ pub fn unanswered_tool_uses(events: &[Envelope]) -> Vec<(String, String)> {
 }
 
 /// What the model reads, ahead of the user's message, when plan mode starts.
-pub const PLAN_ON: &str = "[Plan mode is on] The user wants a plan before any change. Explore and think, but change nothing: do not edit files, and run only commands that change nothing. Once you understand the task, reply with a concrete plan (what you would change, where, and how you would verify it) and stop. The user switches modes when they want it carried out.";
+pub const PLAN_ON: &str = "[Plan mode is on] The user wants a plan before any change. Explore and think, but change nothing: do not edit files, and run only commands that change nothing. Once you understand the task, present a concrete plan with `present_plan` (what you would change, where, and how you would verify it); your turn ends with it, and the user switches modes when they want it carried out.";
 /// What the model reads, ahead of the user's message, when plan mode ends.
 pub const PLAN_OFF: &str = "[Plan mode is off] You may change files and run commands again. Carry out the plan you proposed unless the user says otherwise.";
 
