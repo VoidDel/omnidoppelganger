@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod anthropic;
 pub mod documents;
+pub mod env;
 pub mod events;
 pub mod fsutil;
 pub mod grants;

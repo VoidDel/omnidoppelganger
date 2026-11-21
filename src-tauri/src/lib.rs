@@ -863,6 +863,8 @@ fn remove_provider(app: State<'_, App>, id: String) -> Result<SettingsView, Stri
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before anything else: a `.app` is started with a `PATH` that leaves out where the programs it starts live.
+    odg_core::env::adopt_shell_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

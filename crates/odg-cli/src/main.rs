@@ -399,8 +399,15 @@ async fn run(options: Options) -> Result<bool, String> {
     Ok(completed)
 }
 
+fn main() -> ExitCode {
+    // Before the runtime, which starts threads of its own: the `PATH` this was started with may leave out where the
+    // programs the agent starts live.
+    odg_core::env::adopt_shell_path();
+    runtime_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn runtime_main() -> ExitCode {
     let options = match parse(std::env::args().skip(1)) {
         Ok(options) => options,
         Err(message) if message == USAGE => {
