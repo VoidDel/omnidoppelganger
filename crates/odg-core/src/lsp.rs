@@ -344,10 +344,32 @@ pub fn installed(program: &str) -> Option<PathBuf> {
     directories.iter().flat_map(|directory| names.iter().map(move |name| directory.join(name))).find(|candidate| candidate.is_file())
 }
 
+/// A path as most programs write it: on Windows, without the `\\?\` that marks a path as verbatim (which
+/// canonicalizing gives), `\\?\UNC\server\share` written `\\server\share`. Elsewhere, as it is.
+pub fn plain(path: &Path) -> PathBuf {
+    PathBuf::from(plain_text(&path.to_string_lossy()))
+}
+
+fn plain_text(text: &str) -> String {
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{share}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        text.to_string()
+    }
+}
+
 /// A file's path as a `file:` URI, with what is not plainly part of a path percent-encoded.
 pub fn uri(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
-    let mut encoded = String::from(if text.starts_with('/') { "file://" } else { "file:///" });
+    uri_of(&path.to_string_lossy())
+}
+
+/// [`uri`], of a path written out, whichever system's it is: `C:\a b` or `\\?\C:\a b` gives `file:///C:/a%20b`,
+/// `\\server\share\x` gives `file://server/share/x`.
+fn uri_of(text: &str) -> String {
+    let text = plain_text(text).replace('\\', "/");
+    let mut encoded = String::from(if text.starts_with("//") { "file:" } else if text.starts_with('/') { "file://" } else { "file:///" });
     for byte in text.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => encoded.push(byte as char),
@@ -361,6 +383,12 @@ pub fn uri(path: &Path) -> String {
 
 /// The path a `file:` URI names; `None` for any other kind of URI.
 pub fn path_of(uri: &str) -> Option<PathBuf> {
+    path_text(uri, cfg!(windows)).map(PathBuf::from)
+}
+
+/// [`path_of`], written out as `windows` or another system writes paths. On Windows a drive is written in capitals
+/// and with backslashes, whatever the server sent (`file:///c%3A/x` is `C:\x`), so that paths compare as they should.
+fn path_text(uri: &str, windows: bool) -> Option<String> {
     let rest = uri.strip_prefix("file://")?;
     let mut bytes = Vec::new();
     let raw = rest.as_bytes();
@@ -375,9 +403,18 @@ pub fn path_of(uri: &str) -> Option<PathBuf> {
         at += 1;
     }
     let decoded = String::from_utf8_lossy(&bytes).into_owned();
-    // `file:///C:/x` on Windows names `C:/x`.
-    let windows_drive = decoded.len() > 3 && decoded.as_bytes()[0] == b'/' && decoded.as_bytes()[2] == b':';
-    Some(PathBuf::from(if cfg!(windows) && windows_drive { decoded[1..].to_string() } else { decoded }))
+    if !windows {
+        return Some(decoded);
+    }
+    let drive = decoded.len() > 3 && decoded.as_bytes()[0] == b'/' && decoded.as_bytes()[1].is_ascii_alphabetic() && decoded.as_bytes()[2] == b':';
+    Some(if drive {
+        format!("{}{}", decoded[1..2].to_ascii_uppercase(), decoded[2..].replace('/', "\\"))
+    } else if decoded.starts_with('/') {
+        decoded.replace('/', "\\")
+    } else {
+        // `file://server/share/x`: a share on another machine.
+        format!(r"\\{}", decoded.replace('/', "\\"))
+    })
 }
 
 /// A column given in characters (from 0) as LSP counts it, in UTF-16 code units.
@@ -908,6 +945,8 @@ fn outline(symbols: &[Value], depth: usize, lines: &mut Vec<String>) {
 
 /// Answer `code_nav`: start or find the server for the file's language, give it the file, and ask.
 pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &CancellationToken) -> Result<crate::tools::ToolOutput, String> {
+    // Paths come back from the server as it writes them, which is plainly: the workspace is compared with them so.
+    let workspace = &plain(workspace);
     let operation = input["operation"].as_str().unwrap_or_default();
     let Some((_, placed)) = OPERATIONS.iter().find(|(name, _)| *name == operation) else {
         return Err(format!("`operation` must be one of {}.", OPERATIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")));
@@ -1067,6 +1106,21 @@ mod tests {
         assert_eq!(path_of("untitled:Untitled-1"), None);
         assert_eq!(language_for(Path::new("a/B.TSX")).map(|language| language.program), Some("typescript-language-server"));
         assert!(language_for(Path::new("README.md")).is_none());
+    }
+
+    #[test]
+    fn writes_windows_paths_as_servers_do_and_reads_them_back_alike() {
+        // A verbatim path, as canonicalizing gives on Windows, is written as the path it names.
+        assert_eq!(uri_of(r"\\?\C:\Users\me\a b\x.c"), "file:///C:/Users/me/a%20b/x.c");
+        assert_eq!(uri_of(r"C:\Users\me\x.c"), "file:///C:/Users/me/x.c");
+        assert_eq!(uri_of(r"\\?\UNC\server\share\x.c"), "file://server/share/x.c");
+        assert_eq!(plain_text(r"\\?\C:\w"), r"C:\w");
+        // Read back on Windows with backslashes and a capital drive, however the server wrote the drive.
+        assert_eq!(path_text("file:///C:/Users/me/a%20b/x.c", true).unwrap(), r"C:\Users\me\a b\x.c");
+        assert_eq!(path_text("file:///c%3A/Users/me/x.c", true).unwrap(), r"C:\Users\me\x.c");
+        assert_eq!(path_text("file://server/share/x.c", true).unwrap(), r"\\server\share\x.c");
+        // Elsewhere, as it is.
+        assert_eq!(path_text("file:///home/me/x.c", false).unwrap(), "/home/me/x.c");
     }
 
     #[test]
