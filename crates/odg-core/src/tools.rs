@@ -262,6 +262,21 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "command_input",
+            "description": "Type into a background command: write `text` to its standard input, as a line ended by Enter unless `newline` is false, or close its input with `close`. Then returns what it printed in reply, waiting up to `wait_seconds` (default 2) for it. Use it to answer a prompt (`y`, a name, a choice), or to feed a program that reads its input, started with `run_command` and `background`. Its input is a pipe, not a terminal: a program that only works in a terminal (a menu moved with arrow keys, a password prompt) will not take it; give such a program its answers as options or a file instead. The user is asked before each input, which can make the program do anything it does.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job": { "type": "string", "description": "The job id `run_command` returned, like `b1`." },
+                    "text": { "type": "string", "description": "What to type. Default: nothing, for `close` alone." },
+                    "newline": { "type": "boolean", "description": "End the text with a newline, as pressing Enter does. Default true." },
+                    "close": { "type": "boolean", "description": "Close its input after the text: the end of input, as Ctrl-D gives in a terminal. Default false." },
+                    "wait_seconds": { "type": "integer", "description": "Wait up to this many seconds for it to print something. Default 2, maximum 60." }
+                },
+                "required": ["job"]
+            }
+        }),
+        json!({
             "name": "fetch_url",
             "description": "Get a web page and return its text: documentation, an issue, a raw file, a document. HTML comes back as its words, without markup; a PDF, Word, Excel, or PowerPoint file as the text taken out of it. The user may have to approve the site first. A long page is cut; pass `offset` to read on. It reads the one address it is given.",
             "input_schema": {
@@ -730,6 +745,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "find_files" => find_files(input, context).await,
         "run_command" => run_command(input, context).await,
         "command_output" => command_output(input, context).await,
+        "command_input" => command_input(input, context).await,
         "stop_command" => stop_command(input, context).await,
         "update_todos" => update_todos(input),
         "install_skill" => install_skill(input, context).await,
@@ -1555,6 +1571,27 @@ async fn command_output(input: &Value, context: &ToolContext) -> Result<ToolOutp
     Ok(job_report(id, report))
 }
 
+async fn command_input(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let (id, jobs) = job_arg(input, context)?;
+    let close = input["close"].as_bool().unwrap_or(false);
+    let mut text = input["text"].as_str().unwrap_or_default().to_string();
+    if text.is_empty() && !close {
+        return Err(ToolOutput::error("Give `text` to type, or `close` to end its input."));
+    }
+    if !text.is_empty() && input["newline"].as_bool().unwrap_or(true) && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    jobs.write(id, &text, close).await.map_err(ToolOutput::error)?;
+    let wait = Duration::from_secs(input["wait_seconds"].as_u64().unwrap_or(2).min(OUTPUT_WAIT_LIMIT_SECONDS));
+    let report = jobs.read(id, wait, &context.cancel).await.ok_or_else(|| no_job(id))?;
+    let mut output = job_report(id, report);
+    let sent = if close && text.is_empty() { "Closed its input.".to_string() } else { format!("Sent {} characters{}.", text.chars().count(), if close { " and closed its input" } else { "" }) };
+    output.content = format!("{sent} What it printed since:\n{}", output.content);
+    output.meta["sent"] = json!(text);
+    output.meta["closed"] = json!(close);
+    Ok(output)
+}
+
 async fn stop_command(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let (id, jobs) = job_arg(input, context)?;
     let report = jobs.stop(id).await.ok_or_else(|| no_job(id))?;
@@ -1570,8 +1607,10 @@ async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput,
     let mut command = shell_command(&command_line, &context.workspace, sandbox).map_err(|error| ToolOutput::error(format!("Cannot confine the command to the sandbox: {error}")))?;
     if input["background"].as_bool().unwrap_or(false) {
         let jobs = context.jobs.as_ref().ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
+        // Left open, for `command_input`; a command in the foreground gets none, and a prompt fails at once there.
+        command.stdin(Stdio::piped());
         let id = jobs.start(&command_line, command).map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
-        let content = format!("Started in the background as job {id}. Read what it prints with `command_output`, and end it with `stop_command` when it is no longer needed.");
+        let content = format!("Started in the background as job {id}. Read what it prints with `command_output`, type into it with `command_input`, and end it with `stop_command` when it is no longer needed.");
         return Ok(ToolOutput::ok(content, json!({ "command": command_line, "job": id, "background": true, "sandboxed": sandbox.is_some() })));
     }
 
@@ -2300,5 +2339,56 @@ mod tests {
         assert!(missing.is_error && missing.content.contains("does not exist"), "{}", missing.content);
         let same = refused(json!({ "tool": "move_file", "path": "c.txt", "to": "./c.txt" })).await;
         assert!(same.is_error && same.content.contains("already there"), "{}", same.content);
+    }
+
+    /// A background program that answers each line it reads, and says goodbye at the end of its input.
+    fn echoing() -> &'static str {
+        if cfg!(windows) {
+            "while (($line = [Console]::In.ReadLine()) -ne $null) { \"got $line\" }; 'bye'"
+        } else {
+            "while read line; do echo \"got $line\"; done; echo bye"
+        }
+    }
+
+    #[tokio::test]
+    async fn types_into_a_background_command_and_reads_what_it_answers() {
+        let (_directory, mut context) = context();
+        context.jobs = Some(Arc::new(Jobs::default()));
+        let started = execute("run_command", &json!({ "command": echoing(), "background": true }), &context).await;
+        let job = started.meta["job"].as_str().unwrap().to_string();
+        assert!(started.content.contains("`command_input`"), "{}", started.content);
+
+        // A line, ended by Enter unless told otherwise; what the program says back comes with it.
+        let answered = execute("command_input", &json!({ "job": job, "text": "hello", "wait_seconds": 10 }), &context).await;
+        assert!(!answered.is_error && answered.content.starts_with("Sent 6 characters. What it printed since:\ngot hello"), "{}", answered.content);
+        assert_eq!((answered.meta["sent"].as_str(), answered.meta["running"].as_bool()), (Some("hello\n"), Some(true)));
+
+        // Closed, its input ends, and so does the program.
+        let closed = execute("command_input", &json!({ "job": job, "text": "last", "close": true, "wait_seconds": 10 }), &context).await;
+        assert!(closed.content.starts_with("Sent 5 characters and closed its input."), "{}", closed.content);
+        let mut ended = closed;
+        for _ in 0..20 {
+            if ended.meta["running"] == false {
+                break;
+            }
+            ended = execute("command_output", &json!({ "job": job, "wait_seconds": 1 }), &context).await;
+        }
+        assert_eq!((ended.meta["running"].as_bool(), ended.meta["exit_code"].as_i64()), (Some(false), Some(0)), "{}", ended.content);
+
+        // What it will not do.
+        let late = execute("command_input", &json!({ "job": job, "text": "more" }), &context).await;
+        assert!(late.is_error && late.content.contains("has ended"), "{}", late.content);
+        let nothing = execute("command_input", &json!({ "job": job }), &context).await;
+        assert!(nothing.is_error && nothing.content.contains("Give `text`"), "{}", nothing.content);
+        let unknown = execute("command_input", &json!({ "job": "b99", "text": "x" }), &context).await;
+        assert!(unknown.is_error && unknown.content.contains("b99"), "{}", unknown.content);
+    }
+
+    #[tokio::test]
+    async fn a_command_in_the_foreground_reads_no_input_and_does_not_wait_for_any() {
+        let (_directory, context) = context();
+        let reading = if cfg!(windows) { "$line = [Console]::In.ReadLine(); if ($line -eq $null) { 'none' } else { $line }" } else { "read line || echo none" };
+        let ran = execute("run_command", &json!({ "command": reading, "timeout_seconds": 20 }), &context).await;
+        assert!(ran.content.contains("none") && ran.meta["stopped"].is_null(), "{}", ran.content);
     }
 }

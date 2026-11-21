@@ -1182,7 +1182,13 @@ impl<L: Llm> Inner<L> {
                     self.tool_result(&id, &name, json!({ "INVALID_JSON": raw }).to_string(), true, Value::Null)?;
                     continue;
                 }
-                let verdict = policy::check_in(self.mode(), &name, &input, &self.workspace, self.sandboxed());
+                let mut verdict = policy::check_in(self.mode(), &name, &input, &self.workspace, self.sandboxed());
+                // Input to a job is shown with the command it goes to, which only the session's jobs know.
+                if let Verdict::Ask { reason: "input", detail, .. } = &mut verdict
+                    && let Some(command) = self.jobs.command(input["job"].as_str().unwrap_or_default())
+                {
+                    *detail = format!("{command}\n{detail}");
+                }
                 if let Verdict::Refuse(message) = verdict {
                     self.tool_result(&id, &name, message.to_string(), true, json!({ "refused": true }))?;
                     continue;
@@ -2230,6 +2236,31 @@ mod tests {
         // What the search spent is kept with its result.
         let spent = fixture.session.snapshot().into_iter().find_map(|envelope| if let Event::ToolResult { meta, .. } = envelope.event { Some(meta["tokens"].clone()) } else { None });
         assert_eq!(spent.unwrap()["output"], 40);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn typing_into_a_job_is_asked_about_showing_the_command_it_goes_to() {
+        let reading = if cfg!(windows) { "while (($line = [Console]::In.ReadLine()) -ne $null) { \"got $line\" }" } else { "while read line; do echo \"got $line\"; done" };
+        let script = vec![
+            calls(&[("t1", "run_command", json!({ "command": reading, "background": true }))]),
+            calls(&[("t2", "command_input", json!({ "job": "b1", "text": "hi", "wait_seconds": 10 }))]),
+            says("done"),
+        ];
+        let mut fixture = fixture(ScriptedLlm::new(script, None));
+        fixture.session.send("start it and say hi".into());
+        let started = fixture.approval().await;
+        assert!(fixture.session.resolve_approval(&started, Decision::AllowOnce));
+        let typed = fixture.approval().await;
+        let asked = fixture.session.snapshot().into_iter().find_map(|envelope| match envelope.event {
+            Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } if tool_use_id == typed => Some((reason, detail, grant)),
+            _ => None,
+        });
+        assert_eq!(asked, Some(("input".to_string(), format!("{reading}\n← hi"), Some("input:b1".to_string()))));
+        assert!(fixture.session.resolve_approval(&typed, Decision::AllowOnce));
+        fixture.idle().await;
+        let (_, failed, told) = fixture.results().remove(1);
+        assert!(!failed && told.contains("got hi"), "{told}");
+        fixture.session.kill_jobs();
     }
 
     #[tokio::test(flavor = "multi_thread")]

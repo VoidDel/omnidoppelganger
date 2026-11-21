@@ -395,7 +395,7 @@ export function todos(rows: Row[]): Todo[] {
 /** Commands that ran, in order, for the terminal panel. */
 export function commandRuns(rows: Row[]): ToolItem[] {
   // A background command's output arrives through the calls that read or stop it.
-  const shows = (name: string) => name === "run_command" || name === "command_output" || name === "stop_command";
+  const shows = (name: string) => name === "run_command" || name === "command_output" || name === "command_input" || name === "stop_command";
   return rows.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool" && shows(item.name) && !!item.result?.meta?.command);
 }
 

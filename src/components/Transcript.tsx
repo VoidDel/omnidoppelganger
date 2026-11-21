@@ -268,6 +268,8 @@ function sealOf(tool: ToolItem): string {
       return "行";
     case "command_output":
       return "观";
+    case "command_input":
+      return "输";
     case "stop_command":
       return "止";
     case "update_todos":
@@ -360,6 +362,13 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       const where = meta?.sandboxed ? "结界内，" : "";
       if (meta?.background) return { verb: "后台运行", target: text("command"), outcome: waiting || `${where}已起，编号 ${meta.job}` };
       return { verb: "运行", target: text("command"), outcome: waiting || (meta ? where + ended : "没有运行") };
+    }
+    case "command_input": {
+      // What was typed, into which job; then how the job stands after it.
+      const sent = text("text") ? `← ${text("text")}` : "";
+      const closed = tool.input.close === true ? "（结束输入）" : "";
+      const state = meta?.running ? "还在跑" : meta?.stopped ? "已停止" : meta?.exit_code === 0 ? "已结束，成功" : `已结束，退出码 ${meta?.exit_code ?? "未知"}`;
+      return { verb: "输入后台命令", target: `${text("job")}  ${sent}${closed}`, outcome: waiting || (result!.isError ? "没输进去" : state) };
     }
     case "command_output":
     case "stop_command": {
@@ -514,7 +523,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   const { verb, target, outcome } = describe(tool);
   const { result } = tool;
   const hunk = result && !result.isError ? result.meta?.hunk : undefined;
-  const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "stop_command" ? result?.meta?.output : undefined;
+  const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "command_input" || tool.name === "stop_command" ? result?.meta?.output : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
   // What an MCP tool returned is its whole result, so it is kept one click away like a command's output.
   const returned = (result?.meta?.mcp || tool.name === "web_search" || tool.name === "code_nav") && !result?.isError ? result?.content : undefined;
@@ -610,6 +619,11 @@ const ASK: Record<string, { title: string; note: string; always: string }> = {
     title: "分身要下载语言服务，请本尊定夺",
     note: "代码导航要用这门语言的语言服务，这台电脑上没装。准了之后，从它的官方发布处下载下面这一份，按事先定好的校验码核对后放进 ~/.odg/lsp，不动系统里的东西。只下载这一次，以后所有分身都能用；在设置的「神通」里可以查看或移除。无论哪种禁制，每次都要请示。",
     always: "",
+  },
+  input: {
+    title: "分身要给正在运行的命令输入，请本尊定夺",
+    note: "这条命令在后台运行，分身要往它的输入里写下面这段文字，就像在终端里打字后按回车。打进去的东西会让它照着做：给 python、shell 这类程序输入，等于让它执行代码。",
+    always: "之后给这条命令的输入都准",
   },
   lsp: {
     title: "分身要启动语言服务来察看代码，请本尊定夺",

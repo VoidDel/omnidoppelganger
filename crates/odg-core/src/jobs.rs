@@ -1,15 +1,19 @@
 //! Commands that keep running in the background: a dev server, a watcher,
 //! a long build. `run_command` starts one and returns at once; the model
-//! reads what it prints with `command_output` and ends it with
-//! `stop_command`. A session's jobs live as long as the app does and are
-//! stopped when it exits.
+//! reads what it prints with `command_output`, types into it with
+//! `command_input`, and ends it with `stop_command`. A session's jobs live as
+//! long as the app does and are stopped when it exits.
+//!
+//! A job's standard input is a pipe, not a terminal: a program that reads
+//! lines takes what is written, but one that wants a terminal (a menu moved
+//! with arrow keys, a password prompt) does not.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 /// How much of a job's output is kept; the oldest goes first.
@@ -37,6 +41,8 @@ struct Job {
     pid: Option<u32>,
     stop: CancellationToken,
     output: Arc<Mutex<Output>>,
+    /// Its standard input, while it is open: `None` once closed, or for a job started without one.
+    input: Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>,
 }
 
 /// What [`Jobs::read`] and [`Jobs::stop`] report.
@@ -62,6 +68,7 @@ impl Jobs {
     /// line as the model wrote it, for reports.
     pub fn start(&self, line: &str, mut command: tokio::process::Command) -> std::io::Result<String> {
         let mut child = command.spawn()?;
+        let input = Arc::new(tokio::sync::Mutex::new(child.stdin.take()));
         let id = format!("b{}", self.next.fetch_add(1, Ordering::SeqCst) + 1);
         let output = Arc::new(Mutex::new(Output::default()));
         let stop = CancellationToken::new();
@@ -123,7 +130,7 @@ impl Jobs {
             watched.lock().unwrap().ended = Some(ended);
         });
 
-        self.jobs.lock().unwrap().insert(id.clone(), Job { command: line.to_string(), pid, stop, output });
+        self.jobs.lock().unwrap().insert(id.clone(), Job { command: line.to_string(), pid, stop, output, input });
         Ok(id)
     }
 
@@ -153,6 +160,36 @@ impl Jobs {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// The command line of a job, as the model wrote it; `None` when there is no such job.
+    pub fn command(&self, id: &str) -> Option<String> {
+        self.jobs.lock().unwrap().get(id).map(|job| job.command.clone())
+    }
+
+    /// Write `text` to the job's standard input, then with `close` close it, which a program reading to the end of
+    /// its input takes as the end. What went wrong is said: no such job, it has ended, or its input is closed.
+    pub async fn write(&self, id: &str, text: &str, close: bool) -> Result<(), String> {
+        let (input, ended) = {
+            let jobs = self.jobs.lock().unwrap();
+            let job = jobs.get(id).ok_or_else(|| format!("There is no background command `{id}`."))?;
+            let ended = job.output.lock().unwrap().ended.is_some();
+            (job.input.clone(), ended)
+        };
+        if ended {
+            return Err(format!("Job {id} has ended: nothing reads its input any more."));
+        }
+        let mut input = input.lock().await;
+        let pipe = input.as_mut().ok_or_else(|| format!("Job {id}'s input was closed."))?;
+        if !text.is_empty() {
+            pipe.write_all(text.as_bytes()).await.map_err(|error| format!("Job {id} took no input: {error}"))?;
+            pipe.flush().await.map_err(|error| format!("Job {id} took no input: {error}"))?;
+        }
+        if close {
+            // Dropped, the pipe closes, and the program reads the end of its input.
+            input.take();
+        }
+        Ok(())
     }
 
     /// Stop the job and report what it printed last. `None` when there is no such job.

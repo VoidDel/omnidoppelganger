@@ -149,12 +149,14 @@ describe("background commands", () => {
         result("o1", "command_output", { command: "pnpm dev", job: "b1", running: true, output: "ready" }),
         said(call("o2", "command_output", { job: "b9" })),
         result("o2", "command_output", null, true),
+        said(call("i1", "command_input", { job: "b1", text: "y" })),
+        result("i1", "command_input", { command: "pnpm dev", job: "b1", running: true, output: "ok, going on", sent: "y\n", closed: false }),
         said(call("s1", "stop_command", { job: "b1" })),
         result("s1", "stop_command", { command: "pnpm dev", job: "b1", running: false, stopped: "stopped", output: "" }),
       ),
     );
-    // The read of a job that does not exist has nothing to show.
-    expect(commandRuns(rows).map((run) => run.name)).toEqual(["run_command", "command_output", "stop_command"]);
+    // The read of a job that does not exist has nothing to show; what was typed into one, and its answer, does.
+    expect(commandRuns(rows).map((run) => run.name)).toEqual(["run_command", "command_output", "command_input", "stop_command"]);
   });
 });
 

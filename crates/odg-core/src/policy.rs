@@ -187,6 +187,9 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             },
             (None, _) => Verdict::Allow,
         },
+        // What is typed into a running program can make it do anything it does: each input is asked about, and
+        // allowing it for the session covers that one job.
+        "command_input" => Verdict::Ask { reason: "input", detail: typed(input), grant: Some(format!("input:{}", input["job"].as_str().unwrap_or_default())) },
         "web_search" => Verdict::Ask { reason: "search", detail: input["query"].as_str().unwrap_or_default().to_string(), grant: Some("search".to_string()) },
         // A picture writes a file and is paid for: what it shows, and where it goes, are put to the user.
         "generate_image" if mode == Mode::Plan => Verdict::Refuse("Nothing is painted in plan mode: a picture writes a file and is paid for. Put it in the plan."),
@@ -213,6 +216,13 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
         // Unknown tools reach the executor, which answers them with an error result.
         _ => Verdict::Allow,
     }
+}
+
+/// What `command_input` types, as the user is shown it: the text, and whether its input is then closed.
+pub fn typed(input: &Value) -> String {
+    let text = input["text"].as_str().unwrap_or_default();
+    let close = if input["close"] == true { "（然后结束输入）" } else { "" };
+    format!("← {}{close}", if text.is_empty() { "（不输入文字）" } else { text })
 }
 
 /// What a standing approval of `command` covers outside auto mode: one grant per command in it,
@@ -505,5 +515,17 @@ mod tests {
         // Only looking, or a server the app does not download, asks nothing.
         assert_eq!(check("language_server", &json!({ "language": "rust" }), workspace), Verdict::Allow);
         assert_eq!(check("language_server", &json!({ "language": "python", "install": true }), workspace), Verdict::Allow);
+    }
+
+    #[test]
+    fn typing_into_a_background_command_is_asked_about_with_what_is_typed() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let input = json!({ "job": "b2", "text": "y", "close": true });
+        assert_eq!(check("command_input", &input, workspace), Verdict::Ask { reason: "input", detail: "← y（然后结束输入）".into(), grant: Some("input:b2".into()) });
+        assert_eq!(reason(super::check(Mode::Auto, "command_input", &input, workspace)), Some("input"));
+        assert_eq!(super::check(Mode::Bypass, "command_input", &input, workspace), Verdict::Allow);
+        // Allowed for the session, it covers that job only, and is never kept for good.
+        assert!(!crate::grants::GrantStore::keeps("input:b2"));
     }
 }

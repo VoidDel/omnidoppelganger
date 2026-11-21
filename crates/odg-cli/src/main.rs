@@ -115,6 +115,7 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
         "web_search" => text("query"),
         "load_skill" => text("name"),
         "command_output" | "stop_command" => text("job"),
+        "command_input" => format!("{} ← {}{}", text("job"), text("text"), if input["close"] == true { " (end of input)" } else { "" }),
         "ask_user" => input["questions"].as_array().map(|questions| questions.iter().filter_map(|question| question["question"].as_str()).collect::<Vec<_>>().join(" / ")).unwrap_or_default(),
         _ => String::new(),
     };
@@ -134,6 +135,7 @@ fn ask(reason: &str, detail: &str, session_wide: bool) -> Decision {
         "outside_read" => "read outside the workspace",
         "lsp" => "start a language server that loads the project's own code",
         "install_lsp" => "download a language server for code navigation",
+        "input" => "type into a background command",
         _ => "change a file outside the workspace",
     };
     let mut stderr = std::io::stderr();
