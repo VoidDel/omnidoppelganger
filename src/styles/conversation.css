@@ -1,0 +1,840 @@
+/* ---------- main column ---------- */
+
+.main {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-header {
+  /* Above the conversation, for what hangs from it (the card that asks before deleting). */
+  position: relative;
+  z-index: 5;
+  height: var(--bar);
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* The title, and under it the folder. */
+.title-block {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-header h1 {
+  margin: 0;
+  /* The session's title, brushed on like the label of a scroll. */
+  font-family: var(--brush);
+  font-size: var(--t-lead);
+  font-weight: 700;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Under the title, small: the folder, and after it the branch checked out there. */
+.main-header .where {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.main-header .path {
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: var(--t-micro);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* No space above: the band that holds 本尊's words sticks to the very top, and brings its own. */
+  padding: 0 24px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* A turn: what 本尊 said across the top, what the 分身 did about it below. */
+.turn {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* The turn in hand is as tall as the view, so that at the bottom of the conversation its message
+   is at the top of the view, with the 分身's work filling in beneath it. (A percentage is of the
+   view less the space under the turns, which is what is wanted.) */
+.turn.latest {
+  min-height: 100%;
+}
+
+/* The order on its way from the send button to the message it turns into: the token melting
+   where it stood, then a point of light and the tail behind it. See lib/flight.ts. */
+.token-flight {
+  position: fixed;
+  z-index: 60;
+  line-height: 0;
+  pointer-events: none;
+}
+
+.token-flight,
+.token-flight > div,
+.token-flight .token,
+.mote {
+  will-change: transform, opacity;
+}
+
+/* A point of light, centred on the corner of its box: bright at the heart, and around it the
+   colour of the token it came from, which the flight sets as --mote. */
+.mote {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fffdf2 0 24%, var(--mote, var(--jade)) 50%, transparent 72%);
+  box-shadow: 0 0 14px 5px color-mix(in srgb, var(--mote, var(--jade)) 60%, transparent);
+}
+
+/* 本尊's words stay at the top of the view while their turn scrolls beneath them, so it is
+   always plain what the work on screen answers. The band is opaque and as wide as the view. */
+.turn-said {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: 0 -24px;
+  padding: 16px 24px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  /* The message fills the column the 分身's cards fill under it; what can be done from it sits under its right end. */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.turn-said .original {
+  flex: none;
+  min-width: 0;
+}
+
+/* A long message keeps to a part of the view, and scrolls inside its card. */
+/* A message is held to two lines while it is pinned over its work; opened, it shows up to a third of the view. */
+.turn-said .said-text.held {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.turn-said .said-text.open {
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+/* The words, and at the end of their last line the way to open or close them. */
+.said-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.said-body .said-text {
+  flex: 1;
+}
+
+.said-more {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--jade);
+  font-size: var(--t-micro);
+  /* On the baseline of the last line beside it. */
+  line-height: 1.7;
+  margin-bottom: 3px;
+  text-decoration: underline;
+}
+
+.turn-said .shots {
+  justify-content: flex-start;
+}
+
+/* A word on its way to a 分身 at work, under the message it is working on. */
+.said-queued {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.turn-said .said-queued .said-text {
+  max-height: 18vh;
+}
+
+.said-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 12px;
+}
+
+.turn-said .shots img {
+  max-height: 72px;
+}
+
+/* 本尊's order on moon-white paper, with the 分身's talisman paper showing underneath. */
+.original {
+  background: var(--sheet);
+  border: 1px solid var(--ink);
+  border-radius: var(--r-paper);
+  box-shadow: 6px 6px 0 var(--talisman-under);
+  /* Laid out as the 分身's cards are: the seal at the left, then the words, and when at the top right. */
+  padding: 8px 12px 8px 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.original .seal {
+  /* An odd width, so that the thread under it runs from its very middle. */
+  width: 25px;
+  height: 25px;
+  line-height: 25px;
+  /* Level with the first line of the words. */
+  margin-top: 1px;
+}
+
+.said-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Over the card's right end, small: the way to fork from the message, and when it was said. */
+.said-top {
+  /* Close to the card it belongs to: the column's gap is for things that stand apart. */
+  margin: -10px 0 -6px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.said-top .icon-button {
+  width: 22px;
+  height: 22px;
+}
+
+/* Over the message the bubble reads as the page's own words, not the message's. */
+.said-top .confirm-bubble {
+  font-weight: 400;
+}
+
+.said-when {
+  font-size: var(--t-micro);
+  line-height: 14px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.original.queued {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.said-meta {
+  /* Clear of the paper that shows under the message. */
+  padding-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+/* ---------- what the 分身 says ---------- */
+
+.prose {
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+}
+
+/* Under what the 分身 said, the mark that copies it: quiet until the words are pointed at, and answering when used. */
+.said-tools {
+  display: flex;
+  margin: 2px 0 0 -4px;
+}
+
+.said-copy {
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  background: none;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  opacity: 0.45;
+  cursor: pointer;
+  transition:
+    opacity var(--d-quick) var(--ease-out),
+    color var(--d-quick) var(--ease-out),
+    background-color var(--d-quick) var(--ease-out);
+}
+
+.model-text:hover .said-copy,
+.said-copy:focus-visible,
+.said-copy.done {
+  opacity: 1;
+}
+
+.said-copy:hover {
+  color: var(--ink);
+  background: var(--control);
+}
+
+.said-copy.done {
+  color: var(--jade);
+}
+
+.said-copy:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 1px;
+}
+
+.prose > :first-child {
+  margin-top: 0;
+}
+
+.prose > :last-child {
+  margin-bottom: 0;
+}
+
+.prose p,
+.prose ul,
+.prose ol,
+.prose pre,
+.prose blockquote {
+  margin: 0 0 var(--s-3);
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.4em;
+}
+
+.prose li + li,
+.prose li > ul,
+.prose li > ol {
+  margin-top: var(--s-1);
+}
+
+.prose li::marker {
+  color: var(--ink-2);
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  line-height: 1.4;
+  font-weight: 700;
+}
+
+.prose h1 {
+  margin: var(--s-5) 0 var(--s-2);
+  font-size: var(--t-title);
+}
+
+.prose h2 {
+  margin: var(--s-5) 0 var(--s-2);
+  font-size: var(--t-lead);
+}
+
+.prose h3,
+.prose h4 {
+  margin: var(--s-4) 0 var(--s-1);
+  font-size: var(--t-body);
+}
+
+/* Words quoted from elsewhere: set in, under a stroke of gold. */
+.prose blockquote {
+  padding: 0 0 0 var(--s-3);
+  border-left: 3px solid var(--gold);
+  color: var(--ink-2);
+}
+
+.prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.prose hr {
+  margin: var(--s-4) 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.prose a {
+  color: var(--jade);
+  text-underline-offset: 3px;
+}
+
+.prose pre {
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  line-height: 1.65;
+  overflow-x: auto;
+}
+
+/* A code block, and over its top right corner what it is written in and the button that copies it. */
+.code-block {
+  position: relative;
+}
+
+.code-tools {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  /* The language keeps the corner; the copy button, which shows only when pointed at, comes in beside it. */
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: var(--s-1);
+  padding: 4px var(--s-2) 0 var(--s-2);
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.code-tools .lang {
+  font-family: var(--mono);
+  padding-right: 2px;
+}
+
+/* The copy button shows when the block is pointed at or focused. */
+.code-block .copy {
+  min-height: 24px;
+  padding: 0 var(--s-2);
+  font-size: var(--t-micro);
+  background: var(--sheet);
+  opacity: 0;
+  transition: opacity var(--d-quick) ease;
+}
+
+.code-block:hover .copy,
+.code-block .copy:focus-visible {
+  opacity: 1;
+}
+
+/* Code colors from the palette's own inks, so they follow the theme: cinnabar
+   for keywords, jade for text, gold for numbers and names. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-meta {
+  color: var(--cinnabar-ink);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--jade-tint-ink);
+}
+
+.hljs-number,
+.hljs-attr,
+.hljs-attribute,
+.hljs-symbol,
+.hljs-variable {
+  color: var(--amber-ink);
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-type,
+.hljs-built_in {
+  font-weight: 700;
+}
+
+.hljs-deletion {
+  color: var(--cinnabar-ink);
+}
+
+.prose .table-wrap {
+  margin: 0 0 var(--s-3);
+  overflow-x: auto;
+}
+
+/* A table ruled as a ledger is: a line of ink over and under its head, hairlines between its rows, no boxes. */
+.prose table {
+  border-collapse: collapse;
+  border-top: 1px solid var(--ink);
+  font-size: var(--t-small);
+}
+
+.prose th,
+.prose td {
+  padding: 6px var(--s-5) 6px 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.prose th {
+  border-bottom-color: var(--ink);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.prose tr:last-child td {
+  border-bottom-color: var(--line-strong);
+}
+
+/* A task list: the model's boxes, ticked or not, in place of bullets. */
+.prose li.task-list-item {
+  list-style: none;
+}
+
+.prose li.task-list-item input {
+  margin: 0 6px 0 -20px;
+  accent-color: var(--jade);
+}
+
+.prose :not(pre) > code {
+  padding: 1px 5px;
+  border-radius: var(--r-paper);
+  background: var(--removed);
+}
+
+/* What the 分身 thought, put away under one line; a small ring on the thread marks where. */
+.thinking {
+  position: relative;
+  color: var(--ink-2);
+  font-size: var(--t-small);
+}
+
+.thinking::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--rail-edge) - var(--gutter));
+  top: 6px;
+  /* Over the thread and the light that runs down it. */
+  z-index: 1;
+  width: var(--rail-box);
+  height: var(--rail-box);
+  /* A ring seven pixels across, painted in the middle of the thread's own box. */
+  background: radial-gradient(circle, var(--bg) 0 2.4px, var(--line-strong) 2.9px 3.3px, transparent 3.8px);
+}
+
+.thinking summary {
+  cursor: pointer;
+}
+
+.thinking p {
+  margin: 6px 0 0;
+  max-width: 50em;
+  white-space: pre-wrap;
+}
+
+/* While the 分身 thinks: one line, the newest words at its end, and light passing over the word that says so. */
+.thinking-live {
+  display: flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.thinking-live::before {
+  background: radial-gradient(circle, var(--jade) 0 3.3px, transparent 3.8px);
+  filter: drop-shadow(0 0 4px var(--jade));
+  animation: glow 1.4s ease-in-out infinite alternate;
+}
+
+.thinking-live .label {
+  position: relative;
+  flex: none;
+}
+
+/* The same words in jade over them, coming and going. */
+.thinking-live .label::after {
+  content: attr(data-lit);
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--jade);
+  animation: glow 1.4s ease-in-out infinite alternate;
+}
+
+.thinking-live .tail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+/* Full, the line holds its end in view and lets the start fade out. */
+.thinking-live .tail.full {
+  justify-content: flex-end;
+  mask-image: linear-gradient(to right, transparent, #000 32px);
+}
+
+.thinking-live .tail > span {
+  flex: none;
+}
+
+/* ---------- what the 分身 did: ink on the page, each act under its seal ---------- */
+
+/* The acts of a turn hang on one thread, which runs down from 本尊's order through every seal.
+   The words beside it start where the order's words do. */
+.turn-did {
+  position: relative;
+  min-width: 0;
+  padding-left: var(--gutter);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+/* One pixel of line down the middle of its box. */
+.turn-did::before {
+  content: "";
+  position: absolute;
+  left: var(--rail-edge);
+  width: var(--rail-box);
+  /* From under the order's own seal, behind the band that holds it. */
+  top: -14px;
+  bottom: 0;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent calc(50% - 0.5px), var(--line) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+}
+
+.turn-did:empty::before {
+  display: none;
+}
+
+.turn-did.live {
+  padding-bottom: var(--s-5);
+}
+
+/* While it works the thread ends at the heart of its point of light, not below it. */
+.turn-did.live::before {
+  bottom: 7px;
+}
+
+/* While the 分身 works, light runs down the thread from the order to where the next act will land. It is drawn
+   in the middle of a box as tall as the thread, and the box is moved by half its height each way inside one that
+   hides what goes past its ends: only moving is done at each step, no painting. */
+.vein {
+  position: absolute;
+  left: var(--rail-edge);
+  width: var(--rail-box);
+  top: -14px;
+  bottom: 7px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.vein::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Moved on a layer of its own, so neither its going down nor its coming back has anything painted again. */
+  will-change: transform;
+  /* Three pixels of light, in the middle of the thread's box. */
+  background: linear-gradient(to bottom, transparent, var(--jade) 40%, #fffdf2 50%, var(--jade) 60%, transparent) 50% 50% / 3px 140px no-repeat;
+  filter: drop-shadow(0 0 4px var(--jade));
+  animation: vein 2.2s linear infinite;
+}
+
+/* Its work done, the light goes back up the thread once, in gold, to the order it answered. */
+.turn.closing .vein::after {
+  background-image: linear-gradient(to bottom, transparent, var(--gold) 40%, #fffdf2 50%, var(--gold) 60%, transparent);
+  filter: drop-shadow(0 0 5px var(--gold));
+  animation: vein-home 900ms var(--ease-out) both;
+}
+
+/* As the light reaches it, the order glows gold a moment. The glow is drawn once, round a layer of its own, and only
+   its opacity changes: a shadow whose size changed at every step would have the whole band painted again at each. */
+.turn.closing .original {
+  position: relative;
+}
+
+.turn.closing .original::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 6px 6px 26px 4px color-mix(in srgb, var(--gold) 70%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  will-change: opacity;
+  animation: homecoming 1400ms ease-out 600ms;
+}
+
+/* Down the thread from under the order to past where it ends, the whole of the light each way: the light is 140px
+   long, so it starts half that above the top and ends half that below the bottom, and no half of it pops in at the
+   top or is left standing at the bottom as it goes round again. */
+@keyframes vein {
+  from {
+    transform: translateY(calc(-50% - 80px));
+  }
+  to {
+    transform: translateY(calc(50% + 80px));
+  }
+}
+
+/* Back up the thread and past its top, under the order: the light is 140px long, so it must go half that beyond
+   where its middle meets the top, or its lower half is left standing there until the turn is put by. */
+@keyframes vein-home {
+  from {
+    transform: translateY(50%);
+  }
+  to {
+    transform: translateY(calc(-50% - 80px));
+  }
+}
+
+@keyframes homecoming {
+  20% {
+    opacity: 1;
+  }
+}
+
+/* Where the thread ends while the 分身 works: a point of light, breathing. */
+.vein-tip {
+  position: absolute;
+  left: var(--rail-edge);
+  bottom: 0;
+  /* Over the thread and the light that runs down it. */
+  z-index: 1;
+  width: var(--rail-box);
+  height: var(--rail-box);
+  border-radius: 50%;
+  background: radial-gradient(circle, #fffdf2 0 22%, var(--jade) 48%, transparent 72%);
+  box-shadow: 0 0 12px 3px color-mix(in srgb, var(--jade) 55%, transparent);
+  /* It glows and dims where it is: made larger and smaller, it would leave the pixels the thread is on. */
+  animation: glow 1.2s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes glow {
+  from {
+    opacity: 0.4;
+  }
+}
+
+@keyframes breathe {
+  from {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+
+/* Acts that follow one another stand close, as lines of one record: the space the column puts between its
+   parts is taken back between two of them. */
+.turn-did > :is(.did:not(.delegate), .folded-acts) + :is(.did:not(.delegate), .folded-acts) {
+  margin-top: calc(-1 * var(--s-3));
+}
+
+.did {
+  position: relative;
+}
+
+/* One act to a line: its seal on the thread, then what was done to what, and across a row of dots how it came out. */
+.did-head {
+  width: 100%;
+  min-height: 30px;
+  padding: 2px var(--s-2) 2px 0;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  text-align: left;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+
+/* A line with nothing to open is not dimmed: it is a record, not an unavailable control. */
+.did-head:disabled {
+  opacity: 1;
+}
+
+button.did-head:not(:disabled):hover {
+  background: color-mix(in srgb, var(--sheet) 70%, transparent);
+}
+
+/* The seal of an act is an outline in ink, where 本尊's is cinnabar: how heavy it is says how much the act weighs. */
+.did .seal {
+  position: absolute;
+  left: calc(var(--rail) - var(--gutter) - 10px);
+  top: 4px;
+  /* Over the thread and the light that runs down it. */
+  z-index: 1;
+  width: 21px;
+  height: 21px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+/* An act on the world outside the files: a command, an errand, a borrowed instrument. */
+.did.act .seal {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+/* A file written: gold, the 分身's own colour. */
+.did.wrote .seal {
+  border-color: var(--gold);
+  background: var(--gold-soft);
+  color: var(--amber-ink);
+}
+
+/* An act gone wrong is the only one stamped in full cinnabar. */
+.did.failed .seal {
+  border-color: var(--cinnabar);
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+}
+
+/* Under way: light goes round the seal's edge, as it does round the box an order is written in. */
+.did.live .seal {
+  --seal-ground: var(--bg);
+  border-color: transparent;
+  background: transparent;
+  color: var(--jade);
+}

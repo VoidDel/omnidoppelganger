@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RANGES, ridge } from "./Chrome";
+import { RANGES, ridge } from "./Backdrop";
 
 /** The points of a drawn range, without the two that close it along the frame's foot. */
 const points = (path: string) =>

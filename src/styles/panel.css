@@ -1,0 +1,747 @@
+/* ---------- side panel ---------- */
+
+/* How far the plan has come: a line of gold along a hairline, which moves on as each step is done. */
+.plan-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.plan-progress span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(to right, var(--gold-soft), var(--gold));
+  transition: width var(--d-arrive) var(--ease-out);
+}
+
+/* The steps, each under its seal, on a thread like the turns' own. */
+.todos {
+  position: relative;
+  margin: var(--s-1) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.todos::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--line);
+}
+
+.todo {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 10px;
+  align-items: start;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.todos .row-seal {
+  --seal-ground: var(--panel);
+  margin-top: 3px;
+  z-index: 1;
+}
+
+/* A step to come: a ring on the thread, on the panel's own paper. */
+.todos .row-seal:empty::before {
+  background: var(--panel);
+}
+
+.todo.in_progress .text {
+  font-weight: 700;
+}
+
+.todo.pending .text {
+  color: var(--ink-2);
+}
+
+/* A step done: 毕 in gold, and a stroke of ink drawn through its words. */
+.row-seal.done {
+  border: 1px solid var(--gold);
+  background: var(--gold-soft);
+  color: var(--amber-ink);
+}
+
+.todo.done .text {
+  color: var(--ink-2);
+}
+
+.todo.done .words {
+  /* The stroke follows the words from line to line. */
+  background: linear-gradient(color-mix(in srgb, var(--ink-2) 80%, transparent), color-mix(in srgb, var(--ink-2) 80%, transparent)) 0 58% / 100% 1.5px no-repeat;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Done while the page was watched: the seal comes down, then the brush goes through the words. */
+.todo.fresh .row-seal {
+  animation: stamp var(--d-arrive) var(--ease-seal) backwards;
+}
+
+.todo.fresh .words {
+  animation: strike 640ms var(--ease-out) 260ms backwards;
+}
+
+@keyframes strike {
+  from {
+    background-size: 0 1.5px;
+  }
+}
+
+.panel {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+
+/* The panel's left edge, to drag: a thin strip over the border that shows itself when pointed at. */
+.panel-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+/* Pointed at or dragged, the border under it turns into a fine jade line with a grip at its middle. */
+.panel-edge::before,
+.panel-edge::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  background: var(--jade);
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity 140ms ease 60ms;
+  pointer-events: none;
+}
+
+.panel-edge::before {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+
+.panel-edge::after {
+  top: 50%;
+  width: 4px;
+  height: 40px;
+  border-radius: var(--r-paper);
+  transform: translate(-50%, -50%);
+}
+
+.panel-edge:hover::before,
+.panel-edge:hover::after,
+.panel-edge.dragging::before,
+.panel-edge.dragging::after,
+.panel-edge:focus-visible::before,
+.panel-edge:focus-visible::after {
+  opacity: 1;
+}
+
+.panel-edge:focus-visible {
+  outline: none;
+}
+
+.tabs {
+  height: var(--bar);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tab {
+  min-height: 36px;
+  min-width: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+/* The side panel's tabs are pictures the size of the header's beside them, and as far apart. */
+.tabs {
+  gap: 12px;
+}
+
+.tabs .tab {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 7px;
+}
+
+/* How far the plan has come, beside its picture. */
+.tab .count {
+  font-size: var(--t-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.tab[aria-pressed="true"] {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+  font-weight: 700;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.panel-body h2 {
+  font-family: var(--brush);
+  margin: 0;
+  font-size: var(--t-body);
+  font-weight: 700;
+}
+
+/* A tab's heading, and at its right what it comes to. */
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.panel-meta {
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* What went in is jade, what came out is the grey of a struck line, as in a diff. */
+.panel-meta .in,
+.file-count .in {
+  color: var(--jade);
+}
+
+.panel-meta .out,
+.file-count .out {
+  color: var(--ink-2);
+}
+
+/* The files, as the lines of a ledger in a frame of its own, its corners rounded as the page's other cards are. */
+.file-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  overflow: hidden;
+}
+
+.file-list:empty {
+  display: none;
+}
+
+/* A file, as a line of a ledger: its name, where it is, how much changed. Opened, its changes under it. */
+.file-row + .file-row {
+  border-top: 1px solid var(--line);
+}
+
+.file-head {
+  width: 100%;
+  min-height: 48px;
+  padding: 6px var(--s-1) 6px 10px;
+  border: 0;
+  border-left: 2px solid var(--gold);
+  background: transparent;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  transition: background var(--d-quick) ease;
+}
+
+.file-head:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.file-head:not(:disabled):hover,
+.file-row.open .file-head {
+  background: var(--sheet);
+}
+
+/* The line of a file, and at its end the ways to open it: quiet until the line is pointed at. */
+.file-line {
+  display: flex;
+  align-items: center;
+}
+
+.file-line .file-head {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-acts {
+  flex: none;
+  display: flex;
+  padding-right: 2px;
+  opacity: 0.45;
+  transition: opacity var(--d-quick) var(--ease-out);
+}
+
+.file-acts .icon-button {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+.file-line:hover .file-acts,
+.file-acts:focus-within {
+  opacity: 1;
+}
+
+/* What was made for 本尊 is there to be opened: its ways to open are always at full strength. */
+.product-row .file-acts {
+  opacity: 1;
+}
+
+/* The document runtime in the settings: a card of two lines, Python and LibreOffice, each with its lamp, what it
+   is and where, and at its right what can be done. */
+.runtime-card {
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.runtime-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 14px;
+}
+
+.runtime-row + .runtime-row,
+.runtime-note + .runtime-row {
+  border-top: 1px solid var(--line);
+}
+
+.runtime-what {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.runtime-what strong {
+  font-weight: 500;
+}
+
+.runtime-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.runtime-detail.mono {
+  font-size: var(--t-micro);
+}
+
+.runtime-detail.missing {
+  color: var(--cinnabar-ink);
+}
+
+.runtime-acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* What can be done to a line is an icon at its end; setting up, what the line is waiting for, is in jade. */
+.runtime-acts .icon-button.go {
+  color: var(--jade);
+}
+
+/* What asks before something is taken away for good (ConfirmBubble): a slip of the page's paper under the icon that
+   asked, its point at the icon, on its own layer over what follows. The icon stays lit in cinnabar while it asks. */
+.bubble-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.bubble-anchor > .icon-button.danger[aria-expanded="true"] {
+  border-color: var(--line);
+  background: var(--sheet);
+  color: var(--cinnabar-ink);
+}
+
+.confirm-bubble {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: -6px;
+  z-index: 30;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 48px));
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgb(16 27 29 / 0.16);
+  animation: bubble-in var(--d-quick) var(--ease-out);
+}
+
+/* Its point: a small square of the same paper, turned, its two outer edges drawn, over the middle of what asked;
+   --point, half that one's width, is measured when the bubble opens. */
+.confirm-bubble::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  right: calc(var(--point, 16px) + 1px);
+  width: 10px;
+  height: 10px;
+  border-top: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
+  background: var(--sheet);
+  transform: rotate(45deg);
+}
+
+/* With no room under what asked (the foot of a dialog): over it, its point down. */
+.confirm-bubble.up {
+  top: auto;
+  bottom: calc(100% + 10px);
+  animation-name: bubble-in-up;
+}
+
+.confirm-bubble.up::before {
+  top: auto;
+  bottom: -6px;
+  border: 0;
+  border-right: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.confirm-bubble p {
+  margin: 0;
+  font-size: var(--t-small);
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.confirm-bubble p + p {
+  margin-top: 6px;
+}
+
+.confirm-bubble-acts {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Its two pills, alike wherever the bubble hangs: one step more particular than the rules that size a place's own
+   small buttons (a 功课's head, the bar, a dialog's foot), which would otherwise reach into it. */
+.confirm-bubble .confirm-bubble-acts .button.small {
+  min-height: 28px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: var(--t-small);
+  font-weight: 400;
+}
+
+.confirm-bubble .confirm-bubble-acts .button.text.small {
+  border: 1px solid var(--line-strong);
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.confirm-bubble .confirm-bubble-acts .button.danger-fill {
+  border: 1px solid var(--cinnabar);
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+}
+
+.confirm-bubble .confirm-bubble-acts .button.danger-fill:hover {
+  filter: brightness(1.06);
+}
+
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes bubble-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* How far setting up has got: a ring where the download icon was, the size of the icon, filling with jade from the
+   top as the download comes in; a quarter of jade going round while how long is not known. */
+.runtime-ring {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.runtime-ring svg {
+  transform: rotate(-90deg);
+}
+
+.runtime-ring circle {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.runtime-ring .track {
+  stroke: var(--line);
+}
+
+.runtime-ring .arc {
+  stroke: var(--jade);
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--d-move) var(--ease-out);
+}
+
+.runtime-ring.turning svg {
+  animation: ring-turn 0.9s linear infinite;
+}
+
+@keyframes ring-turn {
+  from {
+    transform: rotate(-90deg);
+  }
+  to {
+    transform: rotate(270deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runtime-ring.turning svg {
+    animation-duration: 3s;
+  }
+}
+
+.runtime-note {
+  margin: 0;
+  padding: 0 14px 10px 34px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.runtime-note.failed {
+  color: var(--cinnabar-ink);
+  white-space: pre-wrap;
+}
+
+.file-row > .file-note {
+  margin: 0;
+  padding: 0 10px 8px 12px;
+}
+
+.file-row.open .file-line {
+  background: var(--sheet);
+}
+
+.file-where {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.file-name,
+.file-dir {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+.file-name {
+  font-size: var(--t-code);
+  line-height: 1.5;
+}
+
+/* The folders above it, small. */
+.file-dir {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+/* The bar: one length for every file, split between what went in and what came out. */
+.file-bar {
+  flex: none;
+  width: 40px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--line);
+  display: flex;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.file-bar .in {
+  background: var(--jade);
+}
+
+.file-bar .out {
+  background: color-mix(in srgb, var(--ink-2) 55%, transparent);
+}
+
+.file-count {
+  flex: none;
+  min-width: 56px;
+  text-align: right;
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.file-head[aria-expanded]::after {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 2px 2px;
+  border: solid var(--ink-2);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+  transition: transform var(--d-quick) var(--ease-out);
+}
+
+.file-head[aria-expanded="true"]::after {
+  transform: rotate(45deg);
+}
+
+.file-diff {
+  max-height: 420px;
+  margin: 0 0 var(--s-2) 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  overflow: auto;
+  animation: unfold var(--d-move) var(--ease-out);
+}
+
+/* Between one edit's change and the next: a gap, ruled. */
+.file-diff .diff + .diff {
+  border-top: 1px dashed var(--line-strong);
+}
+
+/* ---------- the panel as a strip, while it holds nothing ---------- */
+
+.panel.strip {
+  align-items: center;
+  overflow: hidden;
+}
+
+.strip-tabs {
+  padding: 14px 0 var(--s-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.strip-tabs .tab {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+}
+
+/* Written down the strip as on a scroll, faint: there is nothing here yet. */
+.strip-note {
+  margin: var(--s-3) 0 0;
+  writing-mode: vertical-rl;
+  letter-spacing: 0.35em;
+  font-size: var(--t-small);
+  color: color-mix(in srgb, var(--ink-2) 70%, transparent);
+  white-space: nowrap;
+  animation: ink-in var(--d-arrive) var(--ease-out) 200ms backwards;
+}
+
+/* The panel opens and closes by its width, slowly, unless its edge is being dragged. */
+.app.with-panel {
+  transition: grid-template-columns var(--d-arrive) var(--ease-out);
+}
+
+.app.with-panel:has(.panel-edge.dragging) {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app.with-panel,
+  .plan-progress span {
+    transition: none;
+  }
+
+  .todo.fresh .row-seal,
+  .todo.fresh .words,
+  .file-diff,
+  .strip-note {
+    animation: none;
+  }
+}
+
+.terminal {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-code);
+  line-height: 22px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.terminal + .terminal {
+  padding-top: var(--s-3);
+  border-top: 1px dashed var(--line);
+}
+
+.terminal .prompt {
+  color: var(--jade);
+}
+
+.terminal .failed {
+  color: var(--cinnabar-ink);
+  font-weight: 700;
+}
+
+.muted {
+  color: var(--ink-2);
+}

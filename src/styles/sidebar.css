@@ -1,0 +1,673 @@
+/* ---------- shell ---------- */
+
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+}
+
+.app.with-panel {
+  grid-template-columns: 236px minmax(0, 1fr) var(--panel-width, 360px);
+}
+
+.sidebar {
+  min-height: 0;
+  padding: 16px 12px;
+  background: var(--bg-side);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* A 分身 for a folder, the larger; beside it, one to talk to. */
+.sidebar-new {
+  display: flex;
+  gap: var(--s-2);
+}
+
+.sidebar-new .button.primary {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-new .button.outline {
+  flex: none;
+  padding: 0 var(--s-3);
+}
+
+/* The pages at the foot, a list of their own: close together, as the 分身 in a 洞府 are. */
+.sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-foot .row-button {
+  min-height: 34px;
+}
+
+/* The name over the door: pressed, it is the way back to the home screen. */
+.brand {
+  font-family: var(--brush);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
+  font-size: var(--t-body);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-align: left;
+  transition: border-color var(--d-quick) ease;
+}
+
+.brand:hover {
+  border-color: var(--line);
+}
+
+.brand .logo {
+  transition: transform var(--d-move) var(--ease-seal);
+}
+
+.brand:hover .logo {
+  transform: rotate(-8deg) scale(1.08);
+}
+
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* A workspace's name, and beside it the button that starts another session there. */
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The 洞府's name is what puts its 分身 away and brings them back: a small mark before it turns as it does. */
+.group-name {
+  flex: 1;
+  min-width: 0;
+  min-height: 26px;
+  padding: 2px var(--s-2) 2px var(--s-1);
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+.group-name:hover {
+  color: var(--ink);
+}
+
+.group-caret {
+  flex: none;
+  transform: rotate(90deg);
+  transition: transform var(--d-move) var(--ease-out);
+}
+
+.group.closed .group-caret {
+  transform: none;
+}
+
+.group-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Put away: how many 分身 are inside, and a point of colour for any at work or waiting. */
+.group-count {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.group-count .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.group-count .dot.await {
+  background: var(--cinnabar);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--cinnabar) 60%, transparent);
+}
+
+.group-count .dot.busy {
+  background: var(--jade);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--jade) 60%, transparent);
+  animation: breathe 1.2s ease-in-out infinite alternate;
+}
+
+/* The 分身 of a 洞府 come out from under its name. */
+.group .row-button.session {
+  animation: unfold var(--d-move) var(--ease-out);
+}
+
+.group-add {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.group-add:hover {
+  border-color: var(--line);
+  background: var(--sheet);
+  color: var(--jade);
+}
+
+/* A button that is only a picture: its name is in its title and for screen readers. */
+.icon-button {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-button:hover:not(:disabled),
+.icon-button:focus-visible {
+  border-color: var(--line);
+  background: var(--sheet);
+  color: var(--jade);
+}
+
+.icon-button.danger:hover:not(:disabled),
+.icon-button.danger:focus-visible {
+  color: var(--cinnabar-ink);
+}
+
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.row-button {
+  min-height: 36px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row-button:hover {
+  border-color: var(--line);
+}
+
+.row-button[aria-current] {
+  border-color: var(--line-strong);
+  background: var(--sheet);
+  font-weight: 500;
+}
+
+.row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip {
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: var(--t-micro);
+  font-weight: 700;
+}
+
+.chip.await {
+  background: var(--cinnabar-tint);
+  color: var(--cinnabar-ink);
+}
+
+/* At work is jade; work reported back is gold, the 分身's own. Yellow is kept for what waits on 本尊. */
+.chip.busy {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.chip.done {
+  background: var(--gold-soft);
+  color: var(--amber-ink);
+}
+
+.chip.failed,
+.chip.pending {
+  background: var(--removed);
+  color: var(--ink-2);
+}
+
+/* How many 子分身 a 分身 has, while they are folded away under it. */
+.chip.kin {
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+/* A 子分身 in the list, under the 分身 that set it off: set in, with a line down from it. */
+.row-button.child {
+  width: calc(100% - 18px);
+  min-height: 36px;
+  margin-left: 18px;
+  font-size: var(--t-small);
+  position: relative;
+}
+
+.row-button.child::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: -4px;
+  bottom: 50%;
+  width: 8px;
+  border-left: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+/* A 分身 in the list: how it stands as a seal, then its title, and under that when it was last at work. */
+.row-button.session {
+  position: relative;
+  min-height: 52px;
+  padding: 6px var(--s-2) 6px 6px;
+  align-items: flex-start;
+  gap: var(--s-2);
+  transition:
+    background var(--d-quick) ease,
+    border-color var(--d-quick) ease;
+}
+
+.row-button.session.child {
+  min-height: 34px;
+  align-items: center;
+}
+
+/* The one on screen is marked down its left side with a stroke of jade, drawn from its middle outwards. */
+.row-button.session::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--jade);
+  transform: scaleY(0);
+  transition: transform var(--d-move) var(--ease-out);
+}
+
+.row-button.session[aria-current]::after {
+  transform: none;
+}
+
+.row-button.session.await::after {
+  background: var(--cinnabar);
+  transform: none;
+}
+
+.row-seal {
+  position: relative;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  /* Level with the title's line. */
+  margin-top: 4px;
+  border-radius: var(--r-paper);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.row-button.child .row-seal {
+  margin-top: 0;
+}
+
+/* At rest: a small ring, and nothing to read. */
+.row-seal:empty::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -4.5px 0 0 -4.5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+.row-button[aria-current] .row-seal:empty::before {
+  border-color: var(--jade);
+  background: var(--jade);
+}
+
+/* At work: 运 in jade, light going round its edge. */
+.row-seal.busy {
+  isolation: isolate;
+  border: 1px solid transparent;
+  color: var(--jade);
+}
+
+/* The step of a plan in hand while the 分身 is not at work: the same seal, unlit. */
+.row-seal.hand {
+  border: 1px solid var(--jade);
+  color: var(--jade);
+}
+
+/* A seal's light covers its middle with what the seal lies on, which for the 分身 on screen is its row's paper. */
+.row-seal {
+  --seal-ground: var(--bg-side);
+}
+
+.row-button[aria-current] .row-seal {
+  --seal-ground: var(--sheet);
+}
+
+/* Waiting for 本尊: 候 in full cinnabar, glowing and dimming. */
+.row-seal.await {
+  border: 1px solid var(--cinnabar);
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+}
+
+.row-seal.await::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 10px 2px color-mix(in srgb, var(--cinnabar) 70%, transparent);
+  opacity: 0;
+  animation: ember 1.8s ease-in-out infinite alternate;
+}
+
+.row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.row-button.session .row-title {
+  flex: none;
+  line-height: 1.6;
+}
+
+.row-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: var(--t-micro);
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.row-when {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.row-button.busy .row-when {
+  color: var(--jade);
+}
+
+.row-button.await .row-when {
+  color: var(--cinnabar-ink);
+  font-weight: 700;
+}
+
+/* What kind of 分身 it is, said small beside when: no pill, just the word in a hairline. */
+.row-meta .chip.kin {
+  padding: 0 5px;
+  border-radius: var(--r-paper);
+  line-height: 1.35;
+}
+
+/* ---------- at the head of the list: those waiting for 本尊 ---------- */
+
+.awaiting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+/* A slip of the talisman's own yellow paper for each: the request it stands for is on that 分身's page. Lit paper, in the dark too. */
+.await-slip {
+  position: relative;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px var(--s-2);
+  border: 1px solid var(--cinnabar);
+  border-radius: var(--r-paper);
+  background: var(--talisman);
+  color: #1b2a2b;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  box-shadow:
+    inset 0 0 0 2px var(--talisman),
+    inset 0 0 0 3px color-mix(in srgb, var(--cinnabar) 45%, transparent);
+  animation: unroll var(--d-arrive) var(--ease-out) backwards;
+  transition: transform var(--d-quick) var(--ease-out);
+}
+
+.await-slip:hover {
+  transform: translateX(2px);
+}
+
+.await-slip::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 16px 1px color-mix(in srgb, var(--cinnabar) 60%, transparent);
+  opacity: 0;
+  animation: ember 2.2s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+.await-slip .seal {
+  background: #b8322a;
+  color: #ffffff;
+}
+
+.await-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.await-where {
+  flex: 0 1 auto;
+  max-width: 40%;
+  font-size: var(--t-micro);
+  color: #57533c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group-count .dot.busy,
+  .group .row-button.session,
+  .row-seal.busy,
+  .row-seal.await::after,
+  .await-slip,
+  .await-slip::after {
+    animation: none;
+  }
+
+  .row-seal.await::after,
+  .await-slip::after {
+    opacity: 0.6;
+  }
+
+  .row-button.session::after,
+  .group-caret,
+  .await-slip {
+    transition: none;
+  }
+}
+
+/* ---------- buttons ---------- */
+
+.button {
+  min-height: 36px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* Jade sends an order to the 分身; cinnabar is 本尊 stamping a decision. The two never share a colour. */
+.button.primary {
+  background: var(--jade);
+  color: var(--jade-ink);
+}
+
+.button.solid {
+  background: var(--cinnabar);
+  border-color: var(--cinnabar);
+  color: var(--cinnabar-on);
+}
+
+.button.outline {
+  border-color: var(--ink);
+}
+
+.button.outline.red {
+  border-color: var(--cinnabar);
+  color: var(--cinnabar-ink);
+}
+
+.button.text {
+  text-decoration: underline;
+}
+
+.select-button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--control);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.select-button .label {
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.select-button .value {
+  font-weight: 700;
+}
+
+/* 全权托付: the button that says so, the box it is typed in, and its option in the menu are cinnabar. */
+.composer-row .select-button.danger {
+  border-color: var(--cinnabar);
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+}
+
+.composer-row .select-button.danger .value {
+  font-weight: 700;
+}
+
+.composer-box.trusted,
+.composer-box.trusted:focus-within {
+  border-color: var(--cinnabar);
+  box-shadow: 0 0 0 1px var(--cinnabar);
+}
+
+.trusted-note {
+  color: var(--cinnabar-ink);
+  font-weight: 700;
+}
+
+.mode-option.danger {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 var(--r-paper) var(--r-paper);
+  color: var(--cinnabar-ink);
+}
+
+.mode-option.danger .hint {
+  color: var(--cinnabar-ink);
+}
+
+.mode-option.danger:hover:not(:disabled),
+.mode-option.danger[aria-checked="true"] {
+  background: var(--cinnabar-tint);
+  color: var(--cinnabar-ink);
+}
+
+.dialog.danger {
+  border-color: var(--cinnabar);
+  box-shadow: 8px 8px 0 var(--cinnabar-soft);
+}
+
+.dialog.danger p {
+  margin: 0;
+  line-height: 1.7;
+}

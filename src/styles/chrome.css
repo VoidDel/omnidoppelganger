@@ -1,0 +1,521 @@
+/* ---------- what a label means, behind an ⓘ ---------- */
+
+/* The mark sits on the line of the words it explains, a little after them. */
+.info {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.info-mark {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink-2);
+  display: inline-grid;
+  place-items: center;
+  cursor: help;
+  transition: color var(--d-quick) var(--ease-out);
+}
+
+/* Easier to land on than it looks. */
+.info-mark::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+
+.info-mark:hover,
+.info-mark:focus-visible,
+.info-mark[aria-expanded="true"] {
+  color: var(--jade);
+}
+
+.info-mark:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
+}
+
+/* The note: a slip of the same paper as a window, small, set where the mark is and not in the page's flow. */
+.info-note {
+  position: fixed;
+  z-index: 60;
+  width: max-content;
+  max-width: min(380px, calc(100vw - 24px));
+  padding: 10px 14px;
+  border: 1px solid var(--ink);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: 4px 4px 0 var(--talisman-under);
+  font-family: var(--text);
+  font-size: var(--t-small);
+  font-weight: 400;
+  line-height: 1.7;
+  letter-spacing: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: auto;
+}
+
+.info-note p {
+  margin: 0;
+}
+
+.info-note p + p {
+  margin-top: 6px;
+}
+
+/* A label, or a choice with its box, and the mark that explains it, on one line. */
+.label-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.label-line > .info {
+  flex: none;
+}
+
+.schedule-task {
+  margin: 0;
+  max-height: 4.8em;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.schedule-facts {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.schedule-facts .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--jade);
+  text-decoration: underline;
+}
+
+.schedule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.input.area {
+  max-width: 100%;
+  min-height: 96px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.input.short {
+  width: auto;
+  min-width: 96px;
+}
+
+.inline.wide .input {
+  max-width: none;
+}
+
+.kinds,
+.when-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.kind,
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.check {
+  align-items: flex-start;
+}
+
+.kind input,
+.check input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--jade);
+}
+
+.check input {
+  margin-top: 3px;
+}
+
+.days {
+  display: flex;
+  gap: 4px;
+}
+
+/* A day of the week: a round stone, jade when the 功课 falls on it. */
+.day {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--sheet);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.day input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.day:has(input:checked) {
+  border-color: var(--jade);
+  background: var(--jade);
+  color: var(--jade-ink);
+  font-weight: 700;
+}
+
+.day:has(input:focus-visible) {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
+}
+
+.papers {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 12px;
+}
+
+.papers legend {
+  padding: 0 0 10px;
+  font-weight: 500;
+}
+
+.paper {
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.paper:has(input:checked) {
+  border: 2px solid var(--jade);
+  padding: 11px;
+}
+
+.paper .name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.paper input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--jade);
+}
+
+.swatches {
+  display: flex;
+  gap: 6px;
+}
+
+.swatches span {
+  flex: 1;
+  height: 28px;
+  border: 1px solid;
+  border-radius: var(--r-paper);
+}
+
+.error-banner {
+  position: relative;
+  z-index: 2;
+  margin: 12px 24px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cinnabar);
+  border-radius: var(--r-paper);
+  background: var(--cinnabar-tint);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* A seal that is pressed: 本尊 stamps what was read. */
+.seal-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  font-size: 19px;
+  line-height: 30px;
+  cursor: pointer;
+  transition: transform 80ms ease;
+}
+
+.seal-button:hover,
+.seal-button:focus-visible {
+  box-shadow: 0 0 0 3px var(--cinnabar-soft);
+}
+
+.seal-button:active {
+  transform: scale(0.92);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seal-button {
+    transition: none;
+  }
+}
+
+/* The same strip for news that is good: jade, not cinnabar. */
+.error-banner.note {
+  border-color: var(--jade);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+/* The mark: one circle in two halves, each a drawing of its own, one on the other. 本尊's half is ink, the
+   分身's half is gold. */
+.mark {
+  position: relative;
+  flex: none;
+  display: inline-block;
+}
+
+.mark > span {
+  position: absolute;
+  inset: 0;
+}
+
+.mark svg {
+  display: block;
+}
+
+.mark .self {
+  fill: var(--ink);
+}
+
+.mark .double {
+  fill: var(--talisman-under);
+  transition: transform 320ms ease;
+}
+
+/* The 分身's half drifts out and back while it works, along the line the circle is cut on. */
+.mark.working .double {
+  animation: part 1.6s ease-in-out infinite alternate;
+}
+
+.mark.waiting .double {
+  fill: var(--cinnabar);
+  transform: translate(calc(var(--unit) * -1.65), calc(var(--unit) * -0.95));
+}
+
+@keyframes part {
+  to {
+    transform: translate(calc(var(--unit) * -1.82), calc(var(--unit) * -1.05));
+  }
+}
+
+/* The logo: the same two halves stamped on a cinnabar seal. */
+.logo {
+  flex: 0 0 auto;
+}
+
+.logo .plate {
+  fill: var(--cinnabar);
+}
+
+.logo .self {
+  fill: var(--cinnabar-on);
+}
+
+.logo .double {
+  fill: var(--seal-gold);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark.working .double {
+    animation: none;
+    transform: translate(calc(var(--unit) * -1.65), calc(var(--unit) * -0.95));
+  }
+
+  .original,
+  .token-button {
+    transition: none;
+    animation: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  .app.with-panel {
+    grid-template-columns: 236px minmax(0, 1fr);
+  }
+
+  .app.with-panel .panel {
+    display: none;
+  }
+
+  /* No room for the panel at this width, so nothing to put away or bring back. */
+  .panel-toggle {
+    display: none;
+  }
+}
+
+/* ---------- a part of the page that could not be drawn ---------- */
+
+/* In the part's own place: a note that says so, the ways on from it, and the error for whoever is asked. */
+.broken {
+  min-width: 0;
+  min-height: 0;
+  padding: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-3);
+  overflow: auto;
+}
+
+.broken-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.broken h2 {
+  margin: 0;
+  font-size: var(--t-lead);
+  line-height: 1.4;
+  color: var(--cinnabar-ink);
+}
+
+.broken p {
+  margin: 0;
+  max-width: 40em;
+}
+
+.broken-detail {
+  max-width: 100%;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.broken-detail summary {
+  cursor: pointer;
+}
+
+.broken-detail pre {
+  max-width: 100%;
+  max-height: 240px;
+  margin: var(--s-2) 0;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  color: var(--ink);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Where the part it stands for fills what room there is: a conversation, a page. */
+.broken.fill {
+  flex: 1;
+}
+
+/* Where it stands for the bar across the top, or the box under the conversation: it keeps to its edge. */
+.broken.bar {
+  border-bottom: 1px solid var(--line);
+  padding: var(--s-3) var(--s-5);
+}
+
+.broken.under {
+  border-top: 1px solid var(--line);
+  padding: var(--s-3) var(--s-5);
+}
+
+/* Narrow places: the list, and the side panel. */
+.broken.sidebar,
+.broken.panel {
+  padding: var(--s-4);
+}
+
+.broken.sidebar h2,
+.broken.panel h2 {
+  font-size: var(--t-body);
+}
+
+/* The whole page: in the middle of the window. */
+.broken.whole {
+  height: 100%;
+  justify-content: center;
+  padding: var(--s-5) 10vw;
+}
+
+.broken.whole h2 {
+  font-size: var(--t-title);
+}
+
+/* ---------- for one who has asked the system for stillness ---------- */
+
+/* Nothing moves, whatever rule above says it should and however that rule is written: the lists of names in the
+   parts above set what a thing looks like when it does not move, and this stops the moving itself. Without it,
+   a rule more exactly aimed than the one that says "none" went on moving. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  /* A seal or a box at work: a plain edge of jade, no light going round and no glow. */
+  .aura {
+    display: none;
+  }
+
+  .edge::before {
+    background: var(--jade);
+  }
+
+  .vein {
+    display: none;
+  }
+
+  .thinking-live .label::after {
+    display: none;
+  }
+}

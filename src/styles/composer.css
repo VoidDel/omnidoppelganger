@@ -1,0 +1,998 @@
+/* ---------- composer ---------- */
+
+.composer {
+  padding: 0 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.composer-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+/* The frame carries the light round the box while the 分身 works (see "light going round an edge"), and a
+   cinnabar glow while it waits. */
+/* A layer of its own, so that the light under its edge stays under it; and that layer above the conversation
+   (its pinned message, the empty page's words), since the menus that open from the box stand up over them. */
+.composer-frame {
+  position: relative;
+  z-index: 4;
+  isolation: isolate;
+  border-radius: var(--r-control);
+}
+
+.composer-frame > .edge {
+  inset: 0;
+  border-radius: var(--r-control);
+  --light-rest: var(--line-strong);
+  /* A square that covers the box whichever way it is turned. */
+  --light-side: 140%;
+  --light-time: 4.5s;
+  animation: come var(--d-arrive) ease backwards;
+}
+
+.composer-frame > .edge::after {
+  display: none;
+}
+
+/* The same light, out of focus about the box: a glow that goes round with it. */
+.composer-frame > .aura {
+  inset: -3px;
+  z-index: -2;
+  border-radius: calc(var(--r-control) + 3px);
+  filter: blur(9px);
+  opacity: 0.6;
+  --light-rest: transparent;
+  --light-side: 140%;
+  --light-time: 4.5s;
+  animation: come var(--d-arrive) ease backwards;
+}
+
+@keyframes come {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Behind the box while it waits for 本尊: a glow of cinnabar. */
+.composer-frame::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  z-index: -1;
+  border-radius: calc(var(--r-control) + 3px);
+  filter: blur(9px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.composer-box {
+  position: relative;
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  padding: 10px var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  transition: border-color var(--d-move) ease;
+}
+
+.composer-box:focus-within {
+  border-color: var(--jade);
+}
+
+/* While the 分身 works, the box's own edge gives way to the light going round under it. */
+.composer-frame.working .composer-box:not(.trusted) {
+  border-color: transparent;
+  background-clip: padding-box;
+}
+
+/* While it waits for 本尊, the box holds a cinnabar edge that glows and dims. */
+.composer-frame.waiting::before {
+  background: var(--cinnabar);
+  animation: ember-low 2.6s ease-in-out infinite alternate;
+}
+
+@keyframes ember-low {
+  to {
+    opacity: 0.35;
+  }
+}
+
+.composer-frame.waiting .composer-box {
+  border-color: var(--cinnabar);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-frame.working .composer-box:not(.trusted) {
+    border-color: var(--jade);
+  }
+
+  .composer-frame.waiting::before {
+    opacity: 0.25;
+  }
+}
+
+/* As tall as it was left, and taller while what is typed needs more: its height is set from what it holds. */
+.composer textarea {
+  display: block;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  line-height: 1.7;
+}
+
+/* The box's top edge, to drag: a strip over the border that shows a short stroke of jade when pointed at. */
+.composer-grip {
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 12px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.composer-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--jade);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity var(--d-quick) ease 60ms;
+  pointer-events: none;
+}
+
+.composer-grip:hover::after,
+.composer-grip.dragging::after,
+.composer-grip:focus-visible::after {
+  opacity: 1;
+}
+
+.composer-grip:focus-visible {
+  outline: none;
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The composer's controls stay quiet until pointed at: an icon or a value, no box, one line.
+   The three that say how the 分身 stands (what it runs on, what it may do, how full it is) read as one strip, a hairline between each. */
+.composer-row .mode-picker {
+  min-width: 0;
+}
+
+.composer-row .mode-picker + .mode-picker {
+  margin-left: var(--s-1);
+  padding-left: var(--s-1);
+  border-left: 1px solid var(--line);
+}
+
+/* A control that cannot be changed just now still says what it holds. */
+.composer-row .select-button:disabled {
+  opacity: 0.75;
+}
+
+/* Five 灵石 in a row, each a small stone standing on its point, lit from the bottom up as the conversation fills. */
+.stones {
+  --stone: var(--jade);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 3px;
+}
+
+.stones span {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  /* On its point, so "up" on the page is towards the stone's own top left corner. */
+  transform: rotate(45deg);
+  background: linear-gradient(to top left, var(--stone) calc(var(--lit) * 100%), color-mix(in srgb, var(--line-strong) 45%, transparent) 0);
+  transition: background var(--d-move) ease;
+}
+
+/* How full in figures comes out beside the stones when they are pointed at, focused, or their menu is open. */
+.composer-row .select-button:has(.stones) .value {
+  max-width: 0;
+  margin-left: calc(-1 * var(--s-1));
+  opacity: 0;
+  transition:
+    max-width var(--d-move) var(--ease-out),
+    margin var(--d-move) var(--ease-out),
+    opacity var(--d-move) ease;
+}
+
+.composer-row .select-button:has(.stones):is(:hover, :focus-visible, [aria-expanded="true"]) .value {
+  max-width: 160px;
+  margin-left: 0;
+  opacity: 1;
+}
+
+.stones.warm {
+  --stone: var(--gold);
+}
+
+.stones.hot {
+  --stone: var(--cinnabar);
+}
+
+/* Nearly full: the last stone beats. */
+.stones.hot span:last-child {
+  /* It glows and dims; made larger and smaller, it would lose the turn that stands it on its point. */
+  animation: glow 0.9s ease-in-out infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stones.hot span:last-child {
+    animation: none;
+  }
+}
+
+.composer-row .select-button {
+  min-height: 32px;
+  min-width: 0;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  gap: 6px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.composer-row .select-button svg {
+  flex: none;
+  color: currentColor;
+}
+
+.composer-row .select-button .value {
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.composer-row .select-button:hover:not(:disabled),
+.composer-row .select-button[aria-expanded="true"] {
+  background: var(--control);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.composer-row .button {
+  flex: none;
+  min-height: 34px;
+  padding: 0 16px;
+  margin-left: 6px;
+}
+
+/* The button that sends: a jade 令牌 with the order's character on it. */
+.token-button {
+  flex: none;
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  line-height: 0;
+  transition: transform 160ms ease;
+}
+
+.token {
+  overflow: visible;
+}
+
+.token .plate {
+  fill: var(--jade);
+}
+
+.token .rim {
+  fill: none;
+  stroke: var(--jade-ink);
+  stroke-width: 0.8;
+  opacity: 0.45;
+}
+
+.token .hole {
+  fill: var(--sheet);
+}
+
+.token text {
+  fill: var(--jade-ink);
+  font-family: var(--brush);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* Three tokens, three colours: jade for an order, gold for a word sent after it, and cinnabar
+   for the one that stops the 分身, as every decision 本尊 stamps is. */
+.token.word .plate {
+  fill: var(--gold);
+}
+
+.token.halt .plate {
+  fill: var(--cinnabar);
+}
+
+.token.halt .rim {
+  stroke: var(--cinnabar-on);
+}
+
+.token.halt text {
+  fill: var(--cinnabar-on);
+}
+
+/* A token coming onto the row is set down there: the one that stops, after the one it replaces has melted away. */
+.token-button {
+  animation: set-down 220ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+
+.token-button.stop {
+  animation-delay: 140ms;
+}
+
+@keyframes set-down {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+.token-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.token-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.token-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Pictures waiting to be sent, each with a button to take it off again. */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.attachment {
+  position: relative;
+  display: inline-flex;
+}
+
+.attachment img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+}
+
+.attachment > button:not(.shot) {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--sheet);
+  line-height: 1;
+  padding: 0;
+}
+
+/* A file to go with the message: a slip with its name and size, where a picture has its thumbnail. */
+.attachment.file,
+.file-chip {
+  max-width: 100%;
+  min-height: 28px;
+  padding: 2px var(--s-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--bg);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-small);
+  color: var(--ink);
+}
+
+/* The button that takes a file off is at the end of its slip, not over its corner as a picture's is: there it would cover the size. */
+.attachment.file button {
+  position: static;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-right: -4px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.attachment.file button:hover {
+  color: var(--cinnabar-ink);
+}
+
+.attachment.file svg,
+.file-chip svg {
+  flex: none;
+  color: var(--gold);
+}
+
+.file-chip-name {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--t-code);
+}
+
+.file-chip-size {
+  flex: none;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* Under a message in the conversation: what was attached to it. */
+.said-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  /* Clear of the paper that shows under the message. */
+  padding-top: 4px;
+}
+
+.said-files .file-chip {
+  background: var(--sheet);
+  border-color: var(--line);
+}
+
+/* A file under a message that opens when pressed, with at its end the way to its folder: two buttons on one slip,
+   the slip itself setting them apart from the words around. */
+.file-chip.openable {
+  padding: 0;
+  gap: 0;
+}
+
+.file-chip-open,
+.file-chip-reveal {
+  min-height: 26px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.file-chip-open {
+  min-width: 0;
+  padding: 2px 6px 2px var(--s-2);
+  gap: 6px;
+}
+
+.file-chip-reveal {
+  flex: none;
+  padding: 0 7px;
+  border-left: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+.file-chip-reveal svg {
+  color: currentColor;
+}
+
+.file-chip.openable:hover {
+  border-color: var(--jade);
+}
+
+.file-chip-open:hover .file-chip-name {
+  color: var(--jade);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.file-chip-reveal:hover {
+  color: var(--jade);
+  background: var(--control);
+}
+
+.file-chip-open:focus-visible,
+.file-chip-reveal:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: -2px;
+}
+
+.file-chip-open:disabled,
+.file-chip-reveal:disabled {
+  cursor: default;
+}
+
+/* What came of opening one: why it could not be, or that it was shown in its folder instead. */
+.file-note {
+  margin: 4px 0 0;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.file-note.failed {
+  color: var(--cinnabar-ink);
+}
+
+/* Files dragged over the window: the box says it will take them. */
+.composer-box.dropping {
+  border-color: var(--jade);
+  border-style: dashed;
+  background: var(--jade-tint);
+}
+
+.drop-note {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--jade-tint) 92%, transparent);
+  color: var(--jade-tint-ink);
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.attachments .refused {
+  font-size: var(--t-small);
+  color: var(--cinnabar-ink);
+}
+
+/* Pictures the user sent, above the words that came with them. */
+.shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shots img {
+  display: block;
+  max-width: 100%;
+  max-height: 180px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+}
+
+/* A picture that opens at full size when pressed: the picture itself is the button. */
+.shot {
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-paper);
+  background: none;
+  cursor: zoom-in;
+  max-width: 100%;
+}
+
+.shot:hover img {
+  border-color: var(--jade);
+}
+
+.shot:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
+}
+
+/* ---------- a picture seen at full size ---------- */
+
+/* Over the whole window, the page dimmed under it; the picture as large as the window lets it be, never larger
+   than it is, on the page's own paper edge. */
+.viewer {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 48px 72px;
+  border: 0;
+  background: transparent;
+  display: none;
+  place-items: center;
+  overflow: hidden;
+}
+
+.viewer[open] {
+  display: grid;
+}
+
+.viewer:focus {
+  outline: none;
+}
+
+.viewer::backdrop {
+  background: rgb(10 18 20 / 0.82);
+}
+
+.viewer img {
+  /* Held to the window, less the room round it, in the window's own measure: a percentage would be of a row that
+     takes its height from the picture, and a tall picture would run off the window and be cut. */
+  max-width: calc(100vw - 144px);
+  max-height: calc(100vh - 96px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.35);
+  cursor: auto;
+  animation: come var(--d-move) var(--ease-out);
+}
+
+.viewer-close,
+.viewer-step {
+  position: fixed;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 0.25);
+  border-radius: 50%;
+  background: rgb(10 18 20 / 0.55);
+  color: #f2f6f3;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.viewer-close:hover,
+.viewer-step:hover {
+  background: rgb(10 18 20 / 0.8);
+  border-color: rgb(255 255 255 / 0.5);
+}
+
+.viewer-close:focus-visible,
+.viewer-step:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
+}
+
+.viewer-close {
+  top: 16px;
+  right: 16px;
+}
+
+.viewer-step {
+  top: 50%;
+  translate: 0 -50%;
+}
+
+.viewer-step.back {
+  left: 16px;
+}
+
+.viewer-step.next {
+  right: 16px;
+}
+
+.viewer-count {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  translate: -50% 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgb(10 18 20 / 0.55);
+  color: #f2f6f3;
+  font-size: var(--t-small);
+}
+
+.main-header .spacer {
+  flex: 1;
+}
+
+.main-header .title-input {
+  min-height: 36px;
+  max-width: 320px;
+  font-family: var(--brush);
+  font-weight: 700;
+}
+
+.sidebar input[type="search"] {
+  min-height: 36px;
+  font-size: var(--t-small);
+}
+
+.composer-status .button.small,
+.main-header .button.small {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: var(--t-small);
+}
+
+/* The 禁制 picker: a button in the composer row, its menu opening upward over the transcript. */
+.mode-picker {
+  position: relative;
+}
+
+button.select-button {
+  color: var(--ink);
+}
+
+button.select-button svg {
+  color: var(--jade);
+}
+
+.mode-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: min(360px, calc(100vw - 48px));
+  padding: 6px;
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Parts of a composer menu beyond its options: a note, a filter, and a list that scrolls when long. */
+.menu-note {
+  margin: 0;
+  padding: 4px 10px 6px;
+  font-size: var(--t-micro);
+  line-height: 1.5;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.menu-filter {
+  min-height: 34px;
+  max-width: none;
+  margin: 0 4px 4px;
+  width: auto;
+  font-size: var(--t-small);
+}
+
+/* The "/" menu, over the top of the box while a command is typed: one to a line, its name, what follows it, and
+   what it does. */
+.slash-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  width: min(560px, 100%);
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-option {
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: var(--r-paper);
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  cursor: pointer;
+}
+
+.slash-option[aria-selected="true"] {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.slash-option[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.slash-name {
+  flex: none;
+  font-weight: 700;
+}
+
+/* What the command is called in Chinese, beside its name: as the controls it stands for are called. */
+.slash-label {
+  flex: none;
+  margin-left: 6px;
+}
+
+.slash-arg {
+  flex: none;
+  margin-left: 6px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.slash-hint {
+  min-width: 0;
+  margin-left: auto;
+  padding-left: var(--s-2);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.slash-option[aria-selected="true"] .slash-arg,
+.slash-option[aria-selected="true"] .slash-hint {
+  color: inherit;
+}
+
+/* The "/" button's face: the character the menu is called up with. */
+.slash-glyph {
+  display: inline-block;
+  width: 18px;
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+}
+
+/* The providers along the top of the 功法 menu, one of which lists its models below: the session's own first. */
+.menu-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 4px 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 2px;
+}
+
+.menu-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--t-small);
+}
+
+.menu-tab:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.menu-tab[aria-selected="true"] {
+  border-color: var(--jade);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+/* One without a key cannot be moved to; it says why when pointed at. */
+.menu-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.menu-scroll {
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Each option as tall as its words: a long list scrolls, rather than squeezing its options until their second
+   lines run into the next. (A min-height of their own takes away the floor a flex item otherwise has.) */
+.menu-scroll > * {
+  flex-shrink: 0;
+}
+
+.mode-option.plain {
+  grid-template-columns: 1fr 16px;
+  min-height: 36px;
+  padding: 6px 10px;
+}
+
+.select-button:disabled {
+  cursor: default;
+}
+
+.mode-menu-head {
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.mode-menu kbd {
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+}
+
+.mode-option {
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-paper);
+  background: transparent;
+  display: grid;
+  grid-template-columns: 18px 1fr 16px;
+  /* The picture and the tick sit at the middle of the option, however many lines its words take. */
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+}
+
+.mode-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-option:hover:not(:disabled),
+.mode-option[aria-checked="true"] {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.mode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mode-text .name {
+  font-weight: 700;
+}
+
+.mode-text .hint {
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.input.config {
+  max-width: 100%;
+  min-height: 160px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  resize: vertical;
+  white-space: pre;
+}
+
+.hint.failed,
+.who .failed {
+  color: var(--cinnabar-ink);
+}

@@ -1,0 +1,234 @@
+/* The "符箓" look. The page is quiet paper, and the seals on it speak:
+   moon-white paper = what 本尊 said; ink on the page = what the 分身 did, each act under its seal;
+   yellow talisman paper with cinnabar on it = the one thing waiting for 本尊 to decide.
+   Jade is the colour of sending an order, gold the 分身's own, cinnabar 本尊's. */
+
+:root {
+  /* Type: six sizes for everything written, and one for code. Seals and tokens are drawn to their boxes, not set on this scale. */
+  --t-micro: 12px;
+  --t-small: 13px;
+  --t-body: 14px;
+  --t-lead: 16px;
+  --t-title: 21px;
+  --t-display: 38px;
+  --t-code: 13px;
+  /* Corners: paper is cut nearly square, controls are rounded to the hand. */
+  --r-paper: 2px;
+  --r-control: 6px;
+  /* Space, in steps of four. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  /* Motion: how long a thing takes by how far it goes, and the two ways it moves. */
+  --d-quick: 120ms;
+  --d-move: 240ms;
+  --d-arrive: 520ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-seal: cubic-bezier(0.3, 1.5, 0.5, 1);
+  /* The thread a turn's seals hang on: the left edge of its one pixel, measured from the column's left edge;
+     and where the turn's words start. Everything on the thread is an odd number of pixels wide and set on whole
+     pixels, with the thread's pixel in its middle: halves round one way for a line and another for a ring. */
+  --rail: 21px;
+  --gutter: 44px;
+  /* The box the thread is drawn in the middle of, and with it its light, the point it ends in and the rings on it:
+     the same two edges for all of them, so that whatever a screen's scale rounds those edges to, their middles agree. */
+  --rail-box: 13px;
+  /* The bars across the top of the conversation, the side panel and the settings: one height, so their lower
+     borders make one line across the window, whatever each holds. */
+  --bar: 52px;
+  --rail-edge: calc(var(--rail) - 6px);
+  --bg: #eff3ef;
+  --bg-side: #e3eae5;
+  --panel: #f7f9f6;
+  --sheet: #fbfcfa;
+  --ink: #1b2a2b;
+  --ink-2: #4f6162;
+  --line: #cbd6cf;
+  --line-strong: #8fa39b;
+  --control: #eff3ef;
+  --jade: #1f6f64;
+  --jade-ink: #ffffff;
+  --jade-tint: #d8eae4;
+  --jade-tint-ink: #17564d;
+  --talisman: #f6e7a8;
+  --talisman-line: #d9bc55;
+  --talisman-under: #e8c84a;
+  /* Gold as ink on the page itself, where the talisman's own ink would be too dark or too light. */
+  --amber-ink: #6b5200;
+  --added: #dcebe3;
+  --added-ink: #17564d;
+  --cinnabar: #b8322a;
+  --cinnabar-on: #ffffff;
+  --cinnabar-ink: #8c2019;
+  --cinnabar-tint: #f9e2dc;
+  --cinnabar-soft: #e3a79f;
+  --gold: #b8892b;
+  --gold-soft: #e4d3a6;
+  --removed: #e4eae6;
+  --seal-gold: #f6dc8a;
+  --mist-far: #dce6e0;
+  --mist-mid: #c9d8d0;
+  --mist-near: #b4c8bf;
+  /* Two hands. What is written with a brush (headings, seals, the words on a talisman) is LXGW WenKai Lite, a
+     regular-script face. What is read (the conversation, labels, everything a control says) is the system's own
+     Chinese sans, which holds at small sizes; its Latin letters and figures are its own too, so a name like
+     "GLM-4.5" is in one face throughout. Code is Atkinson Hyperlegible Mono. */
+  --brush: "LXGW WenKai Lite", "STKaiti", "KaiTi", serif;
+  --han: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
+  --text: var(--han), system-ui, sans-serif;
+  --mono: "Atkinson Hyperlegible Mono", var(--han), ui-monospace, Consolas, monospace;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #101b1d;
+  --bg-side: #0b1416;
+  --panel: #0b1416;
+  --sheet: #1a2a2c;
+  --ink: #e6eeea;
+  --ink-2: #9fb3ae;
+  --line: #243638;
+  --line-strong: #3c5557;
+  --control: #101b1d;
+  --jade: #6fd0be;
+  --jade-ink: #0b1416;
+  --jade-tint: #1b3f3b;
+  --jade-tint-ink: #bfede3;
+  /* In the dark the talisman is still yellow paper, lit: the one bright thing on the desk. Its ink is dark. */
+  --talisman: #ecd88c;
+  --talisman-line: #b8962e;
+  --talisman-under: #c9a62c;
+  --amber-ink: #f0dc94;
+  --added: #173a36;
+  --added-ink: #bfede3;
+  /* A seal is red with a pale character, in the dark as in the light. */
+  --cinnabar: #cf4a40;
+  --cinnabar-on: #fff5ef;
+  --cinnabar-ink: #ffb4ab;
+  --cinnabar-tint: #3d1c19;
+  --cinnabar-soft: #7a342e;
+  --gold: #e0b85a;
+  --gold-soft: #4a3c17;
+  --removed: #17282a;
+  --seal-gold: #ffe9a8;
+  --mist-far: #15262a;
+  --mist-mid: #1a2f33;
+  --mist-near: #20393d;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--text);
+  font-size: var(--t-body);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+textarea,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 2px;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--mono);
+  font-size: var(--t-code);
+}
+
+/* What scrolls keeps a narrow bar that is out of sight until the thing is pointed at, and is then a soft stroke, no box and no arrows. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* The stroke is narrower than the room it has: the border, in the colour of nothing, keeps it off the edge. */
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  background-clip: content-box;
+}
+
+:hover::-webkit-scrollbar-thumb,
+:focus-within::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--line-strong) 70%, transparent);
+}
+
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  border-width: 2px;
+  background-color: var(--line-strong);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A cinnabar seal: one character stamped in red. It marks what kind of act a card records. */
+.seal {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-paper);
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+  font-family: var(--brush);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 24px;
+  text-align: center;
+}
+
+.seal.small {
+  width: 18px;
+  height: 18px;
+  font-size: 13px;
+  line-height: 18px;
+}

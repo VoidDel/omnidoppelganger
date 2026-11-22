@@ -111,9 +111,9 @@ crates/odg-core/   核心库，不依赖桌面外壳
   openai_responses.rs  OpenAI Responses API 流式客户端
   openai_chat.rs   Chat Completions 流式客户端：DeepSeek、Kimi、GLM 和其他兼容服务
   llm.rs           客户端共用的请求、重试和报错处理
-  tools.rs         工具的规格与执行：文件、搜索、命令、后台命令、代码导航、联网、秘籍、MCP 资源、请教本尊、呈上计划、子分身、交付文件
+  tools.rs, tools/ 工具的规格与执行：文件、搜索、命令、后台命令、代码导航、联网、秘籍、MCP 资源、请教本尊、呈上计划、子分身、交付文件
   jobs.rs          后台命令：启动、读输出、停止、写输入
-  lsp.rs           代码导航：找、下载并启动语言服务，七种问法
+  lsp.rs, lsp/     代码导航：找、下载并启动语言服务，七种问法
   mcp.rs           MCP 客户端：读服务清单、连接、列工具、调工具、读资源
   skills.rs        秘籍：找 SKILL.md，按名读取
   runtime.rs       文房：按校验码下载、安装文档用的 Python 和库，找本机的 LibreOffice
@@ -130,7 +130,7 @@ crates/odg-core/   核心库，不依赖桌面外壳
   policy.rs        五种禁制下，哪些操作要先批准
   safety.rs        放手施为的命令安全检查
   grants.rs        通行符：长期许可的存取
-  agent.rs         agent 循环：回合、步骤、审批、传音、收回、压缩
+  agent.rs, agent/ agent 循环：回合、步骤、审批、传音、收回、压缩、护法与子分身
   undo.rs          改文件前的快照，按轮撤回
   settings.rs      设置和密钥
   fsutil.rs        不会留下半截文件的写入

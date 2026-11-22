@@ -1,0 +1,1003 @@
+/* ---------- light going round an edge ---------- */
+
+/* Two layers under the words of what they light (see Light.tsx). `edge` is the thing's own box with the light
+   turning in it, covered but for a hair's breadth round its rim; `aura`, round the box an order is written in only,
+   is the same light a little larger and out of focus. What turns is one square of gradient, turned whole by the
+   compositor: nothing is laid out or painted again as it goes round, so it costs next to nothing however long the 分身 works. A gradient whose
+   angle is animated looks the same and has the page painted afresh at every step. */
+.aura,
+.edge {
+  position: absolute;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.edge {
+  inset: -1px;
+  border-radius: var(--r-paper);
+  --light-rest: color-mix(in srgb, var(--jade) 45%, var(--seal-ground, var(--bg)));
+}
+
+.aura::before,
+.edge::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--light-side, 64px);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  background: conic-gradient(var(--light-rest) 0 40%, var(--jade) 62%, var(--seal-gold) 78%, #fffdf2 84%, var(--jade) 92%, var(--light-rest) 100%);
+  animation: go-round var(--light-time, 2s) linear infinite;
+}
+
+/* What the light does not reach of the thing's middle. */
+.edge::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 1px;
+  background: var(--seal-ground, var(--bg));
+}
+
+@keyframes go-round {
+  to {
+    rotate: 1turn;
+  }
+}
+
+.did-head .verb {
+  flex: none;
+}
+
+.did:is(.act, .wrote, .failed) .verb {
+  font-weight: 700;
+}
+
+.did.quiet .verb {
+  color: var(--ink-2);
+}
+
+.did-head .target {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--t-code);
+}
+
+/* What several acts read amount to, in words, not a path. */
+.did.folded .target {
+  font-family: var(--text);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+/* The dots that lead the eye from an act to how it came out, as in a ledger. */
+.did-head .leader {
+  flex: 1 1 var(--s-5);
+  min-width: var(--s-4);
+  border-bottom: 1px dotted var(--line-strong);
+  transform: translateY(-4px);
+  opacity: 0.7;
+}
+
+.did-head .outcome {
+  flex: none;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.did.failed .outcome {
+  color: var(--cinnabar-ink);
+  font-weight: 700;
+}
+
+.did.wrote .outcome {
+  color: var(--amber-ink);
+}
+
+.did.live .outcome {
+  color: var(--jade);
+}
+
+/* Taken back by 本尊, or never let run: the line stays, struck through. */
+.did.void .target {
+  color: var(--ink-2);
+  text-decoration: line-through;
+}
+
+/* A line that opens says so with a small mark at its end, which turns when it does. */
+.did-head[aria-expanded]::after {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  margin: 0 2px 2px var(--s-1);
+  border: solid var(--ink-2);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+  transition: transform var(--d-quick) var(--ease-out);
+}
+
+.did-head[aria-expanded="true"]::after {
+  transform: rotate(45deg);
+}
+
+/* A line under an act that says who let it run. */
+.did-note {
+  padding: 0 0 var(--s-1);
+  font-size: var(--t-micro);
+  color: var(--amber-ink);
+}
+
+/* Under an act that wrote a file: the picture it is, if it is one, and the ways to open it and to its folder. */
+.written {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin: 2px 0 var(--s-1);
+}
+
+.written-shot img {
+  display: block;
+  max-width: min(100%, 420px);
+  max-height: 260px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.written-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--s-3);
+}
+
+.written-acts .button.small {
+  min-height: 26px;
+  padding: 0;
+  font-size: var(--t-small);
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.written-acts .button.small:hover {
+  color: var(--jade);
+}
+
+.written-acts .file-note {
+  margin: 0;
+}
+
+/* What a turn left in the workspace without a tool telling of it: a slip at the turn's end, edged in gold as the
+   分身's own work is, each file by name with its ways to open. */
+.made {
+  margin: var(--s-1) 0 var(--s-2);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.made-head {
+  margin: 0;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.made-file {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.made-name {
+  font-size: var(--t-small);
+  overflow-wrap: anywhere;
+}
+
+.made-file .written {
+  margin: 0;
+}
+
+.did-body {
+  margin: var(--s-1) 0 var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  color: var(--ink);
+  overflow-x: auto;
+  animation: unfold var(--d-move) var(--ease-out);
+}
+
+@keyframes unfold {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+    transform: translateY(-4px);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+
+.did-body pre {
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  line-height: 22px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The acts folded under one line, shown again: set in under it, on the same thread. */
+.folded-acts {
+  display: flex;
+  flex-direction: column;
+  animation: unfold var(--d-move) var(--ease-out);
+}
+
+/* The 子分身 a call set off, one to a line, each a way into its own page. */
+.did .agents {
+  margin: var(--s-1) 0 var(--s-2);
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  overflow: hidden;
+}
+
+.did .agents li + li {
+  border-top: 1px solid var(--line);
+}
+
+.did .agent {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px var(--s-3);
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.did .agent:hover:not(:disabled) {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.did .agent:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.did .agent-name {
+  flex: none;
+  max-width: 40%;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.did .agent-task {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- how an act arrives, when it is done while the page is watched --- */
+
+/* An act begun comes out of the paper: its seal gathers, its words bleed in like ink. */
+.did.fresh {
+  --wait: calc(var(--nth, 0) * 90ms);
+}
+
+.did.fresh.live .seal {
+  animation: gather var(--d-arrive) var(--ease-out) var(--wait) backwards;
+}
+
+.did.fresh .did-head > :not(.seal),
+.did.fresh .did-head::after {
+  animation: ink-in var(--d-arrive) var(--ease-out) var(--wait) backwards;
+}
+
+/* Done, its seal is brought down on the page, and the ink of it spreads once round where it struck. */
+.did.fresh:not(.live) .seal {
+  animation: stamp var(--d-arrive) var(--ease-seal) var(--wait) backwards;
+}
+
+.did.fresh:not(.live) .seal::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  animation: seal-ring 900ms ease-out calc(var(--wait) + 160ms) backwards;
+}
+
+.did.fresh:not(.live) .outcome {
+  animation: ink-in var(--d-arrive) var(--ease-out) calc(var(--wait) + 120ms) backwards;
+}
+
+/* One gone wrong lands off true, and shakes. */
+.did.fresh.failed .did-head {
+  animation: misfire 420ms ease-in-out calc(var(--wait) + 200ms);
+}
+
+@keyframes gather {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+    filter: blur(3px);
+  }
+}
+
+@keyframes ink-in {
+  from {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translateX(-6px);
+  }
+}
+
+@keyframes stamp {
+  from {
+    opacity: 0;
+    transform: scale(2.4) rotate(-16deg);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(0.9) rotate(3deg);
+  }
+}
+
+@keyframes seal-ring {
+  from {
+    box-shadow:
+      0 0 0 0 color-mix(in srgb, currentColor 60%, transparent),
+      0 0 14px 2px color-mix(in srgb, currentColor 50%, transparent);
+  }
+  to {
+    box-shadow:
+      0 0 0 14px transparent,
+      0 0 24px 10px transparent;
+  }
+}
+
+@keyframes misfire {
+  20%,
+  60% {
+    transform: translateX(-4px);
+  }
+  40%,
+  80% {
+    transform: translateX(3px);
+  }
+}
+
+.diff {
+  min-width: max-content;
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: var(--t-code);
+  line-height: 22px;
+  white-space: pre;
+}
+
+.diff-line {
+  display: flex;
+  padding-right: var(--s-3);
+}
+
+.diff-line .sign {
+  flex: 0 0 28px;
+  text-align: center;
+}
+
+/* New lines are washed in jade; removed lines fade and are struck through. No red against green. */
+.diff-line.added {
+  background: var(--added);
+  color: var(--added-ink);
+}
+
+.diff-line.added .sign {
+  font-weight: 700;
+}
+
+.diff-line.removed {
+  background: var(--removed);
+  color: var(--ink-2);
+}
+
+.diff-line.removed .words {
+  text-decoration: line-through;
+}
+
+/* ---------- the talisman: a request awaiting the vermilion reply ---------- */
+
+/* The one sheet of yellow paper on the page, written and ruled in cinnabar. It lies across the thread:
+   the work stops here until 本尊 answers. */
+.sign-sheet {
+  position: relative;
+  margin-left: calc(-1 * var(--gutter));
+  padding: 20px var(--s-5);
+  border: 1px solid var(--cinnabar);
+  border-radius: var(--r-paper);
+  background: var(--talisman);
+  color: var(--ink);
+  box-shadow:
+    inset 0 0 0 3px var(--talisman),
+    inset 0 0 0 4px var(--cinnabar-soft),
+    0 14px 34px -16px color-mix(in srgb, var(--cinnabar) 60%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: unroll 620ms var(--ease-out) backwards;
+}
+
+/* In the dark it is still lit paper: everything written on it keeps the inks of day. */
+:root[data-theme="dark"] .sign-sheet {
+  --ink: #1b2a2b;
+  --ink-2: #57533c;
+  --sheet: #fbf6df;
+  --bg: #f3ecd0;
+  --line: #d9c98a;
+  --line-strong: #9c8a4a;
+  --jade: #1f6f64;
+  --cinnabar: #b8322a;
+  --cinnabar-on: #ffffff;
+  --cinnabar-ink: #8c2019;
+  --cinnabar-tint: #f9e2dc;
+  --cinnabar-soft: #dba093;
+  --added: #dcebe3;
+  --added-ink: #17564d;
+  --removed: #e9e2c6;
+  box-shadow:
+    inset 0 0 0 3px var(--talisman),
+    inset 0 0 0 4px var(--cinnabar-soft),
+    0 0 44px -10px color-mix(in srgb, var(--talisman) 55%, transparent);
+}
+
+/* It comes onto the page unrolled from its top edge, and light passes over it once. */
+.sign-sheet::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 42%, rgb(255 255 255 / 0.7) 50%, transparent 58%) 130% 0 / 260% 100% no-repeat;
+  animation: sheen 1100ms ease-out 380ms backwards;
+  pointer-events: none;
+}
+
+/* Waiting, its cinnabar edge glows and dims, slowly, as an ember does. */
+.sign-sheet::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow:
+    0 0 0 1px var(--cinnabar),
+    0 0 26px 3px color-mix(in srgb, var(--cinnabar) 55%, transparent);
+  opacity: 0;
+  animation: ember 2.6s ease-in-out 700ms infinite alternate;
+  pointer-events: none;
+}
+
+.sign-sheet.frozen::after {
+  animation: none;
+}
+
+@keyframes unroll {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+    transform: translateY(-8px);
+  }
+  to {
+    clip-path: inset(-40px);
+  }
+}
+
+@keyframes sheen {
+  from {
+    background-position: -30% 0;
+  }
+}
+
+@keyframes ember {
+  to {
+    opacity: 1;
+  }
+}
+
+.sign-sheet h2 {
+  margin: 0;
+  font-family: var(--brush);
+  font-size: var(--t-title);
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--cinnabar-ink);
+}
+
+.sign-sheet p {
+  margin: 0;
+}
+
+/* What is asked for, on a slip of white laid on the yellow. */
+.sign-detail {
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  padding: var(--s-2) var(--s-3);
+  font-family: var(--mono);
+  font-size: var(--t-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.sign-sheet .diff {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.sign-sheet .button.outline.red {
+  background: color-mix(in srgb, var(--sheet) 55%, transparent);
+}
+
+/* Why the 护法 would not pass it, in cinnabar: it is the reason 本尊 is asked. */
+.sign-review {
+  margin: 0;
+  font-size: var(--t-small);
+  font-weight: 700;
+  color: var(--cinnabar-ink);
+}
+
+/* The request's title, the mark that explains it, and at the right the time left to answer. */
+.sign-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* A quiet round mark after the title: a tip, not a warning. What it explains shows beside it. */
+.sign-why {
+  position: relative;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  /* At the title's upper right, like a note mark, close against its last character. */
+  margin: 2px 0 0 -6px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 14px;
+  cursor: help;
+}
+
+.sign-why:hover,
+.sign-why:focus-visible,
+.sign-why[aria-expanded="true"] {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+
+.sign-why .tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: -8px;
+  z-index: 10;
+  width: max-content;
+  max-width: min(420px, 60vw);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  color: var(--ink);
+  font-size: var(--t-small);
+  font-weight: 400;
+  line-height: 1.6;
+  text-align: left;
+  white-space: normal;
+  display: none;
+}
+
+.sign-why:hover .tip,
+.sign-why:focus-visible .tip,
+.sign-why[aria-expanded="true"] .tip {
+  display: block;
+}
+
+.sign-countdown {
+  flex: none;
+  margin: 4px 0 0 auto;
+  padding: 2px var(--s-3);
+  border: 1px solid var(--cinnabar);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sheet) 60%, transparent);
+  color: var(--cinnabar-ink);
+  font-size: var(--t-small);
+  white-space: nowrap;
+}
+
+.sign-countdown strong {
+  display: inline-block;
+  min-width: 1.3em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The last seconds: the capsule fills with cinnabar and beats. */
+.sign-countdown.urgent {
+  background: var(--cinnabar);
+  color: var(--cinnabar-on);
+  animation: beat 1s ease-in-out infinite;
+}
+
+@keyframes beat {
+  12% {
+    transform: scale(1.08);
+  }
+  30% {
+    transform: none;
+  }
+}
+
+/* ---------- questions the 分身 puts to 本尊 (ask_user) ---------- */
+
+/* The same yellow sheet as a request for leave: the work stops here too until 本尊 answers. A tab for each question
+   when there are several, its options as slips of white, and a field for 本尊's own words. */
+.ask-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--cinnabar-soft);
+}
+
+.ask-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: -1px;
+  padding: 5px var(--s-3);
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--r-control) var(--r-control) 0 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ask-tab:hover {
+  color: var(--ink);
+}
+
+.ask-tab.on {
+  border-color: var(--cinnabar-soft);
+  background: var(--sheet);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.ask-tab:focus-visible {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: -2px;
+}
+
+/* Its number, and once it is answered a tick in jade. */
+.ask-tab-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: var(--t-micro);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ask-tab.done .ask-tab-mark {
+  border-color: var(--jade);
+  background: var(--jade);
+  color: var(--jade-ink);
+}
+
+.ask-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.sign-sheet .ask-question {
+  font-weight: 700;
+  font-size: var(--t-lead);
+  line-height: 1.5;
+}
+
+.ask-hint {
+  margin-left: var(--s-2);
+  font-size: var(--t-small);
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.ask-options {
+  display: grid;
+  gap: 6px;
+}
+
+/* One option: its mark, its name, and under the name what choosing it means. */
+.ask-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  column-gap: 10px;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+  cursor: pointer;
+  transition: border-color var(--d-quick) ease, box-shadow var(--d-quick) ease;
+}
+
+.ask-option:hover {
+  border-color: var(--cinnabar-soft);
+}
+
+.ask-option.on {
+  border-color: var(--cinnabar);
+  box-shadow: inset 0 0 0 1px var(--cinnabar);
+}
+
+.ask-option:has(input:focus-visible) {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: 1px;
+}
+
+.ask-option input[type="radio"],
+.ask-option input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--cinnabar);
+}
+
+.ask-label {
+  font-weight: 700;
+}
+
+.ask-description {
+  grid-column: 2;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+/* 其他 or 补充: the name, and the field taking the rest of the line. */
+.ask-option.ask-other {
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  cursor: text;
+}
+
+.ask-other-gap {
+  width: 13px;
+}
+
+.ask-other-text,
+.ask-text {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+.ask-other-text {
+  padding: 3px var(--s-2);
+}
+
+.ask-text {
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-color: var(--line-strong);
+  background: var(--sheet);
+  resize: vertical;
+}
+
+.ask-other-text:focus,
+.ask-text:focus {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: -1px;
+}
+
+/* The plan the 分身 presented in 先谋后动: a sheet of its own in the thread, ruled in jade at its side. */
+.plan-card {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--jade);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.plan-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.plan-seal {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-paper);
+  background: var(--jade);
+  color: var(--jade-ink);
+  font-family: var(--brush);
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+.plan-title {
+  color: var(--ink);
+  font-size: var(--t-lead);
+}
+
+/* Once the questions are over: what was asked and what 本尊 said, kept quietly in the thread. */
+.asked {
+  display: grid;
+  gap: var(--s-2);
+  padding: 10px var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-paper);
+  background: var(--sheet);
+}
+
+.asked-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.asked-seal {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-paper);
+  background: var(--jade);
+  color: var(--jade-ink);
+  font-family: var(--brush);
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+.asked-whole {
+  margin-left: auto;
+}
+
+.asked-list {
+  margin: 0;
+  display: grid;
+  gap: var(--s-2);
+}
+
+.asked-item dt {
+  color: var(--ink-2);
+}
+
+.asked-header {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: var(--t-micro);
+}
+
+.asked-item dd {
+  margin: 2px 0 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.asked-item dd.muted {
+  font-weight: 400;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.notice {
+  padding: var(--s-2) var(--s-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-paper);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* What these look like for one who has asked for stillness (the rule that stops all motion is at the end of the file). */
+@media (prefers-reduced-motion: reduce) {
+  .did.live .seal {
+    border-color: transparent;
+  }
+
+  .sign-sheet::before {
+    display: none;
+  }
+}
+
+/* ---------- the header's small line ---------- */
+
+.main-header .branch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  line-height: 1.35;
+  color: var(--ink-2);
+}
+
+/* On a 子分身's page: where it came from, and the way back. */
+/* Where the session comes from, in the small line under its title: a word to follow, like the branch beside it. */
+.main-header .kin-link {
+  flex: none;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--amber-ink);
+  font-family: var(--text);
+  font-size: var(--t-micro);
+  line-height: 1.35;
+  text-decoration: underline;
+  text-decoration-color: var(--talisman-line);
+  text-underline-offset: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main-header .kin-link svg {
+  flex: none;
+}
