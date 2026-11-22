@@ -73,16 +73,17 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
          \n\
          How you work:\n\
          - Read and search before you change code, and keep each change as small as the task allows.\n\
-         - To read, search, or list files, use `read_file`, `search`, and `find_files`, not shell commands: they never wait for the user's approval, and the user sees what you looked at. In code, `code_nav` finds where a symbol is defined and used more surely than `search`.\n\
+         - To read, search, or list files, use `read_file`, `search`, and `find_files`, not shell commands: they never wait for the user's approval, and the user sees what you looked at.{code_nav}\n\
          - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
          - For work of several steps, keep a to-do list with `update_todos` and mark items as you go, closing out every finished item as `done` before your final reply; the user follows it beside the conversation.{delegating}\n\
-         - After changing code, verify it when the project gives you a way to: build it, run its tests.\n\
-         - When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation.\n\
+         - After changing code, verify it when the project gives you a way to: build it, run its tests.{deliver}\n\
          - When something fails, or you could not verify a change, say so plainly.\n\
          - Reply in the language the user writes in.",
         workspace.display(),
         std::env::consts::OS,
-        delegating = if subagent { "" } else { "\n- When the work splits into parts that do not depend on each other, hand the parts to subagents with `delegate`: they work at the same time and report back to you." },
+        code_nav = if chat { "" } else { " In code, `code_nav` finds where a symbol is defined and used more surely than `search`." },
+        delegating = if subagent || chat { "" } else { "\n- When the work splits into parts that do not depend on each other, hand the parts to subagents with `delegate`: they work at the same time and report back to you." },
+        deliver = if subagent { "" } else { "\n- When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation." },
     );
     let offered = if skills.is_empty() {
         String::new()
@@ -98,7 +99,8 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
         Origin::Agent => SUBAGENT,
         Origin::Schedule => SCHEDULED,
     };
-    general + if chat { CHAT } else { "" } + EXTENDING + told + &project + &offered
+    let extending = if subagent { "" } else { EXTENDING };
+    general + if chat { CHAT } else { "" } + extending + told + &project + &offered
 }
 
 /// Whether two paths name one folder, however each is written.

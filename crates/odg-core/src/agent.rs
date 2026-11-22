@@ -599,6 +599,28 @@ impl<L: Llm> Inner<L> {
         self.search.as_ref().and_then(|source| source())
     }
 
+    /// Built-in tools withheld from a subagent: setup/configuration, user-facing delivery,
+    /// and delegation/user-interaction tools belong to the main session.
+    fn withheld_from_subagent(name: &str) -> bool {
+        matches!(
+            name,
+            "delegate"
+                | tools::ASK_USER
+                | tools::PRESENT_PLAN
+                | "install_skill"
+                | "add_mcp_server"
+                | "language_server"
+                | "document_runtime"
+                | "deliver_files"
+        )
+    }
+
+    /// Built-in tools withheld from a conversation session (闲谈): project-engineering tools
+    /// have no repository to work on there.
+    fn withheld_from_chat(name: &str) -> bool {
+        matches!(name, "code_nav" | "language_server" | tools::PRESENT_PLAN | "delegate")
+    }
+
     /// The tools of the next request: the built-in ones, then those of the MCP servers connected right now.
     fn tool_specs(&self) -> Vec<Value> {
         let mut specs = tools::specs();
@@ -623,6 +645,12 @@ impl<L: Llm> Inner<L> {
             if !servers.is_empty() {
                 specs.extend(tools::mcp_resource_specs(&servers));
             }
+        }
+        if self.parent.is_some() {
+            specs.retain(|spec| !spec["name"].as_str().is_some_and(Self::withheld_from_subagent));
+        }
+        if self.chatting {
+            specs.retain(|spec| !spec["name"].as_str().is_some_and(Self::withheld_from_chat));
         }
         specs
     }
@@ -805,6 +833,15 @@ impl<L: Llm> Inner<L> {
                 }
                 if let Some(raw) = message.invalid_tool_inputs.get(&id) {
                     self.tool_result(&id, &name, json!({ "INVALID_JSON": raw }).to_string(), true, Value::Null)?;
+                    continue;
+                }
+                if self.parent.is_some() && Self::withheld_from_subagent(&name) {
+                    let message = match name.as_str() {
+                        "delegate" => "A subagent cannot delegate. Do the task yourself.".to_string(),
+                        tools::ASK_USER => "A subagent cannot ask the user. Decide yourself, and say in your report what you decided and why.".to_string(),
+                        _ => format!("A subagent cannot use `{name}`. Report back to the main agent if it is needed."),
+                    };
+                    self.tool_result(&id, &name, message, true, json!({ "refused": true }))?;
                     continue;
                 }
                 let mut verdict = policy::check_in(self.mode(), &name, &input, &self.workspace, self.sandboxed());

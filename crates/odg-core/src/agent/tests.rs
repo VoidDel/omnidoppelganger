@@ -1263,9 +1263,12 @@ async fn delegates_tasks_to_subagents_and_hands_back_their_reports() {
     // The agent the user started may delegate and is not told it is a subagent; a subagent is the reverse.
     assert!(named(own[0], "delegate") && named(own[0], "ask_user") && own[0].system.contains("`delegate`") && !own[0].system.contains("You are a subagent"));
     for request in &theirs {
-        // Nor may it ask the user: it reports to the agent that set it off.
-        assert!(!named(request, "delegate") && !named(request, "ask_user") && !named(request, "present_plan") && named(request, "read_file"));
-        assert!(request.system.contains("You are a subagent") && !request.system.contains("`delegate`"));
+        // Nor may it ask the user, present a plan, or manage global setup / user-facing delivery.
+        for withheld in ["delegate", "ask_user", "present_plan", "install_skill", "add_mcp_server", "language_server", "document_runtime", "deliver_files"] {
+            assert!(!named(request, withheld), "subagent should not be offered {withheld}");
+        }
+        assert!(named(request, "read_file") && named(request, "code_nav") && named(request, "edit_file"));
+        assert!(request.system.contains("You are a subagent") && !request.system.contains("`delegate`") && !request.system.contains("`deliver_files`") && !request.system.contains("`install_skill`"));
         assert_eq!(request.messages.len(), 1);
     }
     let mut tasks: Vec<&str> = theirs.iter().filter_map(|request| request.messages[0]["content"][0]["text"].as_str()).collect();
@@ -1328,4 +1331,53 @@ async fn refuses_a_list_of_tasks_it_cannot_run() {
     assert!(results[0].1 && results[0].2.contains("at least one task"), "{}", results[0].2);
     assert!(results[1].1 && results[1].2.contains("too many"), "{}", results[1].2);
     assert!(fixture.session.children().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subagent_is_refused_withheld_tools_without_asking() {
+    let script = vec![
+        delegates("d1", &[("worker", "Try installing a skill.")]),
+        calls(&[("t1", "install_skill", json!({ "source": "https://example.com/skill" }))]),
+        says("Cannot install skills."),
+        says("Understood."),
+    ];
+    let fixture = fixture(ScriptedLlm::new(script, None));
+    fixture.session.send("go".into());
+    fixture.session.wait_idle().await;
+
+    let [child] = fixture.session.children().try_into().ok().expect("one subagent");
+    let log = child.snapshot();
+    assert!(!log.iter().any(|envelope| matches!(envelope.event, Event::ApprovalRequested { .. })));
+    let result = log.iter().find_map(|envelope| match &envelope.event {
+        Event::ToolResult { is_error, content, meta, .. } => Some((*is_error, content.clone(), meta["refused"].as_bool())),
+        _ => None,
+    });
+    assert!(matches!(result, Some((true, ref msg, Some(true))) if msg.contains("install_skill")), "{result:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chat_session_trims_project_only_tools_and_prompt_references() {
+    let home = tempfile::tempdir().unwrap();
+    let chat_dir = tempfile::tempdir().unwrap();
+    let llm = ScriptedLlm::new(vec![says("hello")], None);
+    let new = NewSession { workspace: chat_dir.path(), provider: "anthropic", model: "scripted", parent: None, worktree: None, schedule: None };
+    let log = SessionStore::new(home.path()).create_with(new).unwrap();
+    let (sender, _events) = unbounded_channel();
+    let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
+    let services = Services { grants: Arc::new(GrantStore::new(home.path().join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None, chat: Some(chat_dir.path().to_path_buf()), runtime: None, painter: None, lsp: None };
+    let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
+
+    session.send("hi".into());
+    session.wait_idle().await;
+
+    let requests = llm.requests.lock().unwrap();
+    let named = |name: &str| requests[0].tools.iter().any(|tool| tool["name"] == name);
+    for withheld in ["code_nav", "language_server", "present_plan", "delegate"] {
+        assert!(!named(withheld), "chat session should not be offered {withheld}");
+    }
+    for kept in ["read_file", "write_file", "run_command", "fetch_url", "ask_user", "deliver_files", "install_skill", "add_mcp_server", "web_search"] {
+        assert!(named(kept), "chat session should still be offered {kept}");
+    }
+    assert!(requests[0].system.contains("This session is a conversation"));
+    assert!(!requests[0].system.contains("`code_nav`") && !requests[0].system.contains("`delegate`"));
 }
