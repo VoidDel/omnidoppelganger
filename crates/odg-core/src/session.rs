@@ -31,9 +31,10 @@ use crate::providers::DEFAULT_PROVIDER;
 /// `effort/changed` event. Format 16 adds the `files/made` event, and format 17
 /// the `question/asked` and `question/answered` events. Format 18 adds `images`
 /// on a tool result, and the `delete_file` and `move_file` edits, whose undoing
-/// an older build would not know. A build from before a format refuses its
-/// sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 18;
+/// an older build would not know. Format 19 adds snapshots on `files/made` and
+/// the `artifact/restored` event for deliverable version history. A build from
+/// before a format refuses its sessions rather than misread them.
+pub const FORMAT_VERSION: u32 = 19;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -193,6 +194,22 @@ impl SessionStore {
         let plain = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
         let path = self.root.join(id).join(FILE_NAME);
         if plain && path.is_file() { Ok(path) } else { Err(SessionError::NotFound(id.to_string())) }
+    }
+
+    /// The `snapshots` directory beside session `id`'s log, when `id` names a stored session.
+    pub fn snapshots_dir(&self, id: &str) -> Option<PathBuf> {
+        Some(self.path(id).ok()?.parent()?.join("snapshots"))
+    }
+
+    /// The source session id when `id` was forked from another session, read from its header alone.
+    pub fn fork_source(&self, id: &str) -> Option<String> {
+        let path = self.path(id).ok()?;
+        let line = std::io::BufRead::lines(std::io::BufReader::new(File::open(path).ok()?)).next()?.ok()?;
+        let envelope: Envelope = serde_json::from_str(&line).ok()?;
+        match envelope.event {
+            Event::SessionCreated { fork: Some(fork), .. } => Some(fork.session),
+            _ => None,
+        }
     }
 
     /// Remove a session for good: its log and the file snapshots beside it.
@@ -441,6 +458,10 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     told.push_str(&format!(" Left as they are, because they changed after your last edit: {}.", skipped.join(", ")));
                 }
                 told.push_str(" Read a file again before relying on what it held.]");
+                pending.push(text(&told));
+            }
+            Event::ArtifactRestored { path, version, .. } => {
+                let told = format!("[The user restored {path} to version v{version}. Read it again before relying on what it held.]");
                 pending.push(text(&told));
             }
             Event::ModelChanged { provider: Some(provider), .. } => speaker = provider.clone(),

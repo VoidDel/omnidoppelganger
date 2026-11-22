@@ -12,10 +12,12 @@ import { Viewer, imageSource } from "./Viewer";
  */
 export const Live = createContext<{ current: boolean }>({ current: false });
 
-/** What the cards may do with the files of the session: open one, or show it in its folder; and fetch a picture the 分身 wrote. */
+/** What the cards may do with the files of the session: open one (or a historical snapshot), show it in its folder, and fetch a picture. */
 export interface Files {
-  open: (path: string, reveal: boolean) => Promise<string>;
-  picture: (path: string) => Promise<Image>;
+  open: (path: string, reveal: boolean, snapshot?: string, version?: number) => Promise<string>;
+  picture: (path: string, snapshot?: string) => Promise<Image>;
+  /** 1-based version number for `(path, snapshot)` when the file has more than one version in this session. */
+  versionOf?: (path: string, snapshot?: string) => number | undefined;
 }
 
 export const FilesContext = createContext<Files | null>(null);
@@ -24,11 +26,12 @@ export const FilesContext = createContext<Files | null>(null);
 const PICTURE_KINDS = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
 
 /**
- * Under an act that wrote a file: the way to open it with the system's program for it and to its folder, and for a
- * picture, the picture as it is now, which opens at full size when pressed.
+ * Under an act that wrote or delivered a file: the way to open it with the system's program for it and to its folder,
+ * and for a picture, the picture itself (from the step's snapshot when available), which opens at full size when pressed.
  */
-export function Written({ path, name }: { path: string; name: string }) {
+export function Written({ path, name, snapshot, version }: { path: string; name: string; snapshot?: string; version?: number }) {
   const files = useContext(FilesContext);
+  const resolvedVersion = version ?? files?.versionOf?.(path, snapshot);
   const picture = PICTURE_KINDS.test(path);
   const [image, setImage] = useState<Image | null>(null);
   const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
@@ -36,18 +39,18 @@ export function Written({ path, name }: { path: string; name: string }) {
   useEffect(() => {
     if (!files || !picture) return;
     let current = true;
-    files.picture(path).then(
+    files.picture(path, snapshot).then(
       (got) => current && setImage(got),
       (error) => current && setNote({ text: String(error), failed: true }),
     );
     return () => {
       current = false;
     };
-  }, [files, path, picture]);
+  }, [files, path, picture, snapshot]);
   if (!files) return null;
   const open = (reveal: boolean) => {
     setNote(null);
-    files.open(path, reveal).then(
+    files.open(path, reveal, reveal ? undefined : snapshot, reveal ? undefined : resolvedVersion).then(
       (done) => done === "revealed" && !reveal && setNote({ text: "这是可执行文件，不从这里直接运行，已在文件夹中显示。", failed: false }),
       (error) => setNote({ text: String(error), failed: true }),
     );
@@ -55,13 +58,23 @@ export function Written({ path, name }: { path: string; name: string }) {
   return (
     <div className="written">
       {image && (
-        <button type="button" className="shot written-shot" title="点开看大图（显示的是文件眼下的样子）" onClick={() => setViewing(true)}>
+        <button
+          type="button"
+          className="shot written-shot"
+          title={resolvedVersion ? `点开看大图（v${resolvedVersion} 快照）` : snapshot ? "点开看大图（这一步当时的版本）" : "点开看大图（显示的是文件眼下的样子）"}
+          onClick={() => setViewing(true)}
+        >
           <img src={imageSource(image)} alt={`分身写的 ${name}`} />
         </button>
       )}
       <div className="written-acts">
-        <button type="button" className="button text small" title={`${path}\n用系统默认的程序打开`} onClick={() => open(false)}>
-          打开
+        <button
+          type="button"
+          className="button text small"
+          title={`${path}\n${resolvedVersion ? `用系统默认的程序打开 v${resolvedVersion} 快照` : snapshot ? "用系统默认的程序打开这一步的版本" : "用系统默认的程序打开"}`}
+          onClick={() => open(false)}
+        >
+          {resolvedVersion ? `打开 v${resolvedVersion}` : "打开"}
         </button>
         <button type="button" className="button text small" title="在文件夹中显示" onClick={() => open(true)}>
           在文件夹中显示
@@ -484,9 +497,9 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
         </div>
       )}
       {body && open && <div className="did-body">{body}</div>}
-      {written && !voided(tool) && <Written path={written} name={written.replace(/^.*[\\/]/, "")} />}
+      {written && !voided(tool) && <Written path={written} name={written.replace(/^.*[\\/]/, "")} snapshot={result?.meta?.snapshot} />}
       {handed.map((path) => (
-        <Written key={path} path={path} name={path.replace(/^.*[\\/]/, "")} />
+        <Written key={path} path={path} name={path.replace(/^.*[\\/]/, "")} snapshot={result?.meta?.snapshots?.[path]} />
       ))}
     </div>
   );

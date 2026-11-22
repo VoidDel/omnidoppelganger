@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Decision, Image, LanguageServerView, Mode, Picked, Reply, RuntimeProgress, RuntimeView, Schedule, SessionItem, SessionView, Settings, SettingsView, SkillsView, UiEvent } from "./types";
+import type { Decision, Image, LanguageServerView, Mode, Picked, Reply, RestoredArtifact, RuntimeProgress, RuntimeView, Schedule, SessionItem, SessionView, Settings, SettingsView, SkillsView, UiEvent } from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
@@ -89,10 +89,15 @@ export const api = {
     const picked = await open({ directory: true, multiple: false, title: "选一个文件夹作洞府" });
     return typeof picked === "string" ? picked : null;
   },
-  /** Open a file attached to a message in the session with the system's program for it, or with `reveal` show it in its folder; resolves `opened` or `revealed`. */
-  openAttachment: (id: string, path: string, reveal: boolean) => invoke<string>("open_attachment", { id, path, reveal }),
-  /** A picture the session's 分身 wrote, as it is now on disk. */
-  picture: (id: string, path: string) => invoke<Image>("picture", { id, path }),
+  /** Open a file attached to a message in the session with the system's program for it, or with `reveal` show it in its folder; with `snapshot`, opens that exact historical version. */
+  openAttachment: (id: string, path: string, reveal: boolean, snapshot?: string, version?: number) =>
+    invoke<string>("open_attachment", { id, path, reveal, snapshot: snapshot ?? null, version: version ?? null }),
+  /** Restore a deliverable in the workspace back to a snapshotted version (backing up unrecorded live edits first). */
+  restoreArtifact: (id: string, path: string, snapshot: string, version: number) => invoke<RestoredArtifact>("restore_artifact", { id, path, snapshot, version }),
+  /** Save a historical deliverable version as a sibling copy in the workspace (e.g. `report.v1.docx`). */
+  saveArtifactCopy: (id: string, path: string, snapshot: string, version: number) => invoke<string>("save_artifact_copy", { id, path, snapshot, version }),
+  /** A picture the session's 分身 wrote, either from a recorded `snapshot` or as it is now on disk. */
+  picture: (id: string, path: string, snapshot?: string) => invoke<Image>("picture", { id, path, snapshot: snapshot ?? null }),
   /** Ask for a folder with the system dialog, titled `title`. Resolves null when the user closes it. */
   pickFolder: async (title: string): Promise<string | null> => {
     const picked = await open({ directory: true, multiple: false, title });

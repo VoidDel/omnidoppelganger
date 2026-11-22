@@ -46,7 +46,7 @@ async fn says_where_the_document_runtime_is_or_how_to_set_it_up_and_hands_over_f
     // Not offered here: a Python the user has is to be used, with leave.
     assert!(execute("document_runtime", &json!({}), &context).await.is_error);
     let root = directory.path().join("runtime");
-    let context = ToolContext { runtime: Some(root.clone()), ..context };
+    let mut context = ToolContext { runtime: Some(root.clone()), ..context };
     let missing = execute("document_runtime", &json!({}), &context).await;
     assert!(!missing.is_error && missing.content.contains("`install` true") && missing.meta["state"] == "missing", "{}", missing.content);
     // Set up as an install leaves it: the interpreter is named, quoted, to run scripts with.
@@ -59,9 +59,22 @@ async fn says_where_the_document_runtime_is_or_how_to_set_it_up_and_hands_over_f
     assert!(ready.content.contains(&call) && ready.meta["python"] == python.to_string_lossy().as_ref(), "{}", ready.content);
     assert!(ready.content.contains("LibreOffice:"));
 
-    std::fs::write(directory.path().join("report.docx"), "x").unwrap();
+    std::fs::write(directory.path().join("report.docx"), "v1").unwrap();
+    let snaps = tempfile::tempdir().unwrap();
+    context.snapshots = Some(snaps.path().to_path_buf());
+    let report_path = directory.path().join("report.docx").to_string_lossy().into_owned();
     let handed = execute("deliver_files", &json!({ "paths": ["report.docx"] }), &context).await;
-    assert_eq!(handed.meta["files"], json!([directory.path().join("report.docx").to_string_lossy()]));
+    assert_eq!(handed.meta["files"], json!([report_path]));
+    let snap1 = handed.meta["snapshots"][&report_path].as_str().unwrap().to_string();
+    assert_eq!(handed.meta["sizes"][&report_path].as_u64(), Some(2));
+    assert_eq!(std::fs::read(snaps.path().join(&snap1)).unwrap(), b"v1");
+    // Revising and re-delivering preserves both versions in the snapshot directory.
+    std::fs::write(directory.path().join("report.docx"), "v2 revised").unwrap();
+    let handed2 = execute("deliver_files", &json!({ "paths": ["report.docx"] }), &context).await;
+    let snap2 = handed2.meta["snapshots"][&report_path].as_str().unwrap().to_string();
+    assert_ne!(snap1, snap2);
+    assert_eq!(std::fs::read(snaps.path().join(&snap1)).unwrap(), b"v1");
+    assert_eq!(std::fs::read(snaps.path().join(&snap2)).unwrap(), b"v2 revised");
     let refused = execute("deliver_files", &json!({ "paths": ["report.docx", "missing.pdf"] }), &context).await;
     assert!(refused.is_error && refused.content.contains("missing.pdf"));
     // Files outside the workspace (whether present or not, or reached through a symlink) are never delivered.

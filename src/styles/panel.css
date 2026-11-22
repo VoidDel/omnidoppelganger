@@ -330,6 +330,60 @@
   opacity: 1;
 }
 
+/* Version history tucked under a deliverable when revised more than once. */
+.product-versions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.version-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  padding: 6px 10px 6px 14px;
+  font-size: var(--t-small);
+}
+
+.version-row + .version-row {
+  border-top: 1px dashed var(--line);
+}
+
+.version-info {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.version-tag {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.version-meta {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.version-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.version-acts .button.small {
+  min-height: 24px;
+  padding: 0 7px;
+  font-size: 12px;
+}
+
 /* The document runtime in the settings: a card of two lines, Python and LibreOffice, each with its lamp, what it
    is and where, and at its right what can be done. */
 .runtime-card {

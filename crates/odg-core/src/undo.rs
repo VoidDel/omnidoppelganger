@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use crate::events::{Envelope, Event};
 use crate::fsutil::write_atomically;
 
+/// The largest deliverable snapshotted for version history (50 MB, matching attached documents).
+pub const ARTIFACT_SNAPSHOT_BYTES: u64 = 50 * 1024 * 1024;
+
 /// Tells two versions of a file apart: its length and a 64-bit FNV-1a hash.
 /// It is for noticing a change, not for security.
 pub fn fingerprint(bytes: &[u8]) -> String {
@@ -47,6 +50,34 @@ pub fn save(directory: &Path, bytes: &[u8]) -> io::Result<String> {
         }
     }
     unreachable!("the loop returns")
+}
+
+/// Snapshot a file on disk into `directory` when it is at most `max_bytes`.
+/// Returns `Ok(None)` when the file exceeds `max_bytes` or is not a regular file.
+pub fn save_file(directory: &Path, file: &Path, max_bytes: u64) -> io::Result<Option<(String, u64)>> {
+    let meta = std::fs::metadata(file)?;
+    if !meta.is_file() || meta.len() > max_bytes {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(file)?;
+    if bytes.len() as u64 > max_bytes {
+        return Ok(None);
+    }
+    let name = save(directory, &bytes)?;
+    Ok(Some((name, bytes.len() as u64)))
+}
+
+/// Whether `name` is a single safe snapshot filename produced by [`save`].
+pub fn valid_snapshot_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 128 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Read a named snapshot from `directory`, refusing any unsafe name.
+pub fn read_snapshot(directory: &Path, name: &str) -> io::Result<Vec<u8>> {
+    if !valid_snapshot_name(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot name"));
+    }
+    std::fs::read(directory.join(name))
 }
 
 /// What undoing does to one file.

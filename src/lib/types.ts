@@ -58,7 +58,11 @@ export type SessionEvent =
   | { type: "guardian/reviewed"; data: { tool_use_id: string; model: string; allowed: boolean; reason: string; verdict?: string; failed?: boolean; tokens?: Tokens } }
   | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
   | { type: "files/restored"; data: { turn: number; restored: string[]; skipped: string[] } }
-  | { type: "files/made"; data: { turn: number; files: string[] } }
+  | { type: "files/made"; data: { turn: number; files: string[]; snapshots?: Record<string, string>; sizes?: Record<string, number> } }
+  | {
+      type: "artifact/restored";
+      data: { file: string; path: string; version: number; snapshot: string; bytes: number; previous?: string; previous_bytes?: number };
+    }
   | { type: "turn/end"; data: { turn: number; reason: string; error: string | null } };
 
 export type Envelope = { seq: number; ts: string } & SessionEvent;
@@ -193,6 +197,11 @@ export interface ToolMeta {
   refusal?: string;
   /** Set on an edit that can be undone: the fingerprint of what it wrote. */
   after?: string;
+  /** Content-addressed snapshot name of the written/painted file in the session's `snapshots/` folder. */
+  snapshot?: string;
+  /** For `deliver_files`: snapshot names and byte sizes keyed by absolute file path. */
+  snapshots?: Record<string, string>;
+  sizes?: Record<string, number>;
   /** For `delete_file` and `move_file`, when they can be undone: each file they changed, as undoing needs it. */
   changes?: { file: string; path: string; before: string | null; after: string | null }[];
   /** `delete_file` took the file away; `move_file` moved it, to `to`. */
@@ -206,6 +215,15 @@ export interface ToolMeta {
   height?: number | null;
   /** The subagents a `delegate` call set off, and why each one's turn ended; `session` is null for one that could not start. */
   agents?: { session: string | null; name: string; reason: string }[];
+}
+
+/** Result of restoring a deliverable to one of its snapshotted versions. */
+export interface RestoredArtifact {
+  path: string;
+  file: string;
+  version: number;
+  bytes: number;
+  backed_up: boolean;
 }
 
 /** A language's server for `code_nav`, as the settings page lists it. */

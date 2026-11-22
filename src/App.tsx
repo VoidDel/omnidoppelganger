@@ -295,8 +295,28 @@ export default function App() {
   const active = state.sessions.find((session) => session.id === state.activeId);
   // Through the session on the page, steady while it is the one: the conversation's cards are not drawn again for them.
   const activeId = state.activeId;
-  const openFile = useCallback((path: string, reveal: boolean) => (activeId ? api.openAttachment(activeId, path, reveal) : Promise.reject("没有打开的分身")), [activeId]);
-  const pictureOf = useCallback((path: string) => (activeId ? api.picture(activeId, path) : Promise.reject("没有打开的分身")), [activeId]);
+  const openFile = useCallback(
+    (path: string, reveal: boolean, snapshot?: string, version?: number) => (activeId ? api.openAttachment(activeId, path, reveal, snapshot, version) : Promise.reject("没有打开的分身")),
+    [activeId],
+  );
+  const pictureOf = useCallback((path: string, snapshot?: string) => (activeId ? api.picture(activeId, path, snapshot) : Promise.reject("没有打开的分身")), [activeId]);
+  const restoreArtifact = useCallback(
+    (path: string, snapshot: string, version: number) => (activeId ? api.restoreArtifact(activeId, path, snapshot, version) : Promise.reject("没有打开的分身")),
+    [activeId],
+  );
+  const saveArtifactCopy = useCallback(
+    (path: string, snapshot: string, version: number) => (activeId ? api.saveArtifactCopy(activeId, path, snapshot, version) : Promise.reject("没有打开的分身")),
+    [activeId],
+  );
+  const versionOf = useCallback(
+    (path: string, snapshot?: string) => {
+      if (!snapshot) return undefined;
+      const product = made.find((entry) => entry.path === path);
+      if (!product || product.versions.length <= 1) return undefined;
+      return product.versions.find((entry) => entry.snapshot === snapshot)?.version;
+    },
+    [made],
+  );
 
   const open = (id: string) => {
     dispatch({ type: "opening", id });
@@ -638,6 +658,7 @@ export default function App() {
                 onFork={active.parent ? undefined : forkFrom}
                 onOpenFile={openFile}
                 onPicture={pictureOf}
+                versionOf={versionOf}
               />
               </Guard>
             )}
@@ -743,7 +764,22 @@ export default function App() {
       )}
       {showPanel && (
         <Guard name="侧栏" className="panel" resetKey={state.activeId}>
-          <SidePanel files={files} runs={runs} todos={plan} products={made} workspace={active?.workspace} width={panel.width} onResize={(width) => setPanel({ ...panel, width })} narrow={strip} onWiden={() => setPeek(true)} working={state.status === "running"} onOpenFile={openFile} />
+          <SidePanel
+            files={files}
+            runs={runs}
+            todos={plan}
+            products={made}
+            workspace={active?.workspace}
+            width={panel.width}
+            onResize={(width) => setPanel({ ...panel, width })}
+            narrow={strip}
+            onWiden={() => setPeek(true)}
+            working={state.status === "running"}
+            frozen={!!replay}
+            onOpenFile={openFile}
+            onRestoreArtifact={restoreArtifact}
+            onSaveArtifactCopy={saveArtifactCopy}
+          />
         </Guard>
       )}
     </div>

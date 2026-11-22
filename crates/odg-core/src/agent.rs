@@ -175,6 +175,21 @@ struct Inner<L: Llm> {
     runtime: tokio::runtime::Handle,
 }
 
+/// What restoring a deliverable version did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RestoredArtifact {
+    /// Display path relative to the workspace.
+    pub path: String,
+    /// Absolute path restored in the workspace.
+    pub file: String,
+    /// 1-based version number restored to.
+    pub version: u32,
+    /// Size in bytes written back.
+    pub bytes: u64,
+    /// Whether the live file held unrecorded edits that were snapshotted before overwriting.
+    pub backed_up: bool,
+}
+
 /// A live session: the log plus the agent that appends to it.
 pub struct Session<L: Llm> {
     inner: Arc<Inner<L>>,
@@ -417,6 +432,121 @@ impl<L: Llm> Session<L> {
         self.inner.append(Event::FilesRestored { turn, restored: outcome.restored.clone(), skipped: outcome.skipped.clone() })?;
         drop(state);
         Ok(outcome)
+    }
+
+    /// Whether `(path, snapshot)` is a recorded deliverable snapshot of this session.
+    pub fn has_artifact_snapshot(&self, path: &str, snapshot: &str) -> bool {
+        if !undo::valid_snapshot_name(snapshot) {
+            return false;
+        }
+        self.inner.log.lock().unwrap().events().iter().any(|envelope| match &envelope.event {
+            Event::ToolResult { tool, is_error: false, meta, .. } => match tool.as_str() {
+                "deliver_files" => meta["snapshots"].as_object().and_then(|map| map.get(path)).and_then(Value::as_str) == Some(snapshot),
+                "generate_image" | "write_file" | "edit_file" => meta["file"].as_str() == Some(path) && meta["snapshot"].as_str() == Some(snapshot),
+                _ => false,
+            },
+            Event::FilesMade { snapshots, .. } => snapshots.get(path).map(String::as_str) == Some(snapshot),
+            Event::ArtifactRestored { file, snapshot: restored, previous, .. } => {
+                file == path && (restored == snapshot || previous.as_deref() == Some(snapshot))
+            }
+            _ => false,
+        })
+    }
+
+    /// Read the raw bytes of a snapshot belonging to this session (or to an ancestor session when forked).
+    pub fn snapshot_bytes(&self, snapshot: &str) -> Result<Vec<u8>, String> {
+        if !undo::valid_snapshot_name(snapshot) {
+            return Err("invalid snapshot name".to_string());
+        }
+        match undo::read_snapshot(&self.inner.snapshots, snapshot) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("cannot read snapshot: {error}")),
+            Err(_) => {}
+        }
+        // Forked sessions reference snapshots kept by the session they were forked from.
+        let mut source = {
+            let log = self.inner.log.lock().unwrap();
+            crate::session::forked_from(log.events()).map(|fork| fork.session.clone())
+        };
+        for _ in 0..16 {
+            let Some(id) = source else { break };
+            if let Some(dir) = self.inner.store.snapshots_dir(&id) {
+                match undo::read_snapshot(&dir, snapshot) {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("cannot read snapshot: {error}")),
+                    Err(_) => {}
+                }
+            }
+            source = self.inner.store.fork_source(&id);
+        }
+        Err("这个版本的快照文件已经找不到了。".to_string())
+    }
+
+    /// Restore a deliverable in the workspace back to one of its snapshotted versions.
+    /// If the live file holds unrecorded edits, those edits are snapshotted first so nothing is lost.
+    pub fn restore_artifact(&self, path: &str, snapshot: &str, version: u32) -> Result<RestoredArtifact, String> {
+        let state = self.inner.state.lock().unwrap();
+        if state.status != Status::Idle {
+            return Err("分身正在运功，先等它停下来再恢复历史版本。".to_string());
+        }
+        if !self.has_artifact_snapshot(path, snapshot) {
+            return Err("这个历史版本不属于当前会话，不能恢复。".to_string());
+        }
+        let target = PathBuf::from(path);
+        if !tools::inside_workspace(&self.inner.workspace, &target) || tools::in_git_directory(&self.inner.workspace, &target) {
+            return Err("只能恢复当前洞府内的交付物（且不能写入 .git 目录）。".to_string());
+        }
+        let bytes = self.snapshot_bytes(snapshot)?;
+        // Snapshot the current live file when it differs from the target and is not already in history.
+        let (previous, previous_bytes) = match undo::save_file(&self.inner.snapshots, &target, undo::ARTIFACT_SNAPSHOT_BYTES) {
+            Ok(Some((live_snap, live_len))) if live_snap != snapshot && !self.has_artifact_snapshot(path, &live_snap) => (Some(live_snap), Some(live_len)),
+            _ => (None, None),
+        };
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("无法创建目录： {error}"))?;
+        }
+        crate::fsutil::write_atomically(&target, &bytes).map_err(|error| format!("无法恢复文件：{error}"))?;
+        let shown = tools::display(&self.inner.workspace, &target);
+        let backed_up = previous.is_some();
+        self.inner.append(Event::ArtifactRestored {
+            file: path.to_string(),
+            path: shown.clone(),
+            version,
+            snapshot: snapshot.to_string(),
+            bytes: bytes.len() as u64,
+            previous,
+            previous_bytes,
+        })?;
+        drop(state);
+        Ok(RestoredArtifact { path: shown, file: path.to_string(), version, bytes: bytes.len() as u64, backed_up })
+    }
+
+    /// Save a historical deliverable version as a sibling copy in the workspace (e.g. `report.v1.docx`),
+    /// never overwriting an existing file. Returns the workspace-relative display path of the created copy.
+    pub fn save_artifact_copy(&self, path: &str, snapshot: &str, version: u32) -> Result<String, String> {
+        if !self.has_artifact_snapshot(path, snapshot) {
+            return Err("这个历史版本不属于当前会话，不能另存。".to_string());
+        }
+        let target = PathBuf::from(path);
+        if !tools::inside_workspace(&self.inner.workspace, &target) || tools::in_git_directory(&self.inner.workspace, &target) {
+            return Err("只能将当前洞府内的交付物另存为副本。".to_string());
+        }
+        let bytes = self.snapshot_bytes(snapshot)?;
+        let parent = target.parent().unwrap_or(&self.inner.workspace);
+        let stem = target.file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| "file".to_string());
+        let ext = target.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        let mut copy = parent.join(format!("{stem}.v{version}{ext}"));
+        let mut attempt = 2u32;
+        while copy.exists() {
+            copy = parent.join(format!("{stem}.v{version}-{attempt}{ext}"));
+            attempt += 1;
+        }
+        if !tools::inside_workspace(&self.inner.workspace, &copy) || tools::in_git_directory(&self.inner.workspace, &copy) {
+            return Err("副本路径超出了当前洞府范围。".to_string());
+        }
+        std::fs::create_dir_all(parent).map_err(|error| format!("无法创建目录：{error}"))?;
+        crate::fsutil::write_atomically(&copy, &bytes).map_err(|error| format!("无法保存副本：{error}"))?;
+        Ok(tools::display(&self.inner.workspace, &copy))
     }
 
     /// The ids and command lines of the background commands still running.
@@ -786,12 +916,28 @@ impl<L: Llm> Inner<L> {
             let _ = self.tool_result(&tool_use_id, &tool, "The turn stopped before this tool ran.".to_string(), true, Value::Null);
         }
         // What the turn left for the user that no tool told of, such as a document a script wrote: looked for once,
-        // off the async threads, since a workspace can be large.
+        // off the async threads, since a workspace can be large. Snapshot each found file for deliverable history.
         let root = self.workspace.clone();
-        let made = tokio::task::spawn_blocking(move || crate::made::since(&root, started)).await.unwrap_or_default();
-        if !made.is_empty() {
-            let files = made.iter().map(|path| path.display().to_string()).collect();
-            let _ = self.append(Event::FilesMade { turn, files });
+        let snapshot_dir = self.snapshots.clone();
+        let (files, snapshots, sizes) = tokio::task::spawn_blocking(move || {
+            let made = crate::made::since(&root, started);
+            let mut files = Vec::with_capacity(made.len());
+            let mut snapshots = std::collections::BTreeMap::new();
+            let mut sizes = std::collections::BTreeMap::new();
+            for path in made {
+                let key = path.display().to_string();
+                if let Ok(Some((snap, len))) = undo::save_file(&snapshot_dir, &path, undo::ARTIFACT_SNAPSHOT_BYTES) {
+                    snapshots.insert(key.clone(), snap);
+                    sizes.insert(key.clone(), len);
+                }
+                files.push(key);
+            }
+            (files, snapshots, sizes)
+        })
+        .await
+        .unwrap_or_default();
+        if !files.is_empty() {
+            let _ = self.append(Event::FilesMade { turn, files, snapshots, sizes });
         }
         let _ = self.append(Event::TurnEnd { turn, reason: reason.to_string(), error });
     }

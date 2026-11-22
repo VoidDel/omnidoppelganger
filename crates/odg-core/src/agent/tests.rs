@@ -1455,3 +1455,100 @@ async fn read_only_subagent_omits_write_tools_and_refuses_mutations_even_in_bypa
     assert_eq!(std::fs::read_to_string(workspace.path().join("hello.txt")).unwrap(), "world\n");
     assert!(!workspace.path().join("out.txt").exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deliverable_versions_are_snapshotted_restored_with_backup_and_saved_as_copies() {
+    let script = vec![
+        calls(&[
+            ("w1", "write_file", json!({ "path": "report.md", "content": "# Draft v1\n" })),
+            ("d1", "deliver_files", json!({ "paths": ["deck.pdf"] })),
+        ]),
+        says("first version ready"),
+        calls(&[
+            ("w2", "edit_file", json!({ "path": "report.md", "old_string": "Draft v1", "new_string": "Final v2" })),
+            ("d2", "deliver_files", json!({ "paths": ["deck.pdf"] })),
+        ]),
+        says("second version ready"),
+        says("noted the restore"),
+    ];
+    let fixture = fixture(ScriptedLlm::new(script, None));
+    let deck = fixture.workspace.path().join("deck.pdf");
+    let deck_str = deck.to_string_lossy().into_owned();
+    let report = fixture.workspace.path().join("report.md");
+    let report_str = report.to_string_lossy().into_owned();
+
+    // Turn 1: v1 of both report.md and deck.pdf.
+    std::fs::write(&deck, b"%PDF-1.4 v1").unwrap();
+    fixture.session.send("make v1".into());
+    fixture.session.wait_idle().await;
+
+    // Turn 2: v2 of both report.md and deck.pdf.
+    std::fs::write(&deck, b"%PDF-1.4 v2 updated").unwrap();
+    fixture.session.send("make v2".into());
+    fixture.session.wait_idle().await;
+
+    let tool_meta = |id: &str| {
+        fixture
+            .session
+            .snapshot()
+            .into_iter()
+            .find_map(|envelope| match envelope.event {
+                Event::ToolResult { tool_use_id, meta, .. } if tool_use_id == id => Some(meta),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let report_v1 = tool_meta("w1")["snapshot"].as_str().unwrap().to_string();
+    let report_v2 = tool_meta("w2")["snapshot"].as_str().unwrap().to_string();
+    let deck_v1 = tool_meta("d1")["snapshots"][&deck_str].as_str().unwrap().to_string();
+    let deck_v2 = tool_meta("d2")["snapshots"][&deck_str].as_str().unwrap().to_string();
+    assert_ne!(report_v1, report_v2);
+    assert_ne!(deck_v1, deck_v2);
+    assert!(fixture.session.has_artifact_snapshot(&report_str, &report_v1));
+    assert!(fixture.session.has_artifact_snapshot(&deck_str, &deck_v1));
+    assert_eq!(fixture.session.snapshot_bytes(&report_v1).unwrap(), b"# Draft v1\n");
+    assert_eq!(fixture.session.snapshot_bytes(&report_v2).unwrap(), b"# Final v2\n");
+    assert_eq!(fixture.session.snapshot_bytes(&deck_v1).unwrap(), b"%PDF-1.4 v1");
+    assert_eq!(fixture.session.snapshot_bytes(&deck_v2).unwrap(), b"%PDF-1.4 v2 updated");
+
+    // Manual edit on disk before restoring v1 is backed up automatically so nothing is lost.
+    std::fs::write(&deck, b"%PDF-1.4 manual edit").unwrap();
+    let restored = fixture.session.restore_artifact(&deck_str, &deck_v1, 1).unwrap();
+    assert_eq!((restored.path.as_str(), restored.version, restored.backed_up), ("deck.pdf", 1, true));
+    assert_eq!(std::fs::read(&deck).unwrap(), b"%PDF-1.4 v1");
+    let backup_snap = fixture
+        .session
+        .snapshot()
+        .into_iter()
+        .find_map(|envelope| match envelope.event {
+            Event::ArtifactRestored { previous, .. } => previous,
+            _ => None,
+        })
+        .unwrap();
+    assert!(fixture.session.has_artifact_snapshot(&deck_str, &backup_snap));
+    assert_eq!(fixture.session.snapshot_bytes(&backup_snap).unwrap(), b"%PDF-1.4 manual edit");
+
+    // Saving a copy creates non-clobbering sibling files `deck.v2.pdf` and `deck.v2-2.pdf`.
+    let copy1 = fixture.session.save_artifact_copy(&deck_str, &deck_v2, 2).unwrap();
+    let copy2 = fixture.session.save_artifact_copy(&deck_str, &deck_v2, 2).unwrap();
+    assert_eq!((copy1.as_str(), copy2.as_str()), ("deck.v2.pdf", "deck.v2-2.pdf"));
+    assert_eq!(std::fs::read(fixture.workspace.path().join(&copy1)).unwrap(), b"%PDF-1.4 v2 updated");
+    assert_eq!(std::fs::read(fixture.workspace.path().join(&copy2)).unwrap(), b"%PDF-1.4 v2 updated");
+
+    // The next turn tells the model that deck.pdf was restored to v1.
+    fixture.session.send("revise from v1".into());
+    fixture.session.wait_idle().await;
+    let requests = fixture.llm.requests.lock().unwrap();
+    let told = texts(requests.last().unwrap()).pop().unwrap().remove(0);
+    assert!(told.contains("restored deck.pdf to version v1"), "{told}");
+    drop(requests);
+
+    // A forked session can still read snapshots kept by its source session.
+    let store = SessionStore::new(fixture._home.path());
+    let forked_log = store.fork(&fixture.session.snapshot(), None).unwrap();
+    let (sender, _events) = unbounded_channel();
+    let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
+    let services = Services { grants: Arc::new(GrantStore::new(fixture._home.path().join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None, chat: None, runtime: None, painter: None, lsp: None };
+    let forked = Session::new(forked_log, fixture.llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
+    assert_eq!(forked.snapshot_bytes(&deck_v1).unwrap(), b"%PDF-1.4 v1");
+}

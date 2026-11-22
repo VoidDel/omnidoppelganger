@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import type { ChangedFile, Product, ToolItem } from "../lib/fold";
-import type { Todo } from "../lib/types";
+import { type ChangedFile, type Product, type ProductVersion, type ToolItem, fileSize } from "../lib/fold";
+import type { RestoredArtifact, Todo } from "../lib/types";
 import { Light } from "./Light";
 import { Diff } from "./Markdown";
 
@@ -59,8 +59,36 @@ const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
   },
 ];
 
-/** A file the 分身 made for 本尊: its name, opened when pressed, where it is, and its folder. */
-function ProductRow({ product, workspace, onOpenFile }: { product: Product; workspace?: string; onOpenFile?: (path: string, reveal: boolean) => Promise<string> }) {
+const VERSION_HOW: Record<ProductVersion["how"], string> = {
+  painted: "作画",
+  delivered: "交付",
+  written: "写入",
+  found: "留下",
+  backup: "恢复前备份",
+};
+
+const shortTime = (ts?: string) => (ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+
+/** A file the 分身 made for 本尊, with expandable version history when revised across steps or turns. */
+function ProductRow({
+  product,
+  workspace,
+  working,
+  frozen,
+  onOpenFile,
+  onRestoreArtifact,
+  onSaveArtifactCopy,
+}: {
+  product: Product;
+  workspace?: string;
+  working: boolean;
+  frozen?: boolean;
+  onOpenFile?: (path: string, reveal: boolean, snapshot?: string, version?: number) => Promise<string>;
+  onRestoreArtifact?: (path: string, snapshot: string, version: number) => Promise<RestoredArtifact>;
+  onSaveArtifactCopy?: (path: string, snapshot: string, version: number) => Promise<string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
   // Where it is, from the workspace when it is in it: the folders that tell one file from another, not the drive's.
   const root = workspace?.replace(/[\\/]+$/, "");
@@ -68,39 +96,82 @@ function ProductRow({ product, workspace, onOpenFile }: { product: Product; work
   const shown = inside ? product.path.slice(root!.length + 1) : product.path;
   const cut = Math.max(shown.lastIndexOf("/"), shown.lastIndexOf("\\")) + 1;
   const name = shown.slice(cut);
-  const openIt = (reveal: boolean) => {
+  const hasHistory = product.versions.length > 1 || product.versions.some((version) => !!version.snapshot);
+  const expandable = product.versions.length > 1;
+  const openIt = (reveal: boolean, snapshot?: string, version?: number) => {
     if (!onOpenFile) return;
     setNote(null);
-    onOpenFile(product.path, reveal).then(
+    onOpenFile(product.path, reveal, snapshot, version).then(
       (done) => done === "revealed" && !reveal && setNote({ text: "这是可执行文件，不从这里直接运行，已在文件夹中显示。", failed: false }),
       (error) => setNote({ text: String(error), failed: true }),
     );
   };
+  const saveCopy = (version: ProductVersion) => {
+    if (!version.snapshot || !onSaveArtifactCopy || busy) return;
+    setBusy(true);
+    setNote(null);
+    onSaveArtifactCopy(product.path, version.snapshot, version.version)
+      .then(
+        (saved) => setNote({ text: `已另存副本：${saved}`, failed: false }),
+        (error) => setNote({ text: String(error), failed: true }),
+      )
+      .finally(() => setBusy(false));
+  };
+  const restoreIt = (version: ProductVersion) => {
+    if (!version.snapshot || !onRestoreArtifact || busy || working || frozen) return;
+    setBusy(true);
+    setNote(null);
+    onRestoreArtifact(product.path, version.snapshot, version.version)
+      .then(
+        (done) => setNote({ text: `已恢复到 v${done.version}${done.backed_up ? "（原文件改动已留存备份）" : ""}`, failed: false }),
+        (error) => setNote({ text: String(error), failed: true }),
+      )
+      .finally(() => setBusy(false));
+  };
+  const latest = product.versions[product.versions.length - 1];
+  const badge =
+    product.how === "painted" ? (
+      <span className="chip done" title="分身请画师画的">
+        作画
+      </span>
+    ) : product.how === "delivered" ? (
+      <span className="chip done" title="分身做好之后交付的">
+        交付
+      </span>
+    ) : product.how === "written" ? (
+      <span className="chip kin" title="分身写出的文档或图表">
+        文档
+      </span>
+    ) : (
+      <span className="chip kin" title={`第 ${product.turn} 轮结束时在洞府里找到的：分身用脚本或命令做出来，没有说交付`}>
+        留下
+      </span>
+    );
   return (
-    <div className="file-row product-row">
+    <div className={`file-row product-row ${open ? "open" : ""}`}>
       <div className="file-line">
-        <button type="button" className="file-head" disabled={!onOpenFile} title={`${product.path}\n用系统默认的程序打开`} onClick={() => openIt(false)}>
+        <button
+          type="button"
+          className="file-head"
+          aria-expanded={expandable ? open : undefined}
+          disabled={!expandable && !onOpenFile}
+          title={expandable ? `${product.path}\n共 ${product.versions.length} 个版本，点开查看或恢复历史版本` : `${product.path}\n用系统默认的程序打开`}
+          onClick={() => (expandable ? setOpen(!open) : openIt(false))}
+        >
           <span className="file-where">
             <span className="file-name">{name}</span>
             {cut > 0 && <span className="file-dir">{shown.slice(0, cut - 1)}</span>}
           </span>
-          {product.how === "painted" ? (
-            <span className="chip done" title="分身请画师画的">
-              作画
-            </span>
-          ) : product.how === "delivered" ? (
-            <span className="chip done" title="分身做好之后交付的">
-              交付
-            </span>
-          ) : (
-            <span className="chip kin" title={`第 ${product.turn} 轮结束时在洞府里找到的：分身用脚本或命令做出来，没有说交付`}>
-              留下
+          {product.versions.length > 1 && (
+            <span className="chip kin" title={`已留存 ${product.versions.length} 个版本`}>
+              {product.versions.length} 版
             </span>
           )}
+          {badge}
         </button>
         {onOpenFile && (
           <span className="file-acts">
-            <button type="button" className="icon-button" title="用系统默认的程序打开" onClick={() => openIt(false)}>
+            <button type="button" className="icon-button" title="用系统默认的程序打开（最新版）" onClick={() => openIt(false)}>
               <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
               </svg>
@@ -118,7 +189,55 @@ function ProductRow({ product, workspace, onOpenFile }: { product: Product; work
       {note && (
         <p className={`file-note ${note.failed ? "failed" : ""}`} role="status">
           {note.text}
+          {note.failed && hasHistory && !expandable && latest?.snapshot && !frozen && !working && onRestoreArtifact && (
+            <>
+              {" "}
+              <button type="button" className="button text small" disabled={busy} onClick={() => restoreIt(latest)}>
+                从快照恢复
+              </button>
+            </>
+          )}
         </p>
+      )}
+      {open && expandable && (
+        <ul className="product-versions">
+          {[...product.versions].reverse().map((version) => {
+            const isCurrent = !!version.snapshot && version.snapshot === product.currentSnapshot;
+            const when = shortTime(version.ts);
+            return (
+              <li key={version.version} className={`version-row ${isCurrent ? "current" : ""}`}>
+                <span className="version-info">
+                  <span className="version-tag mono">v{version.version}</span>
+                  {isCurrent && <span className="chip done">当前</span>}
+                  <span className="version-meta">
+                    {version.turn > 0 ? `第 ${version.turn} 轮` : "手动"} · {VERSION_HOW[version.how]}
+                    {version.bytes !== undefined ? ` · ${fileSize(version.bytes)}` : ""}
+                    {when ? ` · ${when}` : ""}
+                  </span>
+                </span>
+                {version.snapshot && (
+                  <span className="version-acts">
+                    {onOpenFile && (
+                      <button type="button" className="button text small" title={`打开 v${version.version} 快照（不改动洞府文件）`} onClick={() => openIt(false, version.snapshot, version.version)}>
+                        打开
+                      </button>
+                    )}
+                    {!frozen && onSaveArtifactCopy && (
+                      <button type="button" className="button text small" disabled={busy} title={`另存为同目录副本（如 v${version.version}）`} onClick={() => saveCopy(version)}>
+                        存副本
+                      </button>
+                    )}
+                    {!isCurrent && !frozen && !working && onRestoreArtifact && (
+                      <button type="button" className="button text small" disabled={busy} title={`将洞府中的 ${name} 恢复到此版本`} onClick={() => restoreIt(version)}>
+                        恢复
+                      </button>
+                    )}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
@@ -217,11 +336,17 @@ export interface SidePanelProps {
   onWiden: () => void;
   /** The 分身 is at work now: the step of the plan it has in hand is lit. */
   working: boolean;
-  /** Open a file the 分身 changed with the system's program for it, or with `reveal` show it in its folder. */
-  onOpenFile?: (path: string, reveal: boolean) => Promise<string>;
+  /** The page is in replay mode: mutating actions (restore/copy) are disabled. */
+  frozen?: boolean;
+  /** Open a file the 分身 changed with the system's program for it (or a historical snapshot), or with `reveal` show it in its folder. */
+  onOpenFile?: (path: string, reveal: boolean, snapshot?: string, version?: number) => Promise<string>;
+  /** Restore a deliverable back to a historical snapshot. */
+  onRestoreArtifact?: (path: string, snapshot: string, version: number) => Promise<RestoredArtifact>;
+  /** Save a historical deliverable version as a sibling copy in the workspace. */
+  onSaveArtifactCopy?: (path: string, snapshot: string, version: number) => Promise<string>;
 }
 
-export function SidePanel({ files, runs, todos, products, workspace, width, onResize, narrow, onWiden, working, onOpenFile }: SidePanelProps) {
+export function SidePanel({ files, runs, todos, products, workspace, width, onResize, narrow, onWiden, working, frozen, onOpenFile, onRestoreArtifact, onSaveArtifactCopy }: SidePanelProps) {
   const [tab, setTab] = useState<PanelTab>("files");
   const counts: Record<PanelTab, number> = { files: files.length, terminal: runs.length, plan: todos.length, products: products.length };
   // When the first thing comes into a panel that held nothing, it opens on that.
@@ -363,7 +488,16 @@ export function SidePanel({ files, runs, todos, products, workspace, width, onRe
           {products.length === 0 && <p className="muted">分身还没有做出文件。它交付的文档、图片，和每一轮结束时在洞府里找到的新文件，都会列在这里。</p>}
           <div className="file-list">
             {products.map((product) => (
-              <ProductRow key={product.path} product={product} workspace={workspace} onOpenFile={onOpenFile} />
+              <ProductRow
+                key={product.path}
+                product={product}
+                workspace={workspace}
+                working={working}
+                frozen={frozen}
+                onOpenFile={onOpenFile}
+                onRestoreArtifact={onRestoreArtifact}
+                onSaveArtifactCopy={onSaveArtifactCopy}
+              />
             ))}
           </div>
         </div>

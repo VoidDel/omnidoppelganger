@@ -89,15 +89,22 @@ function ItemView({ item, mode, family, frozen, onDecide, onAnswer }: ItemViewPr
           {item.skipped.length > 0 && `没有动：${item.skipped.join("、")}，分身改过之后它们又有变动，恢复会盖掉那些变动。`}
         </div>
       );
+    case "artifact_restored":
+      return (
+        <div className="notice">
+          本尊将 {item.path} 恢复到了 v{item.version}
+          {item.previous ? "（恢复前已为原文件留存备份版本）" : ""}。
+        </div>
+      );
     case "notice":
       return <div className="notice">{notice(item.reason, item.error)}</div>;
     case "made":
-      return <Made files={item.files} />;
+      return <Made files={item.files} snapshots={item.snapshots} />;
   }
 }
 
 /** What the turn left in the workspace without saying so, such as a document a script wrote: each with the way to open it and to its folder. */
-function Made({ files }: { files: string[] }) {
+function Made({ files, snapshots }: { files: string[]; snapshots?: Record<string, string> }) {
   return (
     <div className="made">
       <p className="made-head">这一轮在洞府里留下了 {files.length} 个文件</p>
@@ -108,7 +115,7 @@ function Made({ files }: { files: string[] }) {
             <span className="made-name mono" title={path}>
               {name}
             </span>
-            <Written path={path} name={name} />
+            <Written path={path} name={name} snapshot={snapshots?.[path]} />
           </div>
         );
       })}
@@ -267,10 +274,12 @@ interface Props {
   onUndo: (turn: number) => void;
   /** Start a fork that goes on from before this turn, with the turn's message to send again or change. Absent where a fork cannot be made. */
   onFork?: (turn: number, text: string) => void;
-  /** Open a file attached to a message or written by the 分身 with the system's program for it, or with `reveal` show it in its folder; answers what was done. */
-  onOpenFile?: (path: string, reveal: boolean) => Promise<string>;
-  /** A picture the 分身 wrote, as it is now. */
-  onPicture?: (path: string) => Promise<Image>;
+  /** Open a file attached to a message or written by the 分身 with the system's program for it (or a historical snapshot), or with `reveal` show it in its folder; answers what was done. */
+  onOpenFile?: (path: string, reveal: boolean, snapshot?: string, version?: number) => Promise<string>;
+  /** A picture the 分身 wrote, either from a recorded `snapshot` or as it is now. */
+  onPicture?: (path: string, snapshot?: string) => Promise<Image>;
+  /** 1-based version number for `(path, snapshot)` when the file has more than one version. */
+  versionOf?: (path: string, snapshot?: string) => number | undefined;
 }
 
 /** Undoing cannot itself be undone, so the icon asks once more, in a bubble, before it acts. */
@@ -336,7 +345,7 @@ function Queued({ text }: { text: string }) {
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture, versionOf }: Props) {
   const family = { sessions, onOpen };
   const undoable = undoableTurns(rows, copied);
   /** Where a fork's own conversation begins: said once, between what it copied and what it did itself. */
@@ -410,7 +419,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
     }
   });
   // One for the life of the page's callbacks, so the cards under it are not drawn again for nothing.
-  const files = useMemo<Files | null>(() => (onOpenFile && onPicture ? { open: onOpenFile, picture: onPicture } : null), [onOpenFile, onPicture]);
+  const files = useMemo<Files | null>(() => (onOpenFile && onPicture ? { open: onOpenFile, picture: onPicture, versionOf } : null), [onOpenFile, onPicture, versionOf]);
   return (
     <FilesContext.Provider value={files}>
       <Live.Provider value={live}>

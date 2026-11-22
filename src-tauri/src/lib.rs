@@ -413,15 +413,72 @@ fn session_file(session: &Session<Router>, path: &str) -> bool {
         },
         // What a turn left in the workspace without a tool telling of it, found when the turn ended.
         Event::FilesMade { files, .. } => files.iter().any(|file| file == path),
+        Event::ArtifactRestored { file, .. } => file == path,
         _ => false,
     })
 }
 
+/// Filename for opening a snapshotted deliverable with the system's default program, preserving its extension
+/// and adding `.v{n}` when `version` is given so two versions opened side-by-side are easy to tell apart.
+fn versioned_filename(file: &std::path::Path, version: Option<u32>) -> String {
+    let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| "file".to_string());
+    let ext = file.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    match version {
+        Some(n) => format!("{stem}.v{n}{ext}"),
+        None => format!("{stem}{ext}"),
+    }
+}
+
+/// Materialize immutable snapshot bytes into an isolated temp preview path so external programs (e.g. Word)
+/// can open a historical version with its original extension without ever touching the session snapshot store.
+fn materialize_snapshot(session_id: &str, file: &std::path::Path, snapshot: &str, version: Option<u32>, bytes: &[u8]) -> Result<PathBuf, String> {
+    let safe_session: String = session_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    let dir = std::env::temp_dir().join("odg-versions").join(safe_session).join(snapshot);
+    std::fs::create_dir_all(&dir).map_err(|error| format!("无法准备预览目录：{error}"))?;
+    let preview = dir.join(versioned_filename(file, version));
+    if std::fs::read(&preview).ok().as_deref() != Some(bytes) {
+        odg_core::fsutil::write_atomically(&preview, bytes).map_err(|error| format!("无法准备历史版本预览文件：{error}"))?;
+    }
+    Ok(preview)
+}
+
 /// Open a file attached to a message in this session, or written by its 分身, with the system's own program for
-/// it, or with `reveal`, show it in its folder. A program is only shown in its folder. Answers `opened` or `revealed`.
+/// it, or with `reveal`, show it in its folder. When `snapshot` is given, opens that exact historical snapshot
+/// rather than whatever is on disk now. A program is only shown in its folder. Answers `opened` or `revealed`.
 #[tauri::command]
-async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: bool) -> Result<String, String> {
+async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: bool, snapshot: Option<String>, version: Option<u32>) -> Result<String, String> {
     let session = app.live(&id)?;
+    let dry = std::env::var_os("ODG_E2E_DRY_OPEN").is_some();
+    if let Some(snap) = snapshot.as_deref().filter(|s| !s.is_empty()) {
+        if !session.has_artifact_snapshot(&path, snap) {
+            return Err("这个历史版本不属于当前会话，不能从这里打开。".to_string());
+        }
+        let file = std::path::PathBuf::from(&path);
+        if reveal {
+            let target = if file.exists() {
+                file
+            } else {
+                let bytes = session.snapshot_bytes(snap)?;
+                materialize_snapshot(&id, &file, snap, version, &bytes)?
+            };
+            if !dry {
+                tauri_plugin_opener::reveal_item_in_dir(&target).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
+            }
+            return Ok("revealed".to_string());
+        }
+        let bytes = session.snapshot_bytes(snap)?;
+        let preview = materialize_snapshot(&id, &file, snap, version, &bytes)?;
+        if runnable(&file) {
+            if !dry {
+                tauri_plugin_opener::reveal_item_in_dir(&preview).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
+            }
+            return Ok("revealed".to_string());
+        }
+        if !dry {
+            tauri_plugin_opener::open_path(preview.to_string_lossy().as_ref(), None::<&str>).map_err(|error| format!("没能打开它：{error}"))?;
+        }
+        return Ok("opened".to_string());
+    }
     if !session_file(&session, &path) {
         return Err("这个文件不是这段对话里附过或写过的，不能从这里打开。".to_string());
     }
@@ -430,7 +487,6 @@ async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: 
         return Err(format!("找不到这个文件了，可能已经移走或删掉：{path}"));
     }
     // The end-to-end test asks what would be done, and has nothing opened on the machine it runs on.
-    let dry = std::env::var_os("ODG_E2E_DRY_OPEN").is_some();
     if reveal || runnable(&file) || file.is_dir() {
         if !dry {
             tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
@@ -441,6 +497,20 @@ async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: 
         tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| format!("没能打开它：{error}"))?;
     }
     Ok("opened".to_string())
+}
+
+/// Restore a deliverable in the workspace back to one of its snapshotted versions.
+#[tauri::command]
+async fn restore_artifact(app: State<'_, App>, id: String, path: String, snapshot: String, version: u32) -> Result<odg_core::agent::RestoredArtifact, String> {
+    let session = app.live(&id)?;
+    session.restore_artifact(&path, &snapshot, version)
+}
+
+/// Save a historical deliverable version as a sibling copy in the workspace (e.g. `report.v1.docx`).
+#[tauri::command]
+async fn save_artifact_copy(app: State<'_, App>, id: String, path: String, snapshot: String, version: u32) -> Result<String, String> {
+    let session = app.live(&id)?;
+    session.save_artifact_copy(&path, &snapshot, version)
 }
 
 /// What the page shows of the document runtime: how it stands, and what LibreOffice it would use.
@@ -563,17 +633,28 @@ const PICTURES: &[(&str, &str)] = &[("png", "image/png"), ("jpg", "image/jpeg"),
 /// The largest picture shown in the conversation.
 const PICTURE_BYTES: u64 = 20 * 1024 * 1024;
 
-/// A picture this session's 分身 wrote, as it is now on disk, to be shown under the act that wrote it. It is shown as
-/// an image, so an SVG's scripts never run.
+/// A picture this session's 分身 wrote, either from a recorded `snapshot` or as it is now on disk,
+/// to be shown under the act that wrote it. It is shown as an image, so an SVG's scripts never run.
 #[tauri::command]
-async fn picture(app: State<'_, App>, id: String, path: String) -> Result<Image, String> {
+async fn picture(app: State<'_, App>, id: String, path: String, snapshot: Option<String>) -> Result<Image, String> {
     let session = app.live(&id)?;
-    if !session_file(&session, &path) {
-        return Err("这个文件不是这段对话里写过的。".to_string());
-    }
     let file = std::path::PathBuf::from(&path);
     let extension = file.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
     let media_type = PICTURES.iter().find(|(kind, _)| *kind == extension).map(|(_, media)| media.to_string()).ok_or("这不是能显示的图片。")?;
+    if let Some(snap) = snapshot.as_deref().filter(|s| !s.is_empty()) {
+        if !session.has_artifact_snapshot(&path, snap) {
+            return Err("这个图片版本不属于当前会话。".to_string());
+        }
+        if let Ok(bytes) = session.snapshot_bytes(snap) {
+            if bytes.len() as u64 > PICTURE_BYTES {
+                return Err(format!("这张图有 {} MB，太大，不在这里显示。", bytes.len() / 1024 / 1024));
+            }
+            return Ok(Image { media_type, data: odg_core::events::base64(&bytes) });
+        }
+    }
+    if !session_file(&session, &path) {
+        return Err("这个文件不是这段对话里写过的。".to_string());
+    }
     let size = std::fs::metadata(&file).map_err(|_| format!("找不到这个文件了，可能已经移走或删掉：{path}"))?.len();
     if size > PICTURE_BYTES {
         return Err(format!("这张图有 {} MB，太大，不在这里显示。", size / 1024 / 1024));
@@ -954,6 +1035,8 @@ pub fn run() {
             switch_skill,
             remove_skill,
             open_attachment,
+            restore_artifact,
+            save_artifact_copy,
             picture,
             runtime_status,
             install_runtime,

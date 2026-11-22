@@ -20,6 +20,8 @@ export interface ToolItem {
   review?: { allowed: boolean; reason: string; model: string; failed: boolean };
   /** The turn the call belongs to. */
   turn: number;
+  /** Timestamp of the tool's result event, when completed. */
+  ts?: string;
   /** The user undid this edit. */
   undone?: boolean;
   /** The 子分身 a `delegate` call has set off so far, each a session of its own. */
@@ -33,8 +35,10 @@ export type Item =
   | { kind: "fallback"; from: string; to: string }
   | { kind: "compacted"; summary: string; tokensBefore: number }
   | { kind: "restored"; turn: number; restored: string[]; skipped: string[] }
-  /** Files the turn left in the workspace that no tool told of, such as a document a script wrote: absolute paths. */
-  | { kind: "made"; turn: number; files: string[] }
+  /** A deliverable restored to an earlier snapshotted version. */
+  | { kind: "artifact_restored"; file: string; path: string; version: number; snapshot: string; bytes: number; previous?: string; previousBytes?: number; ts?: string }
+  /** Files the turn left in the workspace that no tool told of (or modified after a tool told of them): absolute paths. */
+  | { kind: "made"; turn: number; files: string[]; snapshots?: Record<string, string>; sizes?: Record<string, number>; ts?: string }
   /** The project's instructions for agents were read; empty `content` means the file is gone. */
   | { kind: "instructions"; path: string; content: string }
   | { kind: "notice"; reason: string; error: string | null };
@@ -159,19 +163,63 @@ export function fold(events: Envelope[]): Row[] {
       }
       case "tool/result": {
         const tool = tools.get(event.data.tool_use_id);
-        if (tool) tool.result = { content: event.data.content, isError: event.data.is_error, meta: event.data.meta };
+        if (tool) {
+          tool.result = { content: event.data.content, isError: event.data.is_error, meta: event.data.meta };
+          tool.ts = event.ts;
+        }
         break;
       }
       case "instructions/loaded":
         current()?.items.push({ kind: "instructions", path: event.data.path, content: event.data.content });
         break;
       case "files/made": {
-        // What the turn's own acts already show (a file written, or handed over) is not said twice.
-        const shown = new Set(current()?.items.flatMap((item) => (item.kind === "tool" && item.result && !item.result.isError ? toldOf(item) : [])) ?? []);
-        const files = event.data.files.filter((path) => !shown.has(path));
-        if (files.length) current()?.items.push({ kind: "made", turn: event.data.turn, files });
+        // What the turn's own acts already show at the same content snapshot is not said twice.
+        const shown = new Map<string, string | undefined>();
+        for (const item of current()?.items ?? []) {
+          if (item.kind !== "tool" || !item.result || item.result.isError) continue;
+          const meta = item.result.meta;
+          if (item.name === "deliver_files" && Array.isArray(meta?.files)) {
+            for (const path of meta.files) shown.set(path, meta.snapshots?.[path]);
+          } else if ((item.name === "edit_file" || item.name === "write_file" || item.name === "generate_image") && meta?.file) {
+            shown.set(meta.file, meta.snapshot);
+          }
+        }
+        const madeSnaps = event.data.snapshots;
+        const files = event.data.files.filter((path) => {
+          if (!shown.has(path)) return true;
+          const madeSnap = madeSnaps?.[path];
+          const prevSnap = shown.get(path);
+          return !!madeSnap && !!prevSnap && madeSnap !== prevSnap;
+        });
+        if (files.length) {
+          const item: Extract<Item, { kind: "made" }> = { kind: "made", turn: event.data.turn, files, ts: event.ts };
+          if (madeSnaps) {
+            const keptSnaps: Record<string, string> = {};
+            const keptSizes: Record<string, number> = {};
+            for (const path of files) {
+              if (madeSnaps[path]) keptSnaps[path] = madeSnaps[path];
+              if (event.data.sizes?.[path] !== undefined) keptSizes[path] = event.data.sizes[path];
+            }
+            if (Object.keys(keptSnaps).length) item.snapshots = keptSnaps;
+            if (Object.keys(keptSizes).length) item.sizes = keptSizes;
+          }
+          current()?.items.push(item);
+        }
         break;
       }
+      case "artifact/restored":
+        current()?.items.push({
+          kind: "artifact_restored",
+          file: event.data.file,
+          path: event.data.path,
+          version: event.data.version,
+          snapshot: event.data.snapshot,
+          bytes: event.data.bytes,
+          previous: event.data.previous,
+          previousBytes: event.data.previous_bytes,
+          ts: event.ts,
+        });
+        break;
       case "context/compacted":
         current()?.items.push({ kind: "compacted", summary: event.data.summary, tokensBefore: event.data.tokens_before });
         break;
@@ -341,31 +389,125 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
   return [...files.values()];
 }
 
-/** The files on disk an act tells of: the one it wrote or painted, or those it handed over. */
-function toldOf(item: ToolItem): string[] {
-  const meta = item.result?.meta;
-  if (item.name === "deliver_files") return Array.isArray(meta?.files) ? meta.files : [];
-  // Written or painted; a file only moved or deleted was not made.
-  return (item.name === "edit_file" || item.name === "write_file" || item.name === "generate_image") && meta?.file ? [meta.file] : [];
+/** Document and visual files written via `write_file`/`edit_file` that count as user deliverables. */
+const WRITTEN_DELIVERABLE = /\.(md|markdown|svg|html|htm|csv)$/i;
+const SKILL_FILE = /(?:^|[\\/])\.odg[\\/]skills[\\/]/i;
+const isWrittenDeliverable = (path: string) => WRITTEN_DELIVERABLE.test(path) && !SKILL_FILE.test(path);
+
+/** One snapshotted version of a deliverable recorded during the session. */
+export interface ProductVersion {
+  /** 1-based version number, oldest first. */
+  version: number;
+  /** Turn in which this version was captured. */
+  turn: number;
+  how: "painted" | "delivered" | "written" | "found" | "backup";
+  /** Content-addressed snapshot name in the session's `snapshots/` folder, when captured. */
+  snapshot?: string;
+  /** Size in bytes when captured. */
+  bytes?: number;
+  /** ISO timestamp when this version was recorded. */
+  ts?: string;
 }
 
-/** A file the 分身 made for 本尊: painted with `generate_image`, handed over with `deliver_files`, or found in the workspace when its turn ended. */
+/** A file the 分身 made for 本尊: painted, handed over, written as a document/chart, or found at turn end, with its version history. */
 export interface Product {
   /** Where it is on disk. */
   path: string;
+  /** Turn of the latest version. */
   turn: number;
-  /** How it came: painted, handed over, or found. What a 分身 said of a file outranks finding it. */
-  how: "painted" | "delivered" | "found";
+  /** How it came: painted, delivered, written, or found. More explicit acts outrank passive finding. */
+  how: "painted" | "delivered" | "written" | "found";
+  /** All distinct versions recorded across the session, oldest first (v1, v2, ...). */
+  versions: ProductVersion[];
+  /** Snapshot currently active on disk (latest version by default, or the restored snapshot). */
+  currentSnapshot?: string;
 }
 
-/** What the 分身 made for 本尊 in this session, the newest first, each once. */
+const HOW_RANK: Record<Product["how"], number> = { found: 0, written: 1, delivered: 2, painted: 3 };
+const bestHow = (a: Product["how"], b: Product["how"]): Product["how"] => (HOW_RANK[b] > HOW_RANK[a] ? b : a);
+
+/** What the 分身 made for 本尊 in this session, newest first, each with its version history. */
 export function products(rows: Row[]): Product[] {
   const made = new Map<string, Product>();
-  for (const item of rows.flatMap((row) => row.items)) {
-    if (item.kind === "made") {
-      for (const path of item.files) made.set(path, { path, turn: item.turn, how: made.get(path)?.how ?? "found" });
-    } else if (item.kind === "tool" && item.result && !item.result.isError && (item.name === "deliver_files" || item.name === "generate_image")) {
-      for (const path of toldOf(item)) made.set(path, { path, turn: item.turn, how: item.name === "generate_image" ? "painted" : "delivered" });
+  const record = (path: string, turn: number, how: Product["how"], snapshot?: string, bytes?: number, ts?: string) => {
+    const existing = made.get(path);
+    if (!existing) {
+      made.set(path, {
+        path,
+        turn,
+        how,
+        versions: [{ version: 1, turn, how, ...(snapshot ? { snapshot } : {}), ...(bytes !== undefined ? { bytes } : {}), ...(ts ? { ts } : {}) }],
+        ...(snapshot ? { currentSnapshot: snapshot } : {}),
+      });
+      return;
+    }
+    const last = existing.versions[existing.versions.length - 1];
+    existing.how = bestHow(existing.how, how);
+    if (snapshot && last?.snapshot === snapshot) {
+      // Same exact bytes already recorded as the latest version: upgrade metadata without creating a duplicate version.
+      if (last.how !== "backup") last.how = bestHow(last.how, how);
+      if (last.bytes === undefined && bytes !== undefined) last.bytes = bytes;
+      if (!last.ts && ts) last.ts = ts;
+      existing.currentSnapshot = snapshot;
+    } else if (!snapshot && !last?.snapshot) {
+      // Legacy log without snapshots: update the single record in place.
+      existing.turn = turn;
+      if (last) {
+        last.turn = turn;
+        if (last.how !== "backup") last.how = bestHow(last.how, how);
+      }
+    } else {
+      existing.turn = turn;
+      existing.versions.push({
+        version: existing.versions.length + 1,
+        turn,
+        how,
+        ...(snapshot ? { snapshot } : {}),
+        ...(bytes !== undefined ? { bytes } : {}),
+        ...(ts ? { ts } : {}),
+      });
+      if (snapshot) existing.currentSnapshot = snapshot;
+    }
+    // Move to the end so the most recently updated product appears first when reversed.
+    made.delete(path);
+    made.set(path, existing);
+  };
+
+  for (const row of rows) {
+    for (const item of row.items) {
+      if (item.kind === "made") {
+        for (const path of item.files) {
+          record(path, item.turn, "found", item.snapshots?.[path], item.sizes?.[path], item.ts);
+        }
+      } else if (item.kind === "tool" && item.result && !item.result.isError) {
+        const meta = item.result.meta;
+        if (item.name === "deliver_files" && Array.isArray(meta?.files)) {
+          for (const path of meta.files) {
+            record(path, item.turn, "delivered", meta.snapshots?.[path], meta.sizes?.[path], item.ts);
+          }
+        } else if (item.name === "generate_image" && meta?.file) {
+          record(meta.file, item.turn, "painted", meta.snapshot, meta.bytes, item.ts);
+        } else if ((item.name === "write_file" || item.name === "edit_file") && meta?.file && isWrittenDeliverable(meta.file)) {
+          record(meta.file, item.turn, "written", meta.snapshot, meta.bytes, item.ts);
+        }
+      } else if (item.kind === "artifact_restored") {
+        const existing = made.get(item.file);
+        if (existing) {
+          if (item.previous && !existing.versions.some((v) => v.snapshot === item.previous)) {
+            existing.versions.push({
+              version: existing.versions.length + 1,
+              turn: row.turn,
+              how: "backup",
+              snapshot: item.previous,
+              ...(item.previousBytes !== undefined ? { bytes: item.previousBytes } : {}),
+              ...(item.ts ? { ts: item.ts } : {}),
+            });
+          }
+          existing.currentSnapshot = item.snapshot;
+          made.delete(item.file);
+          made.set(item.file, existing);
+        }
+      }
     }
   }
   return [...made.values()].reverse();

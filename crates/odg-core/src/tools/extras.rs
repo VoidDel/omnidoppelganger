@@ -74,6 +74,11 @@ pub(super) async fn generate_image(input: &Value, context: &ToolContext) -> Resu
         std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot make the folder {}: {error}", parent.display())))?;
     }
     crate::fsutil::write_atomically(&path, &painted.bytes).map_err(|error| ToolOutput::error(format!("Cannot save the picture at {}: {error}", path.display())))?;
+    let snapshot = context
+        .snapshots
+        .as_ref()
+        .filter(|_| painted.bytes.len() as u64 <= crate::undo::ARTIFACT_SNAPSHOT_BYTES)
+        .and_then(|dir| crate::undo::save(dir, &painted.bytes).ok());
     let shown = display(&context.workspace, &path);
     let mut content = format!(
         "Painted {shown} ({}, {} KB) with {}. The user sees it under this step. You cannot see it: do not describe it beyond what you asked for; ask the user whether it is what they wanted, and if not, paint again under a new name.",
@@ -84,7 +89,10 @@ pub(super) async fn generate_image(input: &Value, context: &ToolContext) -> Resu
     if path != asked {
         content.push_str(&format!(" It was saved as {shown}, not {}, since that is the kind of picture that came back or the name was taken.", display(&context.workspace, &asked)));
     }
-    let meta = json!({ "file": path.to_string_lossy(), "path": shown, "painter": config.painter.name, "model": config.painter.model, "size": painted.size, "prompt": prompt });
+    let mut meta = json!({ "file": path.to_string_lossy(), "path": shown, "painter": config.painter.name, "model": config.painter.model, "size": painted.size, "prompt": prompt, "bytes": painted.bytes.len() });
+    if let Some(snapshot) = snapshot {
+        meta["snapshot"] = json!(snapshot);
+    }
     Ok(ToolOutput::ok(content, meta))
 }
 
@@ -330,8 +338,23 @@ pub(super) fn deliver_files(input: &Value, context: &ToolContext) -> Result<Tool
     if !missing.is_empty() {
         return Err(ToolOutput::error(format!("Not files that are there: {}. Nothing was handed over; deliver them once they are made.", missing.join(", "))));
     }
+    let mut snapshots = std::collections::BTreeMap::new();
+    let mut sizes = std::collections::BTreeMap::new();
+    if let Some(dir) = &context.snapshots {
+        for file in &files {
+            if let Ok(Some((snap, len))) = crate::undo::save_file(dir, Path::new(file), crate::undo::ARTIFACT_SNAPSHOT_BYTES) {
+                snapshots.insert(file.clone(), snap);
+                sizes.insert(file.clone(), len);
+            }
+        }
+    }
     let names: Vec<String> = files.iter().map(|file| display(&context.workspace, Path::new(file))).collect();
-    Ok(ToolOutput::ok(format!("Handed to the user: {}. They can open each from here.", names.join(", ")), json!({ "files": files })))
+    let mut meta = json!({ "files": files });
+    if !snapshots.is_empty() {
+        meta["snapshots"] = json!(snapshots);
+        meta["sizes"] = json!(sizes);
+    }
+    Ok(ToolOutput::ok(format!("Handed to the user: {}. They can open each from here.", names.join(", ")), meta))
 }
 
 /// Add an MCP server to the user's list and connect to it; see [`crate::mcp::McpHub::add`].

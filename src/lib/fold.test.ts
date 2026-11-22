@@ -55,7 +55,7 @@ describe("a search through the provider", () => {
 });
 
 describe("what the 分身 made", () => {
-  it("lists what it handed over and what a turn left, newest first, each once, and says in the turn only what no act showed", () => {
+  it("lists what it handed over, wrote as documents/charts, and left at turn end, newest first, and says in the turn only what no act showed", () => {
     const events = log(
       { type: "turn/start", data: { turn: 1 } },
       user("make the report"),
@@ -74,12 +74,56 @@ describe("what the 分身 made", () => {
       { type: "files/made", data: { turn: 2, files: ["D:\\p\\images\\crane.png", "D:\\p\\report.docx"] } },
     );
     const rows = fold(events);
-    expect(rows[0].items.filter((item) => item.kind === "made")).toEqual([{ kind: "made", turn: 1, files: ["D:\\p\\data.xlsx"] }]);
-    expect(rows[1].items.filter((item) => item.kind === "made")).toEqual([{ kind: "made", turn: 2, files: ["D:\\p\\report.docx"] }]);
+    expect(rows[0].items.filter((item) => item.kind === "made")).toEqual([expect.objectContaining({ kind: "made", turn: 1, files: ["D:\\p\\data.xlsx"] })]);
+    expect(rows[1].items.filter((item) => item.kind === "made")).toEqual([expect.objectContaining({ kind: "made", turn: 2, files: ["D:\\p\\report.docx"] })]);
     expect(products(rows)).toEqual([
-      { path: "D:\\p\\images\\crane.png", turn: 2, how: "painted" },
-      { path: "D:\\p\\data.xlsx", turn: 1, how: "found" },
-      { path: "D:\\p\\report.docx", turn: 2, how: "delivered" },
+      expect.objectContaining({ path: "D:\\p\\report.docx", turn: 2, how: "delivered" }),
+      expect.objectContaining({ path: "D:\\p\\images\\crane.png", turn: 2, how: "painted" }),
+      expect.objectContaining({ path: "D:\\p\\data.xlsx", turn: 1, how: "found" }),
+      expect.objectContaining({ path: "D:\\p\\chart.svg", turn: 1, how: "written" }),
+    ]);
+  });
+
+  it("tracks distinct version snapshots across revisions, deduplicates identical content, and records pre-restore backups", () => {
+    const events = log(
+      { type: "turn/start", data: { turn: 1 } },
+      user("draft"),
+      said(call("w1", "write_file", { path: "report.md" }), call("d1", "deliver_files", { paths: ["deck.pptx"] })),
+      result("w1", "write_file", { path: "report.md", file: "/p/report.md", snapshot: "md-1", bytes: 100, added: 5, removed: 0, created: true }),
+      result("d1", "deliver_files", { files: ["/p/deck.pptx"], snapshots: { "/p/deck.pptx": "ppt-1" }, sizes: { "/p/deck.pptx": 2048 } }),
+      // Turn-end scan sees the same ppt-1 snapshot (deduplicated, not shown again).
+      { type: "files/made", data: { turn: 1, files: ["/p/deck.pptx"], snapshots: { "/p/deck.pptx": "ppt-1" }, sizes: { "/p/deck.pptx": 2048 } } },
+      { type: "turn/end", data: { turn: 1, reason: "completed", error: null } },
+      { type: "turn/start", data: { turn: 2 } },
+      user("revise"),
+      said(call("w2", "edit_file", { path: "report.md" })),
+      result("w2", "edit_file", { path: "report.md", file: "/p/report.md", snapshot: "md-2", bytes: 140, added: 2, removed: 1 }),
+      // Script updated deck.pptx without calling deliver_files again: files/made captures v2.
+      { type: "files/made", data: { turn: 2, files: ["/p/deck.pptx"], snapshots: { "/p/deck.pptx": "ppt-2" }, sizes: { "/p/deck.pptx": 3072 } } },
+      // User had manual edits (ppt-manual) on disk and restored deck.pptx back to v1 (ppt-1).
+      {
+        type: "artifact/restored",
+        data: { file: "/p/deck.pptx", path: "deck.pptx", version: 1, snapshot: "ppt-1", bytes: 2048, previous: "ppt-manual", previous_bytes: 3100 },
+      },
+      { type: "turn/end", data: { turn: 2, reason: "completed", error: null } },
+    );
+    const rows = fold(events);
+    expect(rows[0].items.filter((item) => item.kind === "made")).toEqual([]);
+    const list = products(rows);
+    const deck = list.find((p) => p.path === "/p/deck.pptx")!;
+    const report = list.find((p) => p.path === "/p/report.md")!;
+    expect(deck.how).toBe("delivered");
+    expect(deck.currentSnapshot).toBe("ppt-1");
+    expect(deck.versions.map((v) => ({ version: v.version, turn: v.turn, how: v.how, snapshot: v.snapshot, bytes: v.bytes }))).toEqual([
+      { version: 1, turn: 1, how: "delivered", snapshot: "ppt-1", bytes: 2048 },
+      { version: 2, turn: 2, how: "found", snapshot: "ppt-2", bytes: 3072 },
+      { version: 3, turn: 2, how: "backup", snapshot: "ppt-manual", bytes: 3100 },
+    ]);
+    expect(report.how).toBe("written");
+    expect(report.currentSnapshot).toBe("md-2");
+    expect(report.versions.map((v) => ({ version: v.version, snapshot: v.snapshot }))).toEqual([
+      { version: 1, snapshot: "md-1" },
+      { version: 2, snapshot: "md-2" },
     ]);
   });
 });

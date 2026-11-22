@@ -329,10 +329,19 @@ fn write_change(context: &ToolContext, path: &Path, shown: &str, existing: Optio
         meta["hunks"] = json!(diff.hunks);
     }
     if context.snapshots.is_some() {
+        let after_snapshot = context
+            .snapshots
+            .as_ref()
+            .filter(|_| written.len() as u64 <= crate::undo::ARTIFACT_SNAPSHOT_BYTES)
+            .and_then(|dir| crate::undo::save(dir, written.as_bytes()).ok());
         // What undoing needs: where the file is, what it held, and what it holds now.
         meta["file"] = json!(path.to_string_lossy());
         meta["before"] = json!(snapshot);
         meta["after"] = json!(crate::undo::fingerprint(written.as_bytes()));
+        if let Some(after_snapshot) = after_snapshot {
+            meta["snapshot"] = json!(after_snapshot);
+        }
+        meta["bytes"] = json!(written.len());
     }
     Ok(ToolOutput::ok(summary, meta))
 }

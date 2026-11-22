@@ -20,6 +20,7 @@ export function replayStops(events: Envelope[]): number[] {
       case "context/compacted":
       case "files/restored":
       case "files/made":
+      case "artifact/restored":
         stops.push(index);
         break;
       case "instructions/loaded":

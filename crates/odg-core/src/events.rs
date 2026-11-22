@@ -532,9 +532,36 @@ pub enum Event {
     },
     /// Files of the kinds a 分身 makes for the user (documents, pictures, media, archives) that were new or changed in
     /// the workspace when the turn ended, found by looking, not told by a tool: what a script or a command left there.
-    /// Absolute paths. Never sent to the model. Since format 16.
+    /// Absolute paths. Never sent to the model. Since format 16; `snapshots` and `sizes` since format 19.
     #[serde(rename = "files/made")]
-    FilesMade { turn: u64, files: Vec<String> },
+    FilesMade {
+        turn: u64,
+        files: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        snapshots: std::collections::BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        sizes: std::collections::BTreeMap<String, u64>,
+    },
+    /// The user restored a deliverable to an earlier snapshotted version. The model is told at its next message.
+    /// Since format 19.
+    #[serde(rename = "artifact/restored")]
+    ArtifactRestored {
+        /// Absolute path of the restored file in the workspace.
+        file: String,
+        /// Display path relative to the workspace.
+        path: String,
+        /// 1-based version number restored to.
+        version: u32,
+        /// Snapshot name written back to `file`.
+        snapshot: String,
+        /// Size in bytes of the restored file.
+        bytes: u64,
+        /// If the live file on disk held unrecorded changes before restoring, their snapshot is saved here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_bytes: Option<u64>,
+    },
     #[serde(rename = "turn/end")]
     TurnEnd {
         turn: u64,
