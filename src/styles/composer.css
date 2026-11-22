@@ -31,9 +31,11 @@
   inset: 0;
   border-radius: var(--r-control);
   --light-rest: var(--line-strong);
-  /* A square that covers the box whichever way it is turned. */
-  --light-side: 140%;
+  /* Fallback length before `Light` measures the box's diagonal in pixels (never `%`, which differs between width and height). */
+  --light-side: 100vmax;
   --light-time: 4.5s;
+  /* Keep WebKit's rounded-corner clip intact around the accelerated rotating layer. */
+  transform: translateZ(0);
   animation: come var(--d-arrive) ease backwards;
 }
 
@@ -49,7 +51,7 @@
   filter: blur(9px);
   opacity: 0.6;
   --light-rest: transparent;
-  --light-side: 140%;
+  --light-side: 100vmax;
   --light-time: 4.5s;
   animation: come var(--d-arrive) ease backwards;
 }

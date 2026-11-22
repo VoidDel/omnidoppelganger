@@ -23,11 +23,10 @@
 .edge::before {
   content: "";
   position: absolute;
-  left: 50%;
-  top: 50%;
   width: var(--light-side, 64px);
-  aspect-ratio: 1;
-  translate: -50% -50%;
+  height: var(--light-side, 64px);
+  left: calc(50% - var(--light-side, 64px) / 2);
+  top: calc(50% - var(--light-side, 64px) / 2);
   background: conic-gradient(var(--light-rest) 0 40%, var(--jade) 62%, var(--seal-gold) 78%, #fffdf2 84%, var(--jade) 92%, var(--light-rest) 100%);
   animation: go-round var(--light-time, 2s) linear infinite;
 }
@@ -42,8 +41,12 @@
 }
 
 @keyframes go-round {
+  from {
+    transform: rotate(0deg);
+  }
+
   to {
-    rotate: 1turn;
+    transform: rotate(1turn);
   }
 }
 
