@@ -1381,3 +1381,77 @@ async fn chat_session_trims_project_only_tools_and_prompt_references() {
     assert!(requests[0].system.contains("This session is a conversation"));
     assert!(!requests[0].system.contains("`code_nav`") && !requests[0].system.contains("`delegate`"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_only_subagent_omits_write_tools_and_refuses_mutations_even_in_bypass_mode() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("hello.txt"), "world\n").unwrap();
+    let hub = Arc::new(McpHub::new(home.path().join("mcp.json"), tokio::runtime::Handle::current()));
+    hub.insert("echo", crate::mcp::testing::echo_server().await);
+
+    let listing = if cfg!(windows) { "Get-ChildItem" } else { "ls" };
+    let script = vec![
+        calls(&[(
+            "d1",
+            "delegate",
+            json!({ "tasks": [{ "name": "inspector", "task": "Analyze hello.txt.", "read_only": true }] }),
+        )]),
+        calls(&[
+            ("c1", "edit_file", json!({ "path": "hello.txt", "old_string": "world", "new_string": "hacked" })),
+            ("c2", "run_command", json!({ "command": "echo hacked > out.txt" })),
+            ("c3", "run_command", json!({ "command": "cargo fmt" })),
+            ("c4", "mcp__echo__echo", json!({ "text": "hi" })),
+            ("c5", "run_command", json!({ "command": listing })),
+        ]),
+        says("Inspected."),
+        says("All done."),
+    ];
+    let llm = ScriptedLlm::new(script, None);
+    let worktree = crate::events::Worktree { origin: workspace.path().to_string_lossy().into_owned(), checkout: workspace.path().to_string_lossy().into_owned(), branch: "odg/test".into() };
+    let new = NewSession { workspace: workspace.path(), provider: "anthropic", model: "scripted", parent: None, worktree: Some(worktree), schedule: None };
+    let log = SessionStore::new(home.path()).create_with(new).unwrap();
+    let (sender, _events) = unbounded_channel();
+    let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
+    let services = Services { grants: Arc::new(GrantStore::new(home.path().join("grants.json"))), mcp: Some(hub), skills: None, search: None, sandbox: None, chat: None, runtime: None, painter: None, lsp: None };
+    let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
+    // Even with Bypass enabled on the parent worktree session, the read_only subagent stays strictly read-only.
+    session.set_mode(Mode::Bypass);
+    session.send("analyze".into());
+    session.wait_idle().await;
+
+    let [child] = session.children().try_into().ok().expect("one read-only subagent");
+    let requests = llm.requests.lock().unwrap();
+    let child_req = requests.iter().find(|req| req.session == child.id()).expect("child request");
+    let named = |name: &str| child_req.tools.iter().any(|tool| tool["name"] == name);
+    for withheld in ["edit_file", "write_file", "delete_file", "move_file", "generate_image", "command_input", "command_output", "stop_command", "mcp__echo__echo", "install_skill"] {
+        assert!(!named(withheld), "read_only subagent should not be offered {withheld}");
+    }
+    for kept in ["read_file", "search", "find_files", "code_nav", "run_command"] {
+        assert!(named(kept), "read_only subagent should still be offered {kept}");
+    }
+    assert!(child_req.system.contains("restricted to read-only inspection"));
+    drop(requests);
+
+    // Every mutating call was refused with `refusal: "read_only"`, while `ls` succeeded; workspace files are untouched.
+    let child_results: Vec<(String, bool, Option<String>)> = child
+        .snapshot()
+        .into_iter()
+        .filter_map(|envelope| match envelope.event {
+            Event::ToolResult { tool_use_id, is_error, meta, .. } => Some((tool_use_id, is_error, meta["refusal"].as_str().map(str::to_string))),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        child_results,
+        [
+            ("c1".into(), true, Some("read_only".into())),
+            ("c2".into(), true, Some("read_only".into())),
+            ("c3".into(), true, Some("read_only".into())),
+            ("c4".into(), true, Some("read_only".into())),
+            ("c5".into(), false, None),
+        ]
+    );
+    assert_eq!(std::fs::read_to_string(workspace.path().join("hello.txt")).unwrap(), "world\n");
+    assert!(!workspace.path().join("out.txt").exists());
+}

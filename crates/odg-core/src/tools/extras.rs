@@ -88,8 +88,16 @@ pub(super) async fn generate_image(input: &Value, context: &ToolContext) -> Resu
     Ok(ToolOutput::ok(content, meta))
 }
 
-/// The tasks `delegate` was given, checked: `(name, task)` for each.
-pub fn delegate_tasks(input: &Value) -> Result<Vec<(String, String)>, String> {
+/// One task handed to `delegate`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegateTask {
+    pub name: String,
+    pub task: String,
+    pub read_only: bool,
+}
+
+/// The tasks `delegate` was given, checked.
+pub fn delegate_tasks(input: &Value) -> Result<Vec<DelegateTask>, String> {
     let tasks = input["tasks"].as_array().filter(|tasks| !tasks.is_empty()).ok_or("`tasks` is required and must be a list of at least one task.")?;
     if tasks.len() > SUBAGENTS {
         return Err(format!("{} tasks are too many for one call; give {SUBAGENTS} or fewer.", tasks.len()));
@@ -101,7 +109,8 @@ pub fn delegate_tasks(input: &Value) -> Result<Vec<(String, String)>, String> {
             let task = entry["task"].as_str().map(str::trim).filter(|task| !task.is_empty()).ok_or(format!("Task {} has no `task`.", index + 1))?;
             let name: String = entry["name"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(40).collect();
             let name = if name.is_empty() { format!("subagent {}", index + 1) } else { name };
-            Ok((name, task.to_string()))
+            let read_only = entry["read_only"].as_bool().unwrap_or(false);
+            Ok(DelegateTask { name, task: task.to_string(), read_only })
         })
         .collect()
 }

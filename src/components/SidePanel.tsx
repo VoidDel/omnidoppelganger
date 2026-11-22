@@ -391,7 +391,7 @@ export function SidePanel({ files, runs, todos, products, workspace, width, onRe
             const meta = run.result!.meta!;
             return (
               <pre className="terminal" key={run.id}>
-                <span className="prompt">$</span> {meta.command}
+                <span className="prompt">$</span> {meta.cwd ? `[${meta.cwd}] ` : ""}{meta.command}
                 {run.name === "run_command" && meta.background ? <span className="muted">{`\n[后台运行，编号 ${meta.job}]`}</span> : null}
                 {run.name !== "run_command" ? <span className="muted">{`  （${meta.job}${run.name === "stop_command" ? "，停止" : ""}）`}</span> : null}
                 {"\n"}

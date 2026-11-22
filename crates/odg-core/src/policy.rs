@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::safety::{self, Dialect};
-use crate::tools::{edits_files, in_git_directory, inside_workspace, resolve};
+use crate::tools::{command_cwd, display, edits_files, in_git_directory, inside_workspace, resolve};
 
 /// How much the agent does without asking. A session starts in the mode
 /// chosen in settings, and the user can switch it at any time.
@@ -70,6 +70,21 @@ pub enum Verdict {
     },
 }
 
+/// Format a command for an approval prompt, prefixing its working directory when `cwd` differs from `workspace`.
+fn command_detail(command: &str, input: &Value, workspace: &Path) -> String {
+    match command_cwd(input, workspace) {
+        Some(dir) => {
+            let shown = if !inside_workspace(workspace, &dir) {
+                dir.canonicalize().unwrap_or(dir).to_string_lossy().into_owned()
+            } else {
+                display(workspace, &dir)
+            };
+            if shown.is_empty() { command.to_string() } else { format!("[in {shown}]\n{command}") }
+        }
+        None => command.to_string(),
+    }
+}
+
 /// [`check`] for a session whose commands are confined when `sandboxed`; see
 /// [`crate::sandbox`]. A command that asks to run unconfined is the user's to
 /// decide each time, whatever the mode and whatever was allowed before.
@@ -81,7 +96,8 @@ pub fn check_in(mode: Mode, tool: &str, input: &Value, workspace: &Path, sandbox
         return Verdict::Allow;
     }
     if sandboxed && tool == "run_command" && input["unsandboxed"] == true {
-        return Verdict::Ask { reason: "unsandboxed", detail: input["command"].as_str().unwrap_or_default().to_string(), grant: None };
+        let command = input["command"].as_str().unwrap_or_default();
+        return Verdict::Ask { reason: "unsandboxed", detail: command_detail(command, input, workspace), grant: None };
     }
     check(mode, tool, input, workspace)
 }
@@ -150,12 +166,18 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
     match tool {
         "run_command" => {
             let command = input["command"].as_str().unwrap_or_default();
+            let detail = command_detail(command, input, workspace);
+            if let Some(dir) = command_cwd(input, workspace)
+                && (!inside_workspace(workspace, &dir) || in_git_directory(workspace, &dir))
+            {
+                return Verdict::Ask { reason: "outside_command", detail, grant: None };
+            }
             if mode == Mode::Auto && safety::check(command, Dialect::of_this_machine(), workspace).is_ok() {
                 return Verdict::Allow;
             }
             // In auto mode only what the check does not pass needs approving, and so a standing grant.
             let grant = safety::grants_needed(command, Dialect::of_this_machine(), workspace, mode == Mode::Auto).ok().filter(|grants| !grants.is_empty()).map(|grants| grants.join("\n"));
-            Verdict::Ask { reason: "command", detail: command.to_string(), grant }
+            Verdict::Ask { reason: "command", detail, grant }
         }
         tool if edits_files(tool) && mode == Mode::Plan => Verdict::Refuse(PLAN_REFUSAL),
         // An edit is judged by every file it changes: a move by where the file is and where it goes.
@@ -567,5 +589,40 @@ mod tests {
         assert!(crate::grants::GrantStore::keeps("mcp-resource:notes"));
         assert_eq!(check("list_mcp_resources", &json!({}), workspace), Verdict::Allow);
         assert_eq!(check("present_plan", &json!({ "plan": "x" }), workspace), Verdict::Allow);
+    }
+
+    #[test]
+    fn command_cwd_inside_workspace_follows_normal_rules_while_outside_or_git_always_asks_without_grant() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("project");
+        std::fs::create_dir_all(workspace.join("crates/sub")).unwrap();
+        std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
+        let outside = directory.path().join("other");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let listing = if cfg!(windows) { "Get-ChildItem" } else { "ls" };
+        // Inside workspace: auto mode allows safe commands; edit mode asks with `[in ...]` detail and standing grant.
+        assert_eq!(super::check(Mode::Auto, "run_command", &json!({ "command": listing, "cwd": "crates/sub" }), &workspace), Verdict::Allow);
+        let edit_sub = check("run_command", &json!({ "command": "cargo test", "cwd": "crates/sub" }), &workspace);
+        assert_eq!(
+            edit_sub,
+            Verdict::Ask { reason: "command", detail: "[in crates/sub]\ncargo test".into(), grant: Some("command:cargo test".into()) }
+        );
+        // Workspace root itself (`cwd: "."`) keeps the plain command detail.
+        assert_eq!(
+            check("run_command", &json!({ "command": "cargo test", "cwd": "." }), &workspace),
+            Verdict::Ask { reason: "command", detail: "cargo test".into(), grant: Some("command:cargo test".into()) }
+        );
+        // Outside workspace or inside `.git`: even auto mode asks with reason `outside_command` and no standing grant.
+        for cwd in ["..", "../other", ".git", ".git/hooks"] {
+            let asked = super::check(Mode::Auto, "run_command", &json!({ "command": listing, "cwd": cwd }), &workspace);
+            assert!(matches!(&asked, Verdict::Ask { reason: "outside_command", grant: None, detail } if detail.starts_with("[in ") && detail.ends_with(listing)), "{cwd}: {asked:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+            let escaped = super::check(Mode::Auto, "run_command", &json!({ "command": listing, "cwd": "escape" }), &workspace);
+            assert!(matches!(&escaped, Verdict::Ask { reason: "outside_command", grant: None, .. }), "{escaped:?}");
+        }
     }
 }

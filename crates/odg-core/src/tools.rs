@@ -20,7 +20,7 @@ use crate::jobs::Jobs;
 
 pub use commands::shell;
 pub(crate) use commands::{kill_tree, strip_ansi};
-pub use extras::{ASK_USER, OPTIONS, PRESENT_PLAN, QUESTIONS, SUBAGENTS, TODO_STATES, answered, delegate_tasks, questions, todo_items};
+pub use extras::{ASK_USER, DelegateTask, OPTIONS, PRESENT_PLAN, QUESTIONS, SUBAGENTS, TODO_STATES, answered, delegate_tasks, questions, todo_items};
 pub use files::edits_files;
 #[cfg(test)]
 use files::picture;
@@ -148,6 +148,12 @@ pub fn git_branch(workspace: &Path) -> Option<String> {
 
 pub(crate) fn display(workspace: &Path, path: &Path) -> String {
     path.strip_prefix(workspace).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+/// Resolved working directory requested by `run_command`'s `cwd` parameter, when given and non-empty.
+pub(crate) fn command_cwd(input: &Value, workspace: &Path) -> Option<PathBuf> {
+    let raw = input["cwd"].as_str().map(str::trim).filter(|cwd| !cwd.is_empty())?;
+    Some(resolve(workspace, raw))
 }
 
 pub(super) fn string_arg<'a>(input: &'a Value, name: &str) -> Result<&'a str, ToolOutput> {

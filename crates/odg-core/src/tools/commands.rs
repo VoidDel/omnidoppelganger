@@ -11,7 +11,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::jobs::{Ended, Jobs, Report};
 
-use super::{ToolContext, ToolOutput, string_arg};
+use super::{ToolContext, ToolOutput, command_cwd, display, string_arg};
 
 const COMMAND_OUTPUT_CHARS: usize = 30_000;
 const COMMAND_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -87,9 +87,9 @@ pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
 }
 
-/// The shell set up to run `command_line` in the workspace, its output piped;
+/// The shell set up to run `command_line` in `cwd`, its output piped;
 /// confined to `sandbox` when there is one. Fails when it cannot be confined.
-fn shell_command(command_line: &str, workspace: &Path, sandbox: Option<&crate::sandbox::Sandbox>) -> std::io::Result<tokio::process::Command> {
+fn shell_command(command_line: &str, cwd: &Path, sandbox: Option<&crate::sandbox::Sandbox>) -> std::io::Result<tokio::process::Command> {
     let (program, arguments, _) = shell();
     let mut command = match sandbox {
         Some(sandbox) => crate::sandbox::command(program, sandbox)?,
@@ -107,7 +107,7 @@ fn shell_command(command_line: &str, workspace: &Path, sandbox: Option<&crate::s
     }
     // Ask the programs the command runs not to color either; whatever still does is stripped from the output.
     command.env("NO_COLOR", "1");
-    command.current_dir(workspace).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    command.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
     // Its own process group, so stopping the command can stop everything it started.
@@ -192,17 +192,34 @@ pub(super) async fn stop_command(input: &Value, context: &ToolContext) -> Result
 pub(super) async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let command_line = string_arg(input, "command")?.to_string();
     let timeout = Duration::from_secs(input["timeout_seconds"].as_u64().unwrap_or(COMMAND_TIMEOUT_SECONDS).clamp(1, COMMAND_TIMEOUT_LIMIT_SECONDS));
+    let cwd = match command_cwd(input, &context.workspace) {
+        Some(dir) => {
+            if !dir.exists() {
+                return Err(ToolOutput::error(format!("Working directory {} does not exist.", dir.display())));
+            }
+            if !dir.is_dir() {
+                return Err(ToolOutput::error(format!("Working directory {} is not a directory.", dir.display())));
+            }
+            dir
+        }
+        None => context.workspace.clone(),
+    };
+    let shown_cwd = Some(display(&context.workspace, &cwd)).filter(|shown| !shown.is_empty());
     let (program, _, _) = shell();
     // The model may ask for a command to run unconfined; the user has then been asked (see `policy::check_in`).
     let sandbox = context.sandbox.as_ref().filter(|_| input["unsandboxed"] != true);
-    let mut command = shell_command(&command_line, &context.workspace, sandbox).map_err(|error| ToolOutput::error(format!("Cannot confine the command to the sandbox: {error}")))?;
+    let mut command = shell_command(&command_line, &cwd, sandbox).map_err(|error| ToolOutput::error(format!("Cannot confine the command to the sandbox: {error}")))?;
     if input["background"].as_bool().unwrap_or(false) {
         let jobs = context.jobs.as_ref().ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
         // Left open, for `command_input`; a command in the foreground gets none, and a prompt fails at once there.
         command.stdin(Stdio::piped());
         let id = jobs.start(&command_line, command).map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
         let content = format!("Started in the background as job {id}. Read what it prints with `command_output`, type into it with `command_input`, and end it with `stop_command` when it is no longer needed.");
-        return Ok(ToolOutput::ok(content, json!({ "command": command_line, "job": id, "background": true, "sandboxed": sandbox.is_some() })));
+        let mut meta = json!({ "command": command_line, "job": id, "background": true, "sandboxed": sandbox.is_some() });
+        if let Some(shown) = &shown_cwd {
+            meta["cwd"] = json!(shown);
+        }
+        return Ok(ToolOutput::ok(content, meta));
     }
 
     let started = Instant::now();
@@ -257,17 +274,21 @@ pub(super) async fn run_command(input: &Value, context: &ToolContext) -> Result<
             roots.join(", ")
         ));
     }
+    let mut meta = json!({
+        "command": command_line,
+        "exit_code": exit_code,
+        "stopped": stopped,
+        "duration_ms": started.elapsed().as_millis() as u64,
+        "output": output,
+        "sandboxed": sandbox.is_some(),
+    });
+    if let Some(shown) = &shown_cwd {
+        meta["cwd"] = json!(shown);
+    }
     Ok(ToolOutput {
         content,
         is_error: stopped.is_some() || exit_code != Some(0),
-        meta: json!({
-            "command": command_line,
-            "exit_code": exit_code,
-            "stopped": stopped,
-            "duration_ms": started.elapsed().as_millis() as u64,
-            "output": output,
-            "sandboxed": sandbox.is_some(),
-        }),
+        meta,
         images: Vec::new(),
     })
 }

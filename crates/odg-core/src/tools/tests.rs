@@ -812,3 +812,43 @@ async fn lists_and_reads_the_resources_of_the_users_mcp_servers() {
     let none = execute("list_mcp_resources", &json!({ "server": "gone" }), &context).await;
     assert!(none.is_error && none.content.contains("`gone`"), "{}", none.content);
 }
+
+#[tokio::test]
+async fn run_command_respects_cwd_and_rejects_missing_or_non_directory_cwd() {
+    let (directory, context) = context();
+    let sub = directory.path().join("packages/app");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("marker.txt"), "found-in-sub\n").unwrap();
+    std::fs::write(directory.path().join("plain.txt"), "not a dir\n").unwrap();
+
+    let read_marker = if cfg!(windows) { "Get-Content marker.txt" } else { "cat marker.txt" };
+    let ran = execute("run_command", &json!({ "command": read_marker, "cwd": "packages/app" }), &context).await;
+    assert!(!ran.is_error && ran.content.trim() == "found-in-sub", "{}", ran.content);
+    assert_eq!(ran.meta["cwd"].as_str(), Some("packages/app"));
+
+    // Default cwd (`.` or omitted) leaves `meta["cwd"]` unset.
+    let echo = execute("run_command", &json!({ "command": "echo hi", "cwd": "." }), &context).await;
+    assert!(!echo.is_error && echo.meta["cwd"].is_null(), "{:?}", echo.meta);
+
+    // Missing or file cwd returns a clear error before spawning.
+    let missing = execute("run_command", &json!({ "command": "echo hi", "cwd": "no/such/dir" }), &context).await;
+    assert!(missing.is_error && missing.content.contains("does not exist"), "{}", missing.content);
+    let not_dir = execute("run_command", &json!({ "command": "echo hi", "cwd": "plain.txt" }), &context).await;
+    assert!(not_dir.is_error && not_dir.content.contains("is not a directory"), "{}", not_dir.content);
+}
+
+#[test]
+fn delegate_tasks_parses_read_only_flag() {
+    let parsed = delegate_tasks(&json!({ "tasks": [
+        { "name": "audit", "task": "Inspect auth.", "read_only": true },
+        { "name": "fix", "task": "Patch parser." },
+    ] }))
+    .unwrap();
+    assert_eq!(
+        parsed,
+        vec![
+            DelegateTask { name: "audit".into(), task: "Inspect auth.".into(), read_only: true },
+            DelegateTask { name: "fix".into(), task: "Patch parser.".into(), read_only: false },
+        ]
+    );
+}

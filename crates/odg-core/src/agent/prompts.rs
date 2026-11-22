@@ -39,6 +39,9 @@ pub(super) fn verdict(written: &str) -> (bool, String) {
 /// What a subagent is told on top of the general prompt.
 const SUBAGENT: &str = "\n\nYou are a subagent: another agent gave you the task below as one part of a larger piece of work, and reads your last message as the result. It knows nothing of what you did except what that message says, and you know nothing of its conversation except the task.\n- Do the task and stop. Do not widen it.\n- Other subagents may be working in this workspace at the same time. Change only the files your task is about.\n- End with a report: what you found or changed, files by path; what you verified and how; what is left undone or uncertain. Say it plainly when you could not do the task.";
 
+/// Additional restriction appended to a `read_only` subagent's system prompt.
+const SUBAGENT_READ_ONLY: &str = "\n- You are restricted to read-only inspection: do not create, edit, delete, or move files, and use only read-only inspection tools or read-only commands.";
+
 /// What a session started by a schedule is told on top of the general prompt.
 const SCHEDULED: &str = "\n\nA schedule the user set up started this session, and the first message is the task it carries. The user may not be at the computer.\n- Do not ask a question and wait for the answer. Where the task is unclear, take the cautious reading and say which you took.\n- A tool call that needs approval waits until the user is back, so prefer what you can do without one.\n- End with a report for the user to read later: what you did, what you found, and what needs their attention.";
 
@@ -56,6 +59,10 @@ pub enum Origin {
 /// so the cached prefix stays valid from one request to the next.
 /// `instructions` is the project's own file for agents, as `(name, contents)`.
 pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], origin: Origin, chat: bool) -> String {
+    build_system_prompt(workspace, instructions, skills, origin, chat, false)
+}
+
+pub(super) fn build_system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], origin: Origin, chat: bool, read_only: bool) -> String {
     let subagent = origin == Origin::Agent;
     let (_, _, shell) = tools::shell();
     let project = match instructions {
@@ -100,7 +107,8 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
         Origin::Schedule => SCHEDULED,
     };
     let extending = if subagent { "" } else { EXTENDING };
-    general + if chat { CHAT } else { "" } + extending + told + &project + &offered
+    let readonly = if read_only { SUBAGENT_READ_ONLY } else { "" };
+    general + if chat { CHAT } else { "" } + extending + told + readonly + &project + &offered
 }
 
 /// Whether two paths name one folder, however each is written.

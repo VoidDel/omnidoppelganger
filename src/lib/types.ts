@@ -146,6 +146,8 @@ export interface ToolMeta {
   /** All hunks when a single edit touches multiple separated regions. */
   hunks?: DiffHunk[];
   command?: string;
+  /** Working directory for `run_command` when it differs from the workspace. */
+  cwd?: string;
   exit_code?: number | null;
   /** Whether the command ran in the sandbox: able to write only under the workspace and the temporary directories. */
   sandboxed?: boolean;
@@ -185,8 +187,10 @@ export interface ToolMeta {
   background?: boolean;
   /** A background command is still running. */
   running?: boolean;
-  /** The mode refused the call without asking: an edit in plan mode. */
+  /** The mode or subagent restriction refused the call without asking. */
   refused?: boolean;
+  /** Why a refused call was withheld (`read_only`, `subagent`), if not plan mode. */
+  refusal?: string;
   /** Set on an edit that can be undone: the fingerprint of what it wrote. */
   after?: string;
   /** For `delete_file` and `move_file`, when they can be undone: each file they changed, as undoing needs it. */

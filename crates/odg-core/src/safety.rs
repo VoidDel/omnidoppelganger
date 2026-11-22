@@ -38,6 +38,17 @@ pub fn check(command: &str, dialect: Dialect, workspace: &Path) -> Result<(), St
     Ok(())
 }
 
+/// `Ok` when `command` only reads or inspects inside the workspace (no builds, tests, formatters,
+/// file writes, or paths outside the workspace); used to confine `read_only` subagents.
+pub fn check_read_only(command: &str, dialect: Dialect, workspace: &Path) -> Result<(), String> {
+    for segment in &scan(command, dialect, workspace)? {
+        if let Some((name, rest)) = command_of(segment, dialect)? {
+            check_read_only_program(&name, &rest.iter().map(String::as_str).collect::<Vec<_>>(), dialect)?;
+        }
+    }
+    Ok(())
+}
+
 /// The commands in `command`, read the way its shell would split it, after the checks that hold
 /// whatever runs: no output written to a file, no path outside the workspace, no code hidden in it.
 fn scan(command: &str, dialect: Dialect, workspace: &Path) -> Result<Vec<Segment>, String> {
@@ -657,6 +668,63 @@ fn check_program(name: &str, args: &[&str], dialect: Dialect) -> Result<(), Stri
     }
 }
 
+fn check_read_only_program(name: &str, args: &[&str], dialect: Dialect) -> Result<(), String> {
+    let refuse = |why: &str| Err(format!("{name} {why}"));
+    let has = |flags: &[&str]| args.iter().any(|arg| flags.iter().any(|flag| arg == flag || arg.starts_with(&format!("{flag}="))));
+    match name {
+        "find" if has(&["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]) => refuse("with that action changes files or runs commands"),
+        "find" => Ok(()),
+        "sort" if has(&["-o", "--output"]) => refuse("-o writes a file"),
+        "sort" | "uniq" if args.iter().filter(|arg| !arg.starts_with('-')).count() > 1 => refuse("with two files writes the second"),
+        "sort" | "uniq" => Ok(()),
+        "date" if has(&["-s", "--set"]) => refuse("-s sets the clock"),
+        "date" => Ok(()),
+        "rg" if has(&["--pre"]) => refuse("--pre runs a command on each file"),
+        "rg" => Ok(()),
+        "git" => check_git(args),
+        "cargo" => {
+            if args.iter().any(|arg| *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "--open") {
+                return Err("cargo --config, -Z, and --open can run or open other programs".into());
+            }
+            let Some(subcommand) = args.iter().find(|arg| !arg.starts_with('-') && !arg.starts_with('+')) else {
+                return if args.iter().any(|arg| ["--version", "-V", "--list"].contains(arg)) { Ok(()) } else { Err("cargo without a subcommand".into()) };
+            };
+            match *subcommand {
+                "version" | "locate-project" => Ok(()),
+                "metadata" if args.contains(&"--no-deps") => Ok(()),
+                other => Err(format!("cargo {other} is not read-only")),
+            }
+        }
+        "npm" | "pnpm" | "yarn" | "bun" => {
+            let mut at = 0;
+            while let Some(arg) = args.get(at).filter(|arg| arg.starts_with('-')) {
+                at += if ["--filter", "-F", "--dir", "-C", "--prefix", "--cwd", "-w", "--workspace"].contains(arg) { 2 } else { 1 };
+            }
+            match args.get(at).copied() {
+                Some("ls" | "list" | "why") => Ok(()),
+                None if args.iter().any(|arg| ["--version", "-v"].contains(arg)) => Ok(()),
+                _ => refuse("is not read-only"),
+            }
+        }
+        "go" => match args.first().copied() {
+            Some("list" | "version" | "doc") => Ok(()),
+            Some("env") if !has(&["-w", "-u"]) => Ok(()),
+            _ => refuse("with that subcommand is not read-only"),
+        },
+        "dotnet" => match args.first().copied() {
+            Some("--version" | "--info" | "--list-sdks" | "--list-runtimes") => Ok(()),
+            _ => refuse("with that subcommand is not read-only"),
+        },
+        "rustc" | "node" | "python" | "python3" | "rustup" if !args.is_empty() && args.iter().all(|arg| ["--version", "-V", "-vV", "-v"].contains(arg)) => Ok(()),
+        "foreach-object" | "%" | "foreach" if dialect == Dialect::PowerShell => {
+            if args.iter().all(|arg| arg.starts_with('-') && !arg.to_lowercase().starts_with("-m")) { Ok(()) } else { refuse("with a member name calls a method") }
+        }
+        _ if READERS.contains(&name) => Ok(()),
+        _ if dialect == Dialect::PowerShell && POWERSHELL_READERS.contains(&name) => Ok(()),
+        _ => refuse("is not a read-only inspection command"),
+    }
+}
+
 fn check_git(args: &[&str]) -> Result<(), String> {
     let mut at = 0;
     while let Some(arg) = args.get(at).filter(|arg| arg.starts_with('-')) {
@@ -894,6 +962,18 @@ mod tests {
             assert!(passes(&format!("ls '{inside}'"), dialect, &workspace), "{inside}");
             assert!(!passes(&format!("ls '{beside}'"), dialect, &workspace), "{beside}");
             assert!(!passes(&format!("cargo test --target-dir='{beside}'"), dialect, &workspace));
+        }
+    }
+
+    #[test]
+    fn read_only_check_allows_pure_inspection_and_rejects_builds_formatters_and_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        for command in ["ls -la src", "git status --short && git log --oneline -5", "git diff HEAD~1", "rg 'fn main' src | wc -l", "cargo metadata --no-deps", "pnpm list --depth 0", "rustc --version"] {
+            assert!(check_read_only(command, Dialect::Posix, workspace).is_ok(), "{command}: {:?}", check_read_only(command, Dialect::Posix, workspace));
+        }
+        for command in ["cargo test", "cargo fmt", "cargo build", "cargo metadata", "prettier -w src", "eslint --fix src", "pnpm test", "rm -rf target", "echo hi > out.txt", "git commit -m x", "cat ../secret.txt"] {
+            assert!(check_read_only(command, Dialect::Posix, workspace).is_err(), "{command} passed read-only check");
         }
     }
 }

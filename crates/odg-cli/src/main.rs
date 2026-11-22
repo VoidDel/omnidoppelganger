@@ -110,7 +110,11 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
         }
         "search" => text("pattern"),
         "find_files" => input["glob"].as_str().or(input["path"].as_str()).unwrap_or(".").to_string(),
-        "run_command" => text("command"),
+        "run_command" => {
+            let cwd = text("cwd");
+            let command = text("command");
+            if cwd.is_empty() { command } else { format!("[{cwd}] {command}") }
+        }
         "fetch_url" => text("url"),
         "web_search" => text("query"),
         "load_skill" => text("name"),
@@ -130,6 +134,7 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
 fn ask(reason: &str, detail: &str, session_wide: bool) -> Decision {
     let what = match reason {
         "command" => "run this command",
+        "outside_command" => "run a command outside the workspace (or in .git)",
         "edit" => "change this file",
         "web" => "fetch this address",
         "search" => "search the web for",
@@ -479,6 +484,7 @@ mod tests {
     fn describes_a_tool_call_in_one_line() {
         let json = |text: &str| -> serde_json::Value { text.parse().unwrap() };
         assert_eq!(describe("run_command", &json(r#"{"command": "cargo test\n# second line"}"#)), "run_command  cargo test");
+        assert_eq!(describe("run_command", &json(r#"{"command": "cargo test", "cwd": "crates/odg-core"}"#)), "run_command  [crates/odg-core] cargo test");
         assert_eq!(describe("find_files", &json(r#"{"glob": "**/*.rs"}"#)), "find_files  **/*.rs");
         assert_eq!(describe("update_todos", &json("{}")), "update_todos");
         assert_eq!(describe("move_file", &json(r#"{"path": "a.txt", "to": "lib/a.txt"}"#)), "move_file  a.txt → lib/a.txt");

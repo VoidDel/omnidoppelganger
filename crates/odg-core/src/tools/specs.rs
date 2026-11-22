@@ -141,11 +141,12 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "run_command",
-            "description": format!("Run a shell command in the workspace and return its output and exit code. The shell is {shell_name}. The user may have to approve the command before it runs. Use it to build, test, and inspect the project, not to read or edit files. For a command that does not end by itself (a dev server, a watcher) or runs for many minutes, set `background`: it then returns a job id at once, `command_output` reads what the job prints, and `stop_command` ends it."),
+            "description": format!("Run a shell command in the workspace (or in `cwd`) and return its output and exit code. The shell is {shell_name}. The user may have to approve the command before it runs. Use it to build, test, and inspect the project, not to read or edit files. For a command that does not end by itself (a dev server, a watcher) or runs for many minutes, set `background`: it then returns a job id at once, `command_output` reads what the job prints, and `stop_command` ends it."),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "The command line to run." },
+                    "cwd": { "type": "string", "description": "Working directory for the command, relative to the workspace or absolute. Default: the workspace." },
                     "timeout_seconds": { "type": "integer", "description": "Stop the command after this many seconds. Default 120, maximum 600. Ignored with `background`." },
                     "background": { "type": "boolean", "description": "Leave the command running and return at once. Default false." },
                     "unsandboxed": { "type": "boolean", "description": "Only matters when the user has the command sandbox on, in which a command can write only under the workspace and the temporary directories. Set it for a command that must write elsewhere, such as a package manager's cache; the user is then asked every time. Default false." }
@@ -333,7 +334,7 @@ pub fn image_spec(painter: &crate::imagegen::Painter) -> Value {
 pub fn delegate_spec() -> Value {
     json!({
         "name": "delegate",
-        "description": format!("Hand parts of the work to subagents. Each task goes to its own subagent, which has the tools you have and works in the same workspace; they all work at the same time, and this call returns once every one has finished, with what each reported. Use it when the work splits into parts that do not depend on each other: looking into several areas of the code at once, or changing files that have nothing to do with each other. A subagent knows nothing of this conversation, so each task must stand on its own: say what to do, where, what is already known, and what to report back. Give tasks that run together different files to change, since they share the workspace. Keep for yourself what is quick, and what depends on something you have yet to learn. At most {SUBAGENTS} tasks a call."),
+        "description": format!("Hand parts of the work to subagents. Each task goes to its own subagent, which has the tools you have and works in the same workspace; they all work at the same time, and this call returns once every one has finished, with what each reported. Use it when the work splits into parts that do not depend on each other: looking into several areas of the code at once, or changing files that have nothing to do with each other. A subagent knows nothing of this conversation, so each task must stand on its own: say what to do, where, what is already known, and what to report back. Set `read_only` true on tasks that only read, search, or analyze, so those subagents cannot modify files. Give tasks that run together different files to change, since they share the workspace. Keep for yourself what is quick, and what depends on something you have yet to learn. At most {SUBAGENTS} tasks a call."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -344,7 +345,8 @@ pub fn delegate_spec() -> Value {
                         "type": "object",
                         "properties": {
                             "name": { "type": "string", "description": "A few words to tell this subagent from the others, shown to the user." },
-                            "task": { "type": "string", "description": "Everything the subagent needs to do the part on its own." }
+                            "task": { "type": "string", "description": "Everything the subagent needs to do the part on its own." },
+                            "read_only": { "type": "boolean", "description": "Restrict this subagent to read-only inspection: it cannot edit, write, delete, or move files, paint pictures, or run commands that change files. Set true for analysis, review, and search tasks. Default false." }
                         },
                         "required": ["name", "task"]
                     }

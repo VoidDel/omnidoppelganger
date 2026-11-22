@@ -214,7 +214,8 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
   const { result } = tool;
   const meta = result?.meta;
   const declined = tool.approval?.decision === "deny";
-  const waiting = declined ? (tool.approval?.timedOut ? "无人定夺，自动驳回" : "本尊驳回了") : meta?.refused ? "先谋后动，没有改" : tool.undone ? "本尊已撤回" : result ? "" : "运功中";
+  const refusedLabel = meta?.refusal === "read_only" ? "只读子分身，未执行" : meta?.refusal === "subagent" ? "子分身不可用" : "先谋后动，没有改";
+  const waiting = declined ? (tool.approval?.timedOut ? "无人定夺，自动驳回" : "本尊驳回了") : meta?.refused ? refusedLabel : tool.undone ? "本尊已撤回" : result ? "" : "运功中";
   switch (tool.name) {
     case "read_file": {
       // A picture is looked at, not read: its kind and size instead of a count of lines.
@@ -259,8 +260,10 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       const ended = meta?.stopped === "timed out" ? "超时停止" : meta?.stopped ? "已停止" : meta?.exit_code === 0 ? "成功" : `退出码 ${meta?.exit_code ?? "未知"}`;
       // Said only where it holds: the command could write nowhere but the workspace and the temporary directories.
       const where = meta?.sandboxed ? "结界内，" : "";
-      if (meta?.background) return { verb: "后台运行", target: text("command"), outcome: waiting || `${where}已起，编号 ${meta.job}` };
-      return { verb: "运行", target: text("command"), outcome: waiting || (meta ? where + ended : "没有运行") };
+      const cwd = meta?.cwd ?? text("cwd").trim();
+      const target = cwd && cwd !== "." ? `[${cwd}] ${text("command")}` : text("command");
+      if (meta?.background) return { verb: "后台运行", target, outcome: waiting || `${where}已起，编号 ${meta.job}` };
+      return { verb: "运行", target, outcome: waiting || (meta ? where + ended : "没有运行") };
     }
     case "list_mcp_resources":
       return { verb: "看法器资源", target: text("server"), outcome: waiting || (result!.isError ? "没看到" : `${meta?.results ?? 0} 项`) };
@@ -377,7 +380,7 @@ export function DelegateCard({ tool, family }: { tool: ToolItem; family: Family 
     const reason = ended[at]?.reason;
     const state =
       live?.status === "waiting_approval" ? "await" : live?.status === "running" || (started && !tool.result && !live) ? "busy" : reason === "completed" ? "done" : reason || !started ? (tool.result ? "failed" : "pending") : "done";
-    return { name: started?.name ?? (text(task.name) || `子分身 ${at + 1}`), task: text(task.task), session: started?.session, state };
+    return { name: started?.name ?? (text(task.name) || `子分身 ${at + 1}`), task: text(task.task), readOnly: task.read_only === true, session: started?.session, state };
   });
   const STATES: Record<string, string> = { await: "候旨", busy: "运功中", done: "已回报", failed: "没办成", pending: "待出发" };
   const count = (state: string) => agents.filter((agent) => agent.state === state).length;
@@ -408,6 +411,7 @@ export function DelegateCard({ tool, family }: { tool: ToolItem; family: Family 
               <button type="button" className="agent" disabled={!agent.session} title={agent.session ? "去看这个子分身做了什么" : undefined} onClick={() => agent.session && family.onOpen(agent.session)}>
                 <span className={`chip ${agent.state}`}>{STATES[agent.state]}</span>
                 <span className="agent-name">{agent.name}</span>
+                {agent.readOnly && <span className="chip kin">只读</span>}
                 <span className="agent-task">{agent.task}</span>
               </button>
             </li>
@@ -432,7 +436,7 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
   // A failed call shows what went wrong; a finished command keeps its output one click away.
   // What an MCP tool returned is its whole result, so it is kept one click away like a command's output.
   const returned = (result?.meta?.mcp || ["web_search", "code_nav", "list_mcp_resources", "read_mcp_resource"].includes(tool.name)) && !result?.isError ? result?.content : undefined;
-  const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
+  const failure = result?.isError && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body =
     hunks.length > 0 ? (
       <>
@@ -490,6 +494,11 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
 
 const ASK: Record<string, { title: string; note: string; always: string }> = {
   command: { title: "分身要运行一条命令，请本尊定夺", note: "命令会在洞府（这个文件夹）内执行。", always: "之后同类命令都准" },
+  outside_command: {
+    title: "分身要在洞府之外或 .git 目录中运行命令，请本尊定夺",
+    note: "这条命令的工作目录不在当前洞府内（或在 .git 目录中），所以每次都要请示。",
+    always: "",
+  },
   unsandboxed: {
     title: "分身要出结界运行一条命令，请本尊定夺",
     note: "设置里布着结界（沙箱），命令本来只能往洞府和临时目录里写。分身说这一条得往别处写，所以要出结界跑：准了，它就能改这台机器上本尊能改的任何文件。出结界每次都要请示。",

@@ -23,11 +23,11 @@ impl<L: Llm> Inner<L> {
     /// Start a subagent: a session of its own in this workspace, on this
     /// session's provider, model, and effort, in its mode and with what the
     /// user has allowed it so far.
-    fn spawn(&self, name: &str) -> Result<Session<L>, String> {
+    fn spawn(&self, name: &str, read_only: bool) -> Result<Session<L>, String> {
         let provider = self.provider();
         let new = NewSession { workspace: &self.workspace, provider: &provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone(), schedule: None };
         let log = self.store.create_with(new).map_err(|error| error.to_string())?;
-        let child = Session::new(log, self.llm.clone(), self.tuning.clone(), self.services.clone(), self.events.clone(), self.runtime.clone()).map_err(|error| error.to_string())?;
+        let child = Session::new_with_read_only(log, self.llm.clone(), self.tuning.clone(), self.services.clone(), self.events.clone(), self.runtime.clone(), read_only).map_err(|error| error.to_string())?;
         let (mode, grants) = {
             let state = self.state.lock().unwrap();
             (state.mode, state.grants.clone())
@@ -120,13 +120,13 @@ impl<L: Llm> Inner<L> {
         };
         // Each task with its subagent, or why it could not be started.
         let mut started: Vec<(String, Result<Session<L>, String>)> = Vec::new();
-        for (name, task) in tasks {
-            let child = self.spawn(&name);
+        for task in tasks {
+            let child = self.spawn(&task.name, task.read_only);
             if let Ok(child) = &child {
-                self.append(Event::SubagentStarted { tool_use_id: tool_use_id.to_string(), session: child.id().to_string(), name: name.clone() })?;
-                child.send(task);
+                self.append(Event::SubagentStarted { tool_use_id: tool_use_id.to_string(), session: child.id().to_string(), name: task.name.clone() })?;
+                child.send(task.task);
             }
-            started.push((name, child));
+            started.push((task.name, child));
         }
         let children: Vec<&Session<L>> = started.iter().filter_map(|(_, child)| child.as_ref().ok()).collect();
         let all_idle = async {

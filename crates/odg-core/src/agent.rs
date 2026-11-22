@@ -159,6 +159,9 @@ struct Inner<L: Llm> {
     git_directory: std::sync::OnceLock<Option<PathBuf>>,
     /// The session works in the folder kept for conversations.
     chatting: bool,
+    /// When true (set on `delegate` tasks with `read_only: true`), file edits, image generation,
+    /// external MCP tool calls, and mutating commands are withheld and refused even in Bypass mode.
+    read_only: bool,
     /// The provider and model requests go to; the user can move the session to another of either.
     provider: Mutex<String>,
     model: Mutex<String>,
@@ -187,12 +190,24 @@ impl<L: Llm> Session<L> {
     /// Wrap a stored log. A turn that a crash left open is closed first. The
     /// session resumes the mode of its last message.
     pub fn new(
+        log: SessionLog,
+        llm: Arc<L>,
+        tuning: TuningSource,
+        services: Services,
+        events: UnboundedSender<UiEvent>,
+        runtime: tokio::runtime::Handle,
+    ) -> std::io::Result<Self> {
+        Self::new_with_read_only(log, llm, tuning, services, events, runtime, false)
+    }
+
+    pub(super) fn new_with_read_only(
         mut log: SessionLog,
         llm: Arc<L>,
         tuning: TuningSource,
         services: Services,
         events: UnboundedSender<UiEvent>,
         runtime: tokio::runtime::Handle,
+        read_only: bool,
     ) -> std::io::Result<Self> {
         log.repair_tail()?;
         let (workspace, provider, model) = log.header();
@@ -228,6 +243,7 @@ impl<L: Llm> Session<L> {
                 lsp,
                 git_directory: std::sync::OnceLock::new(),
                 chatting,
+                read_only,
                 provider: Mutex::new(provider),
                 model: Mutex::new(model),
                 effort: Mutex::new(crate::session::effort(log.events())),
@@ -531,7 +547,7 @@ impl<L: Llm> Inner<L> {
             (None, true) => Origin::Schedule,
             (None, false) => Origin::User,
         };
-        system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), origin, self.chatting)
+        prompts::build_system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), origin, self.chatting, self.read_only)
     }
 
     /// Log the project's instructions when they are new, changed, or gone
@@ -621,6 +637,44 @@ impl<L: Llm> Inner<L> {
         matches!(name, "code_nav" | "language_server" | tools::PRESENT_PLAN | "delegate")
     }
 
+    /// Built-in tools withheld from a `read_only` subagent: anything that writes files,
+    /// paints pictures, or manages interactive background processes.
+    fn withheld_from_read_only(name: &str) -> bool {
+        tools::edits_files(name) || matches!(name, "generate_image" | "command_input" | "command_output" | "stop_command")
+    }
+
+    /// Why a `read_only` subagent is refused a tool call, if it is. Runs before `policy::check_in`
+    /// so even `Mode::Bypass` cannot override `read_only: true`.
+    fn read_only_refusal(&self, name: &str, input: &Value) -> Option<String> {
+        if !self.read_only {
+            return None;
+        }
+        if Self::withheld_from_read_only(name) {
+            return Some(format!("This subagent is read-only and cannot use `{name}`. Inspect files and report your findings to the main agent."));
+        }
+        if crate::mcp::split_name(name).is_some() {
+            return Some(format!("This subagent is read-only and cannot call external MCP tool `{name}`."));
+        }
+        if name == "run_command" {
+            if input["background"] == true {
+                return Some("This subagent is read-only and cannot start background commands.".to_string());
+            }
+            if input["unsandboxed"] == true {
+                return Some("This subagent is read-only and cannot run commands outside the sandbox.".to_string());
+            }
+            if let Some(dir) = tools::command_cwd(input, &self.workspace)
+                && (!tools::inside_workspace(&self.workspace, &dir) || tools::in_git_directory(&self.workspace, &dir))
+            {
+                return Some("This subagent is read-only and cannot run commands outside the workspace or inside .git.".to_string());
+            }
+            let command = input["command"].as_str().unwrap_or_default();
+            if let Err(why) = crate::safety::check_read_only(command, crate::safety::Dialect::of_this_machine(), &self.workspace) {
+                return Some(format!("This subagent is read-only and cannot run this command ({why}). Use read_file, search, find_files, code_nav, or read-only inspection commands."));
+            }
+        }
+        None
+    }
+
     /// The tools of the next request: the built-in ones, then those of the MCP servers connected right now.
     fn tool_specs(&self) -> Vec<Value> {
         let mut specs = tools::specs();
@@ -635,11 +689,15 @@ impl<L: Llm> Inner<L> {
         if self.search_config().is_some() || crate::provider_search::can_search(&self.provider()) {
             specs.push(tools::search_spec());
         }
-        if let Some(config) = self.painter_config() {
+        if !self.read_only
+            && let Some(config) = self.painter_config()
+        {
             specs.push(tools::image_spec(config.painter));
         }
         if let Some(hub) = &self.mcp {
-            specs.extend(hub.specs());
+            if !self.read_only {
+                specs.extend(hub.specs());
+            }
             // What servers offer to be read, while one does.
             let servers: Vec<String> = hub.resource_servers().into_iter().map(|(name, _)| name).collect();
             if !servers.is_empty() {
@@ -648,6 +706,9 @@ impl<L: Llm> Inner<L> {
         }
         if self.parent.is_some() {
             specs.retain(|spec| !spec["name"].as_str().is_some_and(Self::withheld_from_subagent));
+        }
+        if self.read_only {
+            specs.retain(|spec| !spec["name"].as_str().is_some_and(Self::withheld_from_read_only));
         }
         if self.chatting {
             specs.retain(|spec| !spec["name"].as_str().is_some_and(Self::withheld_from_chat));
@@ -841,7 +902,11 @@ impl<L: Llm> Inner<L> {
                         tools::ASK_USER => "A subagent cannot ask the user. Decide yourself, and say in your report what you decided and why.".to_string(),
                         _ => format!("A subagent cannot use `{name}`. Report back to the main agent if it is needed."),
                     };
-                    self.tool_result(&id, &name, message, true, json!({ "refused": true }))?;
+                    self.tool_result(&id, &name, message, true, json!({ "refused": true, "refusal": "subagent" }))?;
+                    continue;
+                }
+                if let Some(message) = self.read_only_refusal(&name, &input) {
+                    self.tool_result(&id, &name, message, true, json!({ "refused": true, "refusal": "read_only" }))?;
                     continue;
                 }
                 let mut verdict = policy::check_in(self.mode(), &name, &input, &self.workspace, self.sandboxed());
