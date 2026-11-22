@@ -202,7 +202,7 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "update_todos",
-            "description": "Keep a to-do list for the task, which the user sees beside the conversation. Use it when the work has several steps: write the list before starting, then send it again whenever an item's state changes, marking the item you are on `in_progress` and finished ones `done`. Each call replaces the whole list. Skip it for a task of one or two steps.",
+            "description": "Keep a to-do list for the task, which the user sees beside the conversation. Use it when the work has several steps: write the list before starting, then send it again whenever an item's state changes, marking the item you are on `in_progress` and finished ones `done`. Each call replaces the whole list. Before giving your final reply, call it once more so every finished item is marked `done` (if the final item is writing your summary or reply, mark it `done` right before writing that reply rather than leaving it `in_progress`). Leave an item `in_progress` or `pending` only when it is genuinely unfinished or blocked. Skip it for a task of one or two steps.",
             "input_schema": {
                 "type": "object",
                 "properties": {

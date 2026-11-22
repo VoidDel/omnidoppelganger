@@ -465,6 +465,11 @@ async fn keeps_a_checked_todo_list() {
     let kept = execute("update_todos", &list, &context).await;
     assert_eq!(kept.content, "The list has 3 items, 1 done.");
     assert_eq!(kept.meta["todos"][0], json!({ "text": "read the parser", "status": "done" }));
+    // Once no pending items remain, the result reminds the model to close out the final item before replying.
+    let final_step = json!({ "todos": [{ "text": "read the parser", "status": "done" }, { "text": "write summary", "status": "in_progress" }] });
+    assert!(execute("update_todos", &final_step, &context).await.content.contains("Before your final reply"));
+    let finished = json!({ "todos": [{ "text": "read the parser", "status": "done" }, { "text": "write summary", "status": "done" }] });
+    assert_eq!(execute("update_todos", &finished, &context).await.content, "The list has 2 items, 2 done.");
     for bad in [json!({}), json!({ "todos": [{ "text": "x", "status": "started" }] }), json!({ "todos": [{ "text": "  ", "status": "done" }] })] {
         assert!(execute("update_todos", &bad, &context).await.is_error, "{bad}");
     }

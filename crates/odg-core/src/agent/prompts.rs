@@ -75,7 +75,7 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
          - Read and search before you change code, and keep each change as small as the task allows.\n\
          - To read, search, or list files, use `read_file`, `search`, and `find_files`, not shell commands: they never wait for the user's approval, and the user sees what you looked at. In code, `code_nav` finds where a symbol is defined and used more surely than `search`.\n\
          - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
-         - For work of several steps, keep a to-do list with `update_todos` and mark items as you go; the user follows it beside the conversation.{delegating}\n\
+         - For work of several steps, keep a to-do list with `update_todos` and mark items as you go, closing out every finished item as `done` before your final reply; the user follows it beside the conversation.{delegating}\n\
          - After changing code, verify it when the project gives you a way to: build it, run its tests.\n\
          - When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation.\n\
          - When something fails, or you could not verify a change, say so plainly.\n\

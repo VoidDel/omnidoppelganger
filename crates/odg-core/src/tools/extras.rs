@@ -365,6 +365,13 @@ pub fn todo_items(input: &Value) -> Result<Vec<(String, String)>, String> {
 pub(super) fn update_todos(input: &Value) -> Result<ToolOutput, ToolOutput> {
     let items = todo_items(input).map_err(ToolOutput::error)?;
     let done = items.iter().filter(|(_, status)| status == "done").count();
+    let in_progress = items.iter().filter(|(_, status)| status == "in_progress").count();
+    let pending = items.iter().filter(|(_, status)| status == "pending").count();
     let todos: Vec<Value> = items.iter().map(|(text, status)| json!({ "text": text, "status": status })).collect();
-    Ok(ToolOutput::ok(format!("The list has {} items, {done} done.", items.len()), json!({ "todos": todos })))
+    let mut content = format!("The list has {} items, {done} done.", items.len());
+    // When only the final item(s) remain in progress, models often write their final reply directly and leave the last item unclosed.
+    if pending == 0 && in_progress > 0 {
+        content.push_str(" Before your final reply, call `update_todos` once more to mark finished items `done`.");
+    }
+    Ok(ToolOutput::ok(content, json!({ "todos": todos })))
 }
