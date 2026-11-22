@@ -166,6 +166,19 @@ pub(super) fn delete_file(input: &Value, context: &ToolContext) -> Result<ToolOu
     Ok(ToolOutput::ok(summary, meta))
 }
 
+/// Whether `a` and `b` refer to the exact same file on disk (not merely two paths whose names match ignoring case).
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)), (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
 pub(super) fn move_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let from = resolve(&context.workspace, string_arg(input, "path")?);
     let to = resolve(&context.workspace, string_arg(input, "to")?);
@@ -174,8 +187,9 @@ pub(super) fn move_file(input: &Value, context: &ToolContext) -> Result<ToolOutp
         return Err(ToolOutput::error(format!("{shown_from} is already there.")));
     }
     let bytes = whole_file(&from, &shown_from, "move_file")?;
-    // Only a change of case may find the file itself at `to`, on a file system that ignores case.
-    let recased = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
+    // Only a change of case on the same file (on a case-insensitive filesystem) may find an entry at `to`;
+    // on a case-sensitive filesystem, a separate file differing only in case must not be overwritten.
+    let recased = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase() && same_file(&from, &to);
     match std::fs::symlink_metadata(&to) {
         Ok(_) if !recased => {
             return Err(ToolOutput::error(format!("{shown_to} already exists. Delete it first with delete_file if it is to be replaced, or choose another name.")));
@@ -461,9 +475,17 @@ fn line_diff(before: &str, after: &str) -> LineDiff {
     LineDiff { added: added.len(), removed: removed.len(), hunk }
 }
 
+const SEARCH_CONTEXT_LIMIT: usize = 10;
+
 pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let pattern = string_arg(input, "pattern")?.to_string();
-    let regex = regex::Regex::new(&pattern).map_err(|error| ToolOutput::error(format!("Invalid regular expression: {error}")))?;
+    let case_insensitive = input["case_insensitive"].as_bool().unwrap_or(false);
+    let files_only = input["files_only"].as_bool().unwrap_or(false);
+    let context_lines = input["context"].as_u64().map(|lines| (lines as usize).min(SEARCH_CONTEXT_LIMIT)).unwrap_or(0);
+    let regex = regex::RegexBuilder::new(&pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+        .map_err(|error| ToolOutput::error(format!("Invalid regular expression: {error}")))?;
     let root = match input["path"].as_str() {
         Some(path) => resolve(&context.workspace, path),
         None => context.workspace.clone(),
@@ -484,10 +506,14 @@ pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolO
     let workspace = context.workspace.clone();
     let cancel = context.cancel.clone();
     let task = tokio::task::spawn_blocking(move || {
-        let mut matches: Vec<String> = Vec::new();
+        let mut output: Vec<String> = Vec::new();
+        let mut match_count = 0usize;
         let mut files = 0usize;
+        let mut chars = 0usize;
         let mut truncated = false;
-        'walk: for entry in ignore::WalkBuilder::new(&root).build().filter_map(Result::ok) {
+        // Include dot files (such as `.github/workflows/ci.yml`), as `find_files` does, while skipping Git's own directory.
+        let walk = ignore::WalkBuilder::new(&root).hidden(false).filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git").build();
+        'walk: for entry in walk.filter_map(Result::ok) {
             if cancel.is_cancelled() {
                 break;
             }
@@ -504,26 +530,105 @@ pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolO
             }
             // Files that are not UTF-8 text are skipped: they are binaries or use an encoding the model cannot read.
             let Ok(text) = std::fs::read_to_string(path) else { continue };
-            let mut matched = false;
-            for (index, line) in text.lines().enumerate() {
-                if regex.is_match(line) {
-                    if matches.len() == SEARCH_RESULTS {
+            if files_only {
+                if text.lines().any(|line| regex.is_match(line)) {
+                    if output.len() == FIND_RESULTS {
                         truncated = true;
                         break 'walk;
                     }
-                    matched = true;
-                    let line: String = line.trim_end().chars().take(300).collect();
-                    matches.push(format!("{shown}:{}: {line}", index + 1));
+                    output.push(shown);
+                    files += 1;
+                }
+                continue;
+            }
+            let lines: Vec<&str> = text.lines().collect();
+            let mut hits: Vec<usize> = Vec::new();
+            for (index, line) in lines.iter().enumerate() {
+                if regex.is_match(line) {
+                    if match_count == SEARCH_RESULTS {
+                        truncated = true;
+                        break;
+                    }
+                    match_count += 1;
+                    hits.push(index);
                 }
             }
-            files += usize::from(matched);
+            if hits.is_empty() {
+                if truncated {
+                    break 'walk;
+                }
+                continue;
+            }
+            files += 1;
+            let clip_line = |line: &str| -> String { line.trim_end().chars().take(300).collect() };
+            if context_lines == 0 {
+                for index in hits {
+                    let formatted = format!("{shown}:{}: {}", index + 1, clip_line(lines[index]));
+                    let size = formatted.chars().count() + 1;
+                    if !output.is_empty() && chars + size > READ_OUTPUT_CHARS {
+                        truncated = true;
+                        break 'walk;
+                    }
+                    chars += size;
+                    output.push(formatted);
+                }
+            } else {
+                // Merge overlapping or adjacent context windows so no line is printed twice.
+                let mut ranges: Vec<(usize, usize)> = Vec::new();
+                for &hit in &hits {
+                    let start = hit.saturating_sub(context_lines);
+                    let end = (hit + context_lines).min(lines.len() - 1);
+                    match ranges.last_mut() {
+                        Some((_, last_end)) if start <= *last_end + 1 => *last_end = (*last_end).max(end),
+                        _ => ranges.push((start, end)),
+                    }
+                }
+                let mut cursor = 0usize;
+                for (start, end) in ranges {
+                    if !output.is_empty() {
+                        chars += 3;
+                        output.push("--".to_string());
+                    }
+                    for (index, line) in lines.iter().enumerate().take(end + 1).skip(start) {
+                        while cursor < hits.len() && hits[cursor] < index {
+                            cursor += 1;
+                        }
+                        let sep = if hits.get(cursor) == Some(&index) { ':' } else { '-' };
+                        let formatted = format!("{shown}:{}{sep} {}", index + 1, clip_line(line));
+                        let size = formatted.chars().count() + 1;
+                        if !output.is_empty() && chars + size > READ_OUTPUT_CHARS {
+                            truncated = true;
+                            break 'walk;
+                        }
+                        chars += size;
+                        output.push(formatted);
+                    }
+                }
+            }
+            if truncated {
+                break 'walk;
+            }
         }
-        (matches, files, truncated)
+        if files_only {
+            output.sort_by_key(|path| path.to_lowercase());
+        }
+        (output, match_count, files, truncated)
     });
-    let (matches, files, truncated) = task.await.map_err(|error| ToolOutput::error(format!("Search failed: {error}")))?;
-    let mut content = if matches.is_empty() { format!("No matches for `{pattern}`.") } else { matches.join("\n") };
+    let (output, match_count, files, truncated) = task.await.map_err(|error| ToolOutput::error(format!("Search failed: {error}")))?;
+    let mut content = if output.is_empty() { format!("No matches for `{pattern}`.") } else { output.join("\n") };
     if truncated {
-        content.push_str(&format!("\n[stopped at {SEARCH_RESULTS} matches; narrow the pattern, path, or glob]"));
+        if files_only {
+            content.push_str(&format!("\n[stopped at {FIND_RESULTS} files; narrow the pattern, path, or glob]"));
+        } else if match_count >= SEARCH_RESULTS {
+            content.push_str(&format!("\n[stopped at {SEARCH_RESULTS} matches; narrow the pattern, path, or glob]"));
+        } else {
+            content.push_str(&format!("\n[stopped at {READ_OUTPUT_CHARS} characters; narrow the pattern, path, or glob]"));
+        }
     }
-    Ok(ToolOutput::ok(content, json!({ "pattern": pattern, "matches": matches.len(), "files": files, "truncated": truncated })))
+    let meta = if files_only {
+        json!({ "pattern": pattern, "files": files, "files_only": true, "truncated": truncated })
+    } else {
+        json!({ "pattern": pattern, "matches": match_count, "files": files, "truncated": truncated })
+    };
+    Ok(ToolOutput::ok(content, meta))
 }

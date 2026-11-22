@@ -33,6 +33,9 @@ async fn paints_a_picture_into_the_workspace_as_the_kind_it_is_and_never_over_a_
     assert!(taken.is_error && taken.content.contains("crane-v2.png"), "{}", taken.content);
     let outside = execute("generate_image", &json!({ "prompt": "x", "path": "../crane.png" }), &context).await;
     assert!(outside.is_error && outside.content.contains("outside the workspace"), "{}", outside.content);
+    std::fs::create_dir_all(directory.path().join(".git/hooks")).unwrap();
+    let into_git = execute("generate_image", &json!({ "prompt": "x", "path": ".git/hooks/crane.png" }), &context).await;
+    assert!(into_git.is_error && into_git.content.contains(".git directory"), "{}", into_git.content);
     let shaped = execute("generate_image", &json!({ "prompt": "x", "path": "a.png", "shape": "round" }), &context).await;
     assert!(shaped.is_error && shaped.content.contains("square"), "{}", shaped.content);
 }
@@ -61,6 +64,20 @@ async fn says_where_the_document_runtime_is_or_how_to_set_it_up_and_hands_over_f
     assert_eq!(handed.meta["files"], json!([directory.path().join("report.docx").to_string_lossy()]));
     let refused = execute("deliver_files", &json!({ "paths": ["report.docx", "missing.pdf"] }), &context).await;
     assert!(refused.is_error && refused.content.contains("missing.pdf"));
+    // Files outside the workspace (whether present or not, or reached through a symlink) are never delivered.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let secret = elsewhere.path().join("secret.txt");
+    std::fs::write(&secret, "top secret").unwrap();
+    let outside = execute("deliver_files", &json!({ "paths": [secret.to_string_lossy()] }), &context).await;
+    assert!(outside.is_error && outside.content.starts_with("Outside the workspace:"), "{}", outside.content);
+    let outside_missing = execute("deliver_files", &json!({ "paths": ["../does-not-exist.txt"] }), &context).await;
+    assert!(outside_missing.is_error && outside_missing.content.starts_with("Outside the workspace:"), "{}", outside_missing.content);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&secret, directory.path().join("escape.txt")).unwrap();
+        let escaped = execute("deliver_files", &json!({ "paths": ["escape.txt"] }), &context).await;
+        assert!(escaped.is_error && escaped.content.starts_with("Outside the workspace:"), "{}", escaped.content);
+    }
     assert!(execute("deliver_files", &json!({ "paths": [] }), &context).await.is_error);
 }
 
@@ -220,9 +237,12 @@ async fn searches_text_files_and_honours_gitignore_and_glob() {
     let (directory, context) = context();
     let root = directory.path();
     std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
     std::fs::create_dir_all(root.join("target")).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join(".gitignore"), "target\n").unwrap();
+    std::fs::write(root.join(".git/config"), "read_events\n").unwrap();
+    std::fs::write(root.join(".github/workflows/ci.yml"), "name: READ_EVENTS\n").unwrap();
     std::fs::write(root.join("src/main.rs"), "fn main() {\n    read_events();\n}\n").unwrap();
     std::fs::write(root.join("notes.md"), "call read_events here\n").unwrap();
     std::fs::write(root.join("target/out.rs"), "read_events\n").unwrap();
@@ -233,6 +253,21 @@ async fn searches_text_files_and_honours_gitignore_and_glob() {
     lines.sort_unstable();
     assert_eq!(lines, vec!["notes.md:1: call read_events here", "src/main.rs:2:     read_events();"]);
     assert_eq!(found.meta["files"], 2);
+
+    // Dot folders such as `.github` are searched (while `.git` stays skipped), and `case_insensitive` / `files_only` work.
+    let ci = execute("search", &json!({ "pattern": "read_events", "case_insensitive": true, "files_only": true }), &context).await;
+    assert!(!ci.is_error, "{}", ci.content);
+    assert_eq!(ci.content, ".github/workflows/ci.yml\nnotes.md\nsrc/main.rs");
+    assert_eq!((ci.meta["files"].as_u64(), ci.meta["files_only"].as_bool()), (Some(3), Some(true)));
+
+    // Context lines are marked with `-`, overlapping windows merge, and separate hunks split on `--`.
+    std::fs::write(root.join("src/ctx.rs"), "l1\nhit a\nl3\nhit b\nl5\nl6\nl7\nhit c\nl9\n").unwrap();
+    let with_ctx = execute("search", &json!({ "pattern": "hit", "path": "src/ctx.rs", "context": 1 }), &context).await;
+    assert_eq!(
+        with_ctx.content,
+        "src/ctx.rs:1- l1\nsrc/ctx.rs:2: hit a\nsrc/ctx.rs:3- l3\nsrc/ctx.rs:4: hit b\nsrc/ctx.rs:5- l5\n--\nsrc/ctx.rs:7- l7\nsrc/ctx.rs:8: hit c\nsrc/ctx.rs:9- l9"
+    );
+    assert_eq!((with_ctx.meta["matches"].as_u64(), with_ctx.meta["files"].as_u64()), (Some(3), Some(1)));
 
     let rust_only = execute("search", &json!({ "pattern": "read_events", "glob": "**/*.rs" }), &context).await;
     assert_eq!(rust_only.content, "src/main.rs:2:     read_events();");
@@ -663,6 +698,20 @@ async fn deletes_and_moves_one_file_keeping_a_copy_to_undo_it() {
     assert!(missing.is_error && missing.content.contains("does not exist"), "{}", missing.content);
     let same = refused(json!({ "tool": "move_file", "path": "c.txt", "to": "./c.txt" })).await;
     assert!(same.is_error && same.content.contains("already there"), "{}", same.content);
+
+    // Changing only letter case works on a case-insensitive filesystem, while on a case-sensitive one two
+    // distinct files whose names differ only by case are never overwritten.
+    std::fs::write(workspace.join("case.txt"), "lower").unwrap();
+    if std::fs::symlink_metadata(workspace.join("CASE.txt")).is_ok() {
+        let renamed = execute("move_file", &json!({ "path": "case.txt", "to": "CASE.txt" }), &context).await;
+        assert!(!renamed.is_error, "{}", renamed.content);
+        assert_eq!(std::fs::read_to_string(workspace.join("CASE.txt")).unwrap(), "lower");
+    } else {
+        std::fs::write(workspace.join("CASE.txt"), "upper").unwrap();
+        let clash = execute("move_file", &json!({ "path": "case.txt", "to": "CASE.txt" }), &context).await;
+        assert!(clash.is_error && clash.content.contains("CASE.txt already exists"), "{}", clash.content);
+        assert_eq!(std::fs::read_to_string(workspace.join("CASE.txt")).unwrap(), "upper");
+    }
 }
 
 /// A background program that answers each line it reads, and says goodbye at the end of its input.

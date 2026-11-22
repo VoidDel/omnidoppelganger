@@ -128,12 +128,34 @@ fn advice(status: u16) -> &'static str {
     }
 }
 
+/// Whether `target` stays on the same HTTP(S) host and explicit port as `origin`, so a redirect
+/// cannot quietly cross to another site or local service without asking the user.
+fn same_origin_host(origin: &reqwest::Url, target: &reqwest::Url) -> bool {
+    matches!(target.scheme(), "http" | "https")
+        && origin.host_str().map(str::to_ascii_lowercase) == target.host_str().map(str::to_ascii_lowercase)
+        && origin.port() == target.port()
+}
+
 /// Get `url` and return its text from character `offset` on.
 pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetched {
     if host(url).is_none() {
         return failed(format!("`{url}` is not an http or https address."));
     }
-    let client = match reqwest::Client::builder().connect_timeout(TIMEOUT).timeout(TIMEOUT).redirect(reqwest::redirect::Policy::limited(5)).build() {
+    let Ok(origin) = reqwest::Url::parse(url) else {
+        return failed(format!("`{url}` is not an http or https address."));
+    };
+    let redirect_origin = origin.clone();
+    // Follow redirects only on the approved host: crossing to another host (or a local port) stops so the model can ask for that address.
+    let redirects = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= 5 {
+            attempt.error("too many redirects")
+        } else if same_origin_host(&redirect_origin, attempt.url()) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    });
+    let client = match reqwest::Client::builder().connect_timeout(TIMEOUT).timeout(TIMEOUT).redirect(redirects).build() {
         Ok(client) => client,
         Err(error) => return failed(format!("Cannot set up the request: {error}")),
     };
@@ -141,6 +163,21 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
     let download = async {
         let mut response = request.send().await.map_err(|error| format!("Cannot reach {url}: {error}"))?;
         let status = response.status();
+        if status.is_redirection() {
+            let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).unwrap_or_default().trim();
+            let target = if location.is_empty() {
+                String::new()
+            } else {
+                response.url().join(location).map_or_else(|_| location.to_string(), |resolved| resolved.to_string())
+            };
+            return Err(if target.is_empty() {
+                format!("{url} answered HTTP {} without a redirect address.", status.as_u16())
+            } else if host(&target).is_some() {
+                format!("{url} redirected to {target}, which is on another host. Call `fetch_url` with `{target}` if you want to read it (the user will be asked for that host).")
+            } else {
+                format!("{url} redirected to `{target}`, which is not an http or https address and will not be followed.")
+            });
+        }
         let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).unwrap_or_default().to_lowercase();
         let (kind, encoding) = (header("content-type"), header("content-encoding"));
         let landed = response.url().to_string();
@@ -399,6 +436,33 @@ mod tests {
         for bad in ["ftp://example.com", "file:///etc/passwd", "example.com", "https://", "https:// bad/"] {
             assert_eq!(host(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn allows_redirects_only_on_the_same_host_and_port() {
+        let url = |text: &str| reqwest::Url::parse(text).unwrap();
+        assert!(same_origin_host(&url("https://docs.rs/a"), &url("https://DOCS.RS/b")));
+        assert!(same_origin_host(&url("http://docs.rs/a"), &url("https://docs.rs/a")));
+        assert!(same_origin_host(&url("http://127.0.0.1:8080/a"), &url("http://127.0.0.1:8080/b")));
+        assert!(!same_origin_host(&url("https://docs.rs/a"), &url("https://other.example/a")));
+        assert!(!same_origin_host(&url("http://127.0.0.1:8080/a"), &url("http://127.0.0.1:9090/a")));
+        assert!(!same_origin_host(&url("https://docs.rs/a"), &url("file:///etc/passwd")));
+    }
+
+    #[tokio::test]
+    async fn follows_same_host_redirects_and_stops_at_another_host() {
+        let cancel = CancellationToken::new();
+        let (address, requests) = crate::testing::serve_bytes(vec![
+            answer("302 Found", "location: /landed\r\n", b""),
+            page("text/plain", "arrived").into_bytes(),
+            answer("302 Found", "location: https://other.example/secret\r\n", b""),
+        ])
+        .await;
+        let same = fetch(&format!("{address}/start"), 0, &cancel).await;
+        assert!(!same.is_error && same.content == format!("[redirected to {address}/landed]\narrived"), "{}", same.content);
+        let cross = fetch(&format!("{address}/bounce"), 0, &cancel).await;
+        assert!(cross.is_error && cross.content.contains("on another host") && cross.content.contains("https://other.example/secret"), "{}", cross.content);
+        assert_eq!(requests.await.unwrap().len(), 3);
     }
 
     fn page(kind: &str, body: &str) -> String {

@@ -129,6 +129,8 @@ export interface ToolMeta {
   matches?: number;
   /** How many files `search` found in; or, for `deliver_files`, the absolute paths of the files handed over. */
   files?: number | string[];
+  /** `search` returned matching file paths instead of matching lines. */
+  files_only?: boolean;
   truncated?: boolean;
   /** For `document_runtime`: its interpreter, and LibreOffice's command if there is one; `state` says whether it is set up. */
   python?: string;

@@ -226,7 +226,13 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       return {
         verb: "搜索",
         target: text("pattern"),
-        outcome: waiting || (result!.isError ? "搜索失败" : `${meta?.matches ?? 0} 处${meta?.truncated ? "以上" : ""}`),
+        outcome:
+          waiting ||
+          (result!.isError
+            ? "搜索失败"
+            : meta?.files_only
+              ? `${typeof meta.files === "number" ? meta.files : 0} 个文件${meta.truncated ? "以上" : ""}`
+              : `${meta?.matches ?? 0} 处${meta?.truncated ? "以上" : ""}`),
       };
     case "find_files":
       return {

@@ -194,6 +194,9 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
         "web_search" => Verdict::Ask { reason: "search", detail: input["query"].as_str().unwrap_or_default().to_string(), grant: Some("search".to_string()) },
         // A picture writes a file and is paid for: what it shows, and where it goes, are put to the user.
         "generate_image" if mode == Mode::Plan => Verdict::Refuse("Nothing is painted in plan mode: a picture writes a file and is paid for. Put it in the plan."),
+        "generate_image" if in_git_directory(workspace, &path("path")) => {
+            Verdict::Refuse("Pictures cannot be saved inside a .git directory. Choose a path elsewhere in the workspace.")
+        }
         "generate_image" => Verdict::Ask {
             reason: "image",
             detail: format!("{}\n→ {}", input["prompt"].as_str().unwrap_or_default().trim(), path("path").to_string_lossy()),
@@ -302,6 +305,11 @@ mod tests {
         }
         assert_eq!(check_in(Mode::Bypass, "generate_image", &input, workspace, false), Verdict::Allow);
         assert_eq!(reason(check_in(Mode::Plan, "generate_image", &input, workspace, false)), Some("refused"));
+        std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
+        let into_git = json!({ "prompt": "x", "path": ".git/hooks/pre-commit.png" });
+        for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Plan] {
+            assert_eq!(reason(check_in(mode, "generate_image", &into_git, workspace, false)), Some("refused"), "{mode:?}");
+        }
     }
 
     #[test]

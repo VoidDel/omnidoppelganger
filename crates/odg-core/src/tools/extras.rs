@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::events::{Choice, Image, Question, QuestionKind, Reply};
 
-use super::{ToolContext, ToolOutput, display, inside_workspace, resolve, string_arg};
+use super::{ToolContext, ToolOutput, display, in_git_directory, inside_workspace, resolve, string_arg};
 
 const TODO_ITEMS: usize = 50;
 /// The states a to-do item can be in.
@@ -50,6 +50,9 @@ pub(super) async fn generate_image(input: &Value, context: &ToolContext) -> Resu
     if !inside_workspace(&context.workspace, &asked) {
         return Err(ToolOutput::error(format!("{} is outside the workspace: save pictures inside it.", asked.display())));
     }
+    if in_git_directory(&context.workspace, &asked) {
+        return Err(ToolOutput::error(format!("{} is inside a .git directory: save pictures elsewhere in the workspace.", display(&context.workspace, &asked))));
+    }
     // Before anything is paid for: a file that is there stays as it is.
     if asked.exists() {
         let stem = asked.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
@@ -64,10 +67,13 @@ pub(super) async fn generate_image(input: &Value, context: &ToolContext) -> Resu
         path = path.with_file_name(format!("{stem}-{next}.{}", painted.extension));
         next += 1;
     }
+    if !inside_workspace(&context.workspace, &path) || in_git_directory(&context.workspace, &path) {
+        return Err(ToolOutput::error(format!("{} cannot be written there: choose another path inside the workspace.", display(&context.workspace, &path))));
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot make the folder {}: {error}", parent.display())))?;
     }
-    std::fs::write(&path, &painted.bytes).map_err(|error| ToolOutput::error(format!("Cannot save the picture at {}: {error}", path.display())))?;
+    crate::fsutil::write_atomically(&path, &painted.bytes).map_err(|error| ToolOutput::error(format!("Cannot save the picture at {}: {error}", path.display())))?;
     let shown = display(&context.workspace, &path);
     let mut content = format!(
         "Painted {shown} ({}, {} KB) with {}. The user sees it under this step. You cannot see it: do not describe it beyond what you asked for; ask the user whether it is what they wanted, and if not, paint again under a new name.",
@@ -289,17 +295,28 @@ pub(super) async fn document_runtime(input: &Value, context: &ToolContext) -> Re
     ))
 }
 
-/// The files a step hands the user: each must be there, and is named by its absolute path.
+/// The files a step hands the user: each must lie inside the workspace and exist there, named by its absolute path.
 pub(super) fn deliver_files(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let paths: Vec<&str> = input["paths"].as_array().map(|paths| paths.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     if paths.is_empty() {
         return Err(ToolOutput::error("`paths` names no file."));
     }
     let mut files = Vec::new();
+    let mut outside = Vec::new();
     let mut missing = Vec::new();
     for path in paths {
         let file = resolve(&context.workspace, path);
-        if file.is_file() { files.push(file.to_string_lossy().into_owned()) } else { missing.push(path.to_string()) }
+        // Check workspace confinement before probing disk so this cannot reveal whether an outside file exists.
+        if !inside_workspace(&context.workspace, &file) {
+            outside.push(path.to_string());
+        } else if file.is_file() {
+            files.push(file.to_string_lossy().into_owned());
+        } else {
+            missing.push(path.to_string());
+        }
+    }
+    if !outside.is_empty() {
+        return Err(ToolOutput::error(format!("Outside the workspace: {}. Nothing was handed over; deliver files inside the workspace.", outside.join(", "))));
     }
     if !missing.is_empty() {
         return Err(ToolOutput::error(format!("Not files that are there: {}. Nothing was handed over; deliver them once they are made.", missing.join(", "))));

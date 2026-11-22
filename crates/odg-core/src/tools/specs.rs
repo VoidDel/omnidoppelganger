@@ -24,13 +24,16 @@ pub fn specs() -> Vec<Value> {
         }),
         json!({
             "name": "search",
-            "description": "Search file contents with a regular expression, skipping files that .gitignore excludes. Returns `path:line: text` for each match. Use it to find where something is defined or used before reading whole files.",
+            "description": "Search file contents with a regular expression, skipping files that .gitignore excludes and `.git`. Returns `path:line: text` for each match (with context lines marked `path:line- text` when `context` is given), or one matching file path per line when `files_only` is true. Use it to find where something is defined or used before reading whole files.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "Regular expression (Rust regex syntax)." },
                     "path": { "type": "string", "description": "Directory or file to search. Default: the workspace." },
-                    "glob": { "type": "string", "description": "Only search files whose path matches this glob, for example `**/*.rs`." }
+                    "glob": { "type": "string", "description": "Only search files whose path matches this glob, for example `**/*.rs`." },
+                    "case_insensitive": { "type": "boolean", "description": "Match regardless of letter case. Default false." },
+                    "context": { "type": "integer", "description": "Lines of context to show before and after each match (0 to 10). Default 0." },
+                    "files_only": { "type": "boolean", "description": "Return only the paths of files that contain a match, up to 500 files, instead of individual lines. Default false." }
                 },
                 "required": ["pattern"]
             }
