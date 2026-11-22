@@ -143,6 +143,8 @@ export interface ToolMeta {
   added?: number;
   removed?: number;
   hunk?: DiffHunk | null;
+  /** All hunks when a single edit touches multiple separated regions. */
+  hunks?: DiffHunk[];
   command?: string;
   exit_code?: number | null;
   /** Whether the command ran in the sandbox: able to write only under the workspace and the temporary directories. */

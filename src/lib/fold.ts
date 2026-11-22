@@ -334,7 +334,8 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
     file.file = file.gone ? undefined : (meta.file ?? file.file);
     file.added += meta.added ?? 0;
     file.removed += meta.removed ?? 0;
-    if (meta.hunk) file.hunks.push(meta.hunk);
+    if (meta.hunks?.length) file.hunks.push(...meta.hunks);
+    else if (meta.hunk) file.hunks.push(meta.hunk);
     files.set(meta.path, file);
   }
   return [...files.values()];

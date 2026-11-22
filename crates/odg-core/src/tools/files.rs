@@ -325,6 +325,9 @@ fn write_change(context: &ToolContext, path: &Path, shown: &str, existing: Optio
         format!("Changed {shown}: {added} lines added, {removed} lines removed.")
     };
     let mut meta = json!({ "path": shown, "created": created, "added": added, "removed": removed, "hunk": diff.hunk });
+    if !diff.hunks.is_empty() {
+        meta["hunks"] = json!(diff.hunks);
+    }
     if context.snapshots.is_some() {
         // What undoing needs: where the file is, what it held, and what it holds now.
         meta["file"] = json!(path.to_string_lossy());
@@ -448,31 +451,167 @@ pub(super) async fn find_files(input: &Value, context: &ToolContext) -> Result<T
 struct LineDiff {
     added: usize,
     removed: usize,
-    /// `{ old_start, new_start, lines: [{ kind: " " | "-" | "+", text }] }`, or null when too long to show.
+    /// First hunk (`{ old_start, new_start, lines: [{ kind: " " | "-" | "+", text }] }`), or null when too long to show.
     hunk: Value,
+    /// All hunks when a change spans more than one non-adjacent region; empty otherwise.
+    hunks: Vec<Value>,
 }
 
-/// The changed span between two texts: common leading and trailing lines are
-/// dropped, two lines of context are kept on each side.
+/// One contiguous changed region in full-file 0-based line coordinates.
+#[derive(Clone, Copy)]
+struct ChangeSpan {
+    old_start: usize,
+    old_end: usize,
+    new_start: usize,
+    new_end: usize,
+}
+
+/// Myers shortest-edit-script line diff on `old` vs `new`, capped at `max_d` edits.
+/// Returns `None` when more than `max_d` line edits separate the two slices.
+fn myers_spans(old: &[&str], new: &[&str], offset_old: usize, offset_new: usize, max_d: usize) -> Option<Vec<ChangeSpan>> {
+    let (n, m) = (old.len(), new.len());
+    if n == 0 && m == 0 {
+        return Some(Vec::new());
+    }
+    if n == 0 || m == 0 {
+        return (n + m <= max_d).then(|| vec![ChangeSpan { old_start: offset_old, old_end: offset_old + n, new_start: offset_new, new_end: offset_new + m }]);
+    }
+    let shift = max_d as isize;
+    let mut v = vec![0usize; 2 * max_d + 1];
+    let mut trace: Vec<Vec<usize>> = Vec::new();
+    let mut found = None;
+    'search: for d in 0..=max_d {
+        trace.push(v.clone());
+        let d_isize = d as isize;
+        let mut k = -d_isize;
+        while k <= d_isize {
+            let down = k == -d_isize || (k != d_isize && v[(k - 1 + shift) as usize] < v[(k + 1 + shift) as usize]);
+            let mut x = if down { v[(k + 1 + shift) as usize] } else { v[(k - 1 + shift) as usize] + 1 };
+            let mut y = (x as isize - k) as usize;
+            while x < n && y < m && old[x] == new[y] {
+                x += 1;
+                y += 1;
+            }
+            v[(k + shift) as usize] = x;
+            if x >= n && y >= m {
+                found = Some(d);
+                break 'search;
+            }
+            k += 2;
+        }
+    }
+    let found = found?;
+
+    // Backtrack into reverse-ordered edit operations: true = equal, false = delete/insert.
+    #[derive(Clone, Copy)]
+    enum Op {
+        Equal,
+        Delete,
+        Insert,
+    }
+    let mut ops: Vec<Op> = Vec::with_capacity(n + m);
+    let (mut x, mut y) = (n, m);
+    for d in (1..=found).rev() {
+        let prev = &trace[d];
+        let k = x as isize - y as isize;
+        let d_isize = d as isize;
+        let prev_k = if k == -d_isize || (k != d_isize && prev[(k - 1 + shift) as usize] < prev[(k + 1 + shift) as usize]) { k + 1 } else { k - 1 };
+        let prev_x = prev[(prev_k + shift) as usize];
+        let prev_y = (prev_x as isize - prev_k) as usize;
+        while x > prev_x && y > prev_y {
+            ops.push(Op::Equal);
+            x -= 1;
+            y -= 1;
+        }
+        if x == prev_x {
+            ops.push(Op::Insert);
+            y -= 1;
+        } else {
+            ops.push(Op::Delete);
+            x -= 1;
+        }
+    }
+    while x > 0 && y > 0 {
+        ops.push(Op::Equal);
+        x -= 1;
+        y -= 1;
+    }
+    ops.reverse();
+
+    // Collapse adjacent deletes and inserts into clean change spans.
+    let mut spans: Vec<ChangeSpan> = Vec::new();
+    let (mut oi, mut ni) = (offset_old, offset_new);
+    let mut at = 0;
+    while at < ops.len() {
+        if matches!(ops[at], Op::Equal) {
+            oi += 1;
+            ni += 1;
+            at += 1;
+            continue;
+        }
+        let (old_start, new_start) = (oi, ni);
+        while at < ops.len() && !matches!(ops[at], Op::Equal) {
+            match ops[at] {
+                Op::Delete => oi += 1,
+                Op::Insert => ni += 1,
+                Op::Equal => unreachable!(),
+            }
+            at += 1;
+        }
+        spans.push(ChangeSpan { old_start, old_end: oi, new_start, new_end: ni });
+    }
+    Some(spans)
+}
+
+/// Multi-hunk line diff between two texts, keeping two lines of context around
+/// each changed region and merging nearby hunks whose context meets.
 fn line_diff(before: &str, after: &str) -> LineDiff {
     let old: Vec<&str> = before.lines().collect();
     let new: Vec<&str> = after.lines().collect();
     let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
     let suffix = old[prefix..].iter().rev().zip(new[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
-    let removed = &old[prefix..old.len() - suffix];
-    let added = &new[prefix..new.len() - suffix];
-    let hunk = if removed.len() + added.len() > DIFF_LINES {
-        Value::Null
-    } else {
-        let context_start = prefix.saturating_sub(2);
-        let line = |kind: &str, text: &&str| json!({ "kind": kind, "text": text });
-        let mut lines: Vec<Value> = old[context_start..prefix].iter().map(|text| line(" ", text)).collect();
-        lines.extend(removed.iter().map(|text| line("-", text)));
-        lines.extend(added.iter().map(|text| line("+", text)));
-        lines.extend(old[old.len() - suffix..].iter().take(2).map(|text| line(" ", text)));
-        json!({ "old_start": context_start + 1, "new_start": context_start + 1, "lines": lines })
+    let old_mid = &old[prefix..old.len() - suffix];
+    let new_mid = &new[prefix..new.len() - suffix];
+    let Some(spans) = myers_spans(old_mid, new_mid, prefix, prefix, DIFF_LINES) else {
+        return LineDiff { added: new_mid.len(), removed: old_mid.len(), hunk: Value::Null, hunks: Vec::new() };
     };
-    LineDiff { added: added.len(), removed: removed.len(), hunk }
+    let removed: usize = spans.iter().map(|span| span.old_end - span.old_start).sum();
+    let added: usize = spans.iter().map(|span| span.new_end - span.new_start).sum();
+    if spans.is_empty() || removed + added > DIFF_LINES {
+        return LineDiff { added, removed, hunk: Value::Null, hunks: Vec::new() };
+    }
+    // Group spans whose 2-line context windows touch or overlap into one hunk.
+    let mut groups: Vec<Vec<ChangeSpan>> = Vec::new();
+    for span in spans {
+        match groups.last_mut() {
+            Some(group) if span.old_start <= group.last().unwrap().old_end + 4 => group.push(span),
+            _ => groups.push(vec![span]),
+        }
+    }
+    let line = |kind: &str, text: &&str| json!({ "kind": kind, "text": text });
+    let mut built: Vec<Value> = Vec::with_capacity(groups.len());
+    for group in groups {
+        let first = group[0];
+        let last = *group.last().unwrap();
+        let ctx_before = first.old_start.saturating_sub(2);
+        let ctx_after = (last.old_end + 2).min(old.len());
+        let old_start = ctx_before + 1;
+        let new_start = first.new_start - (first.old_start - ctx_before) + 1;
+        let mut lines: Vec<Value> = old[ctx_before..first.old_start].iter().map(|text| line(" ", text)).collect();
+        for (at, span) in group.iter().enumerate() {
+            if at > 0 {
+                let prev = group[at - 1];
+                lines.extend(old[prev.old_end..span.old_start].iter().map(|text| line(" ", text)));
+            }
+            lines.extend(old[span.old_start..span.old_end].iter().map(|text| line("-", text)));
+            lines.extend(new[span.new_start..span.new_end].iter().map(|text| line("+", text)));
+        }
+        lines.extend(old[last.old_end..ctx_after].iter().map(|text| line(" ", text)));
+        built.push(json!({ "old_start": old_start, "new_start": new_start, "lines": lines }));
+    }
+    let hunk = built.first().cloned().unwrap_or(Value::Null);
+    let hunks = if built.len() > 1 { built } else { Vec::new() };
+    LineDiff { added, removed, hunk, hunks }
 }
 
 const SEARCH_CONTEXT_LIMIT: usize = 10;

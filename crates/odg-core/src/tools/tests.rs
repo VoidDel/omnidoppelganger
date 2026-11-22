@@ -465,13 +465,32 @@ async fn writes_a_whole_file_and_applies_several_edits_or_none() {
 
     let created = execute("write_file", &json!({ "path": "notes/a.txt", "content": "one\ntwo\nthree\n" }), &context).await;
     assert!(!created.is_error && created.meta["created"] == true && created.meta["before"].is_null(), "{}", created.content);
-    // Overwriting saves what was there, like an edit does.
+    // Overwriting saves what was there, like an edit does; unchanged lines between edits are not counted as changed.
     let rewritten = execute("write_file", &json!({ "path": "notes/a.txt", "content": "alpha\ntwo\nomega\n" }), &context).await;
-    assert_eq!((rewritten.meta["added"].as_u64(), rewritten.meta["removed"].as_u64()), (Some(3), Some(3)));
+    assert_eq!((rewritten.meta["added"].as_u64(), rewritten.meta["removed"].as_u64()), (Some(2), Some(2)));
     let saved = snapshots.join(rewritten.meta["before"].as_str().unwrap());
     assert_eq!(std::fs::read_to_string(saved).unwrap(), "one\ntwo\nthree\n");
     assert!(execute("write_file", &json!({ "path": "notes/a.txt", "content": "alpha\ntwo\nomega\n" }), &context).await.is_error);
     assert!(execute("write_file", &json!({ "path": "notes", "content": "x" }), &context).await.is_error);
+
+    // Distant edits in one call produce separate hunks with accurate line counts instead of swallowing the unchanged middle.
+    let long: String = (1..=510).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(directory.path().join("notes/long.txt"), &long).unwrap();
+    let multi = execute(
+        "edit_file",
+        &json!({ "path": "notes/long.txt", "edits": [
+            { "old_string": "line 5\n", "new_string": "line 5 updated\nline 5b\n" },
+            { "old_string": "line 505\n", "new_string": "line 505 updated\n" },
+        ] }),
+        &context,
+    )
+    .await;
+    assert!(!multi.is_error, "{}", multi.content);
+    assert_eq!((multi.meta["added"].as_u64(), multi.meta["removed"].as_u64()), (Some(3), Some(2)));
+    let hunks = multi.meta["hunks"].as_array().unwrap();
+    assert_eq!(hunks.len(), 2);
+    assert_eq!((hunks[0]["old_start"].as_u64(), hunks[0]["new_start"].as_u64()), (Some(3), Some(3)));
+    assert_eq!((hunks[1]["old_start"].as_u64(), hunks[1]["new_start"].as_u64()), (Some(503), Some(504)));
 
     // Several edits apply in order, each to the result of the one before.
     let edits = json!({ "path": "notes/a.txt", "edits": [

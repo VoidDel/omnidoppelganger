@@ -408,6 +408,10 @@
   white-space: pre;
 }
 
+.diff + .diff {
+  border-top: 1px dashed var(--line-strong);
+}
+
 .diff-line {
   display: flex;
   padding-right: var(--s-3);

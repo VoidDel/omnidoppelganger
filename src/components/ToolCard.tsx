@@ -427,13 +427,26 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
   const style = begun && weigh(tool) !== "live" && fresh.style ? ({ "--nth": 0 } as CSSProperties) : fresh.style;
   const { verb, target, outcome } = describe(tool);
   const { result } = tool;
-  const hunk = result && !result.isError ? result.meta?.hunk : undefined;
+  const hunks = result && !result.isError ? (result.meta?.hunks?.length ? result.meta.hunks : result.meta?.hunk ? [result.meta.hunk] : []) : [];
   const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "command_input" || tool.name === "stop_command" ? result?.meta?.output : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
   // What an MCP tool returned is its whole result, so it is kept one click away like a command's output.
   const returned = (result?.meta?.mcp || ["web_search", "code_nav", "list_mcp_resources", "read_mcp_resource"].includes(tool.name)) && !result?.isError ? result?.content : undefined;
   const failure = result?.isError && tool.name !== "run_command" && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
-  const body = hunk ? <Diff hunk={hunk} /> : output ? <pre>{output}</pre> : returned ? <pre>{returned}</pre> : failure ? <pre>{failure}</pre> : null;
+  const body =
+    hunks.length > 0 ? (
+      <>
+        {hunks.map((hunk, at) => (
+          <Diff key={at} hunk={hunk} />
+        ))}
+      </>
+    ) : output ? (
+      <pre>{output}</pre>
+    ) : returned ? (
+      <pre>{returned}</pre>
+    ) : failure ? (
+      <pre>{failure}</pre>
+    ) : null;
   // The file an edit wrote, by where it is: what can be opened from under the act.
   // A picture it looked at is shown the same way, from where it lies.
   const written =
@@ -445,7 +458,7 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
   // A change and a failure are open until closed, even when they come in after the line they belong to; but a
   // picture's text is not what is looked at, the picture is.
   const [chosen, setOpen] = useState<boolean | null>(null);
-  const open = chosen ?? ((!!hunk && !(written && PICTURE_KINDS.test(written))) || !!failure || (!!output && !!result?.isError));
+  const open = chosen ?? ((hunks.length > 0 && !(written && PICTURE_KINDS.test(written))) || !!failure || (!!output && !!result?.isError));
   return (
     <div className={`did ${weigh(tool)} ${voided(tool) ? "void" : ""} ${fresh.className}`} style={style}>
       <button type="button" className="did-head" aria-expanded={body ? open : undefined} disabled={!body} onClick={() => setOpen(!open)}>

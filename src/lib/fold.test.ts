@@ -394,11 +394,11 @@ describe("side panel", () => {
         said(call("t1", "write_file", { path: "new.rs" })),
         result("t1", "write_file", { path: "new.rs", added: 1, removed: 0, created: true, hunk: hunk("fn main() {}") }),
         said(call("t2", "edit_file", { path: "new.rs" })),
-        result("t2", "edit_file", { path: "new.rs", added: 1, removed: 0, hunk: hunk("// more") }),
+        result("t2", "edit_file", { path: "new.rs", added: 2, removed: 0, hunk: hunk("// top"), hunks: [hunk("// top"), hunk("// bottom")] }),
       ),
     );
     const [file] = changedFiles(rows);
-    expect([file.created, file.hunks.map((each) => each.lines[0].text)]).toEqual([true, ["fn main() {}", "// more"]]);
+    expect([file.created, file.hunks.map((each) => each.lines[0].text)]).toEqual([true, ["fn main() {}", "// top", "// bottom"]]);
   });
 
   it("gathers the 子分身 a delegate call set off, in the order they started", () => {
