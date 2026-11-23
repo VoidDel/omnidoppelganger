@@ -1298,3 +1298,90 @@ button.diff-no.new:hover:not(:disabled) {
 .xterm-instance .xterm .xterm-viewport {
   background-color: var(--term-bg);
 }
+
+/* ---------- open files kept above a centered conversation ---------- */
+
+.workbench-dock {
+  flex: none;
+  min-height: 36px;
+  padding: 3px 16px 3px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dock-back {
+  flex: none;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--jade);
+  border-radius: var(--r-control);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+  font-size: var(--t-small);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dock-back:hover {
+  background: var(--jade);
+  color: var(--jade-ink);
+}
+
+.dock-tabs {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  scrollbar-width: thin;
+}
+
+.dock-tab {
+  flex: none;
+  max-width: 220px;
+  min-height: 26px;
+  padding: 0 2px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.dock-tab.current {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.dock-tab-label {
+  min-width: 0;
+  padding: 2px 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--t-small);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-tab-label:hover {
+  color: var(--jade);
+}
+
+.dock-close-all {
+  flex: none;
+  min-height: 26px;
+  padding: 0 6px;
+}

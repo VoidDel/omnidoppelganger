@@ -16,7 +16,7 @@ import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
-import { Workbench, type WorkbenchTab } from "./components/Workbench";
+import { Workbench, WorkbenchDock, type WorkbenchTab } from "./components/Workbench";
 
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
 import { isSetUp } from "./lib/providers";
@@ -1180,7 +1180,25 @@ export default function App() {
                 />
               </Guard>
             ) : (
-              conversationPane
+              <>
+                {isProjectSession && wbTabs.length > 0 && !replay && (
+                  <WorkbenchDock
+                    tabs={wbTabs}
+                    activeTabId={activeTabId}
+                    onOpenTab={(id) => {
+                      setActiveTabId(id);
+                      setInWorkbench(true);
+                      setPanel((cur) => ({ width: Math.max(cur.width, 400), hidden: false }));
+                    }}
+                    onCloseTab={closeWorkbenchTab}
+                    onCloseAll={() => {
+                      setWbTabs([]);
+                      setActiveTabId(null);
+                    }}
+                  />
+                )}
+                {conversationPane}
+              </>
             )}
           </>
         ) : (

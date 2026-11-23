@@ -37,6 +37,54 @@ export interface WorkbenchProps {
   renderDiff?: (tab: Extract<WorkbenchTab, { kind: "diff" }>) => ReactNode;
 }
 
+/**
+ * With the conversation back in the middle, the files that were open stay on a strip above it: each one is the
+ * way back to the code, at that file, and the strip says how many are still open.
+ */
+export function WorkbenchDock({
+  tabs,
+  activeTabId,
+  onOpenTab,
+  onCloseTab,
+  onCloseAll,
+}: {
+  tabs: WorkbenchTab[];
+  activeTabId: string | null;
+  onOpenTab: (id: string) => void;
+  onCloseTab: (id: string) => void;
+  onCloseAll: () => void;
+}) {
+  const current = tabs.find((tab) => tab.id === activeTabId) ?? tabs[tabs.length - 1];
+  return (
+    <div className="workbench-dock" role="toolbar" aria-label="已打开的文件">
+      <button type="button" className="dock-back" title="回到代码工作台，对话停靠到右侧" onClick={() => current && onOpenTab(current.id)}>
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5.5 5 2.5 8l3 3M10.5 5l3 3-3 3" />
+        </svg>
+        回到代码
+      </button>
+      <div className="dock-tabs">
+        {tabs.map((tab) => (
+          <span key={tab.id} className={`dock-tab ${tab.id === current?.id ? "current" : ""}`}>
+            <button type="button" className="dock-tab-label" title={tab.path} onClick={() => onOpenTab(tab.id)}>
+              {tab.name}
+              {tab.kind === "diff" && <span className="wb-tab-tag">{tab.stage === "commit" ? (tab.commit?.slice(0, 7) ?? "提交") : tab.stage === "staged" ? "暂存" : "改动"}</span>}
+            </button>
+            <button type="button" className="wb-tab-close" aria-label={`关闭 ${tab.name}`} title="关闭" onClick={() => onCloseTab(tab.id)}>
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+      {tabs.length > 1 && (
+        <button type="button" className="button text small dock-close-all" onClick={onCloseAll}>
+          全关
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function Workbench({
   sessionId,
   tabs,
@@ -113,7 +161,7 @@ export function Workbench({
               全关
             </button>
           )}
-          <button type="button" className="button outline small" title="把对话切回中间主区域（保留已打开的文件标签）" onClick={onBackToChat}>
+          <button type="button" className="button outline small" title="把对话切回中间主区域；打开的文件留在对话上方，点一下就回来" onClick={onBackToChat}>
             对话居中
           </button>
         </div>
