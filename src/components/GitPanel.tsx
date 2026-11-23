@@ -319,12 +319,15 @@ export function GitPanel({
         <div className="git-sync-tools">
           <button
             type="button"
-            className="icon-button small"
+            className="git-sync-btn"
             disabled={!!busy}
             title="抓取远端分支状态 (git fetch)"
+            aria-label="抓取远端 (git fetch)"
             onClick={() => void runSync("fetch")}
           >
-            ⟳
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13.2 8A5.2 5.2 0 1 1 11.8 4.4M13.2 2.6v2.8h-2.8" />
+            </svg>
           </button>
           <button
             type="button"
