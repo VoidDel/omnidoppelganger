@@ -5,14 +5,16 @@ import { Jump } from "./components/Jump";
 import { McpPage } from "./components/Mcp";
 import { SkillsPage } from "./components/Skills";
 import { Logo, Mountains } from "./components/Backdrop";
-import { Composer } from "./components/Composer";
+import { Composer, type ComposerDraft } from "./components/Composer";
+import { FileTree } from "./components/FileTree";
 import { SessionHeader } from "./components/SessionHeader";
-import { CHAT_ICON, Sidebar } from "./components/Sidebar";
-import { PANEL_STRIP, PANEL_WIDTH, SidePanel, fitPanel } from "./components/SidePanel";
+import { CHAT_ICON, SIDEBAR_WIDTH, Sidebar, type SidebarTab, fitSidebar } from "./components/Sidebar";
+import { PANEL_STRIP, PANEL_WIDTH, type PanelTab, SidePanel, fitPanel } from "./components/SidePanel";
 import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
+import { Workbench, type WorkbenchTab } from "./components/Workbench";
 import { isSetUp } from "./lib/providers";
 import { api } from "./lib/api";
 import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, type StreamBlock } from "./lib/fold";
@@ -166,6 +168,29 @@ function reduce(state: State, action: Action): State {
 
 /** How the user left the side panel, kept in the window's own storage: it is about this screen, not the agent. */
 const PANEL_KEY = "odg.panel";
+const SIDEBAR_KEY = "odg.sidebar";
+
+function useSidebar() {
+  const [sidebar, setSidebar] = useState<{ width: number; hidden: boolean }>(() => {
+    try {
+      const kept = JSON.parse(localStorage.getItem(SIDEBAR_KEY) ?? "{}");
+      return {
+        width: typeof kept.width === "number" ? fitSidebar(kept.width) : SIDEBAR_WIDTH.initial,
+        hidden: kept.hidden === true,
+      };
+    } catch {
+      return { width: SIDEBAR_WIDTH.initial, hidden: false };
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_KEY, JSON.stringify(sidebar));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [sidebar]);
+  return [sidebar, setSidebar] as const;
+}
 
 function usePanel() {
   const [panel, setPanel] = useState<{ width: number; hidden: boolean }>(() => {
@@ -283,8 +308,10 @@ export default function App() {
   }, [playing, speed, stops.length]);
   /** What the page shows: the whole log, or in a replay the log as far as the stop it is at. */
   const shown = useMemo(() => (replay ? state.events.slice(0, (stops[replay.at] ?? -1) + 1) : state.events), [replay?.at, !replay, state.events, stops]);
-  /** Words a fork brings to the message box. */
-  const [seed, setSeed] = useState<{ id: number; text: string } | null>(null);
+  /** Words or file attachments to inject into the message box. */
+  const [seed, setSeed] = useState<{ id: number; text?: string; append?: boolean; attachPaths?: string[] } | null>(null);
+  /** Shared composer drafts by session id so toggling center/side chat keeps typed words and attachments intact. */
+  const draftsRef = useRef<Map<string, ComposerDraft>>(new Map());
 
   const rows = useMemo(() => fold(shown), [shown]);
   const files = useMemo(() => changedFiles(rows), [rows]);
@@ -392,12 +419,157 @@ export default function App() {
   const missingKey = !!defaultProvider && state.settings?.keys[defaultProvider.id]?.source === "none";
   const inSettings = state.page === "settings";
   const inChat = state.page === "chat";
+  const [sidebar, setSidebar] = useSidebar();
+  const [leftTab, setLeftTab] = useState<SidebarTab>("sessions");
   const [panel, setPanel] = usePanel();
-  const showPanel = inChat && !!active && !panel.hidden;
-  // With nothing in it, the panel stands as a strip, until a tab there is pressed; the next 分身 starts again.
+  const [summonPanelTab, setSummonPanelTab] = useState<{ id: number; tab: PanelTab } | null>(null);
+
+  // Workbench tabs for the active workspace (file viewer & git diff viewer).
+  const [wbTabs, setWbTabs] = useState<WorkbenchTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [inWorkbench, setInWorkbench] = useState(false);
+
+  const isProjectSession = !!active && !chatting(active);
+  const activeWorkspace = active?.workspace ?? "";
+  const lastWorkspaceRef = useRef(activeWorkspace);
+  useEffect(() => {
+    if (lastWorkspaceRef.current !== activeWorkspace) {
+      lastWorkspaceRef.current = activeWorkspace;
+      setWbTabs([]);
+      setActiveTabId(null);
+      setInWorkbench(false);
+    }
+    if (!isProjectSession && leftTab !== "sessions") {
+      setLeftTab("sessions");
+    }
+  }, [activeWorkspace, isProjectSession, leftTab]);
+
+  // Auto-refresh token for FileTree and CodeViewer whenever the session log records file-affecting events.
+  const fsRefreshTick = useMemo(() => {
+    let count = 0;
+    for (const env of state.events) {
+      if (
+        env.type === "files/made" ||
+        env.type === "files/restored" ||
+        env.type === "artifact/restored" ||
+        (env.type === "tool/result" &&
+          !env.data.is_error &&
+          ["edit_file", "write_file", "delete_file", "move_file", "run_command"].includes(env.data.tool))
+      ) {
+        count++;
+      }
+    }
+    return count;
+  }, [state.events]);
+
+  const openWorkbenchFile = useCallback(
+    (relPath: string, pin = false, line?: number) => {
+      const clean = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+      if (!clean) return;
+      const name = clean.split("/").pop() || clean;
+      const id = `file:${clean}`;
+      setWbTabs((prev) => {
+        const existing = prev.find((t) => t.id === id);
+        if (existing && existing.kind === "file") {
+          return prev.map((t) =>
+            t.id === id && t.kind === "file"
+              ? { ...t, pinned: t.pinned || pin, line: line ?? t.line, jumpSeq: (t.jumpSeq ?? 0) + 1 }
+              : t,
+          );
+        }
+        const nextTab: WorkbenchTab = { id, kind: "file", path: clean, name, pinned: pin, line, jumpSeq: line ? 1 : 0 };
+        if (!pin) {
+          const previewIdx = prev.findIndex((t) => !t.pinned);
+          if (previewIdx >= 0) {
+            const copy = [...prev];
+            copy[previewIdx] = nextTab;
+            return copy;
+          }
+        }
+        return [...prev, nextTab];
+      });
+      setActiveTabId(id);
+      setInWorkbench(true);
+      setPanel((cur) => ({ width: Math.max(cur.width, 400), hidden: false }));
+    },
+    [setPanel],
+  );
+
+  const closeWorkbenchTab = useCallback((id: string) => {
+    setWbTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === id);
+      if (idx === -1) return prev;
+      const next = prev.filter((t) => t.id !== id);
+      setActiveTabId((cur) => {
+        if (cur !== id) return cur;
+        return next[Math.min(idx, next.length - 1)]?.id ?? null;
+      });
+      if (next.length === 0) setInWorkbench(false);
+      return next;
+    });
+  }, []);
+
+  const handleDeletedWorkspacePath = useCallback((relPath: string) => {
+    setWbTabs((prev) => {
+      const next = prev.filter((t) => t.path !== relPath && !t.path.startsWith(`${relPath}/`));
+      if (next.length === 0) setInWorkbench(false);
+      setActiveTabId((cur) => (next.some((t) => t.id === cur) ? cur : next[next.length - 1]?.id ?? null));
+      return next;
+    });
+  }, []);
+
+  const handleRenamedWorkspacePath = useCallback((fromRel: string, toRel: string) => {
+    setWbTabs((prev) =>
+      prev.map((t) => {
+        if (t.kind !== "file") return t;
+        if (t.path === fromRel) {
+          const name = toRel.split("/").pop() || toRel;
+          const nextId = `file:${toRel}`;
+          setActiveTabId((cur) => (cur === t.id ? nextId : cur));
+          return { ...t, id: nextId, path: toRel, name };
+        }
+        if (t.path.startsWith(`${fromRel}/`)) {
+          const updated = `${toRel}${t.path.slice(fromRel.length)}`;
+          const nextId = `file:${updated}`;
+          setActiveTabId((cur) => (cur === t.id ? nextId : cur));
+          return { ...t, id: nextId, path: updated };
+        }
+        return t;
+      }),
+    );
+  }, []);
+
+  const showWorkbench = inChat && isProjectSession && inWorkbench && wbTabs.length > 0 && !replay;
+  const activeWbFile = useMemo(() => {
+    const cur = wbTabs.find((t) => t.id === activeTabId) ?? wbTabs[0];
+    return cur?.kind === "file" ? cur.path : null;
+  }, [wbTabs, activeTabId]);
+
+  const quoteIntoChat = useCallback(
+    (quoteText: string) => {
+      setSeed({ id: Date.now(), text: quoteText, append: true });
+      setPanel((cur) => ({ ...cur, hidden: false }));
+      setSummonPanelTab({ id: Date.now(), tab: "chat" });
+    },
+    [setPanel],
+  );
+
+  const attachIntoChat = useCallback(
+    (absPath: string) => {
+      setSeed({ id: Date.now(), attachPaths: [absPath] });
+      if (showWorkbench) {
+        setPanel((cur) => ({ ...cur, hidden: false }));
+        setSummonPanelTab({ id: Date.now(), tab: "chat" });
+      }
+    },
+    [showWorkbench, setPanel],
+  );
+
+  const showPanel = inChat && !!active && (!panel.hidden || showWorkbench);
+  // With nothing in it, the panel stands as a strip, until a tab there is pressed; never a strip while side chat is docked.
   const [peek, setPeek] = useState(false);
   useEffect(() => setPeek(false), [state.activeId]);
-  const strip = files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
+  const strip = !showWorkbench && files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
   /** To the 功课 page and the settings, each read again on the way: either may have changed since it was last shown. */
   const toSchedules = () => {
     api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
@@ -500,26 +672,160 @@ export default function App() {
         )}
     </>
   );
+  const conversationPane = active ? (
+    <>
+      {rows.length === 0 && state.queued.length === 0 && chatting(active) ? (
+        <div className="empty">
+          <h1>有话直说</h1>
+          <p>
+            这是闲谈，不绑哪个项目：问什么答什么，要查的它会上网查，附上的文件它会读。它写出的文件放在 <span className="mono">{state.settings?.chat_folder}</span>。要它在某个项目里干活，就用「开辟洞府」选那个文件夹。
+          </p>
+        </div>
+      ) : rows.length === 0 && state.queued.length === 0 ? (
+        <div className="empty">
+          <h1>分身已入驻这处洞府</h1>
+          <p>
+            吩咐一件事吧。眼下的禁制是「{modeOf(active.mode).name}」：{modeOf(active.mode).hint}。
+            {active.mode === "bypass"
+              ? "它不会停下来请示任何事，碰洞府之外的东西、改 .git 也一样。"
+              : "碰这个文件夹之外的东西、改 .git 里的文件，无论哪种禁制都要先请本尊定夺。"}
+            输入框里按 Shift+Tab 换禁制。
+          </p>
+        </div>
+      ) : (
+        <Guard name="对话" className="fill" resetKey={active.id}>
+          <Transcript
+            key={active.id}
+            rows={rows}
+            stream={replay ? [] : state.stream}
+            queued={replay ? [] : state.queued}
+            status={replay ? "idle" : state.status}
+            mode={active.mode}
+            origin={active.parent ? "agent" : active.schedule ? "schedule" : "user"}
+            sessions={state.sessions}
+            copied={active.fork?.turn ?? 0}
+            frozen={!!replay}
+            onOpen={open}
+            onDecide={decide}
+            onAnswer={answer}
+            onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)}
+            onFork={active.parent ? undefined : forkFrom}
+            onOpenFile={openFile}
+            onPicture={pictureOf}
+            versionOf={versionOf}
+          />
+        </Guard>
+      )}
+      {replay ? (
+        <ReplayBar
+          at={replay.at}
+          count={stops.length}
+          playing={replay.playing}
+          speed={replay.speed}
+          turn={turnAt(state.events, stops[replay.at] ?? 0)}
+          time={new Date(state.events[stops[replay.at] ?? 0]?.ts ?? Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          onSeek={(at) => setReplay((now) => now && { ...now, at })}
+          onPlaying={(playing) => setReplay((now) => now && { ...now, playing })}
+          onSpeed={(speed) => setReplay((now) => now && { ...now, speed })}
+          onExit={() => setReplay(null)}
+        />
+      ) : null}
+      {/* Kept while a replay stands in its place, so what was being typed is still there afterwards. */}
+      <div style={{ display: replay ? "none" : "contents" }}>
+        <Guard name="输入框" className="under" resetKey={active.id}>
+          <Composer
+            key={active.id}
+            sessionKey={active.id}
+            drafts={draftsRef.current}
+            status={state.status}
+            providers={providers}
+            // The 宗门 the user added are offered; one can be moved to once it has a key, but a compatible service (a local server) may need none.
+            listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isSetUp(state.settings!, known))}
+            keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || !!providers.find((known) => known.id === provider)?.kind.startsWith("custom")}
+            providerId={active.provider}
+            model={active.model}
+            effort={active.effort ?? state.settings?.settings.effort ?? "high"}
+            effortSet={active.effort !== null}
+            efforts={state.settings?.efforts ?? ["low", "medium", "high", "xhigh", "max"]}
+            onEffort={(effort) => api.setEffort(active.id, effort).then((item) => dispatch({ type: "session", item }), fail)}
+            listModels={api.listModels}
+            onModel={(provider, model) => api.setModel(active.id, provider, model).then((item) => dispatch({ type: "session", item }), fail)}
+            vision={active.vision}
+            mode={active.mode}
+            usage={spent}
+            contextLimit={active.context_limit}
+            contextCeiling={active.context_ceiling}
+            contextSetting={state.settings?.settings.context_limit ?? active.context_limit}
+            contextAuto={!!state.settings?.settings.context_auto}
+            onLimit={(limit) => {
+              // The limit is one setting for every session; each session's own figure comes back with the list.
+              if (state.settings)
+                saved(api.saveSettings(limit === "auto" ? { ...state.settings.settings, context_auto: true } : { ...state.settings.settings, context_limit: limit, context_auto: false })).then(refresh);
+            }}
+            planReady={planReady}
+            onMode={(mode) => switchMode(mode).catch(fail)}
+            onCarryOut={carryOut}
+            onSend={send}
+            onStop={() => api.cancelTurn(active.id).catch(fail)}
+            onCompact={() => api.compactSession(active.id).catch(fail)}
+            trustable={!!active.worktree}
+            seed={seed}
+            commands={slashCommands(active)}
+          />
+        </Guard>
+      </div>
+    </>
+  ) : null;
+
   return (
-    <div className={`app ${showPanel ? "with-panel" : ""}`} style={{ "--panel-width": `${strip ? PANEL_STRIP : panel.width}px` } as React.CSSProperties}>
+    <div
+      className={["app", showPanel && "with-panel", sidebar.hidden && "sidebar-hidden"].filter(Boolean).join(" ")}
+      style={
+        {
+          "--sidebar-width": `${sidebar.width}px`,
+          "--panel-width": `${strip ? PANEL_STRIP : panel.width}px`,
+        } as React.CSSProperties
+      }
+    >
       {/* Each part of the window is guarded by itself: one that cannot be drawn leaves the others in use. */}
-      <Guard name="分身列表" className="sidebar">
-      <Sidebar
-        sessions={state.sessions}
-        activeId={state.activeId}
-        page={state.page}
-        onHome={() => dispatch({ type: "home" })}
-        onMcp={toMcp}
-        onSkills={() => dispatch({ type: "page", page: "skills" })}
-        onSchedules={toSchedules}
-        onChat={chat}
-        onOpen={open}
-        onNew={create}
-        onNewIn={(workspace, isolated) => api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view }), fail)}
-        onSettings={toSettings}
-        onSearch={api.searchSessions}
-      />
-      </Guard>
+      {!sidebar.hidden && (
+        <Guard name="分身列表" className="sidebar">
+          <Sidebar
+            sessions={state.sessions}
+            activeId={state.activeId}
+            page={state.page}
+            tab={leftTab}
+            onTab={setLeftTab}
+            width={sidebar.width}
+            onResize={(width) => setSidebar({ ...sidebar, width })}
+            filesPane={
+              isProjectSession && active ? (
+                <FileTree
+                  sessionId={active.id}
+                  workspace={active.workspace}
+                  activePath={activeWbFile}
+                  refreshTick={fsRefreshTick}
+                  onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
+                  onAttachFile={(absPath) => attachIntoChat(absPath)}
+                  onDeletedPath={handleDeletedWorkspacePath}
+                  onRenamedPath={handleRenamedWorkspacePath}
+                  onError={fail}
+                />
+              ) : undefined
+            }
+            onHome={() => dispatch({ type: "home" })}
+            onMcp={toMcp}
+            onSkills={() => dispatch({ type: "page", page: "skills" })}
+            onSchedules={toSchedules}
+            onChat={chat}
+            onOpen={open}
+            onNew={create}
+            onNewIn={(workspace, isolated) => api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view }), fail)}
+            onSettings={toSettings}
+            onSearch={api.searchSessions}
+          />
+        </Guard>
+      )}
       <main className="main">
         {/* What went wrong, or went well: under the session's title where there is one, at the top of the page otherwise. */}
         {!(inChat && active) && banners}
@@ -613,110 +919,54 @@ export default function App() {
                   refresh();
                 }, fail)
               }
-              panelHidden={panel.hidden}
-              onTogglePanel={() => setPanel({ ...panel, hidden: !panel.hidden })}
+              panelHidden={panel.hidden && !showWorkbench}
+              onTogglePanel={() => {
+                if (showWorkbench) {
+                  setInWorkbench(false);
+                } else {
+                  setPanel({ ...panel, hidden: !panel.hidden });
+                }
+              }}
+              hasWorkbenchTabs={isProjectSession && wbTabs.length > 0 && !replay}
+              inWorkbench={showWorkbench}
+              onToggleWorkbench={() => {
+                const next = !inWorkbench;
+                setInWorkbench(next);
+                if (next) setPanel((cur) => ({ width: Math.max(cur.width, 400), hidden: false }));
+              }}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
               onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
             />
             </Guard>
             {banners}
-            {rows.length === 0 && state.queued.length === 0 && chatting(active) ? (
-              <div className="empty">
-                <h1>有话直说</h1>
-                <p>
-                  这是闲谈，不绑哪个项目：问什么答什么，要查的它会上网查，附上的文件它会读。它写出的文件放在 <span className="mono">{state.settings?.chat_folder}</span>。要它在某个项目里干活，就用「开辟洞府」选那个文件夹。
-                </p>
-              </div>
-            ) : rows.length === 0 && state.queued.length === 0 ? (
-              <div className="empty">
-                <h1>分身已入驻这处洞府</h1>
-                <p>
-                  吩咐一件事吧。眼下的禁制是「{modeOf(active.mode).name}」：{modeOf(active.mode).hint}。
-                  {active.mode === "bypass"
-                    ? "它不会停下来请示任何事，碰洞府之外的东西、改 .git 也一样。"
-                    : "碰这个文件夹之外的东西、改 .git 里的文件，无论哪种禁制都要先请本尊定夺。"}
-                  输入框里按 Shift+Tab 换禁制。
-                </p>
-              </div>
-            ) : (
-              <Guard name="对话" className="fill" resetKey={active.id}>
-              <Transcript
-                key={active.id}
-                rows={rows}
-                stream={replay ? [] : state.stream}
-                queued={replay ? [] : state.queued}
-                status={replay ? "idle" : state.status}
-                mode={active.mode}
-                origin={active.parent ? "agent" : active.schedule ? "schedule" : "user"}
-                sessions={state.sessions}
-                copied={active.fork?.turn ?? 0}
-                frozen={!!replay}
-                onOpen={open}
-                onDecide={decide}
-                onAnswer={answer}
-                onUndo={(turn) => api.undoTurn(active.id, turn).catch(fail)}
-                onFork={active.parent ? undefined : forkFrom}
-                onOpenFile={openFile}
-                onPicture={pictureOf}
-                versionOf={versionOf}
-              />
+            {showWorkbench ? (
+              <Guard name="工作台" className="fill" resetKey={active.id}>
+                <Workbench
+                  sessionId={active.id}
+                  tabs={wbTabs}
+                  activeTabId={activeTabId}
+                  refreshTick={fsRefreshTick}
+                  onSelectTab={setActiveTabId}
+                  onPinTab={(id) => setWbTabs((prev) => prev.map((t) => (t.id === id ? { ...t, pinned: true } : t)))}
+                  onCloseTab={closeWorkbenchTab}
+                  onCloseAllTabs={() => {
+                    setWbTabs([]);
+                    setActiveTabId(null);
+                    setInWorkbench(false);
+                  }}
+                  onBackToChat={() => setInWorkbench(false)}
+                  onQuoteLines={quoteIntoChat}
+                  onAttachPath={(relPath) => {
+                    const sep = active.workspace.includes("\\") ? "\\" : "/";
+                    const abs = `${active.workspace.replace(/[\\/]+$/, "")}${sep}${relPath.replace(/\//g, sep)}`;
+                    attachIntoChat(abs);
+                  }}
+                  onError={fail}
+                />
               </Guard>
+            ) : (
+              conversationPane
             )}
-            {replay ? (
-              <ReplayBar
-                at={replay.at}
-                count={stops.length}
-                playing={replay.playing}
-                speed={replay.speed}
-                turn={turnAt(state.events, stops[replay.at] ?? 0)}
-                time={new Date(state.events[stops[replay.at] ?? 0]?.ts ?? Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                onSeek={(at) => setReplay((now) => now && { ...now, at })}
-                onPlaying={(playing) => setReplay((now) => now && { ...now, playing })}
-                onSpeed={(speed) => setReplay((now) => now && { ...now, speed })}
-                onExit={() => setReplay(null)}
-              />
-            ) : null}
-            {/* Kept while a replay stands in its place, so what was being typed is still there afterwards. */}
-            <div style={{ display: replay ? "none" : "contents" }}>
-            <Guard name="输入框" className="under" resetKey={active.id}>
-            <Composer
-              status={state.status}
-              providers={providers}
-              // The 宗门 the user added are offered; one can be moved to once it has a key, but a compatible service (a local server) may need none.
-              listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isSetUp(state.settings!, known))}
-              keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || !!providers.find((known) => known.id === provider)?.kind.startsWith("custom")}
-              providerId={active.provider}
-              model={active.model}
-              effort={active.effort ?? state.settings?.settings.effort ?? "high"}
-              effortSet={active.effort !== null}
-              efforts={state.settings?.efforts ?? ["low", "medium", "high", "xhigh", "max"]}
-              onEffort={(effort) => api.setEffort(active.id, effort).then((item) => dispatch({ type: "session", item }), fail)}
-              listModels={api.listModels}
-              onModel={(provider, model) => api.setModel(active.id, provider, model).then((item) => dispatch({ type: "session", item }), fail)}
-              vision={active.vision}
-              mode={active.mode}
-              usage={spent}
-              contextLimit={active.context_limit}
-              contextCeiling={active.context_ceiling}
-              contextSetting={state.settings?.settings.context_limit ?? active.context_limit}
-              contextAuto={!!state.settings?.settings.context_auto}
-              onLimit={(limit) => {
-                // The limit is one setting for every session; each session's own figure comes back with the list.
-                if (state.settings)
-                  saved(api.saveSettings(limit === "auto" ? { ...state.settings.settings, context_auto: true } : { ...state.settings.settings, context_limit: limit, context_auto: false })).then(refresh);
-              }}
-              planReady={planReady}
-              onMode={(mode) => switchMode(mode).catch(fail)}
-              onCarryOut={carryOut}
-              onSend={send}
-              onStop={() => api.cancelTurn(active.id).catch(fail)}
-              onCompact={() => api.compactSession(active.id).catch(fail)}
-              trustable={!!active.worktree}
-              seed={seed}
-              commands={slashCommands(active)}
-            />
-            </Guard>
-            </div>
           </>
         ) : (
           <>
@@ -771,11 +1021,16 @@ export default function App() {
             products={made}
             workspace={active?.workspace}
             width={panel.width}
+            sidebarWidth={sidebar.hidden ? 0 : sidebar.width}
             onResize={(width) => setPanel({ ...panel, width })}
             narrow={strip}
             onWiden={() => setPeek(true)}
             working={state.status === "running"}
             frozen={!!replay}
+            chatPane={showWorkbench ? conversationPane : undefined}
+            chatStatus={state.status}
+            summonTab={summonPanelTab}
+            onInspectFile={isProjectSession ? (relPath) => openWorkbenchFile(relPath, false) : undefined}
             onOpenFile={openFile}
             onRestoreArtifact={restoreArtifact}
             onSaveArtifactCopy={saveArtifactCopy}

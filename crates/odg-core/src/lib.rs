@@ -8,6 +8,7 @@ pub mod anthropic;
 pub mod documents;
 pub mod env;
 pub mod events;
+pub mod explorer;
 pub mod fsutil;
 pub mod grants;
 pub mod imagegen;

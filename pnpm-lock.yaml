@@ -20,6 +20,9 @@ importers:
       '@tauri-apps/plugin-opener':
         specifier: ^2.7.3
         version: 2.7.3
+      highlight.js:
+        specifier: 11.11.2
+        version: 11.11.2
       lxgw-wenkai-lite-webfont:
         specifier: ^1.7.0
         version: 1.7.0

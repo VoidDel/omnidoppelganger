@@ -1,0 +1,601 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../lib/api";
+import type { FoundFile, TreeEntry } from "../lib/types";
+
+export interface GitBadge {
+  label: string;
+  tone: "added" | "modified" | "deleted" | "conflict";
+}
+
+export interface FileTreeProps {
+  sessionId: string;
+  workspace: string;
+  activePath: string | null;
+  refreshTick?: number;
+  gitBadges?: Record<string, GitBadge>;
+  onOpenFile: (relPath: string, pin: boolean) => void;
+  onAttachFile: (absPath: string, relPath: string) => void;
+  onDeletedPath?: (relPath: string) => void;
+  onRenamedPath?: (fromRel: string, toRel: string) => void;
+  onError: (message: string) => void;
+}
+
+const IGNORED_PREF_KEY = "odg.explorer.showIgnored";
+
+function joinWorkspacePath(workspace: string, relPath: string): string {
+  const sep = workspace.includes("\\") ? "\\" : "/";
+  const base = workspace.replace(/[\\/]+$/, "");
+  const sub = relPath.replace(/\//g, sep);
+  return sub ? `${base}${sep}${sub}` : base;
+}
+
+function parentOf(relPath: string): string {
+  const idx = relPath.lastIndexOf("/");
+  return idx >= 0 ? relPath.slice(0, idx) : "";
+}
+
+interface FlatNode {
+  entry: TreeEntry;
+  depth: number;
+}
+
+export function FileTree({
+  sessionId,
+  workspace,
+  activePath,
+  refreshTick = 0,
+  gitBadges,
+  onOpenFile,
+  onAttachFile,
+  onDeletedPath,
+  onRenamedPath,
+  onError,
+}: FileTreeProps) {
+  const [showIgnored, setShowIgnored] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(IGNORED_PREF_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(IGNORED_PREF_KEY, String(showIgnored));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [showIgnored]);
+
+  const [entriesByDir, setEntriesByDir] = useState<Record<string, TreeEntry[]>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [selectedPath, setSelectedPath] = useState<string>("");
+  const [selectedIsDir, setSelectedIsDir] = useState<boolean>(false);
+  const [loadingRoot, setLoadingRoot] = useState<boolean>(false);
+
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<FoundFile[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  const [creating, setCreating] = useState<{ parentDir: string; isDir: boolean; name: string } | null>(null);
+  const [renaming, setRenaming] = useState<{ entry: TreeEntry; name: string } | null>(null);
+  const [deleting, setDeleting] = useState<TreeEntry | null>(null);
+  const createInputRef = useRef<HTMLInputElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+
+  const loadDir = useCallback(
+    async (dir: string) => {
+      const list = await api.listWorkspaceDir(sessionId, dir, true, showIgnored);
+      setEntriesByDir((prev) => ({ ...prev, [dir]: list }));
+      return list;
+    },
+    [sessionId, showIgnored],
+  );
+
+  const reloadAll = useCallback(async () => {
+    setLoadingRoot(true);
+    try {
+      const dirs = ["", ...expandedRef.current];
+      const results = await Promise.all(
+        dirs.map((dir) =>
+          api.listWorkspaceDir(sessionId, dir, true, showIgnored).then(
+            (list) => [dir, list] as const,
+            () => null,
+          ),
+        ),
+      );
+      const next: Record<string, TreeEntry[]> = {};
+      for (const pair of results) {
+        if (pair) next[pair[0]] = pair[1];
+      }
+      setEntriesByDir(next);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setLoadingRoot(false);
+    }
+  }, [sessionId, showIgnored, onError]);
+
+  // Reset expansion when switching to a different workspace folder; reload on session/filter/tick changes.
+  const prevWorkspace = useRef(workspace);
+  useEffect(() => {
+    if (prevWorkspace.current !== workspace) {
+      prevWorkspace.current = workspace;
+      setExpanded(new Set());
+      setSelectedPath("");
+      setSelectedIsDir(false);
+      setCreating(null);
+      setRenaming(null);
+      setDeleting(null);
+    }
+    void reloadAll();
+  }, [workspace, reloadAll, refreshTick]);
+
+  // Fuzzy file search when query is entered.
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setFound(null);
+      setSearching(false);
+      return;
+    }
+    let alive = true;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      api.searchWorkspaceFiles(sessionId, trimmed, 100).then(
+        (items) => {
+          if (!alive) return;
+          setFound(items);
+          setSearching(false);
+        },
+        (error) => {
+          if (!alive) return;
+          setSearching(false);
+          onError(String(error));
+        },
+      );
+    }, 150);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [query, sessionId, refreshTick, onError]);
+
+  useEffect(() => {
+    if (creating) createInputRef.current?.focus();
+  }, [creating]);
+
+  useEffect(() => {
+    if (renaming) {
+      const el = renameInputRef.current;
+      if (el) {
+        el.focus();
+        const dot = renaming.entry.kind === "file" ? renaming.name.lastIndexOf(".") : -1;
+        el.setSelectionRange(0, dot > 0 ? dot : renaming.name.length);
+      }
+    }
+  }, [renaming]);
+
+  const toggleDir = (entry: TreeEntry) => {
+    setSelectedPath(entry.path);
+    setSelectedIsDir(true);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(entry.path)) {
+        next.delete(entry.path);
+      } else {
+        next.add(entry.path);
+        void loadDir(entry.path).catch((err) => onError(String(err)));
+      }
+      return next;
+    });
+  };
+
+  const startCreate = (isDir: boolean, targetParent?: string) => {
+    const parentDir = targetParent !== undefined ? targetParent : selectedIsDir ? selectedPath : selectedPath ? parentOf(selectedPath) : "";
+    if (parentDir && !expanded.has(parentDir)) {
+      setExpanded((prev) => new Set([...prev, parentDir]));
+      void loadDir(parentDir).catch((err) => onError(String(err)));
+    }
+    setRenaming(null);
+    setDeleting(null);
+    setCreating({ parentDir, isDir, name: "" });
+  };
+
+  const submitCreate = async () => {
+    if (!creating) return;
+    const name = creating.name.trim();
+    if (!name) {
+      setCreating(null);
+      return;
+    }
+    const rel = creating.parentDir ? `${creating.parentDir}/${name}` : name;
+    try {
+      const created = await api.createWorkspaceEntry(sessionId, rel, creating.isDir);
+      setCreating(null);
+      await loadDir(creating.parentDir);
+      if (!creating.isDir) {
+        onOpenFile(created, true);
+      } else {
+        setExpanded((prev) => new Set([...prev, created]));
+        await loadDir(created);
+      }
+    } catch (error) {
+      onError(String(error));
+    }
+  };
+
+  const submitRename = async () => {
+    if (!renaming) return;
+    const name = renaming.name.trim();
+    if (!name || name === renaming.entry.name) {
+      setRenaming(null);
+      return;
+    }
+    const parent = parentOf(renaming.entry.path);
+    const toRel = parent ? `${parent}/${name}` : name;
+    try {
+      const updated = await api.renameWorkspaceEntry(sessionId, renaming.entry.path, toRel);
+      const oldPath = renaming.entry.path;
+      setRenaming(null);
+      if (expanded.has(oldPath)) {
+        setExpanded((prev) => {
+          const next = new Set<string>();
+          for (const item of prev) {
+            if (item === oldPath) next.add(updated);
+            else if (item.startsWith(`${oldPath}/`)) next.add(`${updated}${item.slice(oldPath.length)}`);
+            else next.add(item);
+          }
+          return next;
+        });
+      }
+      onRenamedPath?.(oldPath, updated);
+      await reloadAll();
+    } catch (error) {
+      onError(String(error));
+    }
+  };
+
+  const confirmDelete = async (entry: TreeEntry) => {
+    try {
+      await api.deleteWorkspaceEntry(sessionId, entry.path);
+      setDeleting(null);
+      if (selectedPath === entry.path) {
+        setSelectedPath("");
+        setSelectedIsDir(false);
+      }
+      onDeletedPath?.(entry.path);
+      await reloadAll();
+    } catch (error) {
+      onError(String(error));
+    }
+  };
+
+  // Flatten visible tree nodes in DFS order.
+  const flatNodes = useMemo(() => {
+    const out: FlatNode[] = [];
+    const walk = (dir: string, depth: number) => {
+      const list = entriesByDir[dir] ?? [];
+      for (const entry of list) {
+        out.push({ entry, depth });
+        if (entry.expandable && expanded.has(entry.path)) {
+          walk(entry.path, depth + 1);
+        }
+      }
+    };
+    walk("", 0);
+    return out;
+  }, [entriesByDir, expanded]);
+
+  // Propagate child git badges onto collapsed folders so modified files inside closed folders remain visible.
+  const dirBadges = useMemo(() => {
+    if (!gitBadges) return {};
+    const out: Record<string, GitBadge["tone"]> = {};
+    const rank: Record<GitBadge["tone"], number> = { conflict: 4, modified: 3, added: 2, deleted: 1 };
+    for (const [path, badge] of Object.entries(gitBadges)) {
+      let cur = parentOf(path);
+      while (cur) {
+        const prev = out[cur];
+        if (!prev || rank[badge.tone] > rank[prev]) out[cur] = badge.tone;
+        cur = parentOf(cur);
+      }
+    }
+    return out;
+  }, [gitBadges]);
+
+  const renderCreateRow = (depth: number) => {
+    if (!creating) return null;
+    return (
+      <div className="tree-inline-edit" style={{ paddingLeft: `${depth * 14 + 10}px` }}>
+        <span className="tree-kind-label">{creating.isDir ? "新目录" : "新文件"}</span>
+        <input
+          ref={createInputRef}
+          className="input tree-input"
+          value={creating.name}
+          placeholder={creating.isDir ? "文件夹名称" : "文件名称"}
+          onChange={(e) => setCreating({ ...creating, name: e.target.value })}
+          onBlur={() => void submitCreate()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void submitCreate();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setCreating(null);
+            }
+          }}
+        />
+      </div>
+    );
+  };
+
+  return (
+    <div className="explorer">
+      <div className="explorer-toolbar">
+        <input
+          className="input explorer-search"
+          type="search"
+          aria-label="搜索洞府文件"
+          placeholder="搜文件名…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <div className="explorer-tools" role="toolbar" aria-label="文件操作">
+          <button type="button" className="icon-button small" title="新建文件" onClick={() => startCreate(false)}>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3.5 2h5.5L12.5 5.5V14h-9z" />
+              <path d="M8 7.5v4M6 9.5h4" />
+            </svg>
+            <span className="sr-only">新建文件</span>
+          </button>
+          <button type="button" className="icon-button small" title="新建文件夹" onClick={() => startCreate(true)}>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1.8 4.2V13h12.4V5.8H7.6L6.2 4.2z" />
+              <path d="M8 7.4v3.6M6.2 9.2h3.6" />
+            </svg>
+            <span className="sr-only">新建文件夹</span>
+          </button>
+          <button
+            type="button"
+            className={`icon-button small ${showIgnored ? "" : "active"}`}
+            aria-pressed={!showIgnored}
+            title={showIgnored ? "当前显示被 Git 忽略的文件，点此隐藏" : "当前已隐藏 Git 忽略文件，点此显示"}
+            onClick={() => setShowIgnored((v) => !v)}
+          >
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1.8 8s2.3-4.2 6.2-4.2S14.2 8 14.2 8s-2.3 4.2-6.2 4.2S1.8 8 1.8 8z" />
+              <circle cx="8" cy="8" r="1.8" />
+              {!showIgnored && <path d="M2.5 13.5 13.5 2.5" />}
+            </svg>
+            <span className="sr-only">{showIgnored ? "隐藏忽略项" : "显示忽略项"}</span>
+          </button>
+          <button type="button" className="icon-button small" title="收起全部目录" onClick={() => setExpanded(new Set())}>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m4.5 6.5 3.5-3 3.5 3M4.5 9.5l3.5 3 3.5-3" />
+            </svg>
+            <span className="sr-only">收起全部</span>
+          </button>
+          <button type="button" className="icon-button small" title="刷新文件列表" onClick={() => void reloadAll()}>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13.2 8A5.2 5.2 0 1 1 11.8 4.4M13.2 2.6v2.8h-2.8" />
+            </svg>
+            <span className="sr-only">刷新</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="explorer-scroll" role="tree" aria-label="洞府文件树">
+        {found !== null ? (
+          found.length === 0 ? (
+            <p className="muted explorer-empty">{searching ? "正在搜寻…" : "没找到匹配的文件。"}</p>
+          ) : (
+            found.map((item) => (
+              <div key={item.path} className={`tree-row search-hit ${activePath === item.path ? "current" : ""}`}>
+                <button
+                  type="button"
+                  className="tree-main"
+                  title={item.path}
+                  onClick={() => onOpenFile(item.path, false)}
+                  onDoubleClick={() => onOpenFile(item.path, true)}
+                >
+                  <span className="tree-label">{item.name}</span>
+                  {item.dir && <span className="tree-sub">{item.dir}</span>}
+                </button>
+                <span className="tree-acts">
+                  <button
+                    type="button"
+                    className="icon-button tiny"
+                    title="附入对话"
+                    onClick={() => onAttachFile(joinWorkspacePath(workspace, item.path), item.path)}
+                  >
+                    @
+                  </button>
+                </span>
+              </div>
+            ))
+          )
+        ) : (
+          <>
+            {creating && creating.parentDir === "" && renderCreateRow(0)}
+            {flatNodes.length === 0 && !creating ? (
+              <p className="muted explorer-empty">{loadingRoot ? "正在读取目录…" : "这个文件夹还是空的。"}</p>
+            ) : (
+              flatNodes.map(({ entry, depth }) => {
+                const isOpen = entry.expandable && expanded.has(entry.path);
+                const isCurrent = activePath === entry.path;
+                const isSelected = selectedPath === entry.path;
+                const badge = gitBadges?.[entry.path];
+                const folderTone = !isOpen && entry.expandable ? dirBadges[entry.path] : undefined;
+
+                if (renaming?.entry.path === entry.path) {
+                  return (
+                    <div key={entry.path} className="tree-inline-edit" style={{ paddingLeft: `${depth * 14 + 10}px` }}>
+                      <input
+                        ref={renameInputRef}
+                        className="input tree-input"
+                        value={renaming.name}
+                        onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
+                        onBlur={() => void submitRename()}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                            e.preventDefault();
+                            void submitRename();
+                          }
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setRenaming(null);
+                          }
+                        }}
+                      />
+                    </div>
+                  );
+                }
+
+                return (
+                  <div key={entry.path} className="tree-item-group">
+                    <div
+                      className={[
+                        "tree-row",
+                        isCurrent && "current",
+                        isSelected && "selected",
+                        entry.ignored && "ignored",
+                        badge && `git-${badge.tone}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      style={{ paddingLeft: `${depth * 14 + 6}px` }}
+                    >
+                      <button
+                        type="button"
+                        role="treeitem"
+                        aria-expanded={entry.expandable ? isOpen : undefined}
+                        aria-selected={isCurrent || isSelected}
+                        className="tree-main"
+                        title={entry.path}
+                        onClick={() => {
+                          if (entry.expandable) {
+                            toggleDir(entry);
+                          } else {
+                            setSelectedPath(entry.path);
+                            setSelectedIsDir(false);
+                            onOpenFile(entry.path, false);
+                          }
+                        }}
+                        onDoubleClick={() => {
+                          if (!entry.expandable) onOpenFile(entry.path, true);
+                        }}
+                      >
+                        {entry.expandable ? (
+                          <svg
+                            className={`tree-caret ${isOpen ? "open" : ""}`}
+                            aria-hidden="true"
+                            width="10"
+                            height="10"
+                            viewBox="0 0 10 10"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M3 2l3.5 3L3 8" />
+                          </svg>
+                        ) : (
+                          <span className="tree-dot" aria-hidden="true" />
+                        )}
+                        <span className="tree-label">{entry.name}</span>
+                        {badge && <span className={`tree-git ${badge.tone}`}>{badge.label}</span>}
+                        {!badge && folderTone && <span className={`tree-folder-dot ${folderTone}`} aria-hidden="true" />}
+                      </button>
+                      <span className="tree-acts">
+                        {entry.expandable ? (
+                          <button
+                            type="button"
+                            className="icon-button tiny"
+                            title="在此文件夹内新建文件"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startCreate(false, entry.path);
+                            }}
+                          >
+                            +
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="icon-button tiny"
+                            title="附入对话"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onAttachFile(joinWorkspacePath(workspace, entry.path), entry.path);
+                            }}
+                          >
+                            @
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="icon-button tiny"
+                          title="重命名"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCreating(null);
+                            setDeleting(null);
+                            setRenaming({ entry, name: entry.name });
+                          }}
+                        >
+                          ✎
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button tiny"
+                          title="在文件夹中显示"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            api.openWorkspaceEntry(sessionId, entry.path, true).catch((err) => onError(String(err)));
+                          }}
+                        >
+                          ↗
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button tiny danger"
+                          title="删除"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCreating(null);
+                            setRenaming(null);
+                            setDeleting(deleting?.path === entry.path ? null : entry);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    </div>
+                    {deleting?.path === entry.path && (
+                      <div className="tree-confirm" role="alertdialog" aria-label={`删除 ${entry.name}`}>
+                        <span>删掉「{entry.name}」{entry.expandable ? "及其中所有内容" : ""}？</span>
+                        <span className="tree-confirm-acts">
+                          <button type="button" className="button text small" onClick={() => setDeleting(null)}>
+                            取消
+                          </button>
+                          <button type="button" className="button danger small" onClick={() => void confirmDelete(entry)}>
+                            删除
+                          </button>
+                        </span>
+                      </div>
+                    )}
+                    {creating && creating.parentDir === entry.path && isOpen && renderCreateRow(depth + 1)}
+                  </div>
+                );
+              })
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

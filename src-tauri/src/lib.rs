@@ -513,6 +513,79 @@ async fn save_artifact_copy(app: State<'_, App>, id: String, path: String, snaps
     session.save_artifact_copy(&path, &snapshot, version)
 }
 
+fn session_workspace(app: &App, id: &str) -> Result<PathBuf, String> {
+    Ok(PathBuf::from(app.live(id)?.summary().workspace))
+}
+
+#[tauri::command]
+async fn list_workspace_dir(app: State<'_, App>, id: String, path: String, show_hidden: bool, show_ignored: bool) -> Result<Vec<odg_core::explorer::TreeEntry>, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::explorer::list_directory(&workspace, &path, show_hidden, show_ignored))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn search_workspace_files(app: State<'_, App>, id: String, query: String, limit: Option<usize>) -> Result<Vec<odg_core::explorer::FoundFile>, String> {
+    let workspace = session_workspace(&app, &id)?;
+    let cap = limit.unwrap_or(odg_core::explorer::DEFAULT_SEARCH_LIMIT);
+    tokio::task::spawn_blocking(move || odg_core::explorer::search_files(&workspace, &query, cap))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_workspace_file(app: State<'_, App>, id: String, path: String) -> Result<odg_core::explorer::FileView, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::explorer::read_file_view(&workspace, &path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn create_workspace_entry(app: State<'_, App>, id: String, path: String, is_dir: bool) -> Result<String, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::explorer::create_entry(&workspace, &path, is_dir))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn rename_workspace_entry(app: State<'_, App>, id: String, from: String, to: String) -> Result<String, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::explorer::rename_entry(&workspace, &from, &to))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn delete_workspace_entry(app: State<'_, App>, id: String, path: String) -> Result<(), String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::explorer::delete_entry(&workspace, &path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn open_workspace_entry(app: State<'_, App>, id: String, path: String, reveal: bool) -> Result<String, String> {
+    let workspace = session_workspace(&app, &id)?;
+    let (file, _) = odg_core::explorer::resolve_confined(&workspace, &path, true, true)?;
+    if !file.exists() {
+        return Err(format!("找不到这个文件了，可能已经移走或删掉：{path}"));
+    }
+    let dry = std::env::var_os("ODG_E2E_DRY_OPEN").is_some();
+    if reveal || runnable(&file) || file.is_dir() {
+        if !dry {
+            tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
+        }
+        return Ok("revealed".to_string());
+    }
+    if !dry {
+        tauri_plugin_opener::open_path(file.to_string_lossy().as_ref(), None::<&str>).map_err(|error| format!("没能打开它：{error}"))?;
+    }
+    Ok("opened".to_string())
+}
+
 /// What the page shows of the document runtime: how it stands, and what LibreOffice it would use.
 #[derive(Serialize)]
 struct RuntimeView {
@@ -1037,6 +1110,13 @@ pub fn run() {
             open_attachment,
             restore_artifact,
             save_artifact_copy,
+            list_workspace_dir,
+            search_workspace_files,
+            read_workspace_file,
+            create_workspace_entry,
+            rename_workspace_entry,
+            delete_workspace_entry,
+            open_workspace_entry,
             picture,
             runtime_status,
             install_runtime,

@@ -17,7 +17,13 @@ const IMAGES_PER_MESSAGE = 8;
 const FILES_PER_MESSAGE = 10;
 
 /** A file waiting to be sent with the message. */
-type Pending = Extract<Picked, { kind: "file" }>;
+export type Pending = Extract<Picked, { kind: "file" }>;
+
+export interface ComposerDraft {
+  text: string;
+  images: Image[];
+  files: Pending[];
+}
 
 /** Why a path could not be attached, in the user's words. */
 const REFUSALS: Record<Extract<Picked, { kind: "refused" }>["why"], (name: string) => string> = {
@@ -91,8 +97,11 @@ export interface ComposerProps {
   onStop: () => void;
   /** Whether the session works in a worktree of its own, the only place 全权托付 may be switched on. */
   trustable: boolean;
-  /** Words to put in the box, as when a fork brings back the message it starts before; a new `id` puts them in. */
-  seed: { id: number; text: string } | null;
+  /** Session id + shared draft map so moving between center chat and side chat keeps typed words and attachments intact. */
+  sessionKey?: string;
+  drafts?: Map<string, ComposerDraft>;
+  /** Words or file paths to put in the box (from fork, file tree attach, or code viewer quote); a new `id` applies it. */
+  seed: { id: number; text?: string; append?: boolean; attachPaths?: string[] } | null;
   /** The "/" commands the window gives, beside the box's own (心法, 境界, 禁制, 凝练); skills among them. */
   commands: SlashCommand[];
 }
@@ -143,11 +152,12 @@ function useBoxHeight() {
 
 export function Composer(props: ComposerProps) {
   const { status, providers, listed, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
-  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, commands: given } = props;
+  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given } = props;
   const provider = providers.find((known) => known.id === providerId);
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
-  const [text, setText] = useState("");
+  const savedDraft = sessionKey ? drafts?.get(sessionKey) : undefined;
+  const [text, setText] = useState(() => savedDraft?.text ?? "");
   const input = useRef<HTMLTextAreaElement>(null);
   const [height, setHeight] = useBoxHeight();
   const [dragging, setDragging] = useState(false);
@@ -160,16 +170,16 @@ export function Composer(props: ComposerProps) {
     box.style.height = `${height}px`;
     box.style.height = `${Math.min(Math.max(box.scrollHeight, height), tallest())}px`;
   }, [text, height]);
-  useEffect(() => {
-    if (!seed) return;
-    setText(seed.text);
-    input.current?.focus();
-  }, [seed?.id]);
-  const [images, setImages] = useState<Image[]>([]);
+  const [images, setImages] = useState<Image[]>(() => savedDraft?.images ?? []);
   /** Which of the pictures to go with the message is being looked at full size. */
   const [viewing, setViewing] = useState<number | null>(null);
   /** Files to go with the message, each by its path. */
-  const [files, setFiles] = useState<Pending[]>([]);
+  const [files, setFiles] = useState<Pending[]>(() => savedDraft?.files ?? []);
+  useEffect(() => {
+    if (!sessionKey || !drafts) return;
+    if (!text && images.length === 0 && files.length === 0) drafts.delete(sessionKey);
+    else drafts.set(sessionKey, { text, images, files });
+  }, [sessionKey, drafts, text, images, files]);
   /** Why something was not taken, until the next attempt. */
   const [refused, setRefused] = useState<string | null>(null);
   /** Files are being dragged over the window: the box shows it will take them. */
@@ -328,6 +338,19 @@ export function Composer(props: ComposerProps) {
   };
   const taking = useRef(take);
   taking.current = take;
+  const lastSeedId = useRef<number | null>(null);
+  useEffect(() => {
+    if (!seed || lastSeedId.current === seed.id) return;
+    lastSeedId.current = seed.id;
+    if (seed.attachPaths && seed.attachPaths.length > 0) {
+      taking.current(seed.attachPaths);
+    }
+    if (seed.text !== undefined) {
+      const incoming = seed.text;
+      setText((prev) => (seed.append && prev.trim() ? `${prev.trimEnd()}\n\n${incoming}` : incoming));
+    }
+    requestAnimationFrame(() => input.current?.focus());
+  }, [seed]);
   // Files dragged from the system onto the window are attached where they are dropped.
   useEffect(() => {
     const stop = api.onFilesDragged(({ over, dropped }) => {

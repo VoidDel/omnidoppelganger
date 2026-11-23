@@ -457,3 +457,64 @@ export interface McpServer {
   /** The names of the tools it offers. */
   tools: string[];
 }
+
+/** One entry in a workspace directory listing (`crates/odg-core/src/explorer.rs`). */
+export interface TreeEntry {
+  name: string;
+  path: string;
+  kind: "dir" | "file" | "symlink";
+  expandable: boolean;
+  size: number | null;
+  modified_ms: number | null;
+  ignored: boolean;
+}
+
+/** One matching file returned by fuzzy workspace file search. */
+export interface FoundFile {
+  name: string;
+  path: string;
+  dir: string;
+}
+
+/** Read-only view of a workspace file for the center workbench viewer. */
+export type FileView =
+  | {
+      kind: "text";
+      path: string;
+      name: string;
+      language: string | null;
+      content: string;
+      lines: number;
+      size: number;
+      modified_ms: number | null;
+      eol: "LF" | "CRLF";
+      svg_data: string | null;
+    }
+  | {
+      kind: "image";
+      path: string;
+      name: string;
+      media_type: string;
+      data: string;
+      size: number;
+      modified_ms: number | null;
+    }
+  | {
+      kind: "document";
+      path: string;
+      name: string;
+      doc_kind: DocumentKind;
+      parts: number | null;
+      content: string;
+      size: number;
+      modified_ms: number | null;
+    }
+  | {
+      kind: "binary";
+      path: string;
+      name: string;
+      size: number;
+      modified_ms: number | null;
+      reason: "binary" | "too_large";
+    };
+

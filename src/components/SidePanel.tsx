@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type ChangedFile, type Product, type ProductVersion, type ToolItem, fileSize } from "../lib/fold";
-import type { RestoredArtifact, Todo } from "../lib/types";
+import type { RestoredArtifact, Status, Todo } from "../lib/types";
 import { Light } from "./Light";
 import { Diff } from "./Markdown";
 
@@ -10,7 +10,18 @@ const TODO_SEALS: Record<Todo["status"], string> = { pending: "", in_progress: "
 /** The panel's width while there is nothing in it: a strip that holds its tabs. */
 export const PANEL_STRIP = 56;
 
-type PanelTab = "files" | "terminal" | "plan" | "products";
+export type PanelTab = "chat" | "files" | "terminal" | "plan" | "products";
+
+const CHAT_TAB: { id: PanelTab; name: string; title: string; icon: ReactNode } = {
+  id: "chat",
+  name: "对话",
+  title: "对话：在右侧栏与分身交谈",
+  icon: (
+    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.3 3.2h11.4v7.6H7.4l-3.1 2.4v-2.4H2.3z" />
+    </svg>
+  ),
+};
 
 const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
   {
@@ -244,7 +255,15 @@ function ProductRow({
 }
 
 /** A file the 分身 changed: where it is, how much it changed, and, opened, the changes themselves. */
-function FileRow({ file, onOpenFile }: { file: ChangedFile; onOpenFile?: (path: string, reveal: boolean) => Promise<string> }) {
+function FileRow({
+  file,
+  onOpenFile,
+  onInspectFile,
+}: {
+  file: ChangedFile;
+  onOpenFile?: (path: string, reveal: boolean) => Promise<string>;
+  onInspectFile?: (relPath: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   /** What came of opening it: why it could not be, or that a program was shown in its folder instead. */
   const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
@@ -283,21 +302,33 @@ function FileRow({ file, onOpenFile }: { file: ChangedFile; onOpenFile?: (path: 
             <span className="in">+{file.added}</span> <span className="out">−{file.removed}</span>
           </span>
         </button>
-        {/* At the line's end: the file opened with the system's program for it, and its folder. */}
-        {where && onOpenFile && (
+        {/* At the line's end: inspect inside workbench, open with system's program, or reveal in folder. */}
+        {(where || onInspectFile) && (
           <span className="file-acts">
-            <button type="button" className="icon-button" title="用系统默认的程序打开" onClick={() => openIt(false)}>
-              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
-              </svg>
-              <span className="sr-only">打开 {file.path.slice(cut)}</span>
-            </button>
-            <button type="button" className="icon-button" title="在文件夹中显示" onClick={() => openIt(true)}>
-              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
-              </svg>
-              <span className="sr-only">在文件夹中显示 {file.path.slice(cut)}</span>
-            </button>
+            {!file.gone && onInspectFile && (
+              <button type="button" className="icon-button" title="在中间工作台查看源码" onClick={() => onInspectFile(file.path.replace(/\\/g, "/"))}>
+                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5.5 5 2.5 8l3 3M10.5 5l3 3-3 3M9 3.5 7 12.5" />
+                </svg>
+                <span className="sr-only">在工作台查看 {file.path.slice(cut)}</span>
+              </button>
+            )}
+            {where && onOpenFile && (
+              <>
+                <button type="button" className="icon-button" title="用系统默认的程序打开" onClick={() => openIt(false)}>
+                  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
+                  </svg>
+                  <span className="sr-only">打开 {file.path.slice(cut)}</span>
+                </button>
+                <button type="button" className="icon-button" title="在文件夹中显示" onClick={() => openIt(true)}>
+                  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
+                  </svg>
+                  <span className="sr-only">在文件夹中显示 {file.path.slice(cut)}</span>
+                </button>
+              </>
+            )}
           </span>
         )}
       </div>
@@ -317,9 +348,10 @@ function FileRow({ file, onOpenFile }: { file: ChangedFile; onOpenFile?: (path: 
   );
 }
 
-/** The side panel's width in pixels: as the user left it, within what leaves the conversation room. */
-export const PANEL_WIDTH = { initial: 360, least: 260 };
-export const fitPanel = (width: number) => Math.round(Math.min(Math.max(width, PANEL_WIDTH.least), Math.max(PANEL_WIDTH.least, window.innerWidth - 248 - 420)));
+/** The side panel's width in pixels: as the user left it, within what leaves the center column room. */
+export const PANEL_WIDTH = { initial: 380, least: 280 };
+export const fitPanel = (width: number, sidebarWidth = 236) =>
+  Math.round(Math.min(Math.max(width, PANEL_WIDTH.least), Math.max(PANEL_WIDTH.least, Math.min(680, window.innerWidth - sidebarWidth - 360))));
 
 export interface SidePanelProps {
   files: ChangedFile[];
@@ -330,6 +362,7 @@ export interface SidePanelProps {
   /** The folder the 分身 works in, which what it made is shown from. */
   workspace?: string;
   width: number;
+  sidebarWidth?: number;
   onResize: (width: number) => void;
   /** Nothing in it to show, so it stands as a strip; a tab pressed there asks for it to open anyway. */
   narrow: boolean;
@@ -338,6 +371,15 @@ export interface SidePanelProps {
   working: boolean;
   /** The page is in replay mode: mutating actions (restore/copy) are disabled. */
   frozen?: boolean;
+  /** Docked side-chat pane when the center column is showing the code/diff workbench. */
+  chatPane?: ReactNode;
+  chatStatus?: Status;
+  /** Optional interactive PTY terminal pane to render inside the `terminal` tab. */
+  terminalPane?: ReactNode;
+  /** Programmatic request to focus a specific tab (e.g. quoting lines into side chat or shortcut to terminal). */
+  summonTab?: { id: number; tab: PanelTab } | null;
+  /** Open a workspace file inside the center code viewer. */
+  onInspectFile?: (relPath: string) => void;
   /** Open a file the 分身 changed with the system's program for it (or a historical snapshot), or with `reveal` show it in its folder. */
   onOpenFile?: (path: string, reveal: boolean, snapshot?: string, version?: number) => Promise<string>;
   /** Restore a deliverable back to a historical snapshot. */
@@ -346,20 +388,61 @@ export interface SidePanelProps {
   onSaveArtifactCopy?: (path: string, snapshot: string, version: number) => Promise<string>;
 }
 
-export function SidePanel({ files, runs, todos, products, workspace, width, onResize, narrow, onWiden, working, frozen, onOpenFile, onRestoreArtifact, onSaveArtifactCopy }: SidePanelProps) {
-  const [tab, setTab] = useState<PanelTab>("files");
-  const counts: Record<PanelTab, number> = { files: files.length, terminal: runs.length, plan: todos.length, products: products.length };
-  // When the first thing comes into a panel that held nothing, it opens on that.
+export function SidePanel({
+  files,
+  runs,
+  todos,
+  products,
+  workspace,
+  width,
+  sidebarWidth = 236,
+  onResize,
+  narrow,
+  onWiden,
+  working,
+  frozen,
+  chatPane,
+  chatStatus = "idle",
+  terminalPane,
+  summonTab,
+  onInspectFile,
+  onOpenFile,
+  onRestoreArtifact,
+  onSaveArtifactCopy,
+}: SidePanelProps) {
+  const hasChat = !!chatPane;
+  const [tab, setTab] = useState<PanelTab>(hasChat ? "chat" : "files");
+  const prevHasChat = useRef(hasChat);
+  useEffect(() => {
+    if (hasChat && !prevHasChat.current) {
+      setTab("chat");
+    } else if (!hasChat && prevHasChat.current && tab === "chat") {
+      setTab("files");
+    }
+    prevHasChat.current = hasChat;
+  }, [hasChat, tab]);
+
+  const lastSummon = useRef<number | null>(null);
+  useEffect(() => {
+    if (!summonTab || lastSummon.current === summonTab.id) return;
+    lastSummon.current = summonTab.id;
+    if (summonTab.tab === "chat" && !hasChat) return;
+    setTab(summonTab.tab);
+  }, [summonTab, hasChat]);
+
+  const counts: Record<Exclude<PanelTab, "chat">, number> = { files: files.length, terminal: runs.length, plan: todos.length, products: products.length };
+  // When the first thing comes into a panel that held nothing (and side chat is not active), it opens on that.
   const had = useRef(counts);
   useEffect(() => {
     const before = had.current;
     had.current = counts;
+    if (hasChat) return;
     // Something made for 本尊 is what the work was for: the panel turns to it when the first of it comes.
     if (before.products === 0 && counts.products > 0) return setTab("products");
     if (before.files + before.terminal + before.plan + before.products > 0) return;
-    const first = TABS.find((each) => before[each.id] === 0 && counts[each.id] > 0);
+    const first = TABS.find((each) => each.id !== "chat" && before[each.id] === 0 && counts[each.id] > 0);
     if (first) setTab(first.id);
-  }, [files.length, runs.length, todos.length, products.length]);
+  }, [hasChat, files.length, runs.length, todos.length, products.length]);
   // The steps done while the page was watched, for a moment: their ink is drawn through them as it happens.
   const [struck, setStruck] = useState<Set<string>>(new Set());
   const steps = useRef(new Map(todos.map((todo) => [todo.text, todo.status])));
@@ -385,8 +468,9 @@ export function SidePanel({ files, runs, todos, products, workspace, width, onRe
     setDragging(down);
   };
   const done = todos.filter((todo) => todo.status === "done").length;
+  const visibleTabs = hasChat ? [CHAT_TAB, ...TABS] : TABS;
   // After every hook: the strip and the panel must call the same ones, in the same order.
-  if (narrow) {
+  if (narrow && !hasChat) {
     return (
       <aside className="panel strip" aria-label="改动与终端">
         <div className="strip-tabs">
@@ -412,7 +496,7 @@ export function SidePanel({ files, runs, todos, products, workspace, width, onRe
     );
   }
   return (
-    <aside className="panel" aria-label="改动与终端">
+    <aside className={`panel ${hasChat ? "with-chat" : ""}`} aria-label={hasChat ? "侧边对话与面板" : "改动与终端"}>
       {/* The edge to drag: the panel is as wide as the pointer is far from the window's right side. */}
       <div
         className={`panel-edge ${dragging ? "dragging" : ""}`}
@@ -425,28 +509,36 @@ export function SidePanel({ files, runs, todos, products, workspace, width, onRe
           event.currentTarget.setPointerCapture(event.pointerId);
           hold(true);
         }}
-        onPointerMove={(event) => held.current && onResize(fitPanel(window.innerWidth - event.clientX))}
+        onPointerMove={(event) => held.current && onResize(fitPanel(window.innerWidth - event.clientX, sidebarWidth))}
         onPointerUp={() => hold(false)}
         onPointerCancel={() => hold(false)}
-        onDoubleClick={() => onResize(fitPanel(PANEL_WIDTH.initial))}
+        onDoubleClick={() => onResize(fitPanel(PANEL_WIDTH.initial, sidebarWidth))}
         onKeyDown={(event) => {
           // Left widens the panel, right narrows it: the edge moves the way the arrow points.
-          if (event.key === "ArrowLeft") onResize(fitPanel(width + 24));
-          if (event.key === "ArrowRight") onResize(fitPanel(width - 24));
+          if (event.key === "ArrowLeft") onResize(fitPanel(width + 24, sidebarWidth));
+          if (event.key === "ArrowRight") onResize(fitPanel(width - 24, sidebarWidth));
         }}
       />
       <div className="tabs">
         {/* Pictures to look at; each one's name is in its title and for a screen reader. */}
-        {TABS.map((each) => (
+        {visibleTabs.map((each) => (
           <button type="button" key={each.id} className="tab" aria-pressed={tab === each.id} title={each.title} onClick={() => setTab(each.id)}>
             {each.icon}
-            <span className="sr-only">{each.id === "plan" || each.id === "products" ? `${each.name} ` : each.name}</span>
+            {each.id === "chat" && <span className="tab-word">对话</span>}
+            <span className="sr-only">{each.id === "chat" ? "" : each.id === "plan" || each.id === "products" ? `${each.name} ` : each.name}</span>
+            {each.id === "chat" && chatStatus === "waiting_approval" && <span className="seal small">候</span>}
+            {each.id === "chat" && chatStatus === "running" && <span className="dot busy" title="运功中" />}
             {each.id === "plan" && todos.length > 0 && <span className="count">{`${done}/${todos.length}`}</span>}
             {each.id === "products" && products.length > 0 && <span className="count">{products.length}</span>}
           </button>
         ))}
       </div>
-      {tab === "plan" ? (
+      {hasChat && (
+        <div className="side-chat-pane" style={{ display: tab === "chat" ? "flex" : "none" }}>
+          {chatPane}
+        </div>
+      )}
+      {tab === "chat" && hasChat ? null : tab === "plan" ? (
         <div className="panel-body">
           <div className="panel-head">
             <h2>分身的计划</h2>
@@ -514,10 +606,12 @@ export function SidePanel({ files, runs, todos, products, workspace, width, onRe
           {files.length === 0 && <p className="muted">分身还没有改过文件。</p>}
           <div className="file-list">
             {files.map((file) => (
-              <FileRow key={file.path} file={file} onOpenFile={onOpenFile} />
+              <FileRow key={file.path} file={file} onOpenFile={onOpenFile} onInspectFile={onInspectFile} />
             ))}
           </div>
         </div>
+      ) : terminalPane ? (
+        <div className="side-terminal-host">{terminalPane}</div>
       ) : (
         <div className="panel-body">
           {runs.length === 0 && <p className="muted">分身还没有运行过命令。</p>}

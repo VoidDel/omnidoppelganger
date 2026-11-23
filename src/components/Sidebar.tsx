@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { SessionItem } from "../lib/types";
 import { ago } from "../lib/when";
 import { Logo } from "./Backdrop";
@@ -6,11 +6,24 @@ import { Light } from "./Light";
 
 const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 
+export type SidebarTab = "sessions" | "files" | "git";
+
+export const SIDEBAR_WIDTH = { initial: 236, least: 210, most: 440 };
+export const fitSidebar = (width: number) => Math.round(Math.min(Math.max(width, SIDEBAR_WIDTH.least), SIDEBAR_WIDTH.most));
+
 export interface SidebarProps {
   sessions: SessionItem[];
   activeId: string | null;
   /** What the main area shows: a conversation, or one of the pages reached from the foot of this list. */
   page: "chat" | "settings" | "schedules" | "mcp" | "skills";
+  /** Optional mode switcher when a project 洞府 is active (`分身 | 文件 | Git`). */
+  tab?: SidebarTab;
+  onTab?: (tab: SidebarTab) => void;
+  filesPane?: ReactNode;
+  gitPane?: ReactNode;
+  gitCount?: number;
+  width?: number;
+  onResize?: (width: number) => void;
   /** Back to the home screen: no 分身 open. */
   onHome: () => void;
   onMcp: () => void;
@@ -67,10 +80,33 @@ export const CHAT_ICON = (
   </svg>
 );
 
-export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSkills, onSchedules, onChat, onOpen, onNew, onNewIn, onSettings, onSearch }: SidebarProps) {
+export function Sidebar({
+  sessions,
+  activeId,
+  page,
+  tab = "sessions",
+  onTab,
+  filesPane,
+  gitPane,
+  gitCount = 0,
+  width = SIDEBAR_WIDTH.initial,
+  onResize,
+  onHome,
+  onMcp,
+  onSkills,
+  onSchedules,
+  onChat,
+  onOpen,
+  onNew,
+  onNewIn,
+  onSettings,
+  onSearch,
+}: SidebarProps) {
   const now = useNow(30_000);
   const [folded, toggleFolded] = useFolded();
   const [query, setQuery] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const held = useRef(false);
   /** The sessions the search found; null while nothing is searched for. */
   const [found, setFound] = useState<Set<string> | null>(null);
   useEffect(() => {
@@ -104,15 +140,88 @@ export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSkills, onS
   const titleOf = (session: SessionItem) => session.title || (session.parent ? "子分身" : "新分身");
   // Those waiting for 本尊 stand at the head of the list wherever they are in it, but for the one already on screen.
   const waiting = sessions.filter((session) => session.status === "waiting_approval" && !(page === "chat" && session.id === activeId));
+  const showSwitcher = page === "chat" && !!filesPane && !!onTab;
+  const activeTab: SidebarTab = showSwitcher ? (tab === "git" && !gitPane ? "sessions" : tab) : "sessions";
+
   return (
-    <nav className="sidebar" aria-label="会话">
+    <nav className="sidebar" aria-label="侧边导航">
+      {onResize && (
+        <div
+          className={`sidebar-edge ${dragging ? "dragging" : ""}`}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整左侧栏宽度，双击恢复"
+          aria-valuenow={width}
+          tabIndex={0}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            held.current = true;
+            setDragging(true);
+          }}
+          onPointerMove={(e) => held.current && onResize(fitSidebar(e.clientX))}
+          onPointerUp={() => {
+            held.current = false;
+            setDragging(false);
+          }}
+          onPointerCancel={() => {
+            held.current = false;
+            setDragging(false);
+          }}
+          onDoubleClick={() => onResize(SIDEBAR_WIDTH.initial)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowRight") onResize(fitSidebar(width + 24));
+            if (e.key === "ArrowLeft") onResize(fitSidebar(width - 24));
+          }}
+        />
+      )}
       {/* The name over the door is the way back to the home screen. */}
       <button type="button" className="brand" title="回到首页" aria-current={page === "chat" && !activeId ? "page" : undefined} onClick={onHome}>
         <Logo />
         <span>OmniDoppelganger</span>
       </button>
-      {/* Work in a folder, or just talk: a 分身 for a project, or one in the folder kept for conversations. */}
-      <div className="sidebar-new">
+      {showSwitcher && (
+        <div className="sidebar-modes" role="tablist" aria-label="左栏视图">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "sessions"}
+            className={`sidebar-mode ${activeTab === "sessions" ? "active" : ""}`}
+            onClick={() => onTab("sessions")}
+          >
+            分身
+            {waiting.length > 0 && <span className="seal small">候</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "files"}
+            className={`sidebar-mode ${activeTab === "files" ? "active" : ""}`}
+            onClick={() => onTab("files")}
+          >
+            文件
+          </button>
+          {gitPane && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "git"}
+              className={`sidebar-mode ${activeTab === "git" ? "active" : ""}`}
+              onClick={() => onTab("git")}
+            >
+              Git
+              {gitCount > 0 && <span className="mode-badge">{gitCount}</span>}
+            </button>
+          )}
+        </div>
+      )}
+      {activeTab === "files" && filesPane ? (
+        <div className="sidebar-pane">{filesPane}</div>
+      ) : activeTab === "git" && gitPane ? (
+        <div className="sidebar-pane">{gitPane}</div>
+      ) : (
+        <>
+          {/* Work in a folder, or just talk: a 分身 for a project, or one in the folder kept for conversations. */}
+          <div className="sidebar-new">
         <button type="button" className="button primary" onClick={onNew}>
           <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
             <path d="M8 3v10M3 8h10" />
@@ -232,6 +341,8 @@ export function Sidebar({ sessions, activeId, page, onHome, onMcp, onSkills, onS
           );
         })}
       </div>
+        </>
+      )}
       {/* The pages at the foot, close together: one group, apart from the 分身 above. */}
       <div className="sidebar-foot">
         <button type="button" className="row-button" aria-current={page === "skills" ? "page" : undefined} title="秘籍：分身遇到对得上的事才研读的做事说明" onClick={onSkills}>

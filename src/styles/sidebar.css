@@ -3,21 +3,31 @@
 .app {
   height: 100%;
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 236px) minmax(0, 1fr);
 }
 
 .app.with-panel {
-  grid-template-columns: 236px minmax(0, 1fr) var(--panel-width, 360px);
+  grid-template-columns: var(--sidebar-width, 236px) minmax(0, 1fr) var(--panel-width, 380px);
+}
+
+.app.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app.sidebar-hidden.with-panel {
+  grid-template-columns: minmax(0, 1fr) var(--panel-width, 380px);
 }
 
 .sidebar {
+  position: relative;
+  min-width: 0;
   min-height: 0;
   padding: 16px 12px;
   background: var(--bg-side);
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 /* A 分身 for a folder, the larger; beside it, one to talk to. */

@@ -3,7 +3,27 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Decision, Image, LanguageServerView, Mode, Picked, Reply, RestoredArtifact, RuntimeProgress, RuntimeView, Schedule, SessionItem, SessionView, Settings, SettingsView, SkillsView, UiEvent } from "./types";
+import type {
+  Decision,
+  FileView,
+  FoundFile,
+  Image,
+  LanguageServerView,
+  Mode,
+  Picked,
+  Reply,
+  RestoredArtifact,
+  RuntimeProgress,
+  RuntimeView,
+  Schedule,
+  SessionItem,
+  SessionView,
+  Settings,
+  SettingsView,
+  SkillsView,
+  TreeEntry,
+  UiEvent,
+} from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
@@ -96,6 +116,19 @@ export const api = {
   restoreArtifact: (id: string, path: string, snapshot: string, version: number) => invoke<RestoredArtifact>("restore_artifact", { id, path, snapshot, version }),
   /** Save a historical deliverable version as a sibling copy in the workspace (e.g. `report.v1.docx`). */
   saveArtifactCopy: (id: string, path: string, snapshot: string, version: number) => invoke<string>("save_artifact_copy", { id, path, snapshot, version }),
+  /** Workspace file explorer and read-only viewer commands, strictly confined to the session's workspace. */
+  listWorkspaceDir: (id: string, path = "", showHidden = true, showIgnored = true) =>
+    invoke<TreeEntry[]>("list_workspace_dir", { id, path, showHidden, showIgnored }),
+  searchWorkspaceFiles: (id: string, query: string, limit = 100) =>
+    invoke<FoundFile[]>("search_workspace_files", { id, query, limit }),
+  readWorkspaceFile: (id: string, path: string) => invoke<FileView>("read_workspace_file", { id, path }),
+  createWorkspaceEntry: (id: string, path: string, isDir: boolean) =>
+    invoke<string>("create_workspace_entry", { id, path, isDir }),
+  renameWorkspaceEntry: (id: string, from: string, to: string) =>
+    invoke<string>("rename_workspace_entry", { id, from, to }),
+  deleteWorkspaceEntry: (id: string, path: string) => invoke<void>("delete_workspace_entry", { id, path }),
+  openWorkspaceEntry: (id: string, path: string, reveal: boolean) =>
+    invoke<string>("open_workspace_entry", { id, path, reveal }),
   /** A picture the session's 分身 wrote, either from a recorded `snapshot` or as it is now on disk. */
   picture: (id: string, path: string, snapshot?: string) => invoke<Image>("picture", { id, path, snapshot: snapshot ?? null }),
   /** Ask for a folder with the system dialog, titled `title`. Resolves null when the user closes it. */
