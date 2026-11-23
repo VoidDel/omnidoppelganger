@@ -18,6 +18,9 @@ import type {
   LanguageServerView,
   Mode,
   Picked,
+  PtyExitPayload,
+  PtyInfo,
+  PtyOutputPayload,
   Reply,
   RestoredArtifact,
   RuntimeProgress,
@@ -151,6 +154,17 @@ export const api = {
   gitLog: (id: string, limit = 30) => invoke<GitCommitItem[]>("git_log", { id, limit }),
   gitCommitFiles: (id: string, commit: string) => invoke<GitFile[]>("git_commit_files", { id, commit }),
   gitSync: (id: string, action: "fetch" | "pull" | "push") => invoke<string>("git_sync", { id, action }),
+  /** Interactive side-panel PTY shell commands and event listeners. */
+  ptySpawn: (id: string, cols = 80, rows = 24) => invoke<PtyInfo>("pty_spawn", { id, cols, rows }),
+  ptyList: (id: string) => invoke<PtyInfo[]>("pty_list", { id }),
+  ptyWrite: (ptyId: string, data: string) => invoke<void>("pty_write", { ptyId, data }),
+  ptyResize: (ptyId: string, cols: number, rows: number) => invoke<void>("pty_resize", { ptyId, cols, rows }),
+  ptyClear: (ptyId: string) => invoke<void>("pty_clear", { ptyId }),
+  ptyClose: (ptyId: string) => invoke<void>("pty_close", { ptyId }),
+  onPtyOutput: (handler: (payload: PtyOutputPayload) => void) =>
+    listen<PtyOutputPayload>("pty-output", (event) => handler(event.payload)),
+  onPtyExit: (handler: (payload: PtyExitPayload) => void) =>
+    listen<PtyExitPayload>("pty-exit", (event) => handler(event.payload)),
   /** A picture the session's 分身 wrote, either from a recorded `snapshot` or as it is now on disk. */
   picture: (id: string, path: string, snapshot?: string) => invoke<Image>("picture", { id, path, snapshot: snapshot ?? null }),
   /** Ask for a folder with the system dialog, titled `title`. Resolves null when the user closes it. */

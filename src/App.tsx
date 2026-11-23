@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Desk } from "./components/Desk";
 import { Guard } from "./components/Guard";
 import { Jump } from "./components/Jump";
@@ -17,6 +17,8 @@ import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { Workbench, type WorkbenchTab } from "./components/Workbench";
+
+const TerminalPane = lazy(() => import("./components/TerminalPane"));
 import { isSetUp } from "./lib/providers";
 import { api } from "./lib/api";
 import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, type StreamBlock } from "./lib/fold";
@@ -621,10 +623,12 @@ export default function App() {
   const quoteIntoChat = useCallback(
     (quoteText: string) => {
       setSeed({ id: Date.now(), text: quoteText, append: true });
-      setPanel((cur) => ({ ...cur, hidden: false }));
-      setSummonPanelTab({ id: Date.now(), tab: "chat" });
+      if (showWorkbench) {
+        setPanel((cur) => ({ ...cur, hidden: false }));
+        setSummonPanelTab({ id: Date.now(), tab: "chat" });
+      }
     },
-    [setPanel],
+    [showWorkbench, setPanel],
   );
 
   const attachIntoChat = useCallback(
@@ -1146,6 +1150,18 @@ export default function App() {
             frozen={!!replay}
             chatPane={showWorkbench ? conversationPane : undefined}
             chatStatus={state.status}
+            terminalPane={
+              active && !replay ? (
+                <Suspense fallback={<div className="viewer-placeholder muted">正在加载终端…</div>}>
+                  <TerminalPane
+                    sessionId={active.id}
+                    runs={runs}
+                    onSendToChat={quoteIntoChat}
+                    onError={fail}
+                  />
+                </Suspense>
+              ) : undefined
+            }
             summonTab={summonPanelTab}
             onInspectFile={isProjectSession ? (relPath) => openWorkbenchFile(relPath, false) : undefined}
             onOpenFile={openFile}

@@ -1,6 +1,8 @@
 //! The desktop shell: Tauri commands over `odg-core`, and one event channel
 //! that carries every session's log, stream, and status events to the window.
 
+mod pty;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -40,6 +42,8 @@ struct App {
     mcp: Arc<McpHub>,
     /// The language servers `code_nav` started, shared by every session.
     lsp: Arc<odg_core::lsp::LspHub>,
+    /// Interactive pseudo-terminals opened in the side panel, grouped by session.
+    pty: Arc<pty::PtyHub>,
     llm: Arc<Router>,
     /// Sessions opened since the app started. A session stays here so its turn keeps running while another is shown.
     sessions: Mutex<HashMap<String, Session<Router>>>,
@@ -687,6 +691,55 @@ async fn git_sync(app: State<'_, App>, id: String, action: String) -> Result<Str
     odg_core::git::sync(&workspace, &action).await
 }
 
+#[tauri::command]
+async fn pty_spawn(handle: tauri::AppHandle, app: State<'_, App>, id: String, cols: u16, rows: u16) -> Result<pty::PtyInfo, String> {
+    let workspace = session_workspace(&app, &id)?;
+    let hub = app.pty.clone();
+    let out_handle = handle.clone();
+    let exit_handle = handle;
+    tokio::task::spawn_blocking(move || {
+        hub.spawn(
+            id,
+            &workspace,
+            cols,
+            rows,
+            move |payload| {
+                let _ = out_handle.emit(pty::PTY_OUTPUT_EVENT, payload);
+            },
+            move |payload| {
+                let _ = exit_handle.emit(pty::PTY_EXIT_EVENT, payload);
+            },
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn pty_list(app: State<'_, App>, id: String) -> Vec<pty::PtyInfo> {
+    app.pty.list(&id)
+}
+
+#[tauri::command]
+fn pty_write(app: State<'_, App>, pty_id: String, data: String) -> Result<(), String> {
+    app.pty.write(&pty_id, &data)
+}
+
+#[tauri::command]
+fn pty_resize(app: State<'_, App>, pty_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    app.pty.resize(&pty_id, cols, rows)
+}
+
+#[tauri::command]
+fn pty_clear(app: State<'_, App>, pty_id: String) {
+    app.pty.clear_backlog(&pty_id);
+}
+
+#[tauri::command]
+fn pty_close(app: State<'_, App>, pty_id: String) {
+    app.pty.close(&pty_id);
+}
+
 /// What the page shows of the document runtime: how it stands, and what LibreOffice it would use.
 #[derive(Serialize)]
 struct RuntimeView {
@@ -959,6 +1012,7 @@ async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
     // Dropping a live session closes its handle on the log, which Windows needs before the file can go.
     // The session itself goes first: it holds its subagents' sessions open.
     for id in std::iter::once(&id).chain(&subagents) {
+        app.pty.close_session(id);
         if let Some(session) = sessions.remove(id) {
             session.kill_jobs();
         }
@@ -1159,7 +1213,8 @@ pub fn run() {
                 });
             }
             let lsp = Arc::new(odg_core::lsp::LspHub::new(home.join("lsp")));
-            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, lsp, llm, sessions: Mutex::new(HashMap::new()), events });
+            let pty = Arc::new(pty::PtyHub::new());
+            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, lsp, pty, llm, sessions: Mutex::new(HashMap::new()), events });
 
             // The clock: whatever has come due is started, with or without a window to show it in.
             let handle = app.handle().clone();
@@ -1229,6 +1284,12 @@ pub fn run() {
             git_log,
             git_commit_files,
             git_sync,
+            pty_spawn,
+            pty_list,
+            pty_write,
+            pty_resize,
+            pty_clear,
+            pty_close,
             picture,
             runtime_status,
             install_runtime,
@@ -1257,9 +1318,10 @@ pub fn run() {
                 for session in app.sessions.lock().unwrap().values() {
                     session.kill_jobs();
                 }
-                // Ends the servers started as processes.
+                // Ends the servers and PTY shells started as processes.
                 app.mcp.shutdown();
                 app.lsp.shutdown();
+                app.pty.shutdown();
             }
         });
 }

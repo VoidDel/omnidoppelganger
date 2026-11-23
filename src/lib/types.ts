@@ -590,3 +590,25 @@ export interface GitCommitResult {
   branch: string | null;
 }
 
+export interface PtyInfo {
+  id: string;
+  session_id: string;
+  title: string;
+  shell: string;
+  cwd: string;
+  exited: number | null;
+  backlog: string;
+}
+
+export interface PtyOutputPayload {
+  id: string;
+  session_id: string;
+  data: string;
+}
+
+export interface PtyExitPayload {
+  id: string;
+  session_id: string;
+  exit_code: number | null;
+}
+
