@@ -45,6 +45,9 @@ const SUBAGENT_READ_ONLY: &str = "\n- You are restricted to read-only inspection
 /// What a session started by a schedule is told on top of the general prompt.
 const SCHEDULED: &str = "\n\nA schedule the user set up started this session, and the first message is the task it carries. The user may not be at the computer.\n- Do not ask a question and wait for the answer. Where the task is unclear, take the cautious reading and say which you took.\n- A tool call that needs approval waits until the user is back, so prefer what you can do without one.\n- End with a report for the user to read later: what you did, what you found, and what needs their attention.";
 
+/// What a side conversation (旁聊) is told on top of the general prompt; see [`crate::aside`].
+const ASIDE: &str = "\n\nThis session is a side conversation: the user talks to you here while another agent, the main agent, works on a task in this same workspace, so as not to interrupt it.\n- You are read-only. Do not create, edit, delete, or move files, and run only commands that read. The main agent may be changing files as you look: read a file again before relying on what it held.\n- A user message may be preceded by a briefing on the main agent, written by the app: what it was asked, its plan, its latest steps and words, and how it stands. Use it to answer questions about what the main agent is doing and why; read the files it touched when that helps. The briefing is not the user speaking.\n- Do not take over the main agent's task. When the user wants something done, say what you would suggest; they can forward your answer to the main agent with one click.\n- Keep answers short and to the point: the user reads them in a narrow side panel.";
+
 /// Who gave a session its first message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
@@ -53,6 +56,8 @@ pub enum Origin {
     Agent,
     /// A schedule; see [`crate::schedule`].
     Schedule,
+    /// The user, in a side conversation beside another session; see [`crate::aside`].
+    Aside,
 }
 
 /// The system prompt. It changes only when the project's instructions do,
@@ -64,6 +69,7 @@ pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &s
 
 pub(super) fn build_system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], origin: Origin, chat: bool, read_only: bool) -> String {
     let subagent = origin == Origin::Agent;
+    let aside = origin == Origin::Aside;
     let (_, _, shell) = tools::shell();
     let project = match instructions {
         Some((name, content)) => format!(
@@ -89,8 +95,8 @@ pub(super) fn build_system_prompt(workspace: &std::path::Path, instructions: Opt
         workspace.display(),
         std::env::consts::OS,
         code_nav = if chat { "" } else { " In code, `code_nav` finds where a symbol is defined and used more surely than `search`." },
-        delegating = if subagent || chat { "" } else { "\n- When the work splits into parts that do not depend on each other, hand the parts to subagents with `delegate`: they work at the same time and report back to you." },
-        deliver = if subagent { "" } else { "\n- When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation." },
+        delegating = if subagent || chat || aside { "" } else { "\n- When the work splits into parts that do not depend on each other, hand the parts to subagents with `delegate`: they work at the same time and report back to you." },
+        deliver = if subagent || aside { "" } else { "\n- When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation." },
     );
     let offered = if skills.is_empty() {
         String::new()
@@ -105,9 +111,11 @@ pub(super) fn build_system_prompt(workspace: &std::path::Path, instructions: Opt
         Origin::User => "",
         Origin::Agent => SUBAGENT,
         Origin::Schedule => SCHEDULED,
+        Origin::Aside => ASIDE,
     };
-    let extending = if subagent { "" } else { EXTENDING };
-    let readonly = if read_only { SUBAGENT_READ_ONLY } else { "" };
+    let extending = if subagent || aside { "" } else { EXTENDING };
+    // A side conversation's own words say it is read-only; the subagent's line would speak of a task it lacks.
+    let readonly = if read_only && !aside { SUBAGENT_READ_ONLY } else { "" };
     general + if chat { CHAT } else { "" } + extending + told + readonly + &project + &offered
 }
 

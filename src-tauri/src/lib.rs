@@ -49,7 +49,7 @@ struct App {
     watcher: Arc<watcher::WorkspaceWatcher>,
     llm: Arc<Router>,
     /// Sessions opened since the app started. A session stays here so its turn keeps running while another is shown.
-    sessions: Mutex<HashMap<String, Session<Router>>>,
+    sessions: Arc<Mutex<HashMap<String, Session<Router>>>>,
     events: UnboundedSender<UiEvent>,
 }
 
@@ -132,7 +132,41 @@ impl App {
             painter: Some(Arc::new(move || painting.painter())),
             lsp: Some(self.lsp.clone()),
         };
-        Session::new(log, self.llm.clone(), Arc::new(tuning), services, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())
+        let session = Session::new(log, self.llm.clone(), Arc::new(tuning), services, self.events.clone(), tokio::runtime::Handle::current()).map_err(|error| error.to_string())?;
+        // A side conversation is told how the session it is beside is getting on, as that session stands when each message joins.
+        if let Some(main) = session.aside().map(str::to_string) {
+            let (sessions, store) = (self.sessions.clone(), self.store.clone());
+            session.set_brief_source(Arc::new(move || {
+                let live = sessions.lock().unwrap().get(&main).cloned();
+                let (title, status, events) = match live {
+                    Some(main) => (main.summary().title, main.status(), main.snapshot()),
+                    // Not opened since the app started: nothing of it is running, and its log says the rest.
+                    None => {
+                        let events = store.read(&main).ok()?;
+                        (odg_core::session::summarize(&events).title, Status::Idle, events)
+                    }
+                };
+                Some(odg_core::aside::brief(&title, status, &events))
+            }));
+        }
+        Ok(session)
+    }
+
+    /// The side conversation beside session `main`, if it has one: among the live sessions, or else in the store.
+    fn find_aside(&self, main: &str) -> Option<String> {
+        let live = self.all_live();
+        if let Some(id) = live.iter().find(|(_, session)| session.aside() == Some(main)).map(|(id, _)| id.clone()) {
+            return Some(id);
+        }
+        self.store.ids().into_iter().filter(|id| !live.contains_key(id)).find(|id| self.store.peek(id).is_ok_and(|summary| summary.aside.as_deref() == Some(main)))
+    }
+
+    /// Whether session `id` is a side conversation, which the list of sessions leaves out.
+    fn is_aside(&self, id: &str, live: &HashMap<String, Session<Router>>) -> bool {
+        match live.get(id) {
+            Some(session) => session.aside().is_some(),
+            None => self.store.peek(id).is_ok_and(|summary| summary.aside.is_some()),
+        }
     }
 
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
@@ -164,7 +198,7 @@ impl App {
             }
             false => (workspace, None),
         };
-        let new = NewSession { workspace: &workspace, provider: &settings.provider, model: &settings.model, parent: None, worktree: made.clone(), schedule };
+        let new = NewSession { workspace: &workspace, provider: &settings.provider, model: &settings.model, parent: None, worktree: made.clone(), schedule, aside: None };
         let log = self.store.create_with(new).map_err(|error| {
             // A worktree without its session would never be found again.
             if let Some(made) = &made {
@@ -270,9 +304,58 @@ async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionItem>, String> 
             // A stored session has no running turn: one left open by a crash is closed when it is opened.
             None => app.store.peek(&id).ok().map(|summary| app.item(SessionSummary { turn_open: false, awaiting_approval: false, ..summary }, Status::Idle)),
         })
+        // A side conversation is reached from the session it is beside, not listed by itself.
+        .filter(|item| item.summary.aside.is_none())
         .collect();
     items.sort_by(|a, b| b.summary.updated_at.cmp(&a.summary.updated_at));
     Ok(items)
+}
+
+/// The side conversation (旁聊) beside session `id`, if it has one.
+#[tauri::command]
+async fn aside_session(app: State<'_, App>, id: String) -> Result<Option<SessionView>, String> {
+    match app.find_aside(&id) {
+        Some(aside) => Ok(Some(view(&app, &app.live(&aside)?))),
+        None => Ok(None),
+    }
+}
+
+/// The side conversation beside session `id`, made now when it has none: a read-only session in the same
+/// folder, on the same provider, model and effort, that is told how `id` is getting on before each message.
+#[tauri::command]
+async fn start_aside(app: State<'_, App>, id: String) -> Result<SessionView, String> {
+    if let Some(aside) = app.find_aside(&id) {
+        return Ok(view(&app, &app.live(&aside)?));
+    }
+    let main = app.live(&id)?;
+    let summary = main.summary();
+    if summary.parent.is_some() || summary.aside.is_some() {
+        return Err("only a session the user started can have a side conversation".to_string());
+    }
+    let new = NewSession { workspace: std::path::Path::new(&summary.workspace), provider: &summary.provider, model: &summary.model, parent: None, worktree: None, schedule: None, aside: Some(&id) };
+    let log = app.store.create_with(new).map_err(|error| error.to_string())?;
+    let session = app.wrap(log)?;
+    // Read-only whatever its mode: in auto, the commands that only read run without asking.
+    session.set_mode(Mode::Auto);
+    if let Some(effort) = summary.effort {
+        let _ = session.set_effort(&effort);
+    }
+    app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
+    Ok(view(&app, &session))
+}
+
+/// Take away the side conversation beside session `id`, to start it over. Fails while it is answering.
+#[tauri::command]
+async fn reset_aside(app: State<'_, App>, id: String) -> Result<(), String> {
+    let Some(aside) = app.find_aside(&id) else { return Ok(()) };
+    let mut sessions = app.sessions.lock().unwrap();
+    if sessions.get(&aside).is_some_and(|session| session.status() != Status::Idle) {
+        return Err("the side conversation is answering; stop it before starting it over".to_string());
+    }
+    if let Some(session) = sessions.remove(&aside) {
+        session.kill_jobs();
+    }
+    app.store.delete(&aside).map_err(|error| error.to_string())
 }
 
 /// Start a session in `workspace`. With `isolated`, in a Git worktree made for
@@ -1013,8 +1096,8 @@ async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
         .ids()
         .into_iter()
         .filter(|other| match live.get(other) {
-            Some(session) => session.parent() == Some(id.as_str()),
-            None => app.store.peek(other).is_ok_and(|summary| summary.parent.as_deref() == Some(id.as_str())),
+            Some(session) => session.parent() == Some(id.as_str()) || session.aside() == Some(id.as_str()),
+            None => app.store.peek(other).is_ok_and(|summary| summary.parent.as_deref() == Some(id.as_str()) || summary.aside.as_deref() == Some(id.as_str())),
         })
         .collect();
     drop(live);
@@ -1022,10 +1105,10 @@ async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
     let mut sessions = app.sessions.lock().unwrap();
     let busy = |session: &Session<Router>| session.status() != Status::Idle || session.children().iter().any(|child| child.status() != Status::Idle);
     if std::iter::once(&id).chain(&subagents).filter_map(|id| sessions.get(id)).any(busy) {
-        return Err("the agent of this session, or one of its subagents, is working; stop it before deleting the session".to_string());
+        return Err("the agent of this session, one of its subagents, or its side conversation is working; stop it before deleting the session".to_string());
     }
     // Dropping a live session closes its handle on the log, which Windows needs before the file can go.
-    // The session itself goes first: it holds its subagents' sessions open.
+    // The session itself goes first: it holds its subagents' sessions open. Its side conversation goes with it.
     for id in std::iter::once(&id).chain(&subagents) {
         app.pty.close_session(id);
         if let Some(session) = sessions.remove(id) {
@@ -1048,6 +1131,7 @@ async fn search_sessions(app: State<'_, App>, query: String) -> Result<Vec<Strin
         .store
         .ids()
         .into_iter()
+        .filter(|id| !app.is_aside(id, &live))
         .filter(|id| match live.get(id) {
             Some(session) => odg_core::session::matches(&session.snapshot(), &query),
             None => app.store.search(id, &query),
@@ -1230,7 +1314,7 @@ pub fn run() {
             let lsp = Arc::new(odg_core::lsp::LspHub::new(home.join("lsp")));
             let pty = Arc::new(pty::PtyHub::new());
             let watcher = Arc::new(watcher::WorkspaceWatcher::new());
-            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, lsp, pty, watcher, llm, sessions: Mutex::new(HashMap::new()), events });
+            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, lsp, pty, watcher, llm, sessions: Arc::new(Mutex::new(HashMap::new())), events });
 
             // The clock: whatever has come due is started, with or without a window to show it in.
             let handle = app.handle().clone();
@@ -1253,6 +1337,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_sessions,
+            aside_session,
+            start_aside,
+            reset_aside,
             create_session,
             preset_workspace,
             attach_files,

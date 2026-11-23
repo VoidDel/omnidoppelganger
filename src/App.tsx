@@ -4,6 +4,7 @@ import { Guard } from "./components/Guard";
 import { Jump } from "./components/Jump";
 import { McpPage } from "./components/Mcp";
 import { SkillsPage } from "./components/Skills";
+import { AsidePane } from "./components/AsidePane";
 import { Logo, Mountains } from "./components/Backdrop";
 import { Composer, type ComposerDraft } from "./components/Composer";
 import { DiffViewer } from "./components/DiffViewer";
@@ -21,6 +22,7 @@ import { Workbench, WorkbenchDock, type WorkbenchTab } from "./components/Workbe
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
 import { isSetUp } from "./lib/providers";
 import { api } from "./lib/api";
+import { forwarded } from "./lib/aside";
 import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
@@ -554,9 +556,8 @@ export default function App() {
       });
       setActiveTabId(id);
       setInWorkbench(true);
-      setPanel((cur) => ({ width: Math.max(cur.width, 400), hidden: false }));
     },
-    [setPanel],
+    [],
   );
 
   const openWorkbenchDiff = useCallback(
@@ -583,9 +584,8 @@ export default function App() {
       });
       setActiveTabId(id);
       setInWorkbench(true);
-      setPanel((cur) => ({ width: Math.max(cur.width, 400), hidden: false }));
     },
-    [setPanel],
+    [],
   );
 
   const closeWorkbenchTab = useCallback((id: string) => {
@@ -638,33 +638,52 @@ export default function App() {
     return cur?.kind === "file" ? cur.path : null;
   }, [wbTabs, activeTabId]);
 
+  const canAside = !!active && !active.parent && !replay;
+  const showPanel = inChat && !!active && !panel.hidden;
+  // With nothing in it, the panel stands as a strip, until a tab there is pressed; the next 分身 starts again.
+  const [peek, setPeek] = useState(false);
+  useEffect(() => setPeek(false), [state.activeId]);
+  const strip = files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
+
+  /** Words or files for the side conversation's box: what is quoted from the code while the code is in the middle. */
+  const [asideSeed, setAsideSeed] = useState<{ id: number; text?: string; append?: boolean; attachPaths?: string[] } | null>(null);
+  /** What is quoted or attached goes to the box on screen: the side conversation's while the code is in the middle. */
   const quoteIntoChat = useCallback(
     (quoteText: string) => {
-      setSeed({ id: Date.now(), text: quoteText, append: true });
-      if (showWorkbench) {
+      if (showWorkbench && canAside) {
+        setAsideSeed({ id: Date.now(), text: quoteText, append: true });
         setPanel((cur) => ({ ...cur, hidden: false }));
+        setPeek(true);
         setSummonPanelTab({ id: Date.now(), tab: "chat" });
+      } else {
+        if (showWorkbench) setInWorkbench(false);
+        setSeed({ id: Date.now(), text: quoteText, append: true });
       }
     },
-    [showWorkbench, setPanel],
+    [showWorkbench, canAside, setPanel],
   );
 
   const attachIntoChat = useCallback(
     (absPath: string) => {
-      setSeed({ id: Date.now(), attachPaths: [absPath] });
-      if (showWorkbench) {
+      if (showWorkbench && canAside) {
+        setAsideSeed({ id: Date.now(), attachPaths: [absPath] });
         setPanel((cur) => ({ ...cur, hidden: false }));
+        setPeek(true);
         setSummonPanelTab({ id: Date.now(), tab: "chat" });
+      } else {
+        if (showWorkbench) setInWorkbench(false);
+        setSeed({ id: Date.now(), attachPaths: [absPath] });
       }
     },
-    [showWorkbench, setPanel],
+    [showWorkbench, canAside, setPanel],
   );
 
-  const showPanel = inChat && !!active && (!panel.hidden || showWorkbench);
-  // With nothing in it, the panel stands as a strip, until a tab there is pressed; never a strip while side chat is docked.
-  const [peek, setPeek] = useState(false);
-  useEffect(() => setPeek(false), [state.activeId]);
-  const strip = !showWorkbench && files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
+  const summonAside = useCallback(() => {
+    dispatch({ type: "page", page: "chat" });
+    setPanel((cur) => ({ ...cur, hidden: false }));
+    setPeek(true);
+    setSummonPanelTab({ id: Date.now(), tab: "chat" });
+  }, [setPanel]);
 
   const summonTerminal = useCallback(() => {
     dispatch({ type: "page", page: "chat" });
@@ -743,6 +762,14 @@ export default function App() {
         run: () => {
           api.createSession(session.worktree?.origin ?? session.workspace, false).then((view) => dispatch({ type: "opened", view }), fail);
         },
+      },
+      {
+        name: "aside",
+        label: "旁聊",
+        aliases: ["旁聊", "侧聊"],
+        hint: "在右侧栏打开只读旁聊：不打断主分身，随时问进展、查代码",
+        unavailable: session.parent ? "子分身的会话没有独立旁聊" : undefined,
+        run: summonAside,
       },
       { name: "fork", label: "分叉", aliases: ["分叉"], hint: "分叉：另起一个分身，带着到现在的全部对话", unavailable: session.parent ? "子分身的会话不能分叉" : undefined, run: () => forkFrom() },
       {
@@ -1007,7 +1034,7 @@ export default function App() {
                   onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
                   onAskReview={() => {
                     send(REVIEW_TASK);
-                    if (showWorkbench) setSummonPanelTab({ id: Date.now(), tab: "chat" });
+                    if (showWorkbench) setInWorkbench(false);
                   }}
                   onNote={(note) => dispatch({ type: "note", note })}
                   onError={fail}
@@ -1122,21 +1149,11 @@ export default function App() {
               }
               sidebarHidden={sidebar.hidden}
               onToggleSidebar={() => setSidebar((cur) => ({ ...cur, hidden: false }))}
-              panelHidden={panel.hidden && !showWorkbench}
-              onTogglePanel={() => {
-                if (showWorkbench) {
-                  setInWorkbench(false);
-                } else {
-                  setPanel({ ...panel, hidden: !panel.hidden });
-                }
-              }}
+              panelHidden={panel.hidden}
+              onTogglePanel={() => setPanel({ ...panel, hidden: !panel.hidden })}
               hasWorkbenchTabs={isProjectSession && wbTabs.length > 0 && !replay}
               inWorkbench={showWorkbench}
-              onToggleWorkbench={() => {
-                const next = !inWorkbench;
-                setInWorkbench(next);
-                if (next) setPanel((cur) => ({ width: Math.max(cur.width, 400), hidden: false }));
-              }}
+              onToggleWorkbench={() => setInWorkbench((cur) => !cur)}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
               onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
             />
@@ -1188,7 +1205,6 @@ export default function App() {
                     onOpenTab={(id) => {
                       setActiveTabId(id);
                       setInWorkbench(true);
-                      setPanel((cur) => ({ width: Math.max(cur.width, 400), hidden: false }));
                     }}
                     onCloseTab={closeWorkbenchTab}
                     onCloseAll={() => {
@@ -1262,6 +1278,17 @@ export default function App() {
                   },
                 ]
               : []),
+            ...(active && !active.parent
+              ? [
+                  {
+                    id: "aside",
+                    name: "旁聊",
+                    hint: "不打断主分身，在右侧栏另开只读对话问进展、查代码",
+                    seal: "旁",
+                    run: summonAside,
+                  },
+                ]
+              : []),
             ...(active
               ? [
                   {
@@ -1307,8 +1334,79 @@ export default function App() {
             onWiden={() => setPeek(true)}
             working={state.status === "running"}
             frozen={!!replay}
-            chatPane={showWorkbench ? conversationPane : undefined}
-            chatStatus={state.status}
+            renderAside={
+              canAside && active
+                ? (visible) => (
+                    <AsidePane
+                      key={active.id}
+                      main={active}
+                      visible={visible}
+                      sessions={state.sessions}
+                      onForward={(text) => {
+                        send(forwarded(text));
+                        if (state.status !== "idle") {
+                          dispatch({ type: "note", note: "已作为传音转给主分身，它做完眼下这一步就会收到。" });
+                        } else if (showWorkbench) {
+                          dispatch({ type: "note", note: "已转给主分身。" });
+                        }
+                      }}
+                      onError={fail}
+                      renderComposer={({ aside, status: asideStatus, usage: asideUsage, onItem, onSend: sendAside, onStop: stopAside, onCompact: compactAside }) => (
+                        <Composer
+                          key={aside.id}
+                          sessionKey={aside.id}
+                          drafts={draftsRef.current}
+                          status={asideStatus}
+                          providers={providers}
+                          listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isSetUp(state.settings!, known))}
+                          keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || !!providers.find((known) => known.id === provider)?.kind.startsWith("custom")}
+                          providerId={aside.provider}
+                          model={aside.model}
+                          effort={aside.effort ?? state.settings?.settings.effort ?? "high"}
+                          effortSet={aside.effort !== null}
+                          efforts={state.settings?.efforts ?? ["low", "medium", "high", "xhigh", "max"]}
+                          onEffort={(effort) => api.setEffort(aside.id, effort).then(onItem, fail)}
+                          listModels={api.listModels}
+                          onModel={(provider, model) => api.setModel(aside.id, provider, model).then(onItem, fail)}
+                          vision={aside.vision}
+                          mode={aside.mode}
+                          usage={asideUsage}
+                          contextLimit={aside.context_limit}
+                          contextCeiling={aside.context_ceiling}
+                          contextSetting={state.settings?.settings.context_limit ?? aside.context_limit}
+                          contextAuto={!!state.settings?.settings.context_auto}
+                          onLimit={(limit) => {
+                            if (state.settings)
+                              saved(api.saveSettings(limit === "auto" ? { ...state.settings.settings, context_auto: true } : { ...state.settings.settings, context_limit: limit, context_auto: false })).then(() => {
+                                refresh();
+                                api.asideSession(active.id).then((view) => {
+                                  if (!view) return;
+                                  const { events: _, ...item } = view;
+                                  onItem(item);
+                                }, () => undefined);
+                              });
+                          }}
+                          planReady={false}
+                          onMode={(mode) => api.setMode(aside.id, mode).then(onItem, fail)}
+                          onCarryOut={() => undefined}
+                          onSend={sendAside}
+                          onStop={stopAside}
+                          onCompact={compactAside}
+                          trustable={false}
+                          seed={asideSeed}
+                          commands={[]}
+                          acceptDrops={visible && showWorkbench}
+                          placeholder={
+                            state.status !== "idle"
+                              ? "主分身运功中，在此旁聊发问（只读，不打断它）…"
+                              : "在此旁聊发问（只读洞府，自动知晓主分身进展）…"
+                          }
+                        />
+                      )}
+                    />
+                  )
+                : undefined
+            }
             terminalPane={
               active && !replay ? (
                 <Suspense fallback={<div className="viewer-placeholder muted">正在加载终端…</div>}>

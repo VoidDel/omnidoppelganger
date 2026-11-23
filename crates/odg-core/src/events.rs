@@ -345,6 +345,10 @@ pub enum Event {
         /// copied from another session's log. Since format 10.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fork: Option<Fork>,
+        /// Id of the session this one is a side conversation (旁聊) beside: a read-only session the user talks
+        /// to while that one's agent works, told how it is getting on. Since format 20.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aside: Option<String>,
     },
     /// The project's own instructions for agents, read from a file at the
     /// top of the workspace when a turn started and found new or changed.
@@ -383,6 +387,11 @@ pub enum Event {
     SessionRenamed { title: String },
     #[serde(rename = "turn/start")]
     TurnStart { turn: u64 },
+    /// In a side conversation (旁聊): how the session it is beside was getting on when the user's next message
+    /// joined, written for the model. It goes ahead of that message's words in the request; a briefing like the
+    /// last one is not logged again. See [`crate::aside`]. Since format 20.
+    #[serde(rename = "aside/briefed")]
+    AsideBriefed { brief: String },
     #[serde(rename = "user/message")]
     UserMessage {
         text: String,

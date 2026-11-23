@@ -86,8 +86,17 @@ export const markdownPlugins = [rehypeHighlight];
  * in Markdown, so that pasted elsewhere they keep their lists, tables and code. Rendered again only when the words
  * change: parsing every block of a long conversation each time anything moves is what made the end of a turn stall.
  */
-export const ModelText = memo(function ModelText({ text }: { text: string }) {
+export const ModelText = memo(function ModelText({ text, onForward }: { text: string; onForward?: (text: string) => void }) {
   const [copied, copy] = useCopy();
+  const [forwarded, setForwarded] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handOver = () => {
+    if (!onForward) return;
+    onForward(text);
+    setForwarded(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setForwarded(false), 2400);
+  };
   return (
     <div className="model-text">
       <div className="prose">
@@ -96,6 +105,19 @@ export const ModelText = memo(function ModelText({ text }: { text: string }) {
         </Markdown>
       </div>
       <div className="said-tools">
+        {onForward && (
+          <button
+            type="button"
+            className={`said-forward ${forwarded ? "done" : ""}`}
+            title={forwarded ? "已转给主分身" : "把这段转给主分身：作为传音发过去，不打断它这一步"}
+            onClick={handOver}
+          >
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9.5 3.5 13.5 7.5 9.5 11.5M13.5 7.5H6a3.5 3.5 0 0 0-3.5 3.5v1.5" />
+            </svg>
+            {forwarded ? "已转给主分身" : "转给主分身"}
+          </button>
+        )}
         <button type="button" className={`said-copy ${copied ? "done" : ""}`} title={copied ? "已复制" : "复制这段（Markdown）"} onClick={() => copy(text)}>
           {copied ? (
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

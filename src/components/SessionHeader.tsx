@@ -188,7 +188,7 @@ export function SessionHeader({
               type="button"
               className="icon-button"
               aria-pressed={!!inWorkbench}
-              title={inWorkbench ? "切回对话居中视图（右侧收起侧边聊天）" : "切到代码工作台视图（中间看文件，右侧侧边聊天）"}
+              title={inWorkbench ? "切回对话居中视图" : "切到代码工作台视图"}
               onClick={onToggleWorkbench}
             >
               <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -198,7 +198,7 @@ export function SessionHeader({
               <span className="sr-only">{inWorkbench ? "切回对话居中" : "切到代码工作台"}</span>
             </button>
           )}
-          <button type="button" className="icon-button panel-toggle" aria-pressed={!panelHidden} title={panelHidden ? "展开右边的改动、终端、计划一栏" : "收起右边的改动、终端、计划一栏"} onClick={onTogglePanel}>
+          <button type="button" className="icon-button panel-toggle" aria-pressed={!panelHidden} title={panelHidden ? "展开右边的旁聊、改动、终端一栏" : "收起右边的旁聊、改动、终端一栏"} onClick={onTogglePanel}>
             {/* The window with its right-hand column: filled in while the column is showing. */}
             <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="3" width="12" height="10" rx="1.5" />

@@ -37,6 +37,12 @@ import type {
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
+  /** The side conversation (旁聊) beside a session, if it has one. */
+  asideSession: (id: string) => invoke<SessionView | null>("aside_session", { id }),
+  /** The side conversation beside a session, made now when it has none: read-only, briefed on the session before each message. */
+  startAside: (id: string) => invoke<SessionView>("start_aside", { id }),
+  /** Take away a session's side conversation, to start it over. Rejects while it is answering. */
+  resetAside: (id: string) => invoke<void>("reset_aside", { id }),
   /** Start a session in a folder; with `isolated`, in a Git worktree made for it, apart from the folder's own files. */
   createSession: (workspace: string, isolated = false) => invoke<SessionView>("create_session", { workspace, isolated }),
   /** Commit what a worktree session's checkout holds and merge it into the folder's branch. Rejects on a conflict, changing nothing. */

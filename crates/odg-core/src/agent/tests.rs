@@ -71,7 +71,7 @@ fn fixture_started_by(llm: Arc<ScriptedLlm>, schedule: Option<&str>) -> Fixture 
 fn fixture_with(llm: Arc<ScriptedLlm>, schedule: Option<&str>, sandbox: bool) -> Fixture {
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
-    let new = NewSession { workspace: workspace.path(), provider: "anthropic", model: "scripted", parent: None, worktree: None, schedule };
+    let new = NewSession { workspace: workspace.path(), provider: "anthropic", model: "scripted", parent: None, worktree: None, schedule, aside: None };
     let log = SessionStore::new(home.path()).create_with(new).unwrap();
     let (sender, events) = unbounded_channel();
     let limits = Arc::new(Mutex::new((u64::MAX, u64::MAX)));
@@ -1356,11 +1356,69 @@ async fn subagent_is_refused_withheld_tools_without_asking() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_side_conversation_is_read_only_and_briefed_on_the_main_session_before_each_new_message() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("notes.txt"), "keep\n").unwrap();
+    let script = vec![
+        calls(&[("e1", "edit_file", json!({ "path": "notes.txt", "old_string": "keep", "new_string": "gone" }))]),
+        says("It is fixing the lexer."),
+        says("Still the same."),
+        says("Now it runs the tests."),
+    ];
+    let llm = ScriptedLlm::new(script, None);
+    let new = NewSession { workspace: workspace.path(), provider: "anthropic", model: "scripted", parent: None, worktree: None, schedule: None, aside: Some("main-1") };
+    let log = SessionStore::new(home.path()).create_with(new).unwrap();
+    let (sender, _events) = unbounded_channel();
+    let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
+    let services = Services { grants: Arc::new(GrantStore::new(home.path().join("grants.json"))), mcp: None, skills: None, search: None, sandbox: None, chat: None, runtime: None, painter: None, lsp: None };
+    let session = Session::new(log, llm.clone(), tuning, services, sender, tokio::runtime::Handle::current()).unwrap();
+    assert_eq!(session.aside(), Some("main-1"));
+    let briefing = Arc::new(Mutex::new("[Briefing] fixing the lexer".to_string()));
+    let read = briefing.clone();
+    session.set_brief_source(Arc::new(move || Some(read.lock().unwrap().clone())));
+    // Even in bypass mode a side conversation only looks.
+    session.set_mode(Mode::Bypass);
+
+    session.send("what is it doing?".into());
+    session.wait_idle().await;
+    session.send("and now?".into());
+    session.wait_idle().await;
+    *briefing.lock().unwrap() = "[Briefing] running the tests".to_string();
+    session.send("now?".into());
+    session.wait_idle().await;
+
+    assert_eq!(std::fs::read_to_string(workspace.path().join("notes.txt")).unwrap(), "keep\n", "a side conversation changes no file");
+    let log = session.snapshot();
+    let briefs: Vec<&str> = log.iter().filter_map(|envelope| if let Event::AsideBriefed { brief } = &envelope.event { Some(brief.as_str()) } else { None }).collect();
+    // The same briefing is not logged twice in a row.
+    assert_eq!(briefs, ["[Briefing] fixing the lexer", "[Briefing] running the tests"]);
+    assert!(log.iter().all(|envelope| !matches!(envelope.event, Event::FilesMade { .. })));
+
+    let requests = llm.requests.lock().unwrap();
+    let named = |name: &str| requests[0].tools.iter().any(|tool| tool["name"] == name);
+    for withheld in ["edit_file", "write_file", "delete_file", "move_file", "delegate", "present_plan", "deliver_files", "install_skill", "add_mcp_server"] {
+        assert!(!named(withheld), "a side conversation should not be offered {withheld}");
+    }
+    for kept in ["read_file", "search", "find_files", "run_command", "ask_user"] {
+        assert!(named(kept), "a side conversation should still be offered {kept}");
+    }
+    assert!(requests[0].system.contains("This session is a side conversation") && !requests[0].system.contains("You are a subagent"));
+    // The briefing goes ahead of the user's words, in the same message.
+    let first_user = &requests[0].messages[0]["content"];
+    assert_eq!(first_user[0]["text"], "[Briefing] fixing the lexer");
+    assert_eq!(first_user[1]["text"], "what is it doing?");
+    let last = requests.last().unwrap();
+    let said: Vec<String> = last.messages.iter().filter(|message| message["role"] == "user").flat_map(|message| message["content"].as_array().cloned().unwrap_or_default()).filter_map(|block| block["text"].as_str().map(str::to_string)).collect();
+    assert!(said.ends_with(&["[Briefing] running the tests".to_string(), "now?".to_string()]), "{said:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn chat_session_trims_project_only_tools_and_prompt_references() {
     let home = tempfile::tempdir().unwrap();
     let chat_dir = tempfile::tempdir().unwrap();
     let llm = ScriptedLlm::new(vec![says("hello")], None);
-    let new = NewSession { workspace: chat_dir.path(), provider: "anthropic", model: "scripted", parent: None, worktree: None, schedule: None };
+    let new = NewSession { workspace: chat_dir.path(), provider: "anthropic", model: "scripted", parent: None, worktree: None, schedule: None, aside: None };
     let log = SessionStore::new(home.path()).create_with(new).unwrap();
     let (sender, _events) = unbounded_channel();
     let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });
@@ -1409,7 +1467,7 @@ async fn read_only_subagent_omits_write_tools_and_refuses_mutations_even_in_bypa
     ];
     let llm = ScriptedLlm::new(script, None);
     let worktree = crate::events::Worktree { origin: workspace.path().to_string_lossy().into_owned(), checkout: workspace.path().to_string_lossy().into_owned(), branch: "odg/test".into() };
-    let new = NewSession { workspace: workspace.path(), provider: "anthropic", model: "scripted", parent: None, worktree: Some(worktree), schedule: None };
+    let new = NewSession { workspace: workspace.path(), provider: "anthropic", model: "scripted", parent: None, worktree: Some(worktree), schedule: None, aside: None };
     let log = SessionStore::new(home.path()).create_with(new).unwrap();
     let (sender, _events) = unbounded_channel();
     let tuning = Arc::new(|_: &str, _: &str| Tuning { effort: "high".to_string(), context_limit: u64::MAX, context_window: u64::MAX, guardian: None, approval_wait: None });

@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type ChangedFile, type Product, type ProductVersion, type ToolItem, fileSize } from "../lib/fold";
-import type { RestoredArtifact, Status, Todo } from "../lib/types";
+import type { RestoredArtifact, Todo } from "../lib/types";
 import { Light } from "./Light";
 import { Diff } from "./Markdown";
 
@@ -14,8 +14,8 @@ export type PanelTab = "chat" | "files" | "terminal" | "plan" | "products";
 
 const CHAT_TAB: { id: PanelTab; name: string; title: string; icon: ReactNode } = {
   id: "chat",
-  name: "对话",
-  title: "对话：在右侧栏与分身交谈",
+  name: "旁聊",
+  title: "旁聊：不打断主分身，在侧栏另开只读对话问进展、查代码",
   icon: (
     <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
       <path d="M2.3 3.2h11.4v7.6H7.4l-3.1 2.4v-2.4H2.3z" />
@@ -371,9 +371,8 @@ export interface SidePanelProps {
   working: boolean;
   /** The page is in replay mode: mutating actions (restore/copy) are disabled. */
   frozen?: boolean;
-  /** Docked side-chat pane when the center column is showing the code/diff workbench. */
-  chatPane?: ReactNode;
-  chatStatus?: Status;
+  /** Independent read-only side conversation (旁聊) bound to the main session; `visible` tells it when the tab is open. */
+  renderAside?: (visible: boolean) => ReactNode;
   /** Optional interactive PTY terminal pane to render inside the `terminal` tab. */
   terminalPane?: ReactNode;
   /** Programmatic request to focus a specific tab (e.g. quoting lines into side chat or shortcut to terminal). */
@@ -401,8 +400,7 @@ export function SidePanel({
   onWiden,
   working,
   frozen,
-  chatPane,
-  chatStatus = "idle",
+  renderAside,
   terminalPane,
   summonTab,
   onInspectFile,
@@ -410,39 +408,34 @@ export function SidePanel({
   onRestoreArtifact,
   onSaveArtifactCopy,
 }: SidePanelProps) {
-  const hasChat = !!chatPane;
-  const [tab, setTab] = useState<PanelTab>(hasChat ? "chat" : "files");
-  const prevHasChat = useRef(hasChat);
+  const hasAside = !!renderAside;
+  const [tab, setTab] = useState<PanelTab>("files");
   useEffect(() => {
-    if (hasChat && !prevHasChat.current) {
-      setTab("chat");
-    } else if (!hasChat && prevHasChat.current && tab === "chat") {
-      setTab("files");
-    }
-    prevHasChat.current = hasChat;
-  }, [hasChat, tab]);
+    if (!hasAside && tab === "chat") setTab("files");
+  }, [hasAside, tab]);
 
   const lastSummon = useRef<number | null>(null);
   useEffect(() => {
     if (!summonTab || lastSummon.current === summonTab.id) return;
     lastSummon.current = summonTab.id;
-    if (summonTab.tab === "chat" && !hasChat) return;
+    if (summonTab.tab === "chat" && !hasAside) return;
     setTab(summonTab.tab);
-  }, [summonTab, hasChat]);
+    if (narrow) onWiden();
+  }, [summonTab, hasAside, narrow, onWiden]);
 
   const counts: Record<Exclude<PanelTab, "chat">, number> = { files: files.length, terminal: runs.length, plan: todos.length, products: products.length };
-  // When the first thing comes into a panel that held nothing (and side chat is not active), it opens on that.
+  // When the first thing comes into a panel that held nothing (and 旁聊 is not open), it opens on that.
   const had = useRef(counts);
   useEffect(() => {
     const before = had.current;
     had.current = counts;
-    if (hasChat) return;
+    if (tab === "chat") return;
     // Something made for 本尊 is what the work was for: the panel turns to it when the first of it comes.
     if (before.products === 0 && counts.products > 0) return setTab("products");
     if (before.files + before.terminal + before.plan + before.products > 0) return;
     const first = TABS.find((each) => each.id !== "chat" && before[each.id] === 0 && counts[each.id] > 0);
     if (first) setTab(first.id);
-  }, [hasChat, files.length, runs.length, todos.length, products.length]);
+  }, [tab, files.length, runs.length, todos.length, products.length]);
   // The steps done while the page was watched, for a moment: their ink is drawn through them as it happens.
   const [struck, setStruck] = useState<Set<string>>(new Set());
   const steps = useRef(new Map(todos.map((todo) => [todo.text, todo.status])));
@@ -468,18 +461,18 @@ export function SidePanel({
     setDragging(down);
   };
   const done = todos.filter((todo) => todo.status === "done").length;
-  const visibleTabs = hasChat ? [CHAT_TAB, ...TABS] : TABS;
+  const visibleTabs = hasAside ? [CHAT_TAB, ...TABS] : TABS;
   // After every hook: the strip and the panel must call the same ones, in the same order.
-  if (narrow && !hasChat) {
+  if (narrow) {
     return (
-      <aside className="panel strip" aria-label="改动与终端">
+      <aside className="panel strip" aria-label="旁聊、改动与终端">
         <div className="strip-tabs">
-          {TABS.map((each) => (
+          {visibleTabs.map((each) => (
             <button
               type="button"
               key={each.id}
               className="tab"
-              title={`${each.title}。还是空的，点开看`}
+              title={each.id === "chat" ? each.title : `${each.title}。还是空的，点开看`}
               onClick={() => {
                 setTab(each.id);
                 onWiden();
@@ -496,7 +489,7 @@ export function SidePanel({
     );
   }
   return (
-    <aside className={`panel ${hasChat ? "with-chat" : ""}`} aria-label={hasChat ? "侧边对话与面板" : "改动与终端"}>
+    <aside className={`panel ${tab === "chat" && hasAside ? "with-chat" : ""}`} aria-label="旁聊、改动与终端">
       {/* The edge to drag: the panel is as wide as the pointer is far from the window's right side. */}
       <div
         className={`panel-edge ${dragging ? "dragging" : ""}`}
@@ -524,21 +517,19 @@ export function SidePanel({
         {visibleTabs.map((each) => (
           <button type="button" key={each.id} className="tab" aria-pressed={tab === each.id} title={each.title} onClick={() => setTab(each.id)}>
             {each.icon}
-            {each.id === "chat" && <span className="tab-word">对话</span>}
+            {each.id === "chat" && <span className="tab-word">旁聊</span>}
             <span className="sr-only">{each.id === "chat" ? "" : each.id === "plan" || each.id === "products" ? `${each.name} ` : each.name}</span>
-            {each.id === "chat" && chatStatus === "waiting_approval" && <span className="seal small">候</span>}
-            {each.id === "chat" && chatStatus === "running" && <span className="dot busy" title="运功中" />}
             {each.id === "plan" && todos.length > 0 && <span className="count">{`${done}/${todos.length}`}</span>}
             {each.id === "products" && products.length > 0 && <span className="count">{products.length}</span>}
           </button>
         ))}
       </div>
-      {hasChat && (
+      {hasAside && (
         <div className="side-chat-pane" style={{ display: tab === "chat" ? "flex" : "none" }}>
-          {chatPane}
+          {renderAside(tab === "chat")}
         </div>
       )}
-      {tab === "chat" && hasChat ? null : tab === "plan" ? (
+      {tab === "chat" && hasAside ? null : tab === "plan" ? (
         <div className="panel-body">
           <div className="panel-head">
             <h2>分身的计划</h2>

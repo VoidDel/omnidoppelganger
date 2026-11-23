@@ -40,12 +40,13 @@ interface ItemViewProps {
   frozen: boolean;
   onDecide: (toolUseId: string, decision: Decision) => void;
   onAnswer: (toolUseId: string, answers: Reply[] | null) => void;
+  onForward?: (text: string) => void;
 }
 
-function ItemView({ item, mode, family, frozen, onDecide, onAnswer }: ItemViewProps) {
+function ItemView({ item, mode, family, frozen, onDecide, onAnswer, onForward }: ItemViewProps) {
   switch (item.kind) {
     case "text":
-      return <ModelText text={item.text} />;
+      return <ModelText text={item.text} onForward={onForward} />;
     case "thinking":
       return (
         <details className="thinking">
@@ -280,6 +281,8 @@ interface Props {
   onPicture?: (path: string, snapshot?: string) => Promise<Image>;
   /** 1-based version number for `(path, snapshot)` when the file has more than one version. */
   versionOf?: (path: string, snapshot?: string) => number | undefined;
+  /** In a side conversation: hand what the 分身 said here to the main 分身, as words said to it during its work. */
+  onForward?: (text: string) => void;
 }
 
 /** Undoing cannot itself be undone, so the icon asks once more, in a bubble, before it acts. */
@@ -345,7 +348,7 @@ function Queued({ text }: { text: string }) {
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture, versionOf }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture, versionOf, onForward }: Props) {
   const family = { sessions, onOpen };
   const undoable = undoableTurns(rows, copied);
   /** Where a fork's own conversation begins: said once, between what it copied and what it did itself. */
@@ -526,7 +529,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                       // Named for the act it starts with, which stays as the fold grows.
                       <Folded key={`fold-${part.tools[0].id}`} tools={part.tools} />
                     ) : (
-                      <ItemView key={part.key} item={part.item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} onAnswer={onAnswer} />
+                      <ItemView key={part.key} item={part.item} mode={mode} family={family} frozen={frozen} onDecide={onDecide} onAnswer={onAnswer} onForward={frozen ? undefined : onForward} />
                     ),
                   )}
                   {last && <Streaming blocks={stream} />}

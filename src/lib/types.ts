@@ -48,6 +48,7 @@ export type SessionEvent =
   | { type: "instructions/loaded"; data: { path: string; content: string } }
   | { type: "skills/listed"; data: { skills: Skill[] } }
   | { type: "turn/start"; data: { turn: number } }
+  | { type: "aside/briefed"; data: { brief: string } }
   | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode; images?: Image[]; files?: Attached[] } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }
   | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
@@ -273,6 +274,8 @@ export interface SessionItem {
   schedule: string | null;
   /** Set for a fork: the session its conversation was copied from, and the last turn that was copied (0 for none). */
   fork: { session: string; turn: number } | null;
+  /** Set for a side conversation (旁聊): the session it is beside. Such a session is not in the list. */
+  aside: string | null;
   workspace: string;
   /** Id of the model provider the session runs on now, and the model. */
   provider: string;

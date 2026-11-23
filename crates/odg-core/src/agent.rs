@@ -119,10 +119,18 @@ struct State {
 /// A message as it is sent: its words, its pictures, its attached files.
 type Said = (String, Vec<Image>, Vec<Attached>);
 
+/// Gives a side conversation the briefing on the session it is beside, as that session stands now; `None` when
+/// there is nothing to tell. See [`crate::aside`].
+pub type BriefSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 struct Inner<L: Llm> {
     id: String,
     /// The session whose agent set this one off as a subagent.
     parent: Option<String>,
+    /// The session this one is a side conversation (旁聊) beside; such a session is read-only.
+    aside: Option<String>,
+    /// Where a side conversation's briefings come from, set by whoever opened it.
+    brief: Mutex<Option<BriefSource>>,
     /// The subagents this session's agent has set off since the app started, by session id.
     children: Mutex<HashMap<String, Session<L>>>,
     /// Where this session's log is kept, and its subagents' logs are created.
@@ -229,6 +237,9 @@ impl<L: Llm> Session<L> {
         let mode = summarize(log.events()).mode;
         let snapshots = log.path().with_file_name("snapshots");
         let parent = crate::session::parent(log.events()).map(str::to_string);
+        let aside = crate::session::aside(log.events()).map(str::to_string);
+        // A side conversation only looks: the main agent is at work on the same files.
+        let read_only = read_only || aside.is_some();
         let worktree = crate::session::worktree(log.events()).cloned();
         let granted_in = worktree.as_ref().map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
         let store = SessionStore::of(&log);
@@ -239,6 +250,8 @@ impl<L: Llm> Session<L> {
             inner: Arc::new(Inner {
                 id: log.id().to_string(),
                 parent,
+                aside,
+                brief: Mutex::new(None),
                 children: Mutex::default(),
                 store,
                 services,
@@ -291,6 +304,17 @@ impl<L: Llm> Session<L> {
     /// Id of the session whose agent set this one off as a subagent.
     pub fn parent(&self) -> Option<&str> {
         self.inner.parent.as_deref()
+    }
+
+    /// Id of the session this one is a side conversation beside, when it is one.
+    pub fn aside(&self) -> Option<&str> {
+        self.inner.aside.as_deref()
+    }
+
+    /// Where this side conversation's briefings on the session it is beside come from. Each message the user
+    /// sends is preceded in the log by the briefing then, unless it is the same as the one logged last.
+    pub fn set_brief_source(&self, source: BriefSource) {
+        *self.inner.brief.lock().unwrap() = Some(source);
     }
 
     /// The subagents this session's agent has set off since the app started.
@@ -673,11 +697,24 @@ impl<L: Llm> Inner<L> {
         // A fork of a session a schedule started is the user's: they are there, having just made it.
         let scheduled = crate::session::schedule(log.events()).is_some() && crate::session::forked_from(log.events()).is_none();
         let origin = match (&self.parent, scheduled) {
+            _ if self.aside.is_some() => Origin::Aside,
             (Some(_), _) => Origin::Agent,
             (None, true) => Origin::Schedule,
             (None, false) => Origin::User,
         };
         prompts::build_system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), origin, self.chatting, self.read_only)
+    }
+
+    /// In a side conversation, log how the session it is beside stands, ahead of the user's message about to be
+    /// logged: unless nothing changed since the briefing logged last, or there is no one to ask.
+    fn brief_before_message(&self) -> Result<(), String> {
+        if self.aside.is_none() {
+            return Ok(());
+        }
+        let source = self.brief.lock().unwrap().clone();
+        let Some(brief) = source.and_then(|source| source()) else { return Ok(()) };
+        let same = crate::session::last_brief(self.log.lock().unwrap().events()) == Some(brief.as_str());
+        if same { Ok(()) } else { self.append(Event::AsideBriefed { brief }) }
     }
 
     /// Log the project's instructions when they are new, changed, or gone
@@ -767,6 +804,12 @@ impl<L: Llm> Inner<L> {
         matches!(name, "code_nav" | "language_server" | tools::PRESENT_PLAN | "delegate")
     }
 
+    /// Built-in tools withheld from a side conversation: it neither hands work out nor sets anything up, and has
+    /// no plan to present or files to deliver. It may still ask the user, who is there talking to it.
+    fn withheld_from_aside(name: &str) -> bool {
+        name != tools::ASK_USER && Self::withheld_from_subagent(name)
+    }
+
     /// Built-in tools withheld from a `read_only` subagent: anything that writes files,
     /// paints pictures, or manages interactive background processes.
     fn withheld_from_read_only(name: &str) -> bool {
@@ -780,26 +823,26 @@ impl<L: Llm> Inner<L> {
             return None;
         }
         if Self::withheld_from_read_only(name) {
-            return Some(format!("This subagent is read-only and cannot use `{name}`. Inspect files and report your findings to the main agent."));
+            return Some(format!("This session is read-only and cannot use `{name}`. Inspect files and say what you find instead."));
         }
         if crate::mcp::split_name(name).is_some() {
-            return Some(format!("This subagent is read-only and cannot call external MCP tool `{name}`."));
+            return Some(format!("This session is read-only and cannot call external MCP tool `{name}`."));
         }
         if name == "run_command" {
             if input["background"] == true {
-                return Some("This subagent is read-only and cannot start background commands.".to_string());
+                return Some("This session is read-only and cannot start background commands.".to_string());
             }
             if input["unsandboxed"] == true {
-                return Some("This subagent is read-only and cannot run commands outside the sandbox.".to_string());
+                return Some("This session is read-only and cannot run commands outside the sandbox.".to_string());
             }
             if let Some(dir) = tools::command_cwd(input, &self.workspace)
                 && (!tools::inside_workspace(&self.workspace, &dir) || tools::in_git_directory(&self.workspace, &dir))
             {
-                return Some("This subagent is read-only and cannot run commands outside the workspace or inside .git.".to_string());
+                return Some("This session is read-only and cannot run commands outside the workspace or inside .git.".to_string());
             }
             let command = input["command"].as_str().unwrap_or_default();
             if let Err(why) = crate::safety::check_read_only(command, crate::safety::Dialect::of_this_machine(), &self.workspace) {
-                return Some(format!("This subagent is read-only and cannot run this command ({why}). Use read_file, search, find_files, code_nav, or read-only inspection commands."));
+                return Some(format!("This session is read-only and cannot run this command ({why}). Use read_file, search, find_files, code_nav, or read-only inspection commands."));
             }
         }
         None
@@ -839,6 +882,9 @@ impl<L: Llm> Inner<L> {
         }
         if self.read_only {
             specs.retain(|spec| !spec["name"].as_str().is_some_and(Self::withheld_from_read_only));
+        }
+        if self.aside.is_some() {
+            specs.retain(|spec| !spec["name"].as_str().is_some_and(Self::withheld_from_aside));
         }
         if self.chatting {
             specs.retain(|spec| !spec["name"].as_str().is_some_and(Self::withheld_from_chat));
@@ -900,6 +946,7 @@ impl<L: Llm> Inner<L> {
         let started = std::time::SystemTime::now();
         let opened = self
             .append(Event::TurnStart { turn })
+            .and_then(|()| self.brief_before_message())
             .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images, files }))
             .and_then(|()| self.refresh_instructions())
             .and_then(|()| self.refresh_skills());
@@ -917,10 +964,12 @@ impl<L: Llm> Inner<L> {
         }
         // What the turn left for the user that no tool told of, such as a document a script wrote: looked for once,
         // off the async threads, since a workspace can be large. Snapshot each found file for deliverable history.
+        // Not by a read-only session, which writes nothing: what it would find is another agent's work.
         let root = self.workspace.clone();
         let snapshot_dir = self.snapshots.clone();
+        let read_only = self.read_only;
         let (files, snapshots, sizes) = tokio::task::spawn_blocking(move || {
-            let made = crate::made::since(&root, started);
+            let made = if read_only { Vec::new() } else { crate::made::since(&root, started) };
             let mut files = Vec::with_capacity(made.len());
             let mut snapshots = std::collections::BTreeMap::new();
             let mut sizes = std::collections::BTreeMap::new();
@@ -949,6 +998,7 @@ impl<L: Llm> Inner<L> {
         for _ in 0..MAX_STEPS {
             let queued: Vec<Said> = self.state.lock().unwrap().inbox.drain(..).collect();
             for (text, images, files) in queued {
+                self.brief_before_message()?;
                 self.append(Event::UserMessage { text, steering: true, mode: self.mode(), images, files })?;
             }
             if cancel.is_cancelled() {

@@ -104,10 +104,14 @@ export interface ComposerProps {
   seed: { id: number; text?: string; append?: boolean; attachPaths?: string[] } | null;
   /** The "/" commands the window gives, beside the box's own (心法, 境界, 禁制, 凝练); skills among them. */
   commands: SlashCommand[];
+  /** What the empty box says, in place of the main conversation's own words. */
+  placeholder?: string;
+  /** Whether files dragged onto the window attach to this box (defaults to true). */
+  acceptDrops?: boolean;
 }
 
 /** The order the "/" menu lists the commands in; any not named here (a skill's) come after, as given. */
-const COMMAND_ORDER = ["new", "fork", "compact", "model", "effort", "mode", "files", "git", "terminal", "rename", "replay", "init", "review", "skills", "mcp", "schedule", "settings"];
+const COMMAND_ORDER = ["new", "aside", "fork", "compact", "model", "effort", "mode", "files", "git", "terminal", "rename", "replay", "init", "review", "skills", "mcp", "schedule", "settings"];
 
 /**
  * How full the conversation is, as five 灵石 lit one after another: each stands for a fifth of the room there is
@@ -152,7 +156,7 @@ function useBoxHeight() {
 
 export function Composer(props: ComposerProps) {
   const { status, providers, listed, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
-  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given } = props;
+  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given, placeholder, acceptDrops = true } = props;
   const provider = providers.find((known) => known.id === providerId);
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
@@ -353,6 +357,10 @@ export function Composer(props: ComposerProps) {
   }, [seed]);
   // Files dragged from the system onto the window are attached where they are dropped.
   useEffect(() => {
+    if (!acceptDrops) {
+      setDropping(false);
+      return;
+    }
     const stop = api.onFilesDragged(({ over, dropped }) => {
       setDropping(over);
       taking.current(dropped);
@@ -360,7 +368,7 @@ export function Composer(props: ComposerProps) {
     return () => {
       stop.then((unlisten) => unlisten()).catch(() => undefined);
     };
-  }, []);
+  }, [acceptDrops]);
   return (
     <div className="composer">
       <div className="composer-status" role="status">
@@ -523,7 +531,7 @@ export function Composer(props: ComposerProps) {
             ref={input}
             rows={2}
             value={text}
-            placeholder={busy ? "给分身传一句音" : "吩咐一件事，回车传令；打 / 唤出命令"}
+            placeholder={placeholder ?? (busy ? "给分身传一句音" : "吩咐一件事，回车传令；打 / 唤出命令")}
             aria-controls={menu.length > 0 ? "slash-menu" : undefined}
             aria-activedescendant={menu.length > 0 ? `slash-${Math.min(chosen, menu.length - 1)}` : undefined}
             onChange={(event) => setText(event.target.value)}

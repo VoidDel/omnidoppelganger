@@ -32,9 +32,11 @@ use crate::providers::DEFAULT_PROVIDER;
 /// the `question/asked` and `question/answered` events. Format 18 adds `images`
 /// on a tool result, and the `delete_file` and `move_file` edits, whose undoing
 /// an older build would not know. Format 19 adds snapshots on `files/made` and
-/// the `artifact/restored` event for deliverable version history. A build from
-/// before a format refuses its sessions rather than misread them.
-pub const FORMAT_VERSION: u32 = 19;
+/// the `artifact/restored` event for deliverable version history. Format 20
+/// adds `aside` to the header and the `aside/briefed` event, for side
+/// conversations. A build from before a format refuses its sessions rather
+/// than misread them.
+pub const FORMAT_VERSION: u32 = 20;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +75,8 @@ pub struct SessionSummary {
     pub schedule: Option<String>,
     /// Where the conversation was copied from, when the session is a fork.
     pub fork: Option<Fork>,
+    /// The session this one is a side conversation (旁聊) beside, when it is one.
+    pub aside: Option<String>,
     /// The mode of the last message, which a reopened session resumes.
     pub mode: Mode,
     pub created_at: String,
@@ -83,6 +87,7 @@ pub struct SessionSummary {
     pub awaiting_approval: bool,
 }
 
+#[derive(Clone)]
 pub struct SessionStore {
     root: PathBuf,
 }
@@ -99,6 +104,8 @@ pub struct NewSession<'a> {
     pub worktree: Option<Worktree>,
     /// Name of the schedule that starts the session.
     pub schedule: Option<&'a str>,
+    /// The session this one is a side conversation beside.
+    pub aside: Option<&'a str>,
 }
 
 impl SessionStore {
@@ -114,12 +121,12 @@ impl SessionStore {
 
     /// Create a session whose agent works in `workspace` with `model` from `provider`.
     pub fn create(&self, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
-        self.create_with(NewSession { workspace, provider, model, parent: None, worktree: None, schedule: None })
+        self.create_with(NewSession { workspace, provider, model, parent: None, worktree: None, schedule: None, aside: None })
     }
 
-    /// Create a session: a subagent's, one that works in a worktree, one a schedule starts, or a plain one.
+    /// Create a session: a subagent's, one that works in a worktree, one a schedule starts, a side conversation, or a plain one.
     pub fn create_with(&self, new: NewSession) -> Result<SessionLog, SessionError> {
-        let NewSession { workspace, provider, model, parent, worktree, schedule } = new;
+        let NewSession { workspace, provider, model, parent, worktree, schedule, aside } = new;
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
         fs::create_dir_all(&directory)?;
@@ -136,6 +143,7 @@ impl SessionStore {
             worktree,
             schedule: schedule.map(str::to_string),
             fork: None,
+            aside: aside.map(str::to_string),
         })?;
         Ok(log)
     }
@@ -152,11 +160,14 @@ impl SessionStore {
     /// they are now, and the snapshots that undo the copied turns' edits stay
     /// with the session that made them: see [`crate::undo::plan`].
     pub fn fork(&self, events: &[Envelope], before: Option<u64>) -> Result<SessionLog, SessionError> {
-        let Some(Event::SessionCreated { id: source, workspace, provider, model, parent, worktree, schedule, .. }) = events.first().map(|envelope| &envelope.event) else {
+        let Some(Event::SessionCreated { id: source, workspace, provider, model, parent, worktree, schedule, aside, .. }) = events.first().map(|envelope| &envelope.event) else {
             return Err(SessionError::Refused("the session to fork has no header".to_string()));
         };
         if parent.is_some() {
             return Err(SessionError::Refused("a subagent's session cannot be forked; fork the session of the agent that set it off".to_string()));
+        }
+        if aside.is_some() {
+            return Err(SessionError::Refused("a side conversation cannot be forked".to_string()));
         }
         let starts = |wanted: u64| events.iter().position(|envelope| matches!(envelope.event, Event::TurnStart { turn } if turn == wanted));
         let end = match before.or_else(|| open_turn(events)) {
@@ -182,6 +193,7 @@ impl SessionStore {
             worktree: worktree.clone(),
             schedule: schedule.clone(),
             fork: Some(Fork { session: source.clone(), turn }),
+            aside: None,
         })?;
         for envelope in copied {
             log.append_at(envelope.ts.clone(), envelope.event.clone())?;
@@ -247,6 +259,12 @@ impl SessionStore {
         let path = self.path(id)?;
         let (events, _) = parse(&path, &fs::read(&path)?)?;
         Ok(summarize(&events))
+    }
+
+    /// Read a stored session's events without changing its file, as [`SessionStore::peek`] does.
+    pub fn read(&self, id: &str) -> Result<Vec<Envelope>, SessionError> {
+        let path = self.path(id)?;
+        Ok(parse(&path, &fs::read(&path)?)?.0)
     }
 
     /// Ids of every stored session, in no particular order.
@@ -430,12 +448,19 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     // The to-do list as the model last wrote it.
     let mut todos: Option<Vec<(String, String)>> = None;
     let mut planning = false;
+    // In a side conversation: the briefing that goes ahead of the user's next words.
+    let mut brief: Option<&str> = None;
     for envelope in events {
         match &envelope.event {
+            Event::AsideBriefed { brief: told } => brief = Some(told),
             Event::UserMessage { text: said, mode, images, files, .. } => {
                 if (*mode == Mode::Plan) != planning {
                     planning = !planning;
                     pending.push(text(if planning { PLAN_ON } else { PLAN_OFF }));
+                }
+                // Not kept with what goes on after a compaction: by then it would be stale, and the next message brings a new one.
+                if let Some(told) = brief.take() {
+                    pending.push(text(told));
                 }
                 // Pictures come before the words about them, as the providers advise, and attached files likewise.
                 // A message of pictures alone has no text block: an empty one is an error to the API.
@@ -626,6 +651,22 @@ pub fn worktree(events: &[Envelope]) -> Option<&Worktree> {
     }
 }
 
+/// Id of the session this one is a side conversation beside, if it is one.
+pub fn aside(events: &[Envelope]) -> Option<&str> {
+    match &events.first()?.event {
+        Event::SessionCreated { aside, .. } => aside.as_deref(),
+        _ => None,
+    }
+}
+
+/// The briefing on the session a side conversation is beside that was logged last, if any.
+pub fn last_brief(events: &[Envelope]) -> Option<&str> {
+    events.iter().rev().find_map(|envelope| match &envelope.event {
+        Event::AsideBriefed { brief } => Some(brief.as_str()),
+        _ => None,
+    })
+}
+
 /// How a session's work came out, for the agent that delegated it: what its
 /// agent said last, and why its last turn ended, as `(reason, error)`. A
 /// turn still open, or none yet, reads as `running`.
@@ -713,6 +754,7 @@ pub fn context_estimate(events: &[Envelope]) -> u64 {
                 estimate += guess(text) + 1500 * images.len() as u64 + files.iter().map(|file| guess(&crate::events::attached_text(file))).sum::<u64>()
             }
             Event::ToolResult { content, images, .. } => estimate += guess(content) + 1500 * images.len() as u64,
+            Event::AsideBriefed { brief } => estimate += guess(brief),
             _ => {}
         }
     }
@@ -863,6 +905,7 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         worktree: worktree(events).cloned(),
         schedule: schedule(events).map(str::to_string),
         fork: forked_from(events).cloned(),
+        aside: aside(events).map(str::to_string),
         mode,
         created_at: events[0].ts.clone(),
         // A fork is new when it is made, though the last event copied into it is as old as it was.
@@ -1328,7 +1371,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         assert_eq!((bare.events().len(), summarize(bare.events()).fork.unwrap().turn), (1, 0));
 
         assert!(store.fork(log.events(), Some(9)).err().unwrap().to_string().contains("no turn 9"));
-        let child = store.create_with(NewSession { workspace: Path::new("/a"), provider: "anthropic", model: "m", parent: Some(log.id()), worktree: None, schedule: None }).unwrap();
+        let child = store.create_with(NewSession { workspace: Path::new("/a"), provider: "anthropic", model: "m", parent: Some(log.id()), worktree: None, schedule: None, aside: None }).unwrap();
         assert!(store.fork(child.events(), None).err().unwrap().to_string().contains("subagent"));
     }
 
@@ -1337,8 +1380,8 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let parent = store.create(Path::new("/a"), "anthropic", "m").unwrap();
         let tree = Worktree { origin: "/a".into(), branch: "odg/1".into(), checkout: "/w".into() };
-        let mut child = store.create_with(NewSession { workspace: Path::new("/w"), provider: "anthropic", model: "m", parent: Some(parent.id()), worktree: Some(tree.clone()), schedule: None }).unwrap();
-        let timed = store.create_with(NewSession { workspace: Path::new("/a"), provider: "anthropic", model: "m", parent: None, worktree: None, schedule: Some("nightly") }).unwrap();
+        let mut child = store.create_with(NewSession { workspace: Path::new("/w"), provider: "anthropic", model: "m", parent: Some(parent.id()), worktree: Some(tree.clone()), schedule: None, aside: None }).unwrap();
+        let timed = store.create_with(NewSession { workspace: Path::new("/a"), provider: "anthropic", model: "m", parent: None, worktree: None, schedule: Some("nightly"), aside: None }).unwrap();
         assert_eq!((summarize(timed.events()).schedule.as_deref(), summarize(child.events()).schedule), (Some("nightly"), None));
         assert_eq!((summarize(child.events()).worktree, summarize(parent.events()).worktree), (Some(tree), None));
         assert_eq!(super::parent(child.events()), Some(parent.id()));

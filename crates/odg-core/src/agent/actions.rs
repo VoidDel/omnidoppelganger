@@ -25,7 +25,7 @@ impl<L: Llm> Inner<L> {
     /// user has allowed it so far.
     fn spawn(&self, name: &str, read_only: bool) -> Result<Session<L>, String> {
         let provider = self.provider();
-        let new = NewSession { workspace: &self.workspace, provider: &provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone(), schedule: None };
+        let new = NewSession { workspace: &self.workspace, provider: &provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone(), schedule: None, aside: None };
         let log = self.store.create_with(new).map_err(|error| error.to_string())?;
         let child = Session::new_with_read_only(log, self.llm.clone(), self.tuning.clone(), self.services.clone(), self.events.clone(), self.runtime.clone(), read_only).map_err(|error| error.to_string())?;
         let (mode, grants) = {
