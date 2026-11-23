@@ -101,93 +101,114 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
   const activePtyRef = useRef<string | null>(null);
   activePtyRef.current = activePtyId;
 
+  /** What a shell printed before its terminal was on screen: it starts printing as soon as it is spawned. */
+  const pendingRef = useRef<Map<string, string>>(new Map());
+
+  /** A terminal in a host of its own on the stage, not yet joined to any shell. */
+  const openTerminal = useCallback((visible: boolean): MountedTerm | null => {
+    const stage = stageRef.current;
+    if (!stage) return null;
+    const host = document.createElement("div");
+    host.className = "xterm-instance";
+    host.style.display = visible ? "block" : "none";
+    stage.appendChild(host);
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      lineHeight: 1.35,
+      fontFamily: '"Atkinson Hyperlegible Mono", "PingFang SC", "Microsoft YaHei UI", ui-monospace, monospace',
+      scrollback: 5000,
+      allowProposedApi: false,
+      theme: currentXtermTheme(),
+      minimumContrastRatio: currentMinContrast(),
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        api.openExternal(uri).catch(() => undefined);
+      }),
+    );
+    term.open(host);
+    return { term, fit, host };
+  }, []);
+
+  /** Join a terminal to its shell: keys go to the shell, and what it printed so far is shown. */
+  const attachTerminal = useCallback((info: PtyInfo, mounted: MountedTerm, earlier: string) => {
+    const { term } = mounted;
+    if (earlier) term.write(earlier);
+    if (info.exited !== null) {
+      term.write(`\r\n\x1b[90m[进程已结束，退出码 ${info.exited}]\x1b[0m\r\n`);
+    }
+    term.onData((data) => {
+      api.ptyWrite(info.id, data).catch(() => undefined);
+    });
+    term.onSelectionChange(() => {
+      if (activePtyRef.current === info.id) {
+        setSelectedText(term.getSelection().trim());
+      }
+    });
+    mountedRef.current.set(info.id, mounted);
+  }, []);
+
+  /** A terminal for a shell that was already running: its backlog says what it printed, so nothing waiting is added. */
   const ensureTerminalInstance = useCallback(
     (info: PtyInfo) => {
-      const stage = stageRef.current;
-      if (!stage) return null;
       const existing = mountedRef.current.get(info.id);
       if (existing) return existing;
-
-      const host = document.createElement("div");
-      host.className = "xterm-instance";
-      host.style.display = activePtyRef.current === info.id ? "block" : "none";
-      stage.appendChild(host);
-
-      const term = new Terminal({
-        cursorBlink: true,
-        fontSize: 13,
-        lineHeight: 1.35,
-        fontFamily: '"Atkinson Hyperlegible Mono", "PingFang SC", "Microsoft YaHei UI", ui-monospace, monospace',
-        scrollback: 5000,
-        allowProposedApi: false,
-        theme: currentXtermTheme(),
-        minimumContrastRatio: currentMinContrast(),
-      });
-      const fit = new FitAddon();
-      term.loadAddon(fit);
-      term.loadAddon(
-        new WebLinksAddon((_event, uri) => {
-          api.openExternal(uri).catch(() => undefined);
-        }),
-      );
-      term.open(host);
-
-      if (info.backlog) {
-        term.write(info.backlog);
-      }
-      if (info.exited !== null) {
-        term.write(`\r\n\x1b[90m[进程已结束，退出码 ${info.exited}]\x1b[0m\r\n`);
-      }
-
-      term.onData((data) => {
-        api.ptyWrite(info.id, data).catch(() => undefined);
-      });
-
-      term.onSelectionChange(() => {
-        if (activePtyRef.current === info.id) {
-          setSelectedText(term.getSelection().trim());
-        }
-      });
-
-      const mounted: MountedTerm = { term, fit, host };
-      mountedRef.current.set(info.id, mounted);
-
-      requestAnimationFrame(() => {
-        if (host.style.display !== "none" && host.clientWidth > 0 && host.clientHeight > 0) {
-          try {
-            fit.fit();
-            api.ptyResize(info.id, term.cols, term.rows).catch(() => undefined);
-          } catch {
-            // Ignore fit before layout settles
-          }
-        }
-      });
+      const mounted = openTerminal(activePtyRef.current === info.id);
+      if (!mounted) return null;
+      pendingRef.current.delete(info.id);
+      attachTerminal(info, mounted, info.backlog);
       return mounted;
     },
-    [],
+    [openTerminal, attachTerminal],
   );
 
+  /**
+   * A new shell, started at the size its terminal has on screen. A shell started at a guessed size draws for that
+   * width: zsh's mark for an unfinished line (a lone `%` and a row of spaces) then wrapped onto a line of its own
+   * once the terminal was fitted, and stayed above the prompt.
+   */
   const createPty = useCallback(async () => {
     if (spawning) return;
     setSpawning(true);
+    // The new terminal is measured alone on the stage: the others step aside while it is.
+    for (const [, inst] of mountedRef.current) inst.host.style.display = "none";
+    const mounted = openTerminal(true);
+    let cols = 80;
+    let rows = 24;
+    if (mounted && mounted.host.clientWidth > 0 && mounted.host.clientHeight > 0) {
+      try {
+        mounted.fit.fit();
+        cols = mounted.term.cols;
+        rows = mounted.term.rows;
+      } catch {
+        // Not laid out yet: the shell starts at the usual size, and is resized when the terminal is fitted.
+      }
+    }
     try {
-      const stage = stageRef.current;
-      const estCols = stage && stage.clientWidth > 120 ? Math.max(30, Math.floor(stage.clientWidth / 8)) : 80;
-      const estRows = stage && stage.clientHeight > 80 ? Math.max(8, Math.floor(stage.clientHeight / 18)) : 24;
-      const info = await api.ptySpawn(sessionId, estCols, estRows);
+      const info = await api.ptySpawn(sessionId, cols, rows);
+      const earlier = pendingRef.current.get(info.id) ?? "";
+      pendingRef.current.delete(info.id);
+      if (mounted) attachTerminal(info, mounted, earlier);
       setPtys((prev) => [...prev, info]);
       setActivePtyId(info.id);
       setViewMode("pty");
-      requestAnimationFrame(() => {
-        const inst = ensureTerminalInstance(info);
-        inst?.term.focus();
-      });
+      if (mounted) mounted.term.focus();
+      else requestAnimationFrame(() => ensureTerminalInstance(info)?.term.focus());
     } catch (err) {
+      mounted?.term.dispose();
+      mounted?.host.remove();
+      // The terminal that was on screen comes back.
+      const back = activePtyRef.current ? mountedRef.current.get(activePtyRef.current) : undefined;
+      if (back) back.host.style.display = "block";
       onError(String(err));
     } finally {
       setSpawning(false);
     }
-  }, [sessionId, spawning, ensureTerminalInstance, onError]);
+  }, [sessionId, spawning, openTerminal, attachTerminal, ensureTerminalInstance, onError]);
 
   // Load existing PTYs for this session (or auto-spawn the first one) on mount / session switch.
   useEffect(() => {
@@ -197,6 +218,7 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
       inst.host.remove();
     }
     mountedRef.current.clear();
+    pendingRef.current.clear();
     setSelectedText("");
 
     let alive = true;
@@ -248,7 +270,13 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
     const stopOut = api.onPtyOutput((payload) => {
       if (payload.session_id !== sessionId) return;
       const inst = mountedRef.current.get(payload.id);
-      inst?.term.write(payload.data);
+      if (inst) {
+        inst.term.write(payload.data);
+        return;
+      }
+      // A shell whose terminal is not joined yet: kept until it is, at most as much as the backlog holds.
+      const kept = (pendingRef.current.get(payload.id) ?? "") + payload.data;
+      pendingRef.current.set(payload.id, kept.length > 131072 ? kept.slice(-131072) : kept);
     });
     const stopExit = api.onPtyExit((payload) => {
       if (payload.session_id !== sessionId) return;
@@ -434,7 +462,7 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
         style={{ display: viewMode === "pty" ? "flex" : "none" }}
       >
         {ptys.length === 0 && !spawning && (
-          <div className="viewer-placeholder">
+          <div className="viewer-placeholder term-empty">
             <p className="muted">当前没有打开的终端。</p>
             <button type="button" className="button outline small" onClick={() => void createPty()}>
               开启终端

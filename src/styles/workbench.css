@@ -1270,6 +1270,16 @@ button.diff-no.new:hover:not(:disabled) {
   --term-bg: #0f1a1c;
 }
 
+/* Laid over the stage rather than in its flow, so a terminal measured on the stage gets all of its height. */
+.term-stage {
+  position: relative;
+}
+
+.term-empty {
+  position: absolute;
+  inset: 0;
+}
+
 .xterm-instance {
   flex: 1;
   width: 100%;
