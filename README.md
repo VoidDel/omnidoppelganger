@@ -72,6 +72,12 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
+macOS 下安装包目前使用本地 Ad-hoc 签名，未经 Apple 公证；将 `.dmg` 中的应用拖入「应用程序」后若系统拦截打开或提示“已损坏 / 无法验证开发者”，在终端执行一次下面这条命令移除隔离属性即可正常启动：
+
+```sh
+xattr -cr /Applications/OmniDoppelganger.app
+```
+
 启动后在**设置**里选模型供应商和模型，填上那一家的 API 密钥；也可以在启动前导出对应的环境变量（见下文）。
 
 ## 界面里的说法
