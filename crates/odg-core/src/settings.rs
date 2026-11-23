@@ -342,9 +342,25 @@ pub struct Window {
 /// Context windows the providers reported, by provider id and model id.
 type Windows = BTreeMap<String, BTreeMap<String, u64>>;
 
+/// The single entry name under [`SystemVault::SERVICE`] holding all vaulted API keys as a JSON object.
+/// Storing every provider's key in one entry avoids per-provider macOS Keychain ACL prompts.
+const BUNDLE_KEY: &str = "api_keys";
+
+/// Process-lifetime cache of the vaulted key bundle so repeated lookups never re-query the OS credential manager.
+enum VaultCache {
+    /// Not yet read from the vault in this process.
+    Unloaded,
+    /// Reading the vault failed (e.g. locked or user denied); reads fall back without re-prompting,
+    /// while explicit writes or `migrate_keys` still retry the vault before touching it.
+    Unavailable,
+    /// Authoritative snapshot of the `api_keys` bundle in the vault.
+    Loaded(BTreeMap<String, String>),
+}
+
 pub struct SettingsStore {
     directory: PathBuf,
     vault: Option<Arc<dyn Vault>>,
+    vault_cache: Mutex<VaultCache>,
     /// What `models.json` holds, read once: it is asked for at every request.
     windows: Mutex<Option<Windows>>,
 }
@@ -352,7 +368,7 @@ pub struct SettingsStore {
 impl SettingsStore {
     /// A store that keeps keys in `credentials.json` under `directory`.
     pub fn new(directory: impl Into<PathBuf>) -> Self {
-        Self { directory: directory.into(), vault: None, windows: Mutex::new(None) }
+        Self { directory: directory.into(), vault: None, vault_cache: Mutex::new(VaultCache::Unloaded), windows: Mutex::new(None) }
     }
 
     /// The store for this run's home directory, as the desktop app and the
@@ -369,21 +385,85 @@ impl SettingsStore {
 
     /// A store that keeps keys in `vault`, and in `credentials.json` only when the vault fails.
     pub fn with_vault(directory: impl Into<PathBuf>, vault: Arc<dyn Vault>) -> Self {
-        Self { directory: directory.into(), vault: Some(vault), windows: Mutex::new(None) }
+        Self { directory: directory.into(), vault: Some(vault), vault_cache: Mutex::new(VaultCache::Unloaded), windows: Mutex::new(None) }
     }
 
-    /// Move the keys `credentials.json` holds into the vault, and take each
-    /// one that arrived out of the file. Run at start, so keys saved before
-    /// the vault was used leave the plain-text file. A key the vault does
-    /// not take stays where it is.
+    fn parse_bundle(raw: &str) -> BTreeMap<String, String> {
+        serde_json::from_str::<Value>(raw)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .map(|object| {
+                object
+                    .into_iter()
+                    .filter_map(|(name, value)| {
+                        let key = value.as_str()?.trim().to_string();
+                        (!key.is_empty()).then_some((name, key))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Move keys from `credentials.json` and from legacy per-provider vault entries (`<provider>_api_key`)
+    /// into the single `api_keys` vault bundle, removing each migrated source once safely stored.
+    /// Also primes the in-memory vault cache so subsequent reads do not touch the OS keychain again.
     pub fn migrate_keys(&self) {
         let Some(vault) = &self.vault else { return };
-        let mut credentials = self.credentials();
-        let before = credentials.len();
-        credentials.retain(|name, value| !value.as_str().is_some_and(|key| vault.set(name, key).is_ok()));
-        if credentials.len() < before {
-            let _ = self.write_credentials(credentials);
+        let mut cache = self.vault_cache.lock().unwrap();
+        let (mut bundle, had_bundle) = match vault.get(BUNDLE_KEY) {
+            Ok(Some(raw)) => (Self::parse_bundle(&raw), true),
+            Ok(None) => (BTreeMap::new(), false),
+            Err(_) => {
+                *cache = VaultCache::Unavailable;
+                return;
+            }
+        };
+
+        // One-time migration from pre-bundle per-provider keychain entries (`<id>_api_key`).
+        // Only probed when `api_keys` does not exist yet, so normal startups do a single keychain read.
+        let mut legacy_names: Vec<String> = Vec::new();
+        if !had_bundle {
+            for provider in self.load().instances() {
+                let name = format!("{}_api_key", provider.id);
+                if let Ok(Some(secret)) = vault.get(&name) {
+                    let trimmed = secret.trim().to_string();
+                    if !trimmed.is_empty() {
+                        bundle.entry(name.clone()).or_insert(trimmed);
+                    }
+                    legacy_names.push(name);
+                }
+            }
         }
+
+        // Merge any keys still sitting in `credentials.json`.
+        let mut credentials = self.credentials();
+        let mut from_file: Vec<String> = Vec::new();
+        for (name, value) in &credentials {
+            if let Some(key) = value.as_str().map(str::trim).filter(|key| !key.is_empty()) {
+                bundle.insert(name.clone(), key.to_string());
+                from_file.push(name.clone());
+            }
+        }
+
+        let needs_write = !legacy_names.is_empty() || !from_file.is_empty();
+        if needs_write {
+            let Ok(encoded) = serde_json::to_string(&bundle) else { return };
+            if vault.set(BUNDLE_KEY, &encoded).is_err() {
+                *cache = VaultCache::Unavailable;
+                return;
+            }
+            if !from_file.is_empty() {
+                for name in &from_file {
+                    credentials.remove(name);
+                }
+                let _ = self.write_credentials(credentials);
+            }
+            for name in &legacy_names {
+                let _ = vault.delete(name);
+            }
+        }
+
+        *cache = VaultCache::Loaded(bundle);
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -467,34 +547,52 @@ impl SettingsStore {
             .unwrap_or_default()
     }
 
+    /// Read the cached vaulted key bundle, loading it once from the OS credential manager on first use.
+    fn vaulted_key(&self, name: &str) -> Option<String> {
+        let vault = self.vault.as_ref()?;
+        let mut cache = self.vault_cache.lock().unwrap();
+        if let VaultCache::Unloaded = &*cache {
+            *cache = match vault.get(BUNDLE_KEY) {
+                Ok(Some(raw)) => VaultCache::Loaded(Self::parse_bundle(&raw)),
+                Ok(None) => VaultCache::Loaded(BTreeMap::new()),
+                Err(_) => VaultCache::Unavailable,
+            };
+        }
+        match &*cache {
+            VaultCache::Loaded(map) => map.get(name).cloned(),
+            VaultCache::Unloaded | VaultCache::Unavailable => None,
+        }
+    }
+
+    /// The environment variable key for the first instance of a provider kind, if set.
+    fn env_key(provider_id: &str) -> Option<String> {
+        let variable = provider(provider_id).filter(|kind| kind.id == provider_id)?.key_env?;
+        std::env::var(variable).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
+    }
+
     /// The saved key and whether it came from the plain-text file. The vault
-    /// is asked first; a vault that fails reads as holding nothing.
+    /// is asked first (via its in-memory cache); a vault that fails reads as holding nothing.
     fn saved_key(&self, provider: &str) -> Option<(String, bool)> {
         let name = format!("{provider}_api_key");
         let usable = |key: String| Some(key.trim().to_string()).filter(|key| !key.is_empty());
-        let vaulted = self.vault.as_ref().and_then(|vault| vault.get(&name).ok().flatten()).and_then(usable);
+        let vaulted = self.vaulted_key(&name).and_then(usable);
         vaulted.map(|key| (key, false)).or_else(|| self.credentials().get(&name)?.as_str().map(str::to_string).and_then(usable).map(|key| (key, true)))
     }
 
     /// The key a provider's requests use: the saved one, else, for the first of its kind, the kind's environment variable.
     pub fn api_key(&self, provider_id: &str) -> Option<String> {
-        self.saved_key(provider_id).map(|(key, _)| key).or_else(|| {
-            let variable = provider(provider_id).filter(|kind| kind.id == provider_id)?.key_env?;
-            std::env::var(variable).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
-        })
+        self.saved_key(provider_id).map(|(key, _)| key).or_else(|| Self::env_key(provider_id))
     }
 
     pub fn key_status(&self, provider: &str) -> KeyStatus {
-        let saved = self.saved_key(provider);
-        let key = self.api_key(provider);
-        let source = if saved.is_some() {
-            "saved"
-        } else if key.is_some() {
-            "env"
-        } else {
-            "none"
+        let (key, source, plaintext) = match self.saved_key(provider) {
+            Some((key, plaintext)) => (Some(key), "saved", plaintext),
+            None => match Self::env_key(provider) {
+                Some(key) => (Some(key), "env", false),
+                None => (None, "none", false),
+            },
         };
-        KeyStatus { source: source.to_string(), preview: key.as_deref().map(mask), plaintext: saved.is_some_and(|(_, plaintext)| plaintext) }
+        KeyStatus { source: source.to_string(), preview: key.as_deref().map(mask), plaintext }
     }
 
     /// Every provider's key status, by provider id.
@@ -583,8 +681,8 @@ impl SettingsStore {
         settings.sandbox.then(|| settings.sandbox_paths.iter().map(|path| path.trim()).filter(|path| !path.is_empty()).map(PathBuf::from).collect())
     }
 
-    /// Store a provider's key: in the vault, or, when there is none or it
-    /// fails, in a file only the current user can read (enforced on Unix).
+    /// Store a provider's key: in the single `api_keys` vault bundle, or, when there is no vault
+    /// or it fails, in a file only the current user can read (enforced on Unix).
     pub fn save_api_key(&self, provider_id: &str, key: &str) -> std::io::Result<()> {
         let key = key.trim();
         if key.is_empty() {
@@ -593,9 +691,25 @@ impl SettingsStore {
         known(provider_id)?;
         let name = format!("{provider_id}_api_key");
         let mut credentials = self.credentials();
-        if self.vault.as_ref().is_some_and(|vault| vault.set(&name, key).is_ok()) {
-            // An older copy in the file would otherwise outlive the key it was replaced by.
-            return if credentials.remove(&name).is_some() { self.write_credentials(credentials) } else { Ok(()) };
+        if let Some(vault) = &self.vault {
+            let mut cache = self.vault_cache.lock().unwrap();
+            let current = match &*cache {
+                VaultCache::Loaded(map) => Ok(map.clone()),
+                VaultCache::Unloaded | VaultCache::Unavailable => vault.get(BUNDLE_KEY).map(|raw| raw.as_deref().map(Self::parse_bundle).unwrap_or_default()),
+            };
+            if let Ok(mut map) = current {
+                map.insert(name.clone(), key.to_string());
+                if let Ok(encoded) = serde_json::to_string(&map)
+                    && vault.set(BUNDLE_KEY, &encoded).is_ok()
+                {
+                    *cache = VaultCache::Loaded(map);
+                    drop(cache);
+                    // Clean up any stale legacy single entry and plain-text file entry.
+                    let _ = vault.delete(&name);
+                    return if credentials.remove(&name).is_some() { self.write_credentials(credentials) } else { Ok(()) };
+                }
+            }
+            *cache = VaultCache::Unavailable;
         }
         credentials.insert(name, Value::String(key.to_string()));
         self.write_credentials(credentials)
@@ -606,7 +720,24 @@ impl SettingsStore {
         known(provider_id)?;
         let name = format!("{provider_id}_api_key");
         if let Some(vault) = &self.vault {
-            vault.delete(&name).map_err(std::io::Error::other)?;
+            let mut cache = self.vault_cache.lock().unwrap();
+            let mut map = match &*cache {
+                VaultCache::Loaded(map) => map.clone(),
+                VaultCache::Unloaded | VaultCache::Unavailable => {
+                    vault.get(BUNDLE_KEY).map_err(std::io::Error::other)?.as_deref().map(Self::parse_bundle).unwrap_or_default()
+                }
+            };
+            if map.remove(&name).is_some() {
+                if map.is_empty() {
+                    vault.delete(BUNDLE_KEY).map_err(std::io::Error::other)?;
+                } else {
+                    let encoded = serde_json::to_string(&map).map_err(std::io::Error::other)?;
+                    vault.set(BUNDLE_KEY, &encoded).map_err(std::io::Error::other)?;
+                }
+            }
+            *cache = VaultCache::Loaded(map);
+            drop(cache);
+            let _ = vault.delete(&name);
         }
         let mut credentials = self.credentials();
         if credentials.remove(&name).is_none() {
@@ -804,21 +935,27 @@ mod tests {
         unsafe { std::env::remove_var("MOONSHOT_API_KEY") };
     }
 
-    /// A vault in memory that can be told to fail.
+    /// A vault in memory that can be told to fail and counts how many times it was read.
     #[derive(Default)]
     struct MemoryVault {
         secrets: std::sync::Mutex<BTreeMap<String, String>>,
         broken: std::sync::atomic::AtomicBool,
+        gets: std::sync::atomic::AtomicUsize,
     }
 
     impl MemoryVault {
         fn check(&self) -> Result<(), String> {
             if self.broken.load(std::sync::atomic::Ordering::SeqCst) { Err("the vault is locked".to_string()) } else { Ok(()) }
         }
+
+        fn get_count(&self) -> usize {
+            self.gets.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     impl Vault for MemoryVault {
         fn get(&self, name: &str) -> Result<Option<String>, String> {
+            self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.check().map(|()| self.secrets.lock().unwrap().get(name).cloned())
         }
 
@@ -832,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_keys_in_the_vault_and_moves_the_ones_a_file_still_holds() {
+    fn keeps_keys_in_a_single_vault_bundle_and_moves_the_ones_a_file_still_holds() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("credentials.json");
         // Two keys saved by a build from before the vault.
@@ -845,16 +982,57 @@ mod tests {
 
         store.migrate_keys();
         assert!(!file.exists());
-        assert_eq!(vault.secrets.lock().unwrap().len(), 2);
+        // All keys live in one single vault entry (`api_keys`) so macOS Keychain only has one ACL item.
+        assert_eq!(vault.secrets.lock().unwrap().len(), 1);
+        assert!(vault.secrets.lock().unwrap().contains_key(BUNDLE_KEY));
         assert_eq!(store.api_key("anthropic").as_deref(), Some("sk-ant-old-key-0000000000"));
         assert!(!store.key_status("zhipu").plaintext);
 
-        // A new key goes to the vault and leaves no file; deleting takes it out.
+        // A new key updates the single bundle and leaves no file; deleting takes it out.
         store.save_api_key("deepseek", " sk-deepseek-key-00000000 ").unwrap();
         assert!(!file.exists());
-        assert_eq!(vault.secrets.lock().unwrap().get("deepseek_api_key").map(String::as_str), Some("sk-deepseek-key-00000000"));
+        assert_eq!(vault.secrets.lock().unwrap().len(), 1);
+        let bundle: Value = serde_json::from_str(vault.secrets.lock().unwrap().get(BUNDLE_KEY).unwrap()).unwrap();
+        assert_eq!(bundle["deepseek_api_key"], "sk-deepseek-key-00000000");
         store.delete_api_key("deepseek").unwrap();
         assert_eq!(store.key_status("deepseek").source, "none");
+        // Deleting every remaining key removes the bundle entry completely.
+        store.delete_api_key("anthropic").unwrap();
+        store.delete_api_key("zhipu").unwrap();
+        assert!(vault.secrets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn migrates_legacy_per_provider_vault_entries_and_caches_reads_in_memory() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = Arc::new(MemoryVault::default());
+        vault.secrets.lock().unwrap().insert("anthropic_api_key".into(), "sk-ant-legacy-0000000000".into());
+        vault.secrets.lock().unwrap().insert("zhipu_api_key".into(), "glm-legacy-000000000000".into());
+
+        let store = SettingsStore::with_vault(directory.path(), vault.clone());
+        store.migrate_keys();
+        // Legacy per-provider entries were merged into `api_keys` and removed.
+        assert_eq!(vault.secrets.lock().unwrap().len(), 1);
+        assert!(vault.secrets.lock().unwrap().contains_key(BUNDLE_KEY));
+
+        // After migration, repeated reads hit only the in-memory cache (0 additional vault reads).
+        let gets_after_migrate = vault.get_count();
+        let statuses = store.key_statuses();
+        assert_eq!(statuses["anthropic"].source, "saved");
+        assert_eq!(statuses["zhipu"].source, "saved");
+        assert_eq!(store.api_key("anthropic").as_deref(), Some("sk-ant-legacy-0000000000"));
+        assert!(store.search().is_some());
+        assert!(store.painter().is_some());
+        assert_eq!(vault.get_count(), gets_after_migrate);
+
+        // A brand-new store instance (next app launch) does just ONE single vault read for `api_keys`.
+        let next_run = SettingsStore::with_vault(directory.path(), vault.clone());
+        let before_next = vault.get_count();
+        next_run.migrate_keys();
+        let _ = next_run.key_statuses();
+        let _ = next_run.search();
+        let _ = next_run.painter();
+        assert_eq!(vault.get_count() - before_next, 1);
     }
 
     #[test]
