@@ -14,6 +14,11 @@ export interface TerminalPaneProps {
   onError: (message: string) => void;
 }
 
+/**
+ * The light palette is chosen against its own paper (#fbfcfa): every one of the sixteen colours reads at a WCAG
+ * contrast of at least 5.9:1. "White" and "bright white" are greys of ink here, since on paper a program's white
+ * text would otherwise vanish; the bright colours are deeper rather than paler, for emphasis that still reads.
+ */
 const LIGHT_THEME: ITheme = {
   background: "#fbfcfa",
   foreground: "#1b2a2b",
@@ -21,22 +26,25 @@ const LIGHT_THEME: ITheme = {
   cursorAccent: "#fbfcfa",
   selectionBackground: "rgba(31, 111, 100, 0.22)",
   black: "#1b2a2b",
-  red: "#b8322a",
-  green: "#1f6f64",
-  yellow: "#8f6814",
-  blue: "#285a84",
-  magenta: "#7b437d",
-  cyan: "#1c747d",
-  white: "#dce4df",
-  brightBlack: "#5c6f70",
-  brightRed: "#cf4a40",
-  brightGreen: "#2a8b7d",
-  brightYellow: "#b8892b",
-  brightBlue: "#3674a8",
-  brightMagenta: "#965499",
-  brightCyan: "#25919c",
-  brightWhite: "#f7f9f6",
+  red: "#b3261e",
+  green: "#1d6b3a",
+  yellow: "#865600",
+  blue: "#1f5a96",
+  magenta: "#863c8a",
+  cyan: "#0b6672",
+  white: "#54656a",
+  brightBlack: "#5f6f72",
+  brightRed: "#a8301f",
+  brightGreen: "#226f41",
+  brightYellow: "#7a5200",
+  brightBlue: "#245e9c",
+  brightMagenta: "#8a3f8e",
+  brightCyan: "#0f6874",
+  brightWhite: "#3f4f53",
 };
+
+/** On paper, colours a program names outright (256 colours, true colour) are darkened by xterm until they read. */
+const LIGHT_MIN_CONTRAST = 4.5;
 
 const DARK_THEME: ITheme = {
   background: "#0f1a1c",
@@ -62,8 +70,17 @@ const DARK_THEME: ITheme = {
   brightWhite: "#ffffff",
 };
 
+function isDark(): boolean {
+  return document.documentElement.dataset.theme === "dark";
+}
+
 function currentXtermTheme(): ITheme {
-  return document.documentElement.dataset.theme === "dark" ? DARK_THEME : LIGHT_THEME;
+  return isDark() ? DARK_THEME : LIGHT_THEME;
+}
+
+/** 1 leaves colours as programs give them, which the dark palette is drawn for. */
+function currentMinContrast(): number {
+  return isDark() ? 1 : LIGHT_MIN_CONTRAST;
 }
 
 interface MountedTerm {
@@ -104,6 +121,7 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
         scrollback: 5000,
         allowProposedApi: false,
         theme: currentXtermTheme(),
+        minimumContrastRatio: currentMinContrast(),
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -300,8 +318,10 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
   useEffect(() => {
     const observer = new MutationObserver(() => {
       const theme = currentXtermTheme();
+      const contrast = currentMinContrast();
       for (const [, inst] of mountedRef.current) {
         inst.term.options.theme = theme;
+        inst.term.options.minimumContrastRatio = contrast;
       }
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });

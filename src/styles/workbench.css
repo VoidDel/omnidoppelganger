@@ -1261,6 +1261,13 @@ button.diff-no.new:hover:not(:disabled) {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  /* The terminal's own background (TerminalPane's themes), so the space under its last whole row matches it. */
+  --term-bg: #fbfcfa;
+  background: var(--term-bg);
+}
+
+:root[data-theme="dark"] .term-stage {
+  --term-bg: #0f1a1c;
 }
 
 .xterm-instance {
@@ -1273,4 +1280,11 @@ button.diff-no.new:hover:not(:disabled) {
 
 .xterm-instance .xterm {
   height: 100%;
+  background: var(--term-bg);
+}
+
+/* xterm.css paints its viewport black and it fills the whole height, while the rows only fill a whole number of
+   lines: what is left at the bottom showed as a black strip. It takes the terminal's background instead. */
+.xterm-instance .xterm .xterm-viewport {
+  background-color: var(--term-bg);
 }
