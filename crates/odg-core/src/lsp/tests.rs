@@ -220,9 +220,9 @@ async fn navigates_a_real_c_project_with_clangd() {
 async fn a_stand_in_that_fails_is_not_taken_for_a_server_and_one_that_will_not_serve_says_so() {
     // rustup's stand-in for rust-analyzer, when the component is not installed, fails at `--version`: `false` does
     // the same, and is not taken for an installed server.
-    static FAILING: Language = Language { key: "test", name: "Test", program: "false", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[], download: None };
+    static FAILING: Language = Language { key: "test", name: "Test", program: "false", version_arg: "--version", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[], download: None };
     // `true` answers `--version`, then exits rather than serve.
-    static SILENT: Language = Language { key: "test", name: "Test", program: "true", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[], download: None };
+    static SILENT: Language = Language { key: "test", name: "Test", program: "true", version_arg: "--version", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[], download: None };
     if installed("false").is_none() || installed("true").is_none() {
         return;
     }
@@ -262,7 +262,7 @@ fn downloadable_in_place(program: &'static str, downloaded: &'static str, file: 
     let target = crate::runtime::target().expect("a target with builds");
     let builds: &'static [(&'static str, &'static str, &'static str, u64)] = Box::leak(vec![(target, &*Box::leak(file.into_boxed_str()), &*Box::leak(sha256.into_boxed_str()), 1_000)].into_boxed_slice());
     let download: &'static Download = Box::leak(Box::new(Download { name: "Fake", program: downloaded, args: &["--serve"], version: "1.0", address: "", builds }));
-    Box::leak(Box::new(Language { key: "fake", name: "Fake", program, args: &[], extensions: &["fake"], install: "install it somehow", runs_project_code: false, env: &[], download: Some(download) }))
+    Box::leak(Box::new(Language { key: "fake", name: "Fake", program, version_arg: "--version", args: &[], extensions: &["fake"], install: "install it somehow", runs_project_code: false, env: &[], download: Some(download) }))
 }
 
 fn sha256_of(bytes: &[u8]) -> String {
@@ -467,4 +467,18 @@ async fn says_how_a_missing_server_can_be_had() {
     assert!(missing(language_by_key("go").unwrap()).contains("go install golang.org/x/tools/gopls@latest"));
     let wrong = server_tool(&LspHub::default(), &json!({ "language": "cobol" }), &CancellationToken::new()).await.unwrap_err();
     assert!(wrong.contains("`language` must be one of rust, c, typescript, python, go"), "{wrong}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn checks_gopls_with_version_subcommand_instead_of_flag() {
+    use std::os::unix::fs::PermissionsExt;
+    let go = language_by_key("go").unwrap();
+    assert_eq!(go.version_arg, "version");
+    let directory = tempfile::tempdir().unwrap();
+    let fake_gopls = directory.path().join("gopls");
+    std::fs::write(&fake_gopls, "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo 'gopls v0.24.0'; exit 0; fi\nexit 2\n").unwrap();
+    std::fs::set_permissions(&fake_gopls, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(servers::works(&fake_gopls, go.version_arg).await);
+    assert!(!servers::works(&fake_gopls, "--version").await);
 }

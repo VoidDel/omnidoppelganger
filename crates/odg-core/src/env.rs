@@ -42,12 +42,28 @@ fn widened(current: &[PathBuf], extra: Vec<PathBuf>) -> Vec<PathBuf> {
 /// Where the programs the app starts — `npx`, `uvx`, `cargo`, the language servers — are usually installed, for every
 /// system at once: `widened` keeps only the folders that are there, so naming another system's costs nothing.
 fn usual_folders(home: &Path) -> Vec<PathBuf> {
-    let mut folders: Vec<PathBuf> = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/opt/local/bin", "/opt/local/sbin", "/home/linuxbrew/.linuxbrew/bin", "/snap/bin"]
-        .iter()
-        .map(PathBuf::from)
-        .collect();
-    // The user's own, as each installer puts them: pipx and uv, cargo, and the version managers' shims.
-    for folder in [".local/bin", ".cargo/bin", ".local/share/mise/shims", ".asdf/shims", ".pyenv/shims", ".bun/bin", ".volta/bin", ".deno/bin", ".npm-global/bin", ".local/share/pnpm", "Library/pnpm"] {
+    let mut folders: Vec<PathBuf> = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/local/go/bin",
+        "/opt/local/bin",
+        "/opt/local/sbin",
+        "/home/linuxbrew/.linuxbrew/bin",
+        "/snap/bin",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    if let Some(gobin) = std::env::var_os("GOBIN").filter(|value| !value.is_empty()) {
+        folders.push(PathBuf::from(gobin));
+    }
+    if let Some(gopath) = std::env::var_os("GOPATH").filter(|value| !value.is_empty()) {
+        folders.extend(std::env::split_paths(&gopath).filter(|path| !path.as_os_str().is_empty()).map(|path| path.join("bin")));
+    }
+    // The user's own, as each installer puts them: go, pipx and uv, cargo, and the version managers' shims.
+    for folder in ["go/bin", ".local/bin", ".cargo/bin", ".local/share/mise/shims", ".asdf/shims", ".pyenv/shims", ".bun/bin", ".volta/bin", ".deno/bin", ".npm-global/bin", ".local/share/pnpm", "Library/pnpm"] {
         folders.push(home.join(folder));
     }
     folders.extend(node_folders(home));
@@ -98,10 +114,10 @@ mod tests {
         folder_in(home, ".nvm/versions/node/v20.11.0/bin");
         folder_in(home, ".nvm/versions/node/v26.13.1/bin");
         let folders = usual_folders(home);
-        for path in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        for path in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/local/go/bin"] {
             assert!(folders.contains(&PathBuf::from(path)), "{path} is missing");
         }
-        for path in [".local/bin", ".cargo/bin", ".local/share/mise/shims", ".asdf/shims"] {
+        for path in ["go/bin", ".local/bin", ".cargo/bin", ".local/share/mise/shims", ".asdf/shims"] {
             assert!(folders.contains(&home.join(path)), "{path} is missing");
         }
         // Every Node nvm keeps, and only the folder holding its `bin`.

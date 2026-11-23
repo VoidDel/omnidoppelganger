@@ -101,6 +101,8 @@ pub struct Language {
     pub name: &'static str,
     /// The server's program, looked for on the `PATH`.
     pub program: &'static str,
+    /// Argument passed to verify the program runs (e.g. `--version`, or `version` for `gopls`).
+    pub(super) version_arg: &'static str,
     pub(super) args: &'static [&'static str],
     pub(super) extensions: &'static [&'static str],
     /// How to install the server, said when it is missing.
@@ -118,6 +120,7 @@ pub const LANGUAGES: &[Language] = &[
         key: "rust",
         name: "Rust",
         program: "rust-analyzer",
+        version_arg: "--version",
         args: &[],
         extensions: &["rs"],
         install: "rustup component add rust-analyzer",
@@ -129,6 +132,7 @@ pub const LANGUAGES: &[Language] = &[
         key: "c",
         name: "C/C++",
         program: "clangd",
+        version_arg: "--version",
         args: &["--log=error"],
         extensions: &["c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "m", "mm"],
         install: "install clangd (it comes with LLVM, and with Xcode's command line tools on macOS)",
@@ -140,6 +144,7 @@ pub const LANGUAGES: &[Language] = &[
         key: "typescript",
         name: "TypeScript/JavaScript",
         program: "typescript-language-server",
+        version_arg: "--version",
         args: &["--stdio"],
         extensions: &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
         install: "npm install -g typescript-language-server typescript",
@@ -152,6 +157,7 @@ pub const LANGUAGES: &[Language] = &[
         key: "python",
         name: "Python",
         program: "pyright-langserver",
+        version_arg: "--version",
         args: &["--stdio"],
         extensions: &["py", "pyi"],
         install: "npm install -g pyright",
@@ -163,6 +169,7 @@ pub const LANGUAGES: &[Language] = &[
         key: "go",
         name: "Go",
         program: "gopls",
+        version_arg: "version",
         args: &[],
         extensions: &["go"],
         install: "go install golang.org/x/tools/gopls@latest",
@@ -198,26 +205,27 @@ pub fn downloaded(root: &Path, language: &Language) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Whether a program answers `--version`: a stand-in that fails, such as rustup's for a component not installed, does
-/// not. Asked once for each program while the app runs.
-async fn works(program: &Path) -> bool {
-    static ASKED: std::sync::LazyLock<Mutex<HashMap<PathBuf, bool>>> = std::sync::LazyLock::new(Mutex::default);
-    if let Some(known) = ASKED.lock().unwrap().get(program) {
+/// Whether a program answers its version check: a stand-in that fails, such as rustup's for a component not installed,
+/// does not. Asked once for each program while the app runs.
+pub(super) async fn works(program: &Path, version_arg: &'static str) -> bool {
+    static ASKED: std::sync::LazyLock<Mutex<HashMap<(PathBuf, &'static str), bool>>> = std::sync::LazyLock::new(Mutex::default);
+    let key = (program.to_path_buf(), version_arg);
+    if let Some(known) = ASKED.lock().unwrap().get(&key) {
         return *known;
     }
     let mut command = tokio::process::Command::new(program);
-    command.arg("--version").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    command.arg(version_arg).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let answered = matches!(tokio::time::timeout(Duration::from_secs(15), command.status()).await, Ok(Ok(status)) if status.success());
-    ASKED.lock().unwrap().insert(program.to_path_buf(), answered);
+    ASKED.lock().unwrap().insert(key, answered);
     answered
 }
 
 /// Where a language's server is: on the `PATH` if it runs, else downloaded under `root`, else nowhere.
 pub async fn locate(root: Option<&Path>, language: &Language) -> Located {
     if let Some(program) = installed(language.program)
-        && works(&program).await
+        && works(&program, language.version_arg).await
     {
         return Located::System(program);
     }
