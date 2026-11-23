@@ -17,7 +17,7 @@ import { ReplayBar, STEP_MS } from "./components/Replay";
 import { SchedulesPage } from "./components/Schedules";
 import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
-import { Workbench, WorkbenchDock, type WorkbenchTab } from "./components/Workbench";
+import { Workbench, WorkbenchTabsBar, type WorkbenchTab } from "./components/Workbench";
 
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
 import { isSetUp } from "./lib/providers";
@@ -529,7 +529,7 @@ export default function App() {
     : 0;
 
   const openWorkbenchFile = useCallback(
-    (relPath: string, pin = false, line?: number) => {
+    (relPath: string, _pin = false, line?: number) => {
       const clean = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
       if (!clean) return;
       const name = clean.split("/").pop() || clean;
@@ -539,19 +539,11 @@ export default function App() {
         if (existing && existing.kind === "file") {
           return prev.map((t) =>
             t.id === id && t.kind === "file"
-              ? { ...t, pinned: t.pinned || pin, line: line ?? t.line, jumpSeq: (t.jumpSeq ?? 0) + 1 }
+              ? { ...t, line: line ?? t.line, jumpSeq: (t.jumpSeq ?? 0) + 1 }
               : t,
           );
         }
-        const nextTab: WorkbenchTab = { id, kind: "file", path: clean, name, pinned: pin, line, jumpSeq: line ? 1 : 0 };
-        if (!pin) {
-          const previewIdx = prev.findIndex((t) => !t.pinned);
-          if (previewIdx >= 0) {
-            const copy = [...prev];
-            copy[previewIdx] = nextTab;
-            return copy;
-          }
-        }
+        const nextTab: WorkbenchTab = { id, kind: "file", path: clean, name, line, jumpSeq: line ? 1 : 0 };
         return [...prev, nextTab];
       });
       setActiveTabId(id);
@@ -561,25 +553,15 @@ export default function App() {
   );
 
   const openWorkbenchDiff = useCallback(
-    (relPath: string, stage: DiffStage, pin = false, commit?: string) => {
+    (relPath: string, stage: DiffStage, _pin = false, commit?: string) => {
       const clean = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
       if (!clean) return;
       const name = clean.split("/").pop() || clean;
       const id = `diff:${stage}:${commit ?? ""}:${clean}`;
       setWbTabs((prev) => {
         const existing = prev.find((t) => t.id === id);
-        if (existing) {
-          return pin ? prev.map((t) => (t.id === id ? { ...t, pinned: true } : t)) : prev;
-        }
-        const nextTab: WorkbenchTab = { id, kind: "diff", path: clean, name, pinned: pin, stage, commit };
-        if (!pin) {
-          const previewIdx = prev.findIndex((t) => !t.pinned);
-          if (previewIdx >= 0) {
-            const copy = [...prev];
-            copy[previewIdx] = nextTab;
-            return copy;
-          }
-        }
+        if (existing) return prev;
+        const nextTab: WorkbenchTab = { id, kind: "diff", path: clean, name, stage, commit };
         return [...prev, nextTab];
       });
       setActiveTabId(id);
@@ -587,6 +569,18 @@ export default function App() {
     },
     [],
   );
+
+  const moveWorkbenchTab = useCallback((fromId: string, toId: string) => {
+    setWbTabs((prev) => {
+      const fromIdx = prev.findIndex((t) => t.id === fromId);
+      const toIdx = prev.findIndex((t) => t.id === toId);
+      if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
+  }, []);
 
   const closeWorkbenchTab = useCallback((id: string) => {
     setWbTabs((prev) => {
@@ -634,9 +628,10 @@ export default function App() {
 
   const showWorkbench = inChat && isProjectSession && inWorkbench && wbTabs.length > 0 && !replay;
   const activeWbFile = useMemo(() => {
+    if (!showWorkbench) return null;
     const cur = wbTabs.find((t) => t.id === activeTabId) ?? wbTabs[0];
     return cur?.kind === "file" ? cur.path : null;
-  }, [wbTabs, activeTabId]);
+  }, [showWorkbench, wbTabs, activeTabId]);
 
   const canAside = !!active && !active.parent && !replay;
   const showPanel = inChat && !!active && !panel.hidden;
@@ -1151,14 +1146,31 @@ export default function App() {
               onToggleSidebar={() => setSidebar((cur) => ({ ...cur, hidden: false }))}
               panelHidden={panel.hidden}
               onTogglePanel={() => setPanel({ ...panel, hidden: !panel.hidden })}
-              hasWorkbenchTabs={isProjectSession && wbTabs.length > 0 && !replay}
-              inWorkbench={showWorkbench}
-              onToggleWorkbench={() => setInWorkbench((cur) => !cur)}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
               onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
             />
             </Guard>
             {banners}
+            {isProjectSession && wbTabs.length > 0 && !replay && (
+              <WorkbenchTabsBar
+                tabs={wbTabs}
+                inWorkbench={showWorkbench}
+                activeTabId={activeTabId}
+                chatStatus={state.status}
+                onSelectChat={() => setInWorkbench(false)}
+                onSelectTab={(id) => {
+                  setActiveTabId(id);
+                  setInWorkbench(true);
+                }}
+                onMoveTab={moveWorkbenchTab}
+                onCloseTab={closeWorkbenchTab}
+                onCloseAllTabs={() => {
+                  setWbTabs([]);
+                  setActiveTabId(null);
+                  setInWorkbench(false);
+                }}
+              />
+            )}
             {showWorkbench ? (
               <Guard name="工作台" className="fill" resetKey={active.id}>
                 <Workbench
@@ -1166,15 +1178,6 @@ export default function App() {
                   tabs={wbTabs}
                   activeTabId={activeTabId}
                   refreshTick={fsRefreshTick}
-                  onSelectTab={setActiveTabId}
-                  onPinTab={(id) => setWbTabs((prev) => prev.map((t) => (t.id === id ? { ...t, pinned: true } : t)))}
-                  onCloseTab={closeWorkbenchTab}
-                  onCloseAllTabs={() => {
-                    setWbTabs([]);
-                    setActiveTabId(null);
-                    setInWorkbench(false);
-                  }}
-                  onBackToChat={() => setInWorkbench(false)}
                   onQuoteLines={quoteIntoChat}
                   onAttachPath={(relPath) => {
                     const sep = active.workspace.includes("\\") ? "\\" : "/";
@@ -1197,24 +1200,7 @@ export default function App() {
                 />
               </Guard>
             ) : (
-              <>
-                {isProjectSession && wbTabs.length > 0 && !replay && (
-                  <WorkbenchDock
-                    tabs={wbTabs}
-                    activeTabId={activeTabId}
-                    onOpenTab={(id) => {
-                      setActiveTabId(id);
-                      setInWorkbench(true);
-                    }}
-                    onCloseTab={closeWorkbenchTab}
-                    onCloseAll={() => {
-                      setWbTabs([]);
-                      setActiveTabId(null);
-                    }}
-                  />
-                )}
-                {conversationPane}
-              </>
+              conversationPane
             )}
           </>
         ) : (

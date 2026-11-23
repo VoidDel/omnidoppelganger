@@ -23,10 +23,6 @@ export interface SessionHeaderProps {
   /** Whether the side panel is put away, and the way to bring it back or put it away. */
   panelHidden: boolean;
   onTogglePanel: () => void;
-  /** Whether workbench file/diff tabs exist, whether workbench view is currently active, and toggling between workbench and centered chat. */
-  hasWorkbenchTabs?: boolean;
-  inWorkbench?: boolean;
-  onToggleWorkbench?: () => void;
   onRename: (title: string) => void;
   onDelete: () => void;
 }
@@ -46,9 +42,6 @@ export function SessionHeader({
   onToggleSidebar,
   panelHidden,
   onTogglePanel,
-  hasWorkbenchTabs,
-  inWorkbench,
-  onToggleWorkbench,
   onRename,
   onDelete,
 }: SessionHeaderProps) {
@@ -183,21 +176,6 @@ export function SessionHeader({
               </ConfirmBubble>
             )}
           </span>
-          {hasWorkbenchTabs && onToggleWorkbench && (
-            <button
-              type="button"
-              className="icon-button"
-              aria-pressed={!!inWorkbench}
-              title={inWorkbench ? "切回对话居中视图" : "切到代码工作台视图"}
-              onClick={onToggleWorkbench}
-            >
-              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" />
-                <path d="M5.5 6.2 3.8 8l1.7 1.8M8.5 6.2 10.2 8 8.5 9.8" />
-              </svg>
-              <span className="sr-only">{inWorkbench ? "切回对话居中" : "切到代码工作台"}</span>
-            </button>
-          )}
           <button type="button" className="icon-button panel-toggle" aria-pressed={!panelHidden} title={panelHidden ? "展开右边的旁聊、改动、终端一栏" : "收起右边的旁聊、改动、终端一栏"} onClick={onTogglePanel}>
             {/* The window with its right-hand column: filled in while the column is showing. */}
             <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">

@@ -200,47 +200,80 @@ export function CodeViewer({
               </button>
             </div>
           )}
-          {view?.kind === "text" && mode === "code" && (
+          {view?.kind === "text" && (
             <button
               type="button"
-              className={`button text small ${findOpen ? "active" : ""}`}
+              className={`icon-button small ${findOpen && mode === "code" ? "active" : ""}`}
+              aria-pressed={findOpen && mode === "code"}
               title="在文件内查找 (Ctrl/Cmd+F)"
               onClick={() => {
+                if (mode !== "code") {
+                  setMode("code");
+                  setFindOpen(true);
+                  requestAnimationFrame(() => findInputRef.current?.focus());
+                  return;
+                }
                 setFindOpen((v) => !v);
                 if (!findOpen) requestAnimationFrame(() => findInputRef.current?.focus());
               }}
             >
-              查找
+              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="7" cy="7" r="4.3" />
+                <path d="m10.2 10.2 3.3 3.3" />
+              </svg>
+              <span className="sr-only">查找</span>
             </button>
           )}
           <button
             type="button"
-            className="button text small"
-            title="把此文件附入右侧对话"
+            className="icon-button small"
+            title="把此文件附入右侧旁聊"
             onClick={() => onAttachPath(path)}
           >
-            附入对话
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 7.4 8 12.4a3 3 0 0 1-4.3-4.2l5.4-5.4a2 2 0 0 1 2.9 2.8L6.7 10.9a1 1 0 0 1-1.5-1.4l4.6-4.6" />
+            </svg>
+            <span className="sr-only">附入对话</span>
           </button>
           <button
             type="button"
-            className="button text small"
-            title="复制相对路径"
+            className={`icon-button small ${copied === "path" ? "done" : ""}`}
+            title={copied === "path" ? "已复制路径" : "复制相对路径"}
             onClick={() => {
               navigator.clipboard.writeText(path).then(() => flashCopied("path"), () => undefined);
             }}
           >
-            {copied === "path" ? "已复制路径" : "复制路径"}
+            {copied === "path" ? (
+              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m3 8.5 3.2 3L13 4.5" />
+              </svg>
+            ) : (
+              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6.5 9.5 9.5 6.5M5.2 7.3 3.7 8.8a2.1 2.1 0 0 0 3 3l1.5-1.5M10.8 8.7l1.5-1.5a2.1 2.1 0 0 0-3-3L7.8 5.7" />
+              </svg>
+            )}
+            <span className="sr-only">{copied === "path" ? "已复制路径" : "复制路径"}</span>
           </button>
           {view?.kind === "text" && (
             <button
               type="button"
-              className="button text small"
-              title="复制全文内容"
+              className={`icon-button small ${copied === "content" ? "done" : ""}`}
+              title={copied === "content" ? "已复制全文" : "复制全文内容"}
               onClick={() => {
                 navigator.clipboard.writeText(view.content).then(() => flashCopied("content"), () => undefined);
               }}
             >
-              {copied === "content" ? "已复制" : "复制全文"}
+              {copied === "content" ? (
+                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m3 8.5 3.2 3L13 4.5" />
+                </svg>
+              ) : (
+                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" />
+                  <path d="M10.5 5.5V3.7a1.2 1.2 0 0 0-1.2-1.2H3.7a1.2 1.2 0 0 0-1.2 1.2v5.6a1.2 1.2 0 0 0 1.2 1.2h1.8" />
+                </svg>
+              )}
+              <span className="sr-only">{copied === "content" ? "已复制全文" : "复制全文"}</span>
             </button>
           )}
           <button
@@ -249,7 +282,7 @@ export function CodeViewer({
             title="用系统默认程序打开"
             onClick={() => api.openWorkspaceEntry(sessionId, path, false).catch((err) => onError(String(err)))}
           >
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
               <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
             </svg>
             <span className="sr-only">外部打开</span>
@@ -260,7 +293,7 @@ export function CodeViewer({
             title="在文件夹中显示"
             onClick={() => api.openWorkspaceEntry(sessionId, path, true).catch((err) => onError(String(err)))}
           >
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
               <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
             </svg>
             <span className="sr-only">在文件夹中显示</span>
@@ -288,30 +321,43 @@ export function CodeViewer({
               }
             }}
           />
-          <span className="viewer-find-count mono">
-            {findQuery ? (matches.length > 0 ? `${findIndex + 1} / ${matches.length} 行` : "无匹配") : ""}
-          </span>
-          <button
-            type="button"
-            className="icon-button small"
-            disabled={matches.length === 0}
-            title="上一处 (Shift+Enter)"
-            onClick={() => setFindIndex((cur) => (cur - 1 + matches.length) % matches.length)}
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            className="icon-button small"
-            disabled={matches.length === 0}
-            title="下一处 (Enter)"
-            onClick={() => setFindIndex((cur) => (cur + 1) % matches.length)}
-          >
-            ↓
-          </button>
-          <button type="button" className="icon-button small" title="关闭查找" onClick={() => setFindOpen(false)}>
-            ×
-          </button>
+          {findQuery && (
+            <span className={`viewer-find-count mono ${matches.length === 0 ? "none" : ""}`}>
+              {matches.length > 0 ? `${findIndex + 1} / ${matches.length}` : "无匹配"}
+            </span>
+          )}
+          <div className="viewer-find-acts">
+            <button
+              type="button"
+              className="viewer-find-btn"
+              disabled={matches.length === 0}
+              title="上一处 (Shift+Enter)"
+              onClick={() => setFindIndex((cur) => (cur - 1 + matches.length) % matches.length)}
+            >
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 12.5v-9M4.2 7.3 8 3.5l3.8 3.8" />
+              </svg>
+              <span className="sr-only">上一处</span>
+            </button>
+            <button
+              type="button"
+              className="viewer-find-btn"
+              disabled={matches.length === 0}
+              title="下一处 (Enter)"
+              onClick={() => setFindIndex((cur) => (cur + 1) % matches.length)}
+            >
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 3.5v9M4.2 8.7 8 12.5l3.8-3.8" />
+              </svg>
+              <span className="sr-only">下一处</span>
+            </button>
+            <button type="button" className="viewer-find-btn" title="关闭查找 (Esc)" onClick={() => setFindOpen(false)}>
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
+              </svg>
+              <span className="sr-only">关闭查找</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -438,6 +484,8 @@ export function CodeViewer({
                   <button
                     type="button"
                     className="line-no"
+                    data-line={lineNo}
+                    aria-label={`第 ${lineNo} 行`}
                     title="点选此行；按住 Shift 点另一行可选区间"
                     onClick={(e) => {
                       if (e.shiftKey && selection) {
@@ -448,13 +496,11 @@ export function CodeViewer({
                         setSelection({ anchor: lineNo, end: lineNo });
                       }
                     }}
-                  >
-                    {lineNo}
-                  </button>
-                  <span
+                  />
+                  <div
                     role="cell"
                     className="line-code"
-                    dangerouslySetInnerHTML={{ __html: lineHtml || " " }}
+                    dangerouslySetInnerHTML={{ __html: lineHtml || "<br>" }}
                   />
                 </div>
               );

@@ -145,6 +145,10 @@
   color: var(--jade-tint-ink);
 }
 
+.icon-button.small.done {
+  color: var(--jade);
+}
+
 .icon-button.tiny {
   width: 20px;
   height: 20px;
@@ -421,8 +425,21 @@
   font-weight: 600;
 }
 
-.wb-tab.preview .wb-tab-name {
-  font-style: italic;
+.wb-tab.wb-tab-chat {
+  padding: 0 12px;
+  user-select: none;
+}
+
+.wb-tab.wb-tab-chat.active {
+  background: var(--bg);
+}
+
+.wb-tab.dragging {
+  opacity: 0.45;
+}
+
+.wb-tab.drop-target {
+  box-shadow: inset 2px 0 0 var(--jade);
 }
 
 .wb-tab-label {
@@ -535,13 +552,13 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
 }
 
 .viewer-meta {
   font-size: 11px;
   color: var(--ink-2);
-  margin-right: 4px;
+  margin-right: 6px;
 }
 
 .seg-switch {
@@ -577,7 +594,8 @@
 }
 
 .viewer-find-input {
-  max-width: 260px;
+  width: 240px;
+  max-width: 100%;
   min-height: 28px;
   padding: 2px 8px;
   font-size: var(--t-small);
@@ -586,7 +604,46 @@
 .viewer-find-count {
   font-size: var(--t-micro);
   color: var(--ink-2);
-  min-width: 72px;
+  padding: 0 2px;
+  white-space: nowrap;
+}
+
+.viewer-find-count.none {
+  color: var(--cinnabar);
+}
+
+.viewer-find-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.viewer-find-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    background-color var(--d-quick) var(--ease-out),
+    border-color var(--d-quick) var(--ease-out),
+    color var(--d-quick) var(--ease-out);
+}
+
+.viewer-find-btn:hover:not(:disabled) {
+  border-color: var(--jade);
+  color: var(--jade);
+  background: var(--jade-soft);
+}
+
+.viewer-find-btn:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 
 .viewer-selection-bar {
@@ -726,9 +783,14 @@
   font-size: 12px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  -webkit-user-select: none;
   user-select: none;
   cursor: pointer;
   opacity: 0.75;
+}
+
+.line-no::before {
+  content: attr(data-line);
 }
 
 .line-no:hover,
@@ -825,7 +887,7 @@
 }
 
 .aside-pane .composer {
-  padding: 0 12px 12px;
+  padding: 0 12px 20px;
 }
 
 .aside-pane .composer-row {
@@ -1161,8 +1223,13 @@
   font-size: 11px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  -webkit-user-select: none;
   user-select: none;
   opacity: 0.72;
+}
+
+.diff-no::before {
+  content: attr(data-line);
 }
 
 button.diff-no.new:not(:disabled) {
@@ -1177,9 +1244,14 @@ button.diff-no.new:hover:not(:disabled) {
 
 .diff-sign {
   text-align: center;
+  -webkit-user-select: none;
   user-select: none;
   color: var(--ink-2);
   font-weight: 700;
+}
+
+.diff-sign::before {
+  content: attr(data-sign);
 }
 
 .rich-diff-row.added .diff-sign {
@@ -1348,91 +1420,4 @@ button.diff-no.new:hover:not(:disabled) {
    lines: what is left at the bottom showed as a black strip. It takes the terminal's background instead. */
 .xterm-instance .xterm .xterm-viewport {
   background-color: var(--term-bg);
-}
-
-/* ---------- open files kept above a centered conversation ---------- */
-
-.workbench-dock {
-  flex: none;
-  min-height: 36px;
-  padding: 3px 16px 3px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.dock-back {
-  flex: none;
-  min-height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--jade);
-  border-radius: var(--r-control);
-  background: var(--jade-tint);
-  color: var(--jade-tint-ink);
-  font-size: var(--t-small);
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.dock-back:hover {
-  background: var(--jade);
-  color: var(--jade-ink);
-}
-
-.dock-tabs {
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  scrollbar-width: thin;
-}
-
-.dock-tab {
-  flex: none;
-  max-width: 220px;
-  min-height: 26px;
-  padding: 0 2px 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-control);
-  background: var(--sheet);
-  color: var(--ink-2);
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.dock-tab.current {
-  border-color: var(--line-strong);
-  color: var(--ink);
-}
-
-.dock-tab-label {
-  min-width: 0;
-  padding: 2px 2px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-size: var(--t-small);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dock-tab-label:hover {
-  color: var(--jade);
-}
-
-.dock-close-all {
-  flex: none;
-  min-height: 26px;
-  padding: 0 6px;
 }

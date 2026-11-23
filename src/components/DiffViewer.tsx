@@ -148,20 +148,20 @@ export function DiffViewer({
                       key={lIdx}
                       className={`rich-diff-row ${line.kind === "+" ? "added" : line.kind === "-" ? "removed" : "context"}`}
                     >
-                      <span className="diff-no old">{line.old_line ?? ""}</span>
+                      <span className="diff-no old" data-line={line.old_line ?? ""} aria-hidden="true" />
                       <button
                         type="button"
                         className="diff-no new"
+                        data-line={line.new_line ?? ""}
+                        aria-label={line.new_line ? `跳到源文件第 ${line.new_line} 行` : undefined}
                         disabled={!line.new_line}
                         title={line.new_line ? `跳到源文件第 ${line.new_line} 行` : undefined}
                         onClick={() => line.new_line && onOpenSource(path, line.new_line)}
-                      >
-                        {line.new_line ?? ""}
-                      </button>
-                      <span className="diff-sign">{line.kind === "-" ? "−" : line.kind}</span>
-                      <span
+                      />
+                      <span className="diff-sign" data-sign={line.kind === "-" ? "−" : line.kind} aria-hidden="true" />
+                      <div
                         className="line-code"
-                        dangerouslySetInnerHTML={{ __html: line.html || " " }}
+                        dangerouslySetInnerHTML={{ __html: line.html || "<br>" }}
                       />
                     </div>
                   ))}
