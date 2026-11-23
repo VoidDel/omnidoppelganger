@@ -250,7 +250,15 @@ mod tests {
             let sandbox = sandbox.clone();
             let inside = inside.clone();
             async move {
-                let output = command("sh", &sandbox).unwrap().arg("-c").arg(script).current_dir(&inside).output().await.unwrap();
+                let output = command("sh", &sandbox)
+                    .unwrap()
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&inside)
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .await
+                    .unwrap();
                 (output.status.success(), String::from_utf8_lossy(&output.stderr).into_owned())
             }
         };
