@@ -151,8 +151,8 @@ export function Composer(props: ComposerProps) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [height, setHeight] = useBoxHeight();
   const [dragging, setDragging] = useState(false);
-  /** Where a drag of the box's top edge began: the pointer, and the height then. Read by the pointer's own events. */
-  const held = useRef<{ y: number; height: number } | null>(null);
+  /** Where a drag of the box's top edge began: pointer Y, visible height, content floor, and saved height. */
+  const held = useRef<{ y: number; height: number; floor: number; saved: number; grown: boolean } | null>(null);
   // The box is as tall as it was left, and taller while what is typed needs more, up to what leaves the conversation room.
   useLayoutEffect(() => {
     const box = input.current;
@@ -383,16 +383,29 @@ export function Composer(props: ComposerProps) {
             tabIndex={0}
             onPointerDown={(event) => {
               event.currentTarget.setPointerCapture(event.pointerId);
+              const box = input.current;
+              const current = box?.offsetHeight ?? height;
+              let content = BOX.least;
+              if (box && text.length > 0) {
+                const prev = box.style.height;
+                box.style.height = "0px";
+                content = box.scrollHeight;
+                box.style.height = prev;
+              }
+              const floor = Math.max(BOX.least, Math.min(content, tallest()));
               // From the height the box is seen at, which is more than the one it was left at while what is typed needs more.
-              held.current = { y: event.clientY, height: input.current?.offsetHeight ?? height };
+              held.current = { y: event.clientY, height: current, floor, saved: height, grown: current > height };
               setDragging(true);
             }}
             onPointerMove={(event) => {
               if (!held.current) return;
-              const next = held.current.height + held.current.y - event.clientY;
-              // A box grown by what is typed in it cannot be dragged smaller than that: nothing would be seen to
-              // change, and it would be left small for the next message without anyone having seen it so.
-              if (next >= held.current.height || held.current.height <= height) setHeight(fitBox(next));
+              const raw = held.current.height + held.current.y - event.clientY;
+              // A box grown by what is typed in it cannot be dragged smaller than that: keep the saved height unchanged.
+              if (held.current.grown && raw < held.current.height) {
+                setHeight(held.current.saved);
+                return;
+              }
+              setHeight(fitBox(Math.max(held.current.floor, raw)));
             }}
             onPointerUp={() => ((held.current = null), setDragging(false))}
             onPointerCancel={() => ((held.current = null), setDragging(false))}
