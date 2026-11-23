@@ -6,7 +6,9 @@ import { McpPage } from "./components/Mcp";
 import { SkillsPage } from "./components/Skills";
 import { Logo, Mountains } from "./components/Backdrop";
 import { Composer, type ComposerDraft } from "./components/Composer";
-import { FileTree } from "./components/FileTree";
+import { DiffViewer } from "./components/DiffViewer";
+import { FileTree, type GitBadge } from "./components/FileTree";
+import { GitPanel } from "./components/GitPanel";
 import { SessionHeader } from "./components/SessionHeader";
 import { CHAT_ICON, SIDEBAR_WIDTH, Sidebar, type SidebarTab, fitSidebar } from "./components/Sidebar";
 import { PANEL_STRIP, PANEL_WIDTH, type PanelTab, SidePanel, fitPanel } from "./components/SidePanel";
@@ -21,7 +23,7 @@ import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, ty
 import { modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
 import type { SlashCommand } from "./lib/slash";
-import type { Decision, Envelope, Image, Mode, Reply, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
+import type { Decision, DiffStage, Envelope, GitStatus, Image, Mode, Reply, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
 /** What "/init" hands the 分身: learn the project, and write down what a 分身 needs to know of it. */
 const INIT_TASK =
@@ -428,6 +430,8 @@ export default function App() {
   const [wbTabs, setWbTabs] = useState<WorkbenchTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [inWorkbench, setInWorkbench] = useState(false);
+  const [manualTick, setManualTick] = useState(0);
+  const [gitState, setGitState] = useState<GitStatus | null>(null);
 
   const isProjectSession = !!active && !chatting(active);
   const activeWorkspace = active?.workspace ?? "";
@@ -438,15 +442,16 @@ export default function App() {
       setWbTabs([]);
       setActiveTabId(null);
       setInWorkbench(false);
+      setGitState(null);
     }
     if (!isProjectSession && leftTab !== "sessions") {
       setLeftTab("sessions");
     }
   }, [activeWorkspace, isProjectSession, leftTab]);
 
-  // Auto-refresh token for FileTree and CodeViewer whenever the session log records file-affecting events.
+  // Auto-refresh token for FileTree, GitPanel, and CodeViewer whenever session events or user actions touch disk.
   const fsRefreshTick = useMemo(() => {
-    let count = 0;
+    let count = manualTick;
     for (const env of state.events) {
       if (
         env.type === "files/made" ||
@@ -460,7 +465,46 @@ export default function App() {
       }
     }
     return count;
-  }, [state.events]);
+  }, [state.events, manualTick]);
+
+  const bumpRefresh = useCallback(() => setManualTick((n) => n + 1), []);
+
+  useEffect(() => {
+    if (!isProjectSession || !activeId) {
+      setGitState(null);
+      return;
+    }
+    let alive = true;
+    api.gitStatus(activeId).then(
+      (st) => alive && setGitState(st),
+      () => alive && setGitState(null),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [isProjectSession, activeId, activeWorkspace, fsRefreshTick]);
+
+  const gitBadges = useMemo<Record<string, GitBadge>>(() => {
+    if (!gitState?.is_repo) return {};
+    const map: Record<string, GitBadge> = {};
+    for (const f of gitState.staged) {
+      map[f.path] = { label: f.status, tone: f.status === "A" ? "added" : f.status === "D" ? "deleted" : "modified" };
+    }
+    for (const f of gitState.unstaged) {
+      map[f.path] = { label: f.status, tone: f.status === "D" ? "deleted" : "modified" };
+    }
+    for (const f of gitState.untracked) {
+      map[f.path] = { label: "U", tone: "added" };
+    }
+    for (const f of gitState.conflicts) {
+      map[f.path] = { label: "!", tone: "conflict" };
+    }
+    return map;
+  }, [gitState]);
+
+  const gitChangeCount = gitState?.is_repo
+    ? gitState.conflicts.length + gitState.staged.length + gitState.unstaged.length + gitState.untracked.length
+    : 0;
 
   const openWorkbenchFile = useCallback(
     (relPath: string, pin = false, line?: number) => {
@@ -478,6 +522,35 @@ export default function App() {
           );
         }
         const nextTab: WorkbenchTab = { id, kind: "file", path: clean, name, pinned: pin, line, jumpSeq: line ? 1 : 0 };
+        if (!pin) {
+          const previewIdx = prev.findIndex((t) => !t.pinned);
+          if (previewIdx >= 0) {
+            const copy = [...prev];
+            copy[previewIdx] = nextTab;
+            return copy;
+          }
+        }
+        return [...prev, nextTab];
+      });
+      setActiveTabId(id);
+      setInWorkbench(true);
+      setPanel((cur) => ({ width: Math.max(cur.width, 400), hidden: false }));
+    },
+    [setPanel],
+  );
+
+  const openWorkbenchDiff = useCallback(
+    (relPath: string, stage: DiffStage, pin = false, commit?: string) => {
+      const clean = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+      if (!clean) return;
+      const name = clean.split("/").pop() || clean;
+      const id = `diff:${stage}:${commit ?? ""}:${clean}`;
+      setWbTabs((prev) => {
+        const existing = prev.find((t) => t.id === id);
+        if (existing) {
+          return pin ? prev.map((t) => (t.id === id ? { ...t, pinned: true } : t)) : prev;
+        }
+        const nextTab: WorkbenchTab = { id, kind: "diff", path: clean, name, pinned: pin, stage, commit };
         if (!pin) {
           const previewIdx = prev.findIndex((t) => !t.pinned);
           if (previewIdx >= 0) {
@@ -798,6 +871,7 @@ export default function App() {
             onTab={setLeftTab}
             width={sidebar.width}
             onResize={(width) => setSidebar({ ...sidebar, width })}
+            gitCount={gitChangeCount}
             filesPane={
               isProjectSession && active ? (
                 <FileTree
@@ -805,10 +879,41 @@ export default function App() {
                   workspace={active.workspace}
                   activePath={activeWbFile}
                   refreshTick={fsRefreshTick}
+                  gitBadges={gitBadges}
                   onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
                   onAttachFile={(absPath) => attachIntoChat(absPath)}
-                  onDeletedPath={handleDeletedWorkspacePath}
-                  onRenamedPath={handleRenamedWorkspacePath}
+                  onDeletedPath={(rel) => {
+                    handleDeletedWorkspacePath(rel);
+                    bumpRefresh();
+                  }}
+                  onRenamedPath={(fromRel, toRel) => {
+                    handleRenamedWorkspacePath(fromRel, toRel);
+                    bumpRefresh();
+                  }}
+                  onError={fail}
+                />
+              ) : undefined
+            }
+            gitPane={
+              isProjectSession && active ? (
+                <GitPanel
+                  sessionId={active.id}
+                  isWorktree={!!active.worktree}
+                  status={gitState}
+                  refreshTick={fsRefreshTick}
+                  working={state.status !== "idle"}
+                  onStatusChanged={(next) => {
+                    if (next) setGitState(next);
+                    bumpRefresh();
+                  }}
+                  onBranchSwitched={(item) => dispatch({ type: "session", item })}
+                  onOpenDiff={(relPath, stage, pin, commit) => openWorkbenchDiff(relPath, stage, pin, commit)}
+                  onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
+                  onAskReview={() => {
+                    send(REVIEW_TASK);
+                    if (showWorkbench) setSummonPanelTab({ id: Date.now(), tab: "chat" });
+                  }}
+                  onNote={(note) => dispatch({ type: "note", note })}
                   onError={fail}
                 />
               ) : undefined
@@ -962,6 +1067,18 @@ export default function App() {
                     attachIntoChat(abs);
                   }}
                   onError={fail}
+                  renderDiff={(tab) => (
+                    <DiffViewer
+                      key={tab.id}
+                      sessionId={active.id}
+                      path={tab.path}
+                      stage={tab.stage}
+                      commit={tab.commit}
+                      refreshTick={fsRefreshTick}
+                      onOpenSource={(relPath, line) => openWorkbenchFile(relPath, false, line)}
+                      onQuoteDiff={quoteIntoChat}
+                    />
+                  )}
                 />
               </Guard>
             ) : (

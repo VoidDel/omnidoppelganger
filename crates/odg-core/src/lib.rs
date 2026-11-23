@@ -10,6 +10,7 @@ pub mod env;
 pub mod events;
 pub mod explorer;
 pub mod fsutil;
+pub mod git;
 pub mod grants;
 pub mod imagegen;
 pub mod jobs;

@@ -518,3 +518,75 @@ export type FileView =
       reason: "binary" | "too_large";
     };
 
+export type DiffStage = "unstaged" | "staged" | "commit";
+
+export interface GitFile {
+  path: string;
+  orig_path: string | null;
+  status: string;
+}
+
+export interface GitStatus {
+  is_repo: boolean;
+  branch: string | null;
+  detached: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  conflicts: GitFile[];
+  staged: GitFile[];
+  unstaged: GitFile[];
+  untracked: GitFile[];
+  untracked_truncated: boolean;
+}
+
+export interface RichDiffLine {
+  kind: "+" | "-" | " ";
+  old_line: number | null;
+  new_line: number | null;
+  text: string;
+}
+
+export interface RichDiffHunk {
+  header: string;
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  lines: RichDiffLine[];
+}
+
+export interface GitDiffView {
+  path: string;
+  name: string;
+  language: string | null;
+  stage: DiffStage;
+  commit: string | null;
+  binary: boolean;
+  added: number;
+  removed: number;
+  hunks: RichDiffHunk[];
+}
+
+export interface GitBranch {
+  name: string;
+  current: boolean;
+  remote: boolean;
+  upstream: string | null;
+  locked_elsewhere: boolean;
+}
+
+export interface GitCommitItem {
+  hash: string;
+  short_hash: string;
+  author: string;
+  timestamp: number;
+  refs: string;
+  subject: string;
+}
+
+export interface GitCommitResult {
+  hash: string;
+  branch: string | null;
+}
+

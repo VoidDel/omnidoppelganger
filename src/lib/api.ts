@@ -5,8 +5,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   Decision,
+  DiffStage,
   FileView,
   FoundFile,
+  GitBranch,
+  GitCommitItem,
+  GitCommitResult,
+  GitDiffView,
+  GitFile,
+  GitStatus,
   Image,
   LanguageServerView,
   Mode,
@@ -129,6 +136,21 @@ export const api = {
   deleteWorkspaceEntry: (id: string, path: string) => invoke<void>("delete_workspace_entry", { id, path }),
   openWorkspaceEntry: (id: string, path: string, reveal: boolean) =>
     invoke<string>("open_workspace_entry", { id, path, reveal }),
+  /** Git management commands for the session's workspace repository. */
+  gitStatus: (id: string) => invoke<GitStatus>("git_status", { id }),
+  gitDiff: (id: string, path: string, stage: DiffStage, commit?: string) =>
+    invoke<GitDiffView>("git_diff", { id, path, stage, commit: commit ?? null }),
+  gitStage: (id: string, paths: string[] = []) => invoke<GitStatus>("git_stage", { id, paths }),
+  gitUnstage: (id: string, paths: string[] = []) => invoke<GitStatus>("git_unstage", { id, paths }),
+  gitDiscard: (id: string, paths: string[]) => invoke<GitStatus>("git_discard", { id, paths }),
+  gitCommit: (id: string, message: string, stageAll = false) =>
+    invoke<GitCommitResult>("git_commit", { id, message, stageAll }),
+  gitBranches: (id: string) => invoke<GitBranch[]>("git_branches", { id }),
+  gitCheckout: (id: string, branch: string, create = false) =>
+    invoke<SessionItem>("git_checkout", { id, branch, create }),
+  gitLog: (id: string, limit = 30) => invoke<GitCommitItem[]>("git_log", { id, limit }),
+  gitCommitFiles: (id: string, commit: string) => invoke<GitFile[]>("git_commit_files", { id, commit }),
+  gitSync: (id: string, action: "fetch" | "pull" | "push") => invoke<string>("git_sync", { id, action }),
   /** A picture the session's 分身 wrote, either from a recorded `snapshot` or as it is now on disk. */
   picture: (id: string, path: string, snapshot?: string) => invoke<Image>("picture", { id, path, snapshot: snapshot ?? null }),
   /** Ask for a folder with the system dialog, titled `title`. Resolves null when the user closes it. */

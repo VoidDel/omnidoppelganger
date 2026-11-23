@@ -586,6 +586,107 @@ async fn open_workspace_entry(app: State<'_, App>, id: String, path: String, rev
     Ok("opened".to_string())
 }
 
+#[tauri::command]
+async fn git_status(app: State<'_, App>, id: String) -> Result<odg_core::git::GitStatus, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::git::status(&workspace)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_diff(
+    app: State<'_, App>,
+    id: String,
+    path: String,
+    stage: odg_core::git::DiffStage,
+    commit: Option<String>,
+) -> Result<odg_core::git::GitDiffView, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::git::diff(&workspace, &path, stage, commit.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_stage(app: State<'_, App>, id: String, paths: Vec<String>) -> Result<odg_core::git::GitStatus, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || {
+        odg_core::git::stage(&workspace, &paths)?;
+        odg_core::git::status(&workspace)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_unstage(app: State<'_, App>, id: String, paths: Vec<String>) -> Result<odg_core::git::GitStatus, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || {
+        odg_core::git::unstage(&workspace, &paths)?;
+        odg_core::git::status(&workspace)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_discard(app: State<'_, App>, id: String, paths: Vec<String>) -> Result<odg_core::git::GitStatus, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || {
+        odg_core::git::discard(&workspace, &paths)?;
+        odg_core::git::status(&workspace)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_commit(app: State<'_, App>, id: String, message: String, stage_all: bool) -> Result<odg_core::git::GitCommitResult, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::git::commit(&workspace, &message, stage_all))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_branches(app: State<'_, App>, id: String) -> Result<Vec<odg_core::git::GitBranch>, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::git::branches(&workspace)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_checkout(app: State<'_, App>, id: String, branch: String, create: bool) -> Result<SessionItem, String> {
+    let session = app.live(&id)?;
+    if session.summary().worktree.is_some() {
+        return Err("独立工作树分身绑定在专属分支上，不能直接切换分支；请在主洞府的分身里切换分支。".to_string());
+    }
+    let workspace = PathBuf::from(session.summary().workspace);
+    tokio::task::spawn_blocking(move || odg_core::git::checkout(&workspace, &branch, create))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(app.item(session.summary(), session.status()))
+}
+
+#[tauri::command]
+async fn git_log(app: State<'_, App>, id: String, limit: Option<usize>) -> Result<Vec<odg_core::git::GitCommitItem>, String> {
+    let workspace = session_workspace(&app, &id)?;
+    let cap = limit.unwrap_or(30);
+    tokio::task::spawn_blocking(move || odg_core::git::log(&workspace, cap)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_commit_files(app: State<'_, App>, id: String, commit: String) -> Result<Vec<odg_core::git::GitFile>, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::git::commit_files(&workspace, &commit))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_sync(app: State<'_, App>, id: String, action: String) -> Result<String, String> {
+    let workspace = session_workspace(&app, &id)?;
+    odg_core::git::sync(&workspace, &action).await
+}
+
 /// What the page shows of the document runtime: how it stands, and what LibreOffice it would use.
 #[derive(Serialize)]
 struct RuntimeView {
@@ -1117,6 +1218,17 @@ pub fn run() {
             rename_workspace_entry,
             delete_workspace_entry,
             open_workspace_entry,
+            git_status,
+            git_diff,
+            git_stage,
+            git_unstage,
+            git_discard,
+            git_commit,
+            git_branches,
+            git_checkout,
+            git_log,
+            git_commit_files,
+            git_sync,
             picture,
             runtime_status,
             install_runtime,

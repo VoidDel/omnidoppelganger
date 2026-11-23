@@ -794,3 +794,347 @@
   display: flex;
   flex-direction: column;
 }
+
+/* ---------- git panel & rich diff viewer ---------- */
+
+.git-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.git-empty {
+  padding: 12px 4px;
+  font-size: var(--t-small);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.git-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.git-branch-btn {
+  min-width: 0;
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink);
+  font-size: var(--t-micro);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.git-branch-btn:hover:not(:disabled) {
+  border-color: var(--jade);
+}
+
+.git-branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-sync-tools {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.git-sync-btn {
+  min-height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.git-sync-btn:hover:not(:disabled) {
+  border-color: var(--jade);
+  color: var(--jade);
+}
+
+.git-branches-box {
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+}
+
+.git-new-branch {
+  padding: 4px 6px;
+  border: 1px dashed var(--line-strong);
+  border-radius: calc(var(--r-control) - 2px);
+  background: transparent;
+  color: var(--jade);
+  font-size: var(--t-micro);
+  text-align: left;
+}
+
+.git-branch-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.git-branch-item {
+  padding: 4px 6px;
+  border: 0;
+  border-radius: calc(var(--r-control) - 2px);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--t-micro);
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.git-branch-item:hover:not(:disabled) {
+  background: var(--jade-tint);
+}
+
+.git-branch-item.current {
+  font-weight: 700;
+}
+
+.git-commit-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.git-commit-input {
+  width: 100%;
+  min-height: 54px;
+  max-height: 140px;
+  padding: 6px 8px;
+  font-size: var(--t-small);
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.git-commit-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.git-commit-submit {
+  flex: 1;
+  min-width: 110px;
+  justify-content: center;
+}
+
+.git-scroll {
+  gap: 8px;
+}
+
+.git-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.git-group-head {
+  min-height: 24px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.git-group-title {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: left;
+}
+
+.git-group-title:hover {
+  color: var(--ink);
+}
+
+.git-group-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.git-file-row .tree-git {
+  margin-left: 0;
+  min-width: 14px;
+  text-align: center;
+}
+
+.git-history {
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.git-commit-row {
+  display: flex;
+  flex-direction: column;
+}
+
+.git-commit-head {
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.git-commit-head:hover,
+.git-commit-head.open {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.git-commit-subject {
+  font-size: var(--t-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-meta {
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.git-commit-files {
+  margin-left: 8px;
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.git-commit-loading {
+  padding: 4px 6px;
+  font-size: var(--t-micro);
+}
+
+.git-commit-file {
+  border-radius: var(--r-control);
+}
+
+.git-commit-file:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.diff-stat-add {
+  color: var(--jade);
+  font-weight: 700;
+}
+
+.diff-stat-del {
+  color: var(--cinnabar);
+  font-weight: 700;
+}
+
+.rich-diff-list {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 32px;
+  font-family: var(--mono);
+  font-size: var(--t-code);
+  line-height: 1.6;
+  min-width: max-content;
+}
+
+.rich-hunk + .rich-hunk {
+  border-top: 1px solid var(--line);
+}
+
+.rich-hunk-header {
+  padding: 4px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.rich-diff-row {
+  display: grid;
+  grid-template-columns: 48px 48px 22px minmax(0, 1fr);
+  align-items: baseline;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 21px;
+}
+
+.rich-diff-row.added {
+  background: var(--added);
+}
+
+.rich-diff-row.removed {
+  background: color-mix(in srgb, var(--cinnabar-tint) 65%, var(--removed));
+}
+
+.diff-no {
+  padding: 0 8px 0 4px;
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  opacity: 0.72;
+}
+
+button.diff-no.new:not(:disabled) {
+  cursor: pointer;
+}
+
+button.diff-no.new:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--jade);
+  font-weight: 700;
+}
+
+.diff-sign {
+  text-align: center;
+  user-select: none;
+  color: var(--ink-2);
+  font-weight: 700;
+}
+
+.rich-diff-row.added .diff-sign {
+  color: var(--added-ink);
+}
+
+.rich-diff-row.removed .diff-sign {
+  color: var(--cinnabar-ink);
+}
