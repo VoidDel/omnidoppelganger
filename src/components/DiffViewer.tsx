@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { escapeHtml, highlightLines } from "../lib/highlight";
+import { sameDiffView } from "../lib/refresh";
 import type { DiffStage, GitDiffView } from "../lib/types";
 
 export interface DiffViewerProps {
@@ -26,25 +27,40 @@ export function DiffViewer({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
+  /** The diff on screen, the one wanted now, and the order they were asked in, as in the code viewer. */
+  const shownKey = useRef<string | null>(null);
+  const wanted = useRef("");
+  const asked = useRef(0);
+  const landed = useRef(0);
   useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    setError(null);
+    const key = `${sessionId}\u0000${path}\u0000${stage}\u0000${commit ?? ""}`;
+    wanted.current = key;
+    const quiet = shownKey.current === key;
+    // A commit's diff never changes: shown once, it is not asked for again.
+    if (quiet && stage === "commit") return;
+    if (!quiet) {
+      setLoading(true);
+      setError(null);
+    }
+    const seq = ++asked.current;
+    const current = () => wanted.current === key && seq > landed.current;
     api.gitDiff(sessionId, path, stage, commit).then(
       (data) => {
-        if (!alive) return;
-        setDiff(data);
+        if (!current()) return;
+        landed.current = seq;
+        shownKey.current = key;
+        setError(null);
+        // Unchanged, the diff object stays: nothing is highlighted again and the page does not move.
+        setDiff((shown) => (shown && sameDiffView(shown, data) ? shown : data));
         setLoading(false);
       },
       (err) => {
-        if (!alive) return;
+        if (!current()) return;
+        landed.current = seq;
         setError(String(err));
         setLoading(false);
       },
     );
-    return () => {
-      alive = false;
-    };
   }, [sessionId, path, stage, commit, refreshTick]);
 
   // Pre-highlight lines per hunk so syntax tokens colorize inside +/- rows cleanly.

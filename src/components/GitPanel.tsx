@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { DiffStage, GitBranch, GitCommitItem, GitFile, GitStatus, SessionItem } from "../lib/types";
 
@@ -8,7 +8,10 @@ export interface GitPanelProps {
   status: GitStatus | null;
   refreshTick?: number;
   working: boolean;
+  /** With the status an action handed back, or without one to have it read again. */
   onStatusChanged: (next?: GitStatus) => void;
+  /** Files on disk changed by an action here (discarding): what shows them is read again. */
+  onFilesChanged?: () => void;
   onBranchSwitched: (item: SessionItem) => void;
   onOpenDiff: (path: string, stage: DiffStage, pin: boolean, commit?: string) => void;
   onOpenFile: (path: string, pin: boolean) => void;
@@ -35,6 +38,7 @@ export function GitPanel({
   refreshTick = 0,
   working,
   onStatusChanged,
+  onFilesChanged,
   onBranchSwitched,
   onOpenDiff,
   onOpenFile,
@@ -65,12 +69,28 @@ export function GitPanel({
 
   const loadLog = useCallback(() => {
     if (!status?.is_repo) return;
-    api.gitLog(sessionId, 25).then(setCommits, () => undefined);
+    // The same history keeps the list as it is, with what is expanded in it.
+    api.gitLog(sessionId, 25).then(
+      (next) => setCommits((shown) => (shown.length === next.length && shown.every((c, at) => c.hash === next[at].hash && c.refs === next[at].refs) ? shown : next)),
+      () => undefined,
+    );
   }, [sessionId, status?.is_repo]);
 
+  // At once for another repository or branch; after a change on disk, once the burst of changes is over.
+  const logKey = useRef<string | null>(null);
   useEffect(() => {
-    loadLog();
-  }, [loadLog, refreshTick, status?.branch]);
+    const key = `${sessionId}\u0000${status?.branch ?? ""}`;
+    const fresh = logKey.current !== key;
+    logKey.current = key;
+    const timer = setTimeout(loadLog, fresh ? 0 : 600);
+    return () => clearTimeout(timer);
+  }, [loadLog, refreshTick, sessionId, status?.branch]);
+
+  /** After discarding, the files themselves changed too: the tree and what is open are read again. */
+  const afterDiscard = (next: GitStatus) => {
+    onStatusChanged(next);
+    onFilesChanged?.();
+  };
 
   const openBranches = () => {
     const next = !branchMenuOpen;
@@ -262,7 +282,7 @@ export function GitPanel({
                 onClick={() => {
                   const target = file.path;
                   setDiscardTarget(null);
-                  api.gitDiscard(sessionId, [target]).then(onStatusChanged, (err) => onError(String(err)));
+                  api.gitDiscard(sessionId, [target]).then(afterDiscard, (err) => onError(String(err)));
                 }}
               >
                 确认放弃
@@ -495,7 +515,7 @@ export function GitPanel({
                     onClick={() => {
                       const paths = status.unstaged.map((f) => f.path);
                       setDiscardTarget(null);
-                      api.gitDiscard(sessionId, paths).then(onStatusChanged, (err) => onError(String(err)));
+                      api.gitDiscard(sessionId, paths).then(afterDiscard, (err) => onError(String(err)));
                     }}
                   >
                     全部放弃

@@ -466,29 +466,43 @@ export default function App() {
   }, [inChat, isProjectSession, activeId, activeWorkspace]);
 
   useEffect(() => {
-    const stop = api.onWorkspaceChanged(() => {
-      bumpRefresh();
-      refresh();
-    });
+    // A change on disk refreshes the tree, Git and what is open; the list of 分身 does not depend on it.
+    const stop = api.onWorkspaceChanged(() => bumpRefresh());
     return () => {
       stop.then((unlisten) => unlisten()).catch(() => undefined);
     };
-  }, [bumpRefresh, refresh]);
+  }, [bumpRefresh]);
 
+  // Git status: at once for a newly opened workspace, then once per burst of changes, not once per change.
+  // A status that comes back after a newer one was asked for still lands, unless the workspace changed meanwhile.
+  const gitKey = useRef<string | null>(null);
   useEffect(() => {
     if (!isProjectSession || !activeId) {
+      gitKey.current = null;
       setGitState(null);
       return;
     }
-    let alive = true;
-    api.gitStatus(activeId).then(
-      (st) => alive && setGitState(st),
-      () => alive && setGitState(null),
+    const key = `${activeId}\u0000${activeWorkspace}`;
+    const fresh = gitKey.current !== key;
+    gitKey.current = key;
+    const timer = setTimeout(
+      () =>
+        api.gitStatus(activeId).then(
+          (st) => gitKey.current === key && setGitState(st),
+          () => gitKey.current === key && setGitState(null),
+        ),
+      fresh ? 0 : 300,
     );
-    return () => {
-      alive = false;
-    };
+    return () => clearTimeout(timer);
   }, [isProjectSession, activeId, activeWorkspace, fsRefreshTick]);
+
+  // A branch switched outside the app (in the terminal, or another tool) shows in the title bar once Git sees it.
+  const seenBranch = useRef<string | null>(null);
+  useEffect(() => {
+    const branch = gitState?.is_repo ? gitState.branch : null;
+    if (branch && seenBranch.current && branch !== seenBranch.current) refresh();
+    seenBranch.current = branch;
+  }, [gitState?.is_repo, gitState?.branch, refresh]);
 
   const gitBadges = useMemo<Record<string, GitBadge>>(() => {
     if (!gitState?.is_repo) return {};
@@ -983,9 +997,11 @@ export default function App() {
                   refreshTick={fsRefreshTick}
                   working={state.status !== "idle"}
                   onStatusChanged={(next) => {
+                    // Staging hands back the new status itself; anything else (commit, branch, sync) asks for it again.
                     if (next) setGitState(next);
-                    bumpRefresh();
+                    else bumpRefresh();
                   }}
+                  onFilesChanged={bumpRefresh}
                   onBranchSwitched={(item) => dispatch({ type: "session", item })}
                   onOpenDiff={(relPath, stage, pin, commit) => openWorkbenchDiff(relPath, stage, pin, commit)}
                   onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}

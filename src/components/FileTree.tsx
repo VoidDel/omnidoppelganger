@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { sameEntries } from "../lib/refresh";
 import type { FoundFile, TreeEntry } from "../lib/types";
 
 export interface GitBadge {
@@ -94,35 +95,52 @@ export function FileTree({
     [sessionId, showIgnored],
   );
 
-  const reloadAll = useCallback(async () => {
-    setLoadingRoot(true);
-    try {
-      const dirs = ["", ...expandedRef.current];
-      const results = await Promise.all(
-        dirs.map((dir) =>
-          api.listWorkspaceDir(sessionId, dir, true, showIgnored).then(
-            (list) => [dir, list] as const,
-            () => null,
+  const reloadAll = useCallback(
+    async (quiet = false) => {
+      if (!quiet) setLoadingRoot(true);
+      try {
+        const dirs = ["", ...expandedRef.current];
+        const results = await Promise.all(
+          dirs.map((dir) =>
+            api.listWorkspaceDir(sessionId, dir, true, showIgnored).then(
+              (list) => [dir, list] as const,
+              () => null,
+            ),
           ),
-        ),
-      );
-      const next: Record<string, TreeEntry[]> = {};
-      for (const pair of results) {
-        if (pair) next[pair[0]] = pair[1];
+        );
+        // A directory that reads the same keeps its old listing, and a tree where nothing changed is not drawn again.
+        setEntriesByDir((shown) => {
+          const next: Record<string, TreeEntry[]> = {};
+          let changed = Object.keys(shown).length !== results.filter(Boolean).length;
+          for (const pair of results) {
+            if (!pair) continue;
+            const [dir, list] = pair;
+            if (sameEntries(shown[dir], list)) next[dir] = shown[dir];
+            else {
+              next[dir] = list;
+              changed = true;
+            }
+          }
+          return changed ? next : shown;
+        });
+      } catch (error) {
+        onError(String(error));
+      } finally {
+        if (!quiet) setLoadingRoot(false);
       }
-      setEntriesByDir(next);
-    } catch (error) {
-      onError(String(error));
-    } finally {
-      setLoadingRoot(false);
-    }
-  }, [sessionId, showIgnored, onError]);
+    },
+    [sessionId, showIgnored, onError],
+  );
 
-  // Reset expansion when switching to a different workspace folder; reload on session/filter/tick changes.
+  // Reset expansion when switching to a different workspace folder; reload at once for a new folder or filter,
+  // and once a burst of changes on disk is over for the rest.
   const prevWorkspace = useRef(workspace);
+  const lastReload = useRef<typeof reloadAll | null>(null);
   useEffect(() => {
+    let quiet = lastReload.current === reloadAll;
     if (prevWorkspace.current !== workspace) {
       prevWorkspace.current = workspace;
+      quiet = false;
       setExpanded(new Set());
       setSelectedPath("");
       setSelectedIsDir(false);
@@ -130,7 +148,9 @@ export function FileTree({
       setRenaming(null);
       setDeleting(null);
     }
-    void reloadAll();
+    lastReload.current = reloadAll;
+    const timer = setTimeout(() => void reloadAll(quiet), quiet ? 250 : 0);
+    return () => clearTimeout(timer);
   }, [workspace, reloadAll, refreshTick]);
 
   // Fuzzy file search when query is entered.

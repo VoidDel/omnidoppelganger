@@ -3,6 +3,7 @@ import Markdown from "react-markdown";
 import { api } from "../lib/api";
 import { documentLabel, fileSize } from "../lib/fold";
 import { findInLines, highlightLines } from "../lib/highlight";
+import { sameFileView } from "../lib/refresh";
 import type { FileView } from "../lib/types";
 import { markdownParts, markdownPlugins, markdownSyntax } from "./Markdown";
 
@@ -52,28 +53,49 @@ export function CodeViewer({
     setMode(lower.endsWith(".md") || lower.endsWith(".markdown") ? "preview" : "code");
   }, [path]);
 
+  /** The file the view on screen was read from; a re-read of the same file replaces it quietly, in place. */
+  const shownKey = useRef<string | null>(null);
+  /** The file wanted now, and the order reads were asked in: a read that lands after a later one is dropped. */
+  const wanted = useRef("");
+  const asked = useRef(0);
+  const landed = useRef(0);
   useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    setLoadError(null);
+    const key = `${sessionId}\u0000${path}`;
+    wanted.current = key;
+    if (shownKey.current !== key) {
+      setLoading(true);
+      setLoadError(null);
+    }
+    const seq = ++asked.current;
+    // Not dropped when a newer refresh is asked for meanwhile: under a stream of changes some read must land.
+    const current = () => wanted.current === key && seq > landed.current;
     api.readWorkspaceFile(sessionId, path).then(
       (data) => {
-        if (!alive) return;
-        setView(data);
+        if (!current()) return;
+        landed.current = seq;
+        shownKey.current = key;
+        setLoadError(null);
+        // Unchanged, the view object stays: nothing is highlighted again, and the page keeps its scroll and selection.
+        setView((shown) => (shown && sameFileView(shown, data) ? shown : data));
         setLoading(false);
       },
       (error) => {
-        if (!alive) return;
+        if (!current()) return;
+        landed.current = seq;
         setLoadError(String(error));
         setLoading(false);
       },
     );
-    return () => {
-      alive = false;
-    };
   }, [sessionId, path, refreshTick]);
 
   const rawLines = useMemo(() => (view?.kind === "text" ? view.content.split("\n") : []), [view]);
+  // A file that got shorter under a selection keeps what is still there of it.
+  useEffect(() => {
+    if (!selection || rawLines.length === 0) return;
+    const last = rawLines.length;
+    if (selection.anchor > last && selection.end > last) setSelection(null);
+    else if (selection.anchor > last || selection.end > last) setSelection({ anchor: Math.min(selection.anchor, last), end: Math.min(selection.end, last) });
+  }, [rawLines.length, selection]);
   const htmlLines = useMemo(
     () => (view?.kind === "text" ? highlightLines(view.content, view.language) : []),
     [view],
