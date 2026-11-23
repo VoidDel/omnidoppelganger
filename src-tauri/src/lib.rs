@@ -2,6 +2,7 @@
 //! that carries every session's log, stream, and status events to the window.
 
 mod pty;
+mod watcher;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -44,6 +45,8 @@ struct App {
     lsp: Arc<odg_core::lsp::LspHub>,
     /// Interactive pseudo-terminals opened in the side panel, grouped by session.
     pty: Arc<pty::PtyHub>,
+    /// Debounced filesystem watcher for the currently viewed workspace.
+    watcher: Arc<watcher::WorkspaceWatcher>,
     llm: Arc<Router>,
     /// Sessions opened since the app started. A session stays here so its turn keeps running while another is shown.
     sessions: Mutex<HashMap<String, Session<Router>>>,
@@ -740,6 +743,18 @@ fn pty_close(app: State<'_, App>, pty_id: String) {
     app.pty.close(&pty_id);
 }
 
+#[tauri::command]
+async fn watch_workspace(handle: tauri::AppHandle, app: State<'_, App>, id: Option<String>) -> Result<(), String> {
+    let target = match id {
+        Some(session_id) if !session_id.is_empty() => Some(session_workspace(&app, &session_id)?),
+        _ => None,
+    };
+    let runtime = tokio::runtime::Handle::current();
+    app.watcher.watch(target, runtime, move |workspace| {
+        let _ = handle.emit(watcher::WORKSPACE_CHANGED_EVENT, workspace);
+    })
+}
+
 /// What the page shows of the document runtime: how it stands, and what LibreOffice it would use.
 #[derive(Serialize)]
 struct RuntimeView {
@@ -1214,7 +1229,8 @@ pub fn run() {
             }
             let lsp = Arc::new(odg_core::lsp::LspHub::new(home.join("lsp")));
             let pty = Arc::new(pty::PtyHub::new());
-            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, lsp, pty, llm, sessions: Mutex::new(HashMap::new()), events });
+            let watcher = Arc::new(watcher::WorkspaceWatcher::new());
+            app.manage(App { store: SessionStore::new(home.join("sessions")), settings, grants, schedules, mcp, lsp, pty, watcher, llm, sessions: Mutex::new(HashMap::new()), events });
 
             // The clock: whatever has come due is started, with or without a window to show it in.
             let handle = app.handle().clone();
@@ -1290,6 +1306,7 @@ pub fn run() {
             pty_resize,
             pty_clear,
             pty_close,
+            watch_workspace,
             picture,
             runtime_status,
             install_runtime,
@@ -1322,6 +1339,7 @@ pub fn run() {
                 app.mcp.shutdown();
                 app.lsp.shutdown();
                 app.pty.shutdown();
+                app.watcher.stop();
             }
         });
 }

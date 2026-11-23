@@ -258,20 +258,8 @@ function useTheme(theme: Settings["theme"] | undefined) {
 
 export default function App() {
   const [state, dispatch] = useReducer(reduce, initial);
-  /** Whether the Ctrl+K sheet, the way to go anywhere, is open. */
-  const [jumping, setJumping] = useState(false);
-  useEffect(() => {
-    const key = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        // Not over a dialog that is asking something: what it asks is about the 分身 on screen.
-        if (document.querySelector("dialog[open]:not(.jump)")) return;
-        setJumping((open) => !open);
-      }
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, []);
+  /** Which quick-jump sheet is open: `"all"` (Ctrl+K), `"files"` (Ctrl+P), or null. */
+  const [jumping, setJumping] = useState<"all" | "files" | null>(null);
   const fail = useCallback((error: unknown) => dispatch({ type: "error", error: String(error) }), []);
   const refresh = useCallback(() => api.listSessions().then((sessions) => dispatch({ type: "sessions", sessions }), fail), [fail]);
 
@@ -471,6 +459,22 @@ export default function App() {
 
   const bumpRefresh = useCallback(() => setManualTick((n) => n + 1), []);
 
+  // Watch the active project workspace on disk so external edits and PTY git/file commands auto-refresh UI.
+  useEffect(() => {
+    const targetId = inChat && isProjectSession && activeId ? activeId : null;
+    api.watchWorkspace(targetId).catch(() => undefined);
+  }, [inChat, isProjectSession, activeId, activeWorkspace]);
+
+  useEffect(() => {
+    const stop = api.onWorkspaceChanged(() => {
+      bumpRefresh();
+      refresh();
+    });
+    return () => {
+      stop.then((unlisten) => unlisten()).catch(() => undefined);
+    };
+  }, [bumpRefresh, refresh]);
+
   useEffect(() => {
     if (!isProjectSession || !activeId) {
       setGitState(null);
@@ -647,6 +651,49 @@ export default function App() {
   const [peek, setPeek] = useState(false);
   useEffect(() => setPeek(false), [state.activeId]);
   const strip = !showWorkbench && files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
+
+  const summonTerminal = useCallback(() => {
+    dispatch({ type: "page", page: "chat" });
+    setPanel((cur) => ({ ...cur, hidden: false }));
+    setPeek(true);
+    setSummonPanelTab({ id: Date.now(), tab: "terminal" });
+  }, [setPanel]);
+
+  const shortcutContext = useRef({ inChat, isProjectSession, hasActive: !!active });
+  shortcutContext.current = { inChat, isProjectSession, hasActive: !!active };
+
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey;
+      const lower = event.key.toLowerCase();
+      if (mod && !event.altKey && lower === "k") {
+        event.preventDefault();
+        if (document.querySelector("dialog[open]:not(.jump)")) return;
+        setJumping((cur) => (cur === "all" ? null : "all"));
+        return;
+      }
+      if (mod && !event.altKey && lower === "p" && shortcutContext.current.isProjectSession) {
+        event.preventDefault();
+        if (document.querySelector("dialog[open]:not(.jump)")) return;
+        setJumping((cur) => (cur === "files" ? null : "files"));
+        return;
+      }
+      if (mod && !event.altKey && !event.shiftKey && lower === "b") {
+        event.preventDefault();
+        setSidebar((cur) => ({ ...cur, hidden: !cur.hidden }));
+        return;
+      }
+      if (
+        shortcutContext.current.hasActive &&
+        ((mod && !event.altKey && lower === "j") || (event.ctrlKey && !event.altKey && event.key === "`"))
+      ) {
+        event.preventDefault();
+        summonTerminal();
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [setSidebar, summonTerminal]);
   /** To the 功课 page and the settings, each read again on the way: either may have changed since it was last shown. */
   const toSchedules = () => {
     api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
@@ -684,6 +731,33 @@ export default function App() {
         },
       },
       { name: "fork", label: "分叉", aliases: ["分叉"], hint: "分叉：另起一个分身，带着到现在的全部对话", unavailable: session.parent ? "子分身的会话不能分叉" : undefined, run: () => forkFrom() },
+      {
+        name: "files",
+        label: "文件",
+        aliases: ["文件", "目录"],
+        hint: "在左侧栏打开洞府文件树管理",
+        run: () => {
+          setSidebar((cur) => ({ ...cur, hidden: false }));
+          setLeftTab("files");
+        },
+      },
+      {
+        name: "git",
+        label: "Git",
+        aliases: ["版本", "仓库"],
+        hint: "在左侧栏打开 Git 变更、提交与分支管理",
+        run: () => {
+          setSidebar((cur) => ({ ...cur, hidden: false }));
+          setLeftTab("git");
+        },
+      },
+      {
+        name: "terminal",
+        label: "终端",
+        aliases: ["终端", "命令行"],
+        hint: "打开右侧交互式运行终端 (Ctrl/Cmd+J)",
+        run: summonTerminal,
+      },
       {
         name: "rename",
         label: "改名",
@@ -723,8 +797,10 @@ export default function App() {
         run: (task) => send(task ? `按秘籍「${skill.name}」（skill）办：${task}` : `按秘籍「${skill.name}」（skill）办。`),
       };
     });
-    // Learning the project and reviewing its changes are for a project, not a conversation.
-    const fitting = chatting(session) ? builtIn.filter((command) => command.name !== "init" && command.name !== "review") : builtIn;
+    // Project-only commands (`init`, `review`, `files`, `git`) are hidden in plain conversations.
+    const fitting = chatting(session)
+      ? builtIn.filter((command) => !["init", "review", "files", "git"].includes(command.name))
+      : builtIn;
     return [...fitting, ...skills];
   };
   const banners = (
@@ -1028,6 +1104,8 @@ export default function App() {
                   refresh();
                 }, fail)
               }
+              sidebarHidden={sidebar.hidden}
+              onToggleSidebar={() => setSidebar((cur) => ({ ...cur, hidden: false }))}
               panelHidden={panel.hidden && !showWorkbench}
               onTogglePanel={() => {
                 if (showWorkbench) {
@@ -1118,11 +1196,49 @@ export default function App() {
       </main>
       {jumping && (
         <Jump
+          mode={jumping}
           sessions={state.sessions}
           acts={[
             { id: "home", name: "首页", hint: "回到山前：候旨的、运功的、将至的功课", seal: "山", run: () => dispatch({ type: "home" }) },
             { id: "new", name: "开辟洞府", hint: "选一个文件夹，化出分身", seal: "辟", run: () => void create() },
             { id: "chat", name: "闲谈", hint: "不选文件夹，直接和分身说话", seal: "谈", run: chat },
+            ...(isProjectSession
+              ? [
+                  {
+                    id: "files",
+                    name: "文件树",
+                    hint: "在左栏查看与管理洞府里的文件",
+                    seal: "卷",
+                    run: () => {
+                      dispatch({ type: "page", page: "chat" });
+                      setSidebar((cur) => ({ ...cur, hidden: false }));
+                      setLeftTab("files");
+                    },
+                  },
+                  {
+                    id: "git",
+                    name: "Git 管理",
+                    hint: "在左栏暂存、提交、切换分支、拉取推送",
+                    seal: "版",
+                    run: () => {
+                      dispatch({ type: "page", page: "chat" });
+                      setSidebar((cur) => ({ ...cur, hidden: false }));
+                      setLeftTab("git");
+                    },
+                  },
+                ]
+              : []),
+            ...(active
+              ? [
+                  {
+                    id: "terminal",
+                    name: "运行终端",
+                    hint: "打开右侧交互式本地终端 (Ctrl/Cmd+J)",
+                    seal: "端",
+                    run: summonTerminal,
+                  },
+                ]
+              : []),
             { id: "skills", name: "秘籍", hint: "随程序带来的做事说明，打开才收入；还有自己的", seal: "籍", run: () => dispatch({ type: "page", page: "skills" }) },
             { id: "mcp", name: "法器", hint: "给分身添上本事的 MCP 服务：查文档、搜网页、操控浏览器", seal: "器", run: toMcp },
             { id: "schedules", name: "功课", hint: "到了时辰自行化出分身去办的事", seal: "课", run: toSchedules },
@@ -1130,7 +1246,16 @@ export default function App() {
           ]}
           onOpen={open}
           onSearch={api.searchSessions}
-          onClose={() => setJumping(false)}
+          onSearchFiles={isProjectSession && activeId ? (q) => api.searchWorkspaceFiles(activeId, q, 60) : undefined}
+          onOpenFile={
+            isProjectSession
+              ? (relPath, line) => {
+                  dispatch({ type: "page", page: "chat" });
+                  openWorkbenchFile(relPath, false, line);
+                }
+              : undefined
+          }
+          onClose={() => setJumping(null)}
         />
       )}
       {showPanel && (

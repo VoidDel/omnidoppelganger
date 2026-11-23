@@ -107,7 +107,7 @@ export interface ComposerProps {
 }
 
 /** The order the "/" menu lists the commands in; any not named here (a skill's) come after, as given. */
-const COMMAND_ORDER = ["new", "fork", "compact", "model", "effort", "mode", "rename", "replay", "init", "review", "skills", "mcp", "schedule", "settings"];
+const COMMAND_ORDER = ["new", "fork", "compact", "model", "effort", "mode", "files", "git", "terminal", "rename", "replay", "init", "review", "skills", "mcp", "schedule", "settings"];
 
 /**
  * How full the conversation is, as five 灵石 lit one after another: each stands for a fifth of the room there is

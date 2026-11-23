@@ -17,6 +17,9 @@ export interface SessionHeaderProps {
   onReplay: () => void;
   /** For a session in a worktree of its own: bring its work back into the folder. */
   onLand: () => void;
+  /** Whether the left sidebar is hidden, and the way to bring it back or put it away. */
+  sidebarHidden?: boolean;
+  onToggleSidebar?: () => void;
   /** Whether the side panel is put away, and the way to bring it back or put it away. */
   panelHidden: boolean;
   onTogglePanel: () => void;
@@ -39,6 +42,8 @@ export function SessionHeader({
   replaying,
   onReplay,
   onLand,
+  sidebarHidden,
+  onToggleSidebar,
   panelHidden,
   onTogglePanel,
   hasWorkbenchTabs,
@@ -61,6 +66,15 @@ export function SessionHeader({
   const busy = session.status !== "idle";
   return (
     <header className="main-header">
+      {sidebarHidden && onToggleSidebar && (
+        <button type="button" className="icon-button" title="展开左侧栏 (Ctrl/Cmd+B)" onClick={onToggleSidebar}>
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="3" width="12" height="10" rx="1.5" />
+            <path d="M6 3v10" />
+          </svg>
+          <span className="sr-only">展开左侧栏</span>
+        </button>
+      )}
       {/* The title, and under it in small letters the folder the session works in. */}
       <div className="title-block">
         {draft === null ? (
