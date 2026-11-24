@@ -778,6 +778,20 @@ async fn git_sync(app: State<'_, App>, id: String, action: String) -> Result<Str
 }
 
 #[tauri::command]
+async fn git_pr_defaults(app: State<'_, App>, id: String) -> Result<odg_core::git::PrDefaults, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || odg_core::git::pr_defaults(&workspace))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_create_pr(app: State<'_, App>, id: String, title: String, body: String, base: Option<String>, draft: bool) -> Result<odg_core::git::PullRequestResult, String> {
+    let workspace = session_workspace(&app, &id)?;
+    odg_core::git::create_pr(&workspace, &title, &body, base.as_deref(), draft).await
+}
+
+#[tauri::command]
 async fn pty_spawn(handle: tauri::AppHandle, app: State<'_, App>, id: String, cols: u16, rows: u16) -> Result<pty::PtyInfo, String> {
     let workspace = session_workspace(&app, &id)?;
     let hub = app.pty.clone();
@@ -1032,6 +1046,52 @@ async fn send_message(app: State<'_, App>, id: String, text: String, images: Vec
         return Err(format!("{} takes text only: remove the images, or start a session on a model that takes them", summary.model));
     }
     Ok(session.send_with(text, images, files))
+}
+
+/// Fire a best-effort native desktop notification when the app is unfocused (turn completed or waiting approval).
+#[tauri::command]
+async fn notify_desktop(title: String, body: String) {
+    let title = title.replace(['\r', '\n'], " ");
+    let body = body.replace(['\r', '\n'], " ");
+    let _ = tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!("display notification \"{}\" with title \"{}\"", esc(&body), esc(&title));
+            let _ = std::process::Command::new("osascript").args(["-e", &script]).output();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("notify-send").args([&title, &body]).output();
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let esc = |s: &str| {
+                s.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+                    .replace('\'', "''")
+            };
+            let ps = format!(
+                "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+                 $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+                 $texts = $xml.GetElementsByTagName('text'); \
+                 $texts.Item(0).AppendChild($xml.CreateTextNode('{}')) > $null; \
+                 $texts.Item(1).AppendChild($xml.CreateTextNode('{}')) > $null; \
+                 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml); \
+                 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('OmniDoppelganger').Show($toast);",
+                esc(&title),
+                esc(&body)
+            );
+            let _ = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+                .creation_flags(0x0800_0000)
+                .output();
+        }
+    })
+    .await;
 }
 
 /// What each path the user picked to attach is: a file, a picture, or neither and why. Nothing is sent yet.
@@ -1380,6 +1440,7 @@ pub fn run() {
             preset_workspace,
             attach_files,
             save_pasted_file,
+            notify_desktop,
             fork_session,
             list_schedules,
             save_schedule,
@@ -1424,6 +1485,8 @@ pub fn run() {
             git_log,
             git_commit_files,
             git_sync,
+            git_pr_defaults,
+            git_create_pr,
             pty_spawn,
             pty_list,
             pty_write,

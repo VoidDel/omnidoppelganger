@@ -30,6 +30,7 @@ export function effortNote(provider: Provider | undefined): string {
         return "Codex CLI 最高到元婴（xhigh），化神按元婴算。";
       case "cursor":
       case "grok":
+      case "opencode":
         return "这个 CLI 暂不单独传境界参数，按所选心法的默认思考深度运行。";
     }
   }

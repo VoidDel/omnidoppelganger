@@ -199,6 +199,20 @@ pub const PROVIDERS: &[Provider] = &[
             ("grok-code-fast-1", "Grok Code Fast"),
         ],
     },
+    Provider {
+        id: "opencode",
+        name: "OpenCode (CLI)",
+        protocol: Protocol::Cli(CliKind::OpenCode),
+        base_url: "",
+        other_urls: &[],
+        key_env: None,
+        models: &[
+            ("default", "默认（按 opencode 配置）"),
+            ("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6"),
+            ("openai/gpt-5.4", "GPT-5.4"),
+            ("google/gemini-3.1-pro", "Gemini Pro"),
+        ],
+    },
 ];
 
 /// The kind of provider `id` names: a kind's own id, which is also the first
@@ -456,7 +470,7 @@ pub fn effort_for(protocol: Protocol, effort: &str) -> Option<&'static str> {
         Protocol::Chat(Flavor::DeepSeek) => Some(level(["low", "high", "high", "high", "max"])),
         // Kimi K3 and GLM-5.3 take low/high/max.
         Protocol::Chat(Flavor::Kimi | Flavor::Glm) => Some(level(["low", "high", "high", "max", "max"])),
-        Protocol::Chat(Flavor::Generic) | Protocol::Cli(CliKind::Cursor | CliKind::Grok) => None,
+        Protocol::Chat(Flavor::Generic) | Protocol::Cli(CliKind::Cursor | CliKind::Grok | CliKind::OpenCode) => None,
     }
 }
 

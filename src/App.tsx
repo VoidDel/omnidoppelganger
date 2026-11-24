@@ -22,6 +22,7 @@ import { Workbench, WorkbenchTabsBar, type WorkbenchTab } from "./components/Wor
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
 import { isProviderEnabled } from "./lib/providers";
 import { api } from "./lib/api";
+import { notifyBackground } from "./lib/notify";
 import { forwarded } from "./lib/aside";
 import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
@@ -265,13 +266,27 @@ export default function App() {
   const fail = useCallback((error: unknown) => dispatch({ type: "error", error: String(error) }), []);
   const refresh = useCallback(() => api.listSessions().then((sessions) => dispatch({ type: "sessions", sessions }), fail), [fail]);
 
+  const sessionsRef = useRef(state.sessions);
+  sessionsRef.current = state.sessions;
+  const lastStatusRef = useRef<Map<string, string>>(new Map());
+
   useEffect(() => {
     refresh();
     api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
     const stop = api.onSessionEvent((event) => {
       dispatch({ type: "event", event });
       // Titles and list order come from the log, so the list is read again when a turn starts or ends.
-      if (event.kind === "status") refresh();
+      if (event.kind === "status") {
+        const prev = lastStatusRef.current.get(event.session_id);
+        lastStatusRef.current.set(event.session_id, event.status);
+        const title = sessionsRef.current.find((s) => s.id === event.session_id)?.title || "分身";
+        if (event.status === "waiting_approval" && prev !== "waiting_approval") {
+          notifyBackground(`分身候旨 · ${title}`, "有操作或提问等待本尊定夺。");
+        } else if (event.status === "idle" && prev === "running") {
+          notifyBackground(`分身收功 · ${title}`, "本轮任务已完成。");
+        }
+        refresh();
+      }
     });
     const readSchedules = () => api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
     readSchedules();

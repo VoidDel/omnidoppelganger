@@ -976,8 +976,17 @@ impl<L: Llm> Inner<L> {
                 let (conversation_id, briefing) = {
                     let log = self.log.lock().unwrap();
                     let conv = crate::session::external_session(log.events(), kind.backend_key()).map(str::to_string);
-                    let brief = self.aside.is_some().then(|| crate::session::last_brief(log.events()).map(str::to_string)).flatten();
-                    (conv, brief)
+                    let aside_brief = self.aside.is_some().then(|| crate::session::last_brief(log.events()).map(str::to_string)).flatten();
+                    let handoff_brief = if conv.is_none() {
+                        crate::cli_agents::build_handoff_brief(log.events(), turn)
+                    } else {
+                        None
+                    };
+                    let combined = match (aside_brief, handoff_brief) {
+                        (Some(a), Some(h)) => Some(format!("{a}\n\n{h}")),
+                        (a, h) => a.or(h),
+                    };
+                    (conv, combined)
                 };
                 let prompt = crate::cli_agents::build_prompt(cli_text.as_deref().unwrap_or(""), &cli_files, briefing.as_deref());
                 let tuning = self.tuning();

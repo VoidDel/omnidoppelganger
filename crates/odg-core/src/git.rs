@@ -819,6 +819,122 @@ pub async fn sync(workspace: &Path, action: &str) -> Result<String, String> {
     }
 }
 
+/// Auto-populated Pull Request draft defaults derived from the current branch and its commits.
+#[derive(Debug, Clone, Serialize)]
+pub struct PrDefaults {
+    pub branch: String,
+    pub base: String,
+    pub title: String,
+    pub body: String,
+    pub has_gh: bool,
+}
+
+/// Outcome of creating a Pull Request via `gh pr create`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PullRequestResult {
+    pub url: String,
+    pub branch: String,
+}
+
+/// Inspect the current branch and commits ahead of the default base branch to prefill a PR form.
+pub fn pr_defaults(directory: &Path) -> Result<PrDefaults, String> {
+    let (top, _) = repo_context(directory).ok_or_else(|| "当前洞府不是 Git 仓库".to_string())?;
+    let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
+    if branch.is_empty() || branch == "HEAD" {
+        return Err("当前处于游离 HEAD 状态，请先切到具体分支再创建 PR。".to_string());
+    }
+    let base = git_text(&top, &[], &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .ok()
+        .map(|s| s.trim().strip_prefix("origin/").unwrap_or(s.trim()).to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            if git_text(&top, &[], &["show-ref", "--verify", "--quiet", "refs/heads/main"]).is_ok() {
+                "main".to_string()
+            } else if git_text(&top, &[], &["show-ref", "--verify", "--quiet", "refs/heads/master"]).is_ok() {
+                "master".to_string()
+            } else {
+                "main".to_string()
+            }
+        });
+    let range = format!("{base}..HEAD");
+    let subjects: Vec<String> = git_text(&top, &[], &["log", &range, "--max-count=20", "--format=%s"])
+        .ok()
+        .map(|out| out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+        .filter(|list: &Vec<String>| !list.is_empty())
+        .unwrap_or_else(|| {
+            git_text(&top, &[], &["log", "-n", "1", "--format=%s"])
+                .ok()
+                .map(|out| out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+                .unwrap_or_default()
+        });
+    let title = subjects.first().cloned().unwrap_or_else(|| branch.clone());
+    let body = if subjects.is_empty() {
+        String::new()
+    } else {
+        let mut lines = vec!["## 改动摘要".to_string(), String::new()];
+        for subj in &subjects {
+            lines.push(format!("- {subj}"));
+        }
+        lines.join("\n")
+    };
+    let has_gh = crate::cli_agents::find_named_binary("ODG_GH_BIN", "gh", &[]).is_some();
+    Ok(PrDefaults { branch, base, title, body, has_gh })
+}
+
+/// Push the current branch if needed and create a GitHub Pull Request via `gh pr create`.
+pub async fn create_pr(directory: &Path, title: &str, body: &str, base: Option<&str>, draft: bool) -> Result<PullRequestResult, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("PR 标题不能为空。".to_string());
+    }
+    let gh = crate::cli_agents::find_named_binary("ODG_GH_BIN", "gh", &[])
+        .ok_or_else(|| "未找到 GitHub CLI (gh)，请先安装并运行 `gh auth login` 完成登录。".to_string())?;
+    let (top, _) = repo_context(directory).ok_or_else(|| "当前洞府不是 Git 仓库".to_string())?;
+    let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
+    if branch.is_empty() || branch == "HEAD" {
+        return Err("当前处于游离 HEAD 状态，请先切到具体分支再创建 PR。".to_string());
+    }
+    // Ensure the branch is pushed to origin before creating the PR.
+    sync(&top, "push").await?;
+
+    let mut args = vec!["pr".to_string(), "create".to_string(), "--title".to_string(), title.to_string(), "--body".to_string(), body.to_string()];
+    if let Some(base) = base.map(str::trim).filter(|b| !b.is_empty() && *b != branch) {
+        args.push("--base".to_string());
+        args.push(base.to_string());
+    }
+    if draft {
+        args.push("--draft".to_string());
+    }
+    let mut cmd = tokio::process::Command::new(&gh);
+    cmd.args(&args)
+        .current_dir(&top)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+
+    let out = tokio::time::timeout(SYNC_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| format!("创建 PR 超时（超过 {} 秒）。", SYNC_TIMEOUT.as_secs()))?
+        .map_err(|error| format!("无法执行 gh pr create：{error}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() {
+        let msg = [stderr, stdout].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+        return Err(if msg.is_empty() { "gh pr create 执行失败".to_string() } else { msg });
+    }
+    let url = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with("http://") || line.starts_with("https://"))
+        .unwrap_or(stdout.as_str())
+        .to_string();
+    Ok(PullRequestResult { url, branch })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

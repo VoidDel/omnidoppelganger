@@ -33,6 +33,7 @@ pub enum CliKind {
     ClaudeCode,
     Cursor,
     Grok,
+    OpenCode,
 }
 
 impl CliKind {
@@ -44,6 +45,7 @@ impl CliKind {
             Self::ClaudeCode => "claude_code",
             Self::Cursor => "cursor",
             Self::Grok => "grok",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -54,6 +56,7 @@ impl CliKind {
             Self::ClaudeCode => "Claude Code (claude)",
             Self::Cursor => "Cursor Agent (cursor-agent)",
             Self::Grok => "Grok CLI (grok)",
+            Self::OpenCode => "OpenCode (opencode)",
         }
     }
 
@@ -65,6 +68,7 @@ impl CliKind {
             Self::ClaudeCode => find_named_binary("ODG_CLAUDE_BIN", "claude", &[".claude/local"]),
             Self::Cursor => find_named_binary("ODG_CURSOR_AGENT_BIN", "cursor-agent", &[".cursor/bin"]),
             Self::Grok => find_named_binary("ODG_GROK_BIN", "grok", &[".grok/bin"]),
+            Self::OpenCode => find_named_binary("ODG_OPENCODE_BIN", "opencode", &[".opencode/bin"]),
         }
     }
 
@@ -90,6 +94,7 @@ pub fn context_window(kind: CliKind) -> u64 {
         CliKind::Codex => 400_000,
         CliKind::Cursor => 500_000,
         CliKind::Grok => 500_000,
+        CliKind::OpenCode => 500_000,
     }
 }
 
@@ -303,6 +308,88 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
     (mapped_name.to_string(), Value::Object(normalized))
 }
 
+/// Build a concise cross-engine handoff briefing from prior turns in the session log when a user
+/// switches mid-session to a CLI engine that has no existing external session id yet.
+pub fn build_handoff_brief(events: &[crate::events::Envelope], current_turn: u64) -> Option<String> {
+    if current_turn <= 1 {
+        return None;
+    }
+    let mut turn = 0u64;
+    let mut latest_summary: Option<String> = None;
+    let mut exchanges: Vec<(&'static str, String)> = Vec::new();
+    let mut edited_files: Vec<String> = Vec::new();
+
+    let clip_text = |s: &str, max_chars: usize| -> String {
+        let trimmed = s.trim();
+        if trimmed.chars().count() <= max_chars {
+            trimmed.to_string()
+        } else {
+            format!("{}…", trimmed.chars().take(max_chars).collect::<String>())
+        }
+    };
+
+    for env in events {
+        match &env.event {
+            Event::TurnStart { turn: t } => turn = *t,
+            _ if turn >= current_turn => break,
+            Event::ContextCompacted { summary, .. } if !summary.trim().is_empty() => {
+                latest_summary = Some(clip_text(summary, 1200));
+                exchanges.clear();
+            }
+            Event::UserMessage { text, .. } if !text.trim().is_empty() => {
+                exchanges.push(("用户", clip_text(text, 500)));
+            }
+            Event::AssistantMessage { content, .. } => {
+                let text: String = content
+                    .iter()
+                    .filter(|b| b["type"].as_str() == Some("text"))
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.trim().is_empty() {
+                    exchanges.push(("助手", clip_text(&text, 600)));
+                }
+            }
+            Event::ToolResult { tool, is_error: false, meta, .. } if crate::tools::edits_files(tool) => {
+                if let Some(path) = meta["path"].as_str().filter(|p| !p.is_empty())
+                    && !edited_files.iter().any(|existing| existing == path)
+                {
+                    edited_files.push(path.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if latest_summary.is_none() && exchanges.is_empty() && edited_files.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from("[会话交接上下文 / Cross-Engine Handoff]\n你正在接手同一个会话的后续任务。以下是此前由其他模型/引擎完成的对话与文件改动摘要，请在此基础上无缝继续：\n");
+    if let Some(summary) = latest_summary {
+        out.push_str("\n前情摘要：\n");
+        out.push_str(&summary);
+        out.push('\n');
+    }
+    if !edited_files.is_empty() {
+        out.push_str("\n此前已改动的文件：\n");
+        for path in edited_files.iter().take(20) {
+            out.push_str("- ");
+            out.push_str(path);
+            out.push('\n');
+        }
+    }
+    if !exchanges.is_empty() {
+        out.push_str("\n近期对话记录：\n");
+        let start = exchanges.len().saturating_sub(10);
+        for (who, msg) in &exchanges[start..] {
+            out.push_str(&format!("[{who}] {msg}\n"));
+        }
+    }
+    out.push_str("\n--- 以下是本轮用户的新指令 ---");
+    Some(out)
+}
+
 /// Build the prompt string passed to an external CLI, prepending any side-conversation briefing and attached file paths.
 pub fn build_prompt(text: &str, files: &[Attached], briefing: Option<&str>) -> String {
     let mut parts = Vec::new();
@@ -475,6 +562,24 @@ pub fn build_args(
             args.push(prompt.to_string());
             args
         }
+        CliKind::OpenCode => {
+            let mut args = vec!["run".to_string(), "--format".to_string(), "json".to_string()];
+            if let Some(session_id) = resume {
+                args.push("--session".to_string());
+                args.push(session_id.to_string());
+            }
+            if !model.is_empty() && model != "default" {
+                args.push("--model".to_string());
+                args.push(model.to_string());
+            }
+            if read_only || mode == Mode::Plan {
+                args.push("--agent".to_string());
+                args.push("plan".to_string());
+            }
+            args.push("--".to_string());
+            args.push(prompt.to_string());
+            args
+        }
     }
 }
 
@@ -495,7 +600,7 @@ impl StreamParser {
             CliKind::Codex => self.parse_codex(line),
             CliKind::ClaudeCode => self.parse_claude(line),
             CliKind::Cursor => self.parse_cursor(line),
-            CliKind::Grok => self.parse_grok(line),
+            CliKind::Grok | CliKind::OpenCode => self.parse_grok(line),
         }
     }
 
@@ -820,7 +925,12 @@ impl StreamParser {
         }
         let Ok(v) = serde_json::from_str::<Value>(trimmed) else { return Vec::new() };
         let ty = v["type"].as_str().or_else(|| v["event"].as_str()).unwrap_or("");
-        let conv = v["session_id"].as_str().or_else(|| v["conversation_id"].as_str()).map(str::to_string);
+        let conv = v["session_id"]
+            .as_str()
+            .or_else(|| v["sessionID"].as_str())
+            .or_else(|| v["conversation_id"].as_str())
+            .or_else(|| v["part"]["sessionID"].as_str())
+            .map(str::to_string);
         match ty {
             "init" | "system" | "step_start" => {
                 if conv.is_some() {
@@ -830,8 +940,9 @@ impl StreamParser {
                 }
             }
             "text" | "text_delta" | "assistant" => {
-                let delta = v["text"]
+                let delta = v["part"]["text"]
                     .as_str()
+                    .or_else(|| v["text"].as_str())
                     .or_else(|| v["delta"].as_str())
                     .or_else(|| v["content"].as_str())
                     .unwrap_or("")
@@ -929,7 +1040,7 @@ impl StreamParser {
                 vec![CliEvent::ToolDone { conversation_id: conv, call_key, name: None, input: Value::Null, output, is_error }]
             }
             "step_finish" => {
-                let usage = v["usage"].clone();
+                let usage = if !v["part"]["tokens"].is_null() { v["part"]["tokens"].clone() } else { v["usage"].clone() };
                 let tokens = anthropic_like_tokens(&usage);
                 vec![CliEvent::AgentText { conversation_id: conv, delta: String::new(), done: true, usage, tokens }]
             }
@@ -1922,6 +2033,53 @@ mod tests {
             grok,
             ["--no-auto-update", "--output-format", "streaming-json", "--resume", "g-1", "--model", "grok-4.7", "--sandbox", "workspace-write", "--always-approve", "-p", "hello"]
         );
+
+        let opencode = build_args(CliKind::OpenCode, "refactor", None, Some("ses_7"), "anthropic/claude-sonnet-4-6", "high", Mode::Plan, false, false);
+        assert_eq!(
+            opencode,
+            ["run", "--format", "json", "--session", "ses_7", "--model", "anthropic/claude-sonnet-4-6", "--agent", "plan", "--", "refactor"]
+        );
+    }
+
+    #[test]
+    fn builds_cross_engine_handoff_brief_from_prior_turns() {
+        let events = vec![
+            crate::events::Envelope { seq: 1, ts: "2026-11-24T00:00:00Z".into(), event: Event::TurnStart { turn: 1 } },
+            crate::events::Envelope {
+                seq: 2,
+                ts: "2026-11-24T00:00:01Z".into(),
+                event: Event::UserMessage { text: "修一下 motor.c 的重锁逻辑".into(), steering: false, mode: Mode::Auto, images: vec![], files: vec![] },
+            },
+            crate::events::Envelope {
+                seq: 3,
+                ts: "2026-11-24T00:00:02Z".into(),
+                event: Event::ToolResult {
+                    tool_use_id: "t1".into(),
+                    tool: "edit_file".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                    meta: json!({ "path": "peripheral/src/motor.c", "added": 5, "removed": 1 }),
+                    images: vec![],
+                },
+            },
+            crate::events::Envelope {
+                seq: 4,
+                ts: "2026-11-24T00:00:03Z".into(),
+                event: Event::AssistantMessage {
+                    content: vec![json!({ "type": "text", "text": "已修复 motor.c 停稳判定。" })],
+                    stop_reason: Some("end_turn".into()),
+                    model: "claude-opus-4-7".into(),
+                    usage: Value::Null,
+                    tokens: None,
+                },
+            },
+            crate::events::Envelope { seq: 5, ts: "2026-11-24T00:00:04Z".into(), event: Event::TurnStart { turn: 2 } },
+        ];
+        assert!(build_handoff_brief(&events, 1).is_none());
+        let brief = build_handoff_brief(&events, 2).expect("handoff brief");
+        assert!(brief.contains("peripheral/src/motor.c"));
+        assert!(brief.contains("修一下 motor.c"));
+        assert!(brief.contains("已修复 motor.c 停稳判定"));
     }
 
     #[test]

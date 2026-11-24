@@ -13,6 +13,8 @@ import type {
   GitCommitResult,
   GitDiffView,
   GitFile,
+  GitPrDefaults,
+  GitPrResult,
   GitStatus,
   Image,
   LanguageServerView,
@@ -164,6 +166,9 @@ export const api = {
   gitLog: (id: string, limit = 30) => invoke<GitCommitItem[]>("git_log", { id, limit }),
   gitCommitFiles: (id: string, commit: string) => invoke<GitFile[]>("git_commit_files", { id, commit }),
   gitSync: (id: string, action: "fetch" | "pull" | "push") => invoke<string>("git_sync", { id, action }),
+  gitPrDefaults: (id: string) => invoke<GitPrDefaults>("git_pr_defaults", { id }),
+  gitCreatePr: (id: string, title: string, body: string, base: string | null, draft: boolean) =>
+    invoke<GitPrResult>("git_create_pr", { id, title, body, base, draft }),
   /** Interactive side-panel PTY shell commands and event listeners. */
   ptySpawn: (id: string, cols = 80, rows = 24) => invoke<PtyInfo>("pty_spawn", { id, cols, rows }),
   ptyList: (id: string) => invoke<PtyInfo[]>("pty_list", { id }),
@@ -190,6 +195,8 @@ export const api = {
   },
   /** Open an http(s) or mailto link in the system's default app, never in the app window. */
   openExternal: (url: string) => openUrl(url),
+  /** Best-effort native OS desktop notification when the app is in the background. */
+  notifyDesktop: (title: string, body: string) => invoke<void>("notify_desktop", { title, body }),
   onSessionEvent: (handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),
   /** The document runtime: how it stands, setting it up (how far it has got comes as events), and taking it away. */
   /** The language servers `code_nav` uses: where each is, downloading one the app can, and taking a download away. */

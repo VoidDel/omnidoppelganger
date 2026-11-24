@@ -6,6 +6,7 @@ export const CLI_INFO: Record<CliBackend, { bin: string; label: string }> = {
   claude_code: { bin: "claude", label: "Claude Code (claude)" },
   cursor: { bin: "cursor-agent", label: "Cursor Agent (cursor-agent)" },
   grok: { bin: "grok", label: "Grok CLI (grok)" },
+  opencode: { bin: "opencode", label: "OpenCode (opencode)" },
 };
 
 /** Return the local CLI backend of a provider/kind, or null for HTTP API providers. */

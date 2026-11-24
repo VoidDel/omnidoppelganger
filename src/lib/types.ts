@@ -378,7 +378,7 @@ export interface KeyStatus {
   plaintext: boolean;
 }
 
-export type CliBackend = "antigravity" | "codex" | "claude_code" | "cursor" | "grok";
+export type CliBackend = "antigravity" | "codex" | "claude_code" | "cursor" | "grok" | "opencode";
 
 /** A model provider as the core describes it. Pairs are `[id, display name]` and `[address, what it is]`. */
 /** A kind of provider, which providers are added as. */
@@ -596,6 +596,19 @@ export interface GitCommitItem {
 export interface GitCommitResult {
   hash: string;
   branch: string | null;
+}
+
+export interface GitPrDefaults {
+  branch: string;
+  base: string;
+  title: string;
+  body: string;
+  has_gh: boolean;
+}
+
+export interface GitPrResult {
+  url: string;
+  branch: string;
 }
 
 export interface PtyInfo {

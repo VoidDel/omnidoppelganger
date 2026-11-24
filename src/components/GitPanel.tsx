@@ -55,6 +55,14 @@ export function GitPanel({
   const [newBranchName, setNewBranchName] = useState("");
   const [creatingBranch, setCreatingBranch] = useState(false);
 
+  // Pull Request inline drawer
+  const [prOpen, setPrOpen] = useState(false);
+  const [prTitle, setPrTitle] = useState("");
+  const [prBody, setPrBody] = useState("");
+  const [prBase, setPrBase] = useState("main");
+  const [prDraft, setPrDraft] = useState(false);
+  const [prHasGh, setPrHasGh] = useState(true);
+
   // Discard confirmation target (`"*"` = all unstaged, else single relative path)
   const [discardTarget, setDiscardTarget] = useState<string | null>(null);
 
@@ -129,6 +137,46 @@ export function GitPanel({
       loadLog();
       const label = action === "fetch" ? "已抓取远端更新" : action === "pull" ? "已拉取远端提交" : "已推送到远端";
       onNote(msg ? `${label}：${msg.split("\n")[0]}` : `${label}。`);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openPr = () => {
+    const next = !prOpen;
+    setPrOpen(next);
+    if (next) {
+      setBranchMenuOpen(false);
+      api.gitPrDefaults(sessionId).then(
+        (d) => {
+          setPrTitle(d.title);
+          setPrBody(d.body);
+          setPrBase(d.base);
+          setPrHasGh(d.has_gh);
+        },
+        (err) => {
+          setPrOpen(false);
+          onError(String(err));
+        },
+      );
+    }
+  };
+
+  const submitPr = async () => {
+    const title = prTitle.trim();
+    if (!title || busy) return;
+    setBusy("pr");
+    try {
+      const res = await api.gitCreatePr(sessionId, title, prBody, prBase.trim() || null, prDraft);
+      setPrOpen(false);
+      onStatusChanged();
+      loadLog();
+      onNote(res.url ? `已创建 PR：${res.url}` : `已为分支 ${res.branch} 创建 PR。`);
+      if (res.url && /^https?:\/\//i.test(res.url)) {
+        void api.openExternal(res.url).catch(() => undefined);
+      }
     } catch (err) {
       onError(String(err));
     } finally {
@@ -347,8 +395,73 @@ export function GitPanel({
           >
             ↑{status.ahead > 0 ? status.ahead : ""}
           </button>
+          <button
+            type="button"
+            className={`git-sync-btn ${prOpen ? "active" : ""}`}
+            disabled={!!busy || !status.branch || status.detached}
+            title="一键推送当前分支并创建 GitHub PR (gh pr create)"
+            onClick={openPr}
+          >
+            PR
+          </button>
         </div>
       </div>
+
+      {prOpen && (
+        <div className="git-branches-box">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 6 }}>
+            <span className="muted" style={{ fontSize: "var(--t-micro)" }}>
+              <span className="mono">{status.branch}</span> → <span className="mono">{prBase || "main"}</span>
+            </span>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "var(--t-micro)", color: "var(--ink-2)", cursor: "pointer" }}>
+              <input type="checkbox" checked={prDraft} onChange={(e) => setPrDraft(e.target.checked)} />
+              草稿 PR
+            </label>
+          </div>
+          {!prHasGh && (
+            <p className="muted" style={{ fontSize: "var(--t-micro)", color: "var(--cinnabar-ink)", margin: "0 0 6px" }}>
+              未检测到本机 <span className="mono">gh</span> CLI，请先安装并运行 <span className="mono">gh auth login</span>。
+            </p>
+          )}
+          <input
+            className="input tree-input"
+            style={{ width: "100%", marginBottom: 6 }}
+            placeholder="PR 标题…"
+            value={prTitle}
+            onChange={(e) => setPrTitle(e.target.value)}
+          />
+          <textarea
+            className="input"
+            rows={4}
+            style={{ width: "100%", fontSize: "var(--t-small)", marginBottom: 6, resize: "vertical" }}
+            placeholder="PR 改动说明（Markdown）…"
+            value={prBody}
+            onChange={(e) => setPrBody(e.target.value)}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              className="input tree-input mono"
+              style={{ width: 96 }}
+              placeholder="目标分支"
+              title="目标 base 分支"
+              value={prBase}
+              onChange={(e) => setPrBase(e.target.value)}
+            />
+            <button type="button" className="button text small" onClick={() => setPrOpen(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="button primary small"
+              style={{ marginLeft: "auto" }}
+              disabled={!!busy || !prTitle.trim() || !prHasGh}
+              onClick={() => void submitPr()}
+            >
+              {busy === "pr" ? "创建中…" : "推送并创建 PR"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {branchMenuOpen && !isWorktree && (
         <div className="git-branches-box">
