@@ -72,6 +72,8 @@ export const api = {
   sendMessage: (id: string, text: string, images: Image[] = [], files: string[] = []) => invoke<boolean>("send_message", { id, text, images, files }),
   /** What each of these paths is, to attach: a file, a picture, or neither and why. Nothing is sent. */
   attachFiles: (paths: string[]) => invoke<Picked[]>("attach_files", { paths }),
+  /** Save a long pasted text snippet as a typed UTF-8 attachment file (e.g. `.svg`, `.html`, `.txt`). */
+  savePastedFile: (name: string, content: string) => invoke<Picked>("save_pasted_file", { name, content }),
   /** Ask for files with the system dialog. Resolves with none when the user closes it. */
   pickFiles: async (): Promise<string[]> => {
     const picked = await open({ multiple: true, title: "选要附给分身的文件" });

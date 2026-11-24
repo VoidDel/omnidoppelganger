@@ -4,11 +4,13 @@ import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { launchFrom } from "../lib/flight";
 import { type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { MODES, nextMode } from "../lib/modes";
+import { type PasteKind, detectPasteKind, nextPastedFilename, shouldCollapsePaste } from "../lib/paste";
 import { CLI_INFO, cliOf } from "../lib/providers";
 import { type Offer, type SlashChoice, type SlashCommand, completion, offers, parse } from "../lib/slash";
 import type { Image, Mode, Picked, Provider, Status } from "../lib/types";
 import { Mark } from "./Backdrop";
 import { Light } from "./Light";
+import { PasteViewer } from "./PasteViewer";
 import { CHECK, LIMITS, ModePicker, ModelList, Popup } from "./Pickers";
 import { Viewer, imageSource } from "./Viewer";
 
@@ -18,7 +20,15 @@ const IMAGES_PER_MESSAGE = 8;
 const FILES_PER_MESSAGE = 10;
 
 /** A file waiting to be sent with the message. */
-export type Pending = Extract<Picked, { kind: "file" }>;
+export type Pending = Extract<Picked, { kind: "file" }> & {
+  /** Present when this file was created from a collapsed long paste in the composer. */
+  pasted?: {
+    content: string;
+    kind: PasteKind;
+    label: string;
+    lines: number;
+  };
+};
 
 export interface ComposerDraft {
   text: string;
@@ -45,6 +55,34 @@ const FILE_ICON = (
     <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
   </svg>
 );
+
+function pasteIcon(kind: PasteKind) {
+  if (kind === "svg") {
+    return (
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+        <circle cx="5.7" cy="6.2" r="1.1" />
+        <path d="m2.5 11.5 3.3-3.2 2.4 2.2 2.3-2.5 3 3.5" />
+      </svg>
+    );
+  }
+  if (kind === "markdown") {
+    return (
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="1.8" y="3" width="12.4" height="10" rx="1.5" />
+        <path d="M4.2 10.5V5.5l2.2 2.4 2.2-2.4v5M11.6 5.5v4.6M10 8.6l1.6 1.6 1.6-1.6" />
+      </svg>
+    );
+  }
+  if (kind === "html" || kind === "xml" || kind === "json") {
+    return (
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M5.5 4.5 2 8l3.5 3.5M10.5 4.5 14 8l-3.5 3.5M9 3.5 7 12.5" />
+      </svg>
+    );
+  }
+  return FILE_ICON;
+}
 // 5 MB of base64 is 3.75 MB of file.
 const IMAGE_BYTES = 3_700_000;
 
@@ -179,6 +217,8 @@ export function Composer(props: ComposerProps) {
   const [images, setImages] = useState<Image[]>(() => savedDraft?.images ?? []);
   /** Which of the pictures to go with the message is being looked at full size. */
   const [viewing, setViewing] = useState<number | null>(null);
+  /** Path of the pasted text/SVG/HTML block currently opened in the preview modal. */
+  const [viewingPaste, setViewingPaste] = useState<string | null>(null);
   /** Files to go with the message, each by its path. */
   const [files, setFiles] = useState<Pending[]>(() => savedDraft?.files ?? []);
   useEffect(() => {
@@ -205,6 +245,7 @@ export function Composer(props: ComposerProps) {
     setText("");
     setImages([]);
     setFiles([]);
+    setViewingPaste(null);
     setRefused(null);
   };
 
@@ -311,6 +352,45 @@ export function Composer(props: ComposerProps) {
     }
     if (taken.length) setImages((current) => [...current, ...taken].slice(0, IMAGES_PER_MESSAGE));
   };
+  const attachPastedText = (pastedText: string) => {
+    setRefused(null);
+    if (files.length >= FILES_PER_MESSAGE) {
+      setRefused(`一次最多附 ${FILES_PER_MESSAGE} 个文件，已先按原文贴入输入框。`);
+      setText((prev) => prev + pastedText);
+      return;
+    }
+    const detected = detectPasteKind(pastedText);
+    const name = nextPastedFilename(
+      detected.ext,
+      files.map((file) => file.name),
+    );
+    api.savePastedFile(name, pastedText).then(
+      (picked) => {
+        if (picked.kind === "file") {
+          setFiles((current) => {
+            if (current.length >= FILES_PER_MESSAGE) {
+              setRefused(`一次最多附 ${FILES_PER_MESSAGE} 个文件，多的没有附上。`);
+              return current;
+            }
+            return [
+              ...current,
+              {
+                ...picked,
+                pasted: { content: pastedText, kind: detected.kind, label: detected.label, lines: detected.lines },
+              },
+            ];
+          });
+        } else if (picked.kind === "refused") {
+          setRefused(REFUSALS[picked.why](picked.name));
+        }
+      },
+      () => {
+        // Fallback when not running in Tauri or temp write fails: never lose the user's pasted text.
+        setText((prev) => prev + pastedText);
+      },
+    );
+  };
+  const activePaste = viewingPaste ? files.find((file) => file.path === viewingPaste && file.pasted) : undefined;
   // What the last render knew, for what comes in between renders: files dropped on the window.
   const known = useRef({ vision, blind });
   known.current = { vision, blind };
@@ -454,6 +534,19 @@ export function Composer(props: ComposerProps) {
             }}
           />
           {viewing !== null && images.length > 0 && <Viewer images={images} at={viewing} whose="要附的" onClose={() => setViewing(null)} />}
+          {activePaste?.pasted && (
+            <PasteViewer
+              item={{ name: activePaste.name, bytes: activePaste.bytes, ...activePaste.pasted }}
+              onClose={() => setViewingPaste(null)}
+              onExpandToInput={() => {
+                const snippet = activePaste.pasted?.content ?? "";
+                setFiles((current) => current.filter((had) => had.path !== activePaste.path));
+                setText((prev) => (prev ? `${prev}\n${snippet}` : snippet));
+                setViewingPaste(null);
+                requestAnimationFrame(() => input.current?.focus());
+              }}
+            />
+          )}
           {(images.length > 0 || files.length > 0 || refused) && (
             <div className="attachments">
               {images.map((image, index) => (
@@ -466,24 +559,55 @@ export function Composer(props: ComposerProps) {
                   </button>
                 </span>
               ))}
-              {files.map((file) => (
-                <span
-                  className="attachment file"
-                  key={file.path}
-                  title={`${file.path}\n${file.inline ? (file.document ? "取出的文字会随这句话一起发给分身，图和排版不在其中" : "它的内容会随这句话一起发给分身") : "它太大，不随消息发送：分身会自己分段去读，不用请示"}`}
-                >
-                  {FILE_ICON}
-                  <span className="file-chip-name">{file.name}</span>
-                  <span className="file-chip-size">
-                    {fileSize(file.bytes)}
-                    {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
-                    {!file.inline && "，分身自读"}
+              {files.map((file) =>
+                file.pasted ? (
+                  <span className={`attachment file pasted kind-${file.pasted.kind}`} key={file.path}>
+                    <button
+                      type="button"
+                      className="file-chip-preview"
+                      title={`点击预览 ${file.name}（${file.pasted.label}，${file.pasted.lines} 行）`}
+                      onClick={() => setViewingPaste(file.path)}
+                    >
+                      {pasteIcon(file.pasted.kind)}
+                      <span className="file-chip-name">{file.name}</span>
+                      <span className="file-chip-size">
+                        {fileSize(file.bytes)} ·{" "}
+                        {file.pasted.kind === "svg" || file.pasted.kind === "html" || file.pasted.kind === "markdown"
+                          ? file.pasted.label
+                          : `${file.pasted.lines} 行`}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="file-chip-remove"
+                      aria-label={`去掉 ${file.name}`}
+                      onClick={() => {
+                        if (viewingPaste === file.path) setViewingPaste(null);
+                        setFiles(files.filter((had) => had.path !== file.path));
+                      }}
+                    >
+                      ×
+                    </button>
                   </span>
-                  <button type="button" aria-label={`去掉 ${file.name}`} onClick={() => setFiles(files.filter((had) => had.path !== file.path))}>
-                    ×
-                  </button>
-                </span>
-              ))}
+                ) : (
+                  <span
+                    className="attachment file"
+                    key={file.path}
+                    title={`${file.path}\n${file.inline ? (file.document ? "取出的文字会随这句话一起发给分身，图和排版不在其中" : "它的内容会随这句话一起发给分身") : "它太大，不随消息发送：分身会自己分段去读，不用请示"}`}
+                  >
+                    {FILE_ICON}
+                    <span className="file-chip-name">{file.name}</span>
+                    <span className="file-chip-size">
+                      {fileSize(file.bytes)}
+                      {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
+                      {!file.inline && "，分身自读"}
+                    </span>
+                    <button type="button" aria-label={`去掉 ${file.name}`} onClick={() => setFiles(files.filter((had) => had.path !== file.path))}>
+                      ×
+                    </button>
+                  </span>
+                ),
+              )}
               {refused && (
                 <span className="refused" role="alert">
                   {refused}
@@ -545,11 +669,20 @@ export function Composer(props: ComposerProps) {
             // The button's menu belongs to the box while the box has the keyboard: pressed elsewhere, it is put away.
             onBlur={() => setBrowsing(false)}
             onPaste={(event) => {
-              // A pasted screenshot is attached; pasted text goes into the box as usual.
-              const files = [...event.clipboardData.items].filter((item) => item.kind === "file" && item.type.startsWith("image/")).flatMap((item) => item.getAsFile() ?? []);
-              if (files.length === 0) return;
-              event.preventDefault();
-              void attach(files);
+              // A pasted screenshot is attached; oversized text or SVG/HTML snippets collapse into clickable chips.
+              const pastedImages = [...event.clipboardData.items]
+                .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+                .flatMap((item) => item.getAsFile() ?? []);
+              if (pastedImages.length > 0) {
+                event.preventDefault();
+                void attach(pastedImages);
+                return;
+              }
+              const pastedText = event.clipboardData.getData("text/plain");
+              if (pastedText && shouldCollapsePaste(pastedText)) {
+                event.preventDefault();
+                attachPastedText(pastedText);
+              }
             }}
             onKeyDown={(event) => {
               // While the "/" menu is up, the arrows go through it, Tab completes, Enter takes, Escape puts it away.

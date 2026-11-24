@@ -1040,6 +1040,37 @@ async fn attach_files(paths: Vec<String>) -> Result<Vec<Picked>, String> {
     tokio::task::spawn_blocking(move || paths.iter().map(|path| pick(std::path::Path::new(path))).collect()).await.map_err(|error| error.to_string())
 }
 
+/// Save a long text snippet pasted into the composer as a real UTF-8 file under `~/.odg/pastes/<stamp>/<name>`,
+/// returning the same [`Picked`] descriptor as `attach_files` so it behaves like a native attachment.
+#[tauri::command]
+async fn save_pasted_file(name: String, content: String) -> Result<Picked, String> {
+    static PASTE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    const MAX_PASTE_BYTES: usize = 10 * 1024 * 1024;
+    if content.len() > MAX_PASTE_BYTES {
+        return Err("粘贴内容超过 10 MB，请先保存为文件后再附给分身。".to_string());
+    }
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
+        .collect();
+    let safe_name = cleaned.trim_matches('.').to_string();
+    let safe_name = if safe_name.is_empty() || safe_name.len() > 80 { "pasted.txt".to_string() } else { safe_name };
+    tokio::task::spawn_blocking(move || {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let seq = PASTE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = settings::home().join("pastes").join(format!("{millis}-{seq}"));
+        std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建粘贴缓存目录：{error}"))?;
+        let path = dir.join(&safe_name);
+        std::fs::write(&path, content.as_bytes()).map_err(|error| format!("无法写入粘贴文件：{error}"))?;
+        Ok(pick(&path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn resolve_approval(app: State<'_, App>, id: String, tool_use_id: String, decision: Decision) -> Result<bool, String> {
     Ok(app.live(&id)?.resolve_approval(&tool_use_id, decision))
@@ -1348,6 +1379,7 @@ pub fn run() {
             create_session,
             preset_workspace,
             attach_files,
+            save_pasted_file,
             fork_session,
             list_schedules,
             save_schedule,
