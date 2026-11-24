@@ -3,7 +3,7 @@ import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Info } from "./Hint";
-import { CLI_INFO, cliOf, setUp } from "../lib/providers";
+import { CLI_INFO, cliOf, enabledProviders, setUp } from "../lib/providers";
 import { RuntimeSection } from "./Runtime";
 import { LanguageServersSection } from "./LanguageServers";
 import { EFFORT_NAMES, effortNote } from "../lib/efforts";
@@ -236,6 +236,11 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
     setRemoving(null);
     await onRemove(provider.id);
   };
+  const toggle = (provider: Provider, on: boolean) => {
+    const current = settings.disabled_providers ?? [];
+    const next = on ? current.filter((id) => id !== provider.id) : current.includes(provider.id) ? current : [...current, provider.id];
+    void onSave({ ...settings, disabled_providers: next });
+  };
   return (
     <section>
       <div className="section-head">
@@ -257,15 +262,17 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
         {listed.map((provider) => {
           const status = statusOf(provider);
           const cli = cliOf(provider);
+          const isDefault = provider.id === settings.provider;
+          const enabled = isDefault || !(settings.disabled_providers ?? []).includes(provider.id);
           const address = settings.base_urls[provider.id];
           const removable = status.source === "saved" || !!address || provider.id !== provider.kind || !!settings.provider_names[provider.id];
           // Where its requests go, when that can be set: the first Anthropic provider's address comes from the environment, and local CLIs have no HTTP URL.
           const shown = provider.id === "anthropic" || cli ? "" : address || (provider.base_url ? "默认地址" : "未填地址");
           return (
-            <li key={provider.id}>
+            <li key={provider.id} className={enabled ? "" : "off"}>
               <div className="key-who">
                 <strong>{provider.name}</strong>
-                {provider.id === settings.provider && (
+                {isDefault && (
                   <span className="chip busy" title="默认分身出自这个宗门，在下面「默认分身」里换">
                     默认
                   </span>
@@ -291,6 +298,22 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
                 </div>
               )}
               <span className="key-acts">
+                  <label
+                    className="mcp-switch"
+                    title={
+                      isDefault
+                        ? "当前默认宗门不能直接停用；先在下面「默认分身」里换一家再停用"
+                        : enabled
+                          ? `停用 ${provider.name}：保留密钥或 CLI，不在心法菜单中列出`
+                          : `启用 ${provider.name}`
+                    }
+                  >
+                    <input type="checkbox" role="switch" checked={enabled} disabled={isDefault} onChange={(event) => toggle(provider, event.target.checked)} />
+                    <span className="track" aria-hidden="true" />
+                    <span className="sr-only">
+                      {enabled ? "停用" : "启用"} {provider.name}
+                    </span>
+                  </label>
                   <button type="button" className="icon-button" title={`改 ${provider.name} 的密钥或地址`} onClick={() => setEditing(provider.id)}>
                     <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M10.6 2.9 13.1 5.4 5.6 12.9 2.6 13.4 3.1 10.4Z" />
@@ -524,7 +547,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
               <Combo
                 id="default-provider"
                 value={settings.provider}
-                options={setUp(view).map((provider) => ({ value: provider.id, text: provider.name, note: view.keys[provider.id]?.source === "none" ? (cliOf(provider) ? "未装 CLI" : "未填密钥") : "" }))}
+                options={enabledProviders(view).map((provider) => ({ value: provider.id, text: provider.name, note: view.keys[provider.id]?.source === "none" ? (cliOf(provider) ? "未装 CLI" : "未填密钥") : "" }))}
                 editable={false}
                 onSave={(id) => onSave({ ...settings, provider: id, model: view.providers.find((provider) => provider.id === id)?.models[0]?.[0] ?? "" })}
               />

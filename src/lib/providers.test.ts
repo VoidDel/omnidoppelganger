@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cliOf, isSetUp, setUp } from "./providers";
+import { cliOf, enabledProviders, isProviderEnabled, isSetUp, setUp } from "./providers";
 import type { Provider, SettingsView } from "./types";
 
 const provider = (id: string, kind = id, protocol: Provider["protocol"] = { chat: "generic" }): Provider => ({
@@ -39,9 +39,17 @@ describe("the 宗门 the user keeps", () => {
         claude_code: { source: "cli", preview: "/usr/local/bin/claude" },
         codex: { source: "none" },
       },
-      settings: { provider: "deepseek", base_urls: { custom: "http://127.0.0.1:3425" }, provider_names: { "custom-2": "本地二号" } },
+      settings: {
+        provider: "deepseek",
+        base_urls: { custom: "http://127.0.0.1:3425" },
+        provider_names: { "custom-2": "本地二号" },
+        disabled_providers: ["claude_code", "deepseek"],
+      },
     } as unknown as SettingsView;
     expect(setUp(view).map((one) => one.id)).toEqual(["anthropic", "zhipu", "custom", "custom-2", "deepseek", "claude_code"]);
+    // Disabled providers stay in `setUp` (for the settings list) but are excluded from `enabledProviders` (except the active default).
+    expect(enabledProviders(view).map((one) => one.id)).toEqual(["anthropic", "zhipu", "custom", "custom-2", "deepseek"]);
+    expect(isProviderEnabled(view, provider("claude_code", "claude_code", { cli: "claude_code" }))).toBe(false);
     // A compatible kind or uninstalled CLI is not offered until it is added or detected.
     expect(isSetUp(view, provider("custom_anthropic"))).toBe(false);
     expect(isSetUp(view, provider("openai"))).toBe(false);

@@ -115,6 +115,10 @@ pub struct Settings {
     /// is what keeps it in the list.
     #[serde(default)]
     pub provider_names: BTreeMap<String, String>,
+    /// Providers switched off in the settings list: kept there with their keys
+    /// or detected CLIs intact, but hidden from the model pickers.
+    #[serde(default)]
+    pub disabled_providers: Vec<String>,
     /// Whether the commands the agent runs are confined to writing under the
     /// workspace; see [`crate::sandbox`]. Has no effect where the system cannot confine them.
     #[serde(default)]
@@ -156,6 +160,7 @@ impl Default for Settings {
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
             provider_names: BTreeMap::new(),
+            disabled_providers: Vec::new(),
             sandbox: false,
             sandbox_paths: Vec::new(),
             context_windows: BTreeMap::new(),
@@ -200,7 +205,14 @@ impl Settings {
             self.theme = default.theme;
         }
         let names = self.provider_names.clone();
+        let active_provider = self.provider.clone();
         let listed = |id: &str| !is_added(id) || names.contains_key(id);
+        let mut seen_disabled = std::collections::BTreeSet::new();
+        self.disabled_providers = std::mem::take(&mut self.disabled_providers)
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty() && id != &active_provider && listed(id) && provider(id).is_some() && seen_disabled.insert(id.clone()))
+            .collect();
         self.guardian_models.retain(|provider, model| !provider.is_empty() && !model.trim().is_empty() && listed(provider));
         for model in self.guardian_models.values_mut() {
             *model = model.trim().to_string();
@@ -641,6 +653,7 @@ impl SettingsStore {
         let mut settings = self.load();
         settings.base_urls.remove(id);
         settings.provider_names.remove(id);
+        settings.disabled_providers.retain(|disabled| disabled != id);
         settings.guardian_models.remove(id);
         settings.context_windows.retain(|key, _| !key.starts_with(&format!("{id}/")));
         if settings.provider == id {
@@ -836,7 +849,10 @@ mod tests {
             ("anthropic".into(), "https://gateway".into()),
             ("nobody".into(), "https://x".into()),
         ]);
-        assert_eq!(urls.valid().base_urls, BTreeMap::from([("zhipu".into(), "https://api.z.ai/api/paas/v4".into())]));
+        urls.disabled_providers = vec![" claude_code ".into(), "claude_code".into(), "zhipu".into(), "nobody".into(), "custom-9".into()];
+        let validated = urls.valid();
+        assert_eq!(validated.base_urls, BTreeMap::from([("zhipu".into(), "https://api.z.ai/api/paas/v4".into())]));
+        assert_eq!(validated.disabled_providers, vec!["claude_code"]);
     }
 
     #[test]

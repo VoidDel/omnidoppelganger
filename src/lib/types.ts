@@ -353,6 +353,8 @@ export interface Settings {
   base_urls: Record<string, string>;
   /** The names the user gave providers, by provider id; every provider added beside the first of its kind is here. */
   provider_names: Record<string, string>;
+  /** Providers switched off in 宗门: kept in the settings list with their keys/CLI, hidden from 心法 menus. */
+  disabled_providers: string[];
   /** Whether the commands a 分身 runs are confined to writing under its workspace, where the system can do that. */
   sandbox: boolean;
   /** Directories confined commands may also write under. */

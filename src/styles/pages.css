@@ -268,9 +268,21 @@
   color: var(--cinnabar-ink);
 }
 
+.key-list li.off .key-who strong,
+.key-list li.off .key-what,
+.key-list li.off .key-where {
+  opacity: 0.5;
+}
+
 .key-acts {
   display: flex;
+  align-items: center;
   gap: 2px;
+}
+
+.key-acts .mcp-switch {
+  margin-top: 0;
+  margin-right: 6px;
 }
 
 /* A window over the page for one small job. Paper with the talisman showing under it, as 本尊's own orders are. */

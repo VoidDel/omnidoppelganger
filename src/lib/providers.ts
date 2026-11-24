@@ -28,3 +28,13 @@ export function isSetUp(view: SettingsView, provider: Provider): boolean {
 export function setUp(view: SettingsView): Provider[] {
   return view.providers.filter((provider) => isSetUp(view, provider));
 }
+
+/** Whether a set-up provider is switched on and offered in the 默认分身 and 心法 menus. */
+export function isProviderEnabled(view: SettingsView, provider: Provider): boolean {
+  return isSetUp(view, provider) && (provider.id === view.settings.provider || !(view.settings.disabled_providers ?? []).includes(provider.id));
+}
+
+/** Set-up providers that are currently switched on. */
+export function enabledProviders(view: SettingsView): Provider[] {
+  return view.providers.filter((provider) => isProviderEnabled(view, provider));
+}

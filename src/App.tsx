@@ -20,7 +20,7 @@ import { Transcript } from "./components/Transcript";
 import { Workbench, WorkbenchTabsBar, type WorkbenchTab } from "./components/Workbench";
 
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
-import { isSetUp } from "./lib/providers";
+import { isProviderEnabled } from "./lib/providers";
 import { api } from "./lib/api";
 import { forwarded } from "./lib/aside";
 import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, type StreamBlock } from "./lib/fold";
@@ -930,7 +930,7 @@ export default function App() {
             status={state.status}
             providers={providers}
             // The 宗门 the user added are offered; one can be moved to once it has a key, but a compatible service (a local server) may need none.
-            listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isSetUp(state.settings!, known))}
+            listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isProviderEnabled(state.settings!, known))}
             keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || !!providers.find((known) => known.id === provider)?.kind.startsWith("custom")}
             providerId={active.provider}
             model={active.model}
@@ -1345,7 +1345,7 @@ export default function App() {
                           drafts={draftsRef.current}
                           status={asideStatus}
                           providers={providers}
-                          listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isSetUp(state.settings!, known))}
+                          listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isProviderEnabled(state.settings!, known))}
                           keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || !!providers.find((known) => known.id === provider)?.kind.startsWith("custom")}
                           providerId={aside.provider}
                           model={aside.model}
