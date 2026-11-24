@@ -434,6 +434,15 @@
   background: var(--bg);
 }
 
+.wb-tab .dot.busy {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--jade) 60%, transparent);
+  animation: breathe 1.2s ease-in-out infinite alternate;
+}
+
 .wb-tab.dragging {
   opacity: 0.45;
 }
