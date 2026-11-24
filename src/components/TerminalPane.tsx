@@ -472,23 +472,48 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
       </div>
 
       {viewMode === "agent" && (
-        <div className="panel-body">
+        <div className="panel-body term-runs">
           {runs.length === 0 && <p className="muted">分身还没有运行过命令。</p>}
           {runs.map((run) => {
             const meta = run.result!.meta!;
+            const cmdLine = `${meta.cwd ? `[${meta.cwd}] ` : ""}${meta.command ?? ""}`.replace(/\s+/g, " ").trim();
+            const failed = Boolean(meta.stopped) || (!meta.background && !meta.running && meta.exit_code !== 0);
+            const outputLines = meta.output ? meta.output.replace(/\n$/, "").split("\n").length : 0;
+            const badge = meta.stopped
+              ? meta.stopped === "timed out"
+                ? "超时"
+                : "已停止"
+              : run.name === "run_command" && meta.background
+                ? `后台 #${meta.job}`
+                : meta.running
+                  ? "运行中"
+                  : meta.exit_code !== 0
+                    ? `退出 ${meta.exit_code ?? "?"}`
+                    : outputLines > 0
+                      ? `${outputLines} 行`
+                      : "成功";
             return (
-              <pre className="terminal" key={run.id}>
-                <span className="prompt">$</span> {meta.cwd ? `[${meta.cwd}] ` : ""}
-                {meta.command}
-                {run.name === "run_command" && meta.background ? <span className="muted">{`\n[后台运行，编号 ${meta.job}]`}</span> : null}
-                {run.name !== "run_command" ? <span className="muted">{`  （${meta.job}${run.name === "stop_command" ? "，停止" : ""}）`}</span> : null}
-                {"\n"}
-                {meta.output}
-                {meta.stopped ? <span className="failed">{`\n[${meta.stopped === "timed out" ? "超时停止" : "已停止"}]`}</span> : null}
-                {!meta.stopped && !meta.background && !meta.running && meta.exit_code !== 0 ? (
-                  <span className="failed">{`\n[退出码 ${meta.exit_code ?? "未知"}]`}</span>
-                ) : null}
-              </pre>
+              <details className="term-run" key={run.id}>
+                <summary className="term-run-head" title={cmdLine}>
+                  <span className="term-run-chevron" aria-hidden="true">
+                    ▸
+                  </span>
+                  <span className="prompt">$</span>
+                  <span className="term-run-cmd">{cmdLine}</span>
+                  <span className={`term-run-status ${failed ? "failed" : "muted"}`}>{badge}</span>
+                </summary>
+                <pre className="terminal term-run-body">
+                  <span className="prompt">$</span> {meta.cwd ? `[${meta.cwd}] ` : ""}
+                  {meta.command}
+                  {run.name === "run_command" && meta.background ? <span className="muted">{`\n[后台运行，编号 ${meta.job}]`}</span> : null}
+                  {run.name !== "run_command" ? <span className="muted">{`  （${meta.job}${run.name === "stop_command" ? "，停止" : ""}）`}</span> : null}
+                  {meta.output ? `\n${meta.output}` : ""}
+                  {meta.stopped ? <span className="failed">{`\n[${meta.stopped === "timed out" ? "超时停止" : "已停止"}]`}</span> : null}
+                  {!meta.stopped && !meta.background && !meta.running && meta.exit_code !== 0 ? (
+                    <span className="failed">{`\n[退出码 ${meta.exit_code ?? "未知"}]`}</span>
+                  ) : null}
+                </pre>
+              </details>
             );
           })}
         </div>

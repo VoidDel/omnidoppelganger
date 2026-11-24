@@ -1,0 +1,64 @@
+# Maintainer: OmniDoppelganger Contributors
+pkgname=omnidoppelganger
+pkgver=0.7.7
+pkgrel=1
+pkgdesc="OmniDoppelganger desktop app and CLI — local AI coding agent workbench"
+arch=('x86_64' 'aarch64')
+url="https://github.com/VoidDel/omnidoppelganger"
+license=('MIT')
+depends=(
+  'cairo'
+  'gdk-pixbuf2'
+  'glib2'
+  'gtk3'
+  'hicolor-icon-theme'
+  'libayatana-appindicator'
+  'openssl'
+  'webkit2gtk-4.1'
+)
+makedepends=(
+  'cargo'
+  'git'
+  'nodejs'
+  'pkgconf'
+  'pnpm'
+  'rust'
+)
+optdepends=(
+  'git: worktree isolation and Git panel support'
+  'github-cli: one-click GitHub pull request creation'
+)
+options=('!lto')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz" "omnidoppelganger.desktop")
+sha256sums=('SKIP' 'SKIP')
+
+prepare() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  export CARGO_HOME="${srcdir}/.cargo"
+  pnpm install --frozen-lockfile
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  export CARGO_HOME="${srcdir}/.cargo"
+  export CARGO_TARGET_DIR="${srcdir}/target"
+  pnpm build
+  cargo build --release --frozen --manifest-path src-tauri/Cargo.toml
+  cargo build --release --frozen -p odg-cli
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 "${srcdir}/target/release/omnidoppelganger" "${pkgdir}/usr/bin/omnidoppelganger"
+  install -Dm755 "${srcdir}/target/release/odg" "${pkgdir}/usr/bin/odg"
+  install -Dm644 "${srcdir}/omnidoppelganger.desktop" "${pkgdir}/usr/share/applications/omnidoppelganger.desktop"
+
+  install -Dm644 "src-tauri/icons/32x32.png" "${pkgdir}/usr/share/icons/hicolor/32x32/apps/omnidoppelganger.png"
+  install -Dm644 "src-tauri/icons/64x64.png" "${pkgdir}/usr/share/icons/hicolor/64x64/apps/omnidoppelganger.png"
+  install -Dm644 "src-tauri/icons/128x128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/omnidoppelganger.png"
+  install -Dm644 "src-tauri/icons/128x128@2x.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/omnidoppelganger.png"
+  install -Dm644 "src-tauri/icons/icon.png" "${pkgdir}/usr/share/icons/hicolor/512x512/apps/omnidoppelganger.png"
+
+  install -Dm644 "LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

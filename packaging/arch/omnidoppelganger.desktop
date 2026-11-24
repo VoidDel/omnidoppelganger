@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OmniDoppelganger
+GenericName=AI Coding Agent Workbench
+Comment=Local AI coding agent desktop app built with Rust, Tauri, and React
+Exec=/usr/bin/omnidoppelganger %U
+Icon=omnidoppelganger
+Terminal=false
+Categories=Development;IDE;
+StartupNotify=true
+StartupWMClass=omnidoppelganger
