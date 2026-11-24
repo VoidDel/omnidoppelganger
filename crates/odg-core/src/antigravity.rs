@@ -9,22 +9,17 @@
 //! side panel, and read-only aside all work seamlessly.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use serde_json::Value;
 use tokio::process::Command;
-use tokio_util::sync::CancellationToken;
 
-use crate::events::{Attached, Event};
-use crate::llm::{StreamDelta, Tokens};
+use crate::llm::Tokens;
 use crate::policy::Mode;
 use crate::providers::Listed;
-
-pub const BACKEND: &str = "antigravity";
 
 /// Effort suffixes that `agy models` bakes into variant model ids, ordered lowest to highest.
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
@@ -127,32 +122,7 @@ pub fn resolve_model_for_effort(model: &str, effort: &str) -> (String, Option<St
 /// Checks `ODG_AGY_BIN`, then `PATH`, then common per-user / Homebrew install locations
 /// so apps launched from Finder/Dock still find `~/.local/bin/agy`.
 pub fn find_binary() -> Option<PathBuf> {
-    if let Ok(explicit) = std::env::var("ODG_AGY_BIN") {
-        let path = PathBuf::from(explicit.trim());
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let name = if cfg!(windows) { "agy.exe" } else { "agy" };
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    let mut fallbacks = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        fallbacks.push(home.join(".local").join("bin").join(name));
-        fallbacks.push(home.join(".cargo").join("bin").join(name));
-    }
-    #[cfg(not(windows))]
-    {
-        fallbacks.push(PathBuf::from("/opt/homebrew/bin/agy"));
-        fallbacks.push(PathBuf::from("/usr/local/bin/agy"));
-    }
-    fallbacks.into_iter().find(|path| path.is_file())
+    crate::cli_agents::find_named_binary("ODG_AGY_BIN", "agy", &[])
 }
 
 /// Parse the text output of `agy models` into deduplicated base [`Listed`] model entries,
@@ -265,46 +235,24 @@ pub enum AgyEvent {
     },
 }
 
-/// Map `agy` tool names and parameter keys onto OmniDoppelganger's built-in tool shapes so
-/// `ToolCard` displays native seals (`读`, `写`, `改`, `跑`, `搜`, `寻`, `查`) and readable targets.
-fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
-    let mapped_name = match raw_name {
-        "read_file" | "view_file" => "read_file",
-        "write_file" | "write_to_file" => "write_file",
-        "edit_file" | "replace_file_content" | "multi_replace_file_content" | "sed_file" => "edit_file",
-        "run_command" => "run_command",
-        "grep_search" | "search" => "search",
-        "find_by_name" | "list_dir" | "find_files" => "find_files",
-        "search_web" | "web_search" => "web_search",
-        "read_url_content" | "fetch_url" => "fetch_url",
-        "generate_image" => "generate_image",
-        other => other,
-    };
-    let mut normalized = params.as_object().cloned().unwrap_or_default();
-    if !normalized.contains_key("path")
-        && let Some(path) = ["Path", "TargetFile", "AbsolutePath", "DirectoryPath", "SearchDirectory", "SearchPath"]
-            .iter()
-            .find_map(|key| normalized.get(*key).and_then(Value::as_str))
-            .map(str::to_string)
-    {
-        normalized.insert("path".to_string(), Value::String(path));
+/// Convert a parsed [`AgyEvent`] into the unified [`crate::cli_agents::CliEvent`].
+pub fn into_cli_event(ev: AgyEvent) -> crate::cli_agents::CliEvent {
+    use crate::cli_agents::CliEvent;
+    match ev {
+        AgyEvent::Init { conversation_id } => CliEvent::Init { conversation_id },
+        AgyEvent::AgentText { conversation_id, delta, done, usage, tokens, .. } => {
+            CliEvent::AgentText { conversation_id, delta, done, usage, tokens }
+        }
+        AgyEvent::ToolStart { conversation_id, step_index, name, input } => {
+            CliEvent::ToolStart { conversation_id, call_key: step_index.to_string(), name, input }
+        }
+        AgyEvent::ToolDone { conversation_id, step_index, name, input, output, is_error } => {
+            CliEvent::ToolDone { conversation_id, call_key: step_index.to_string(), name: Some(name), input, output, is_error }
+        }
+        AgyEvent::Result { conversation_id, success, response, error, usage, tokens } => {
+            CliEvent::Result { conversation_id, success, response, error, usage, tokens }
+        }
     }
-    if !normalized.contains_key("command")
-        && let Some(cmd) = normalized.get("CommandLine").and_then(Value::as_str).map(str::to_string)
-    {
-        normalized.insert("command".to_string(), Value::String(cmd));
-    }
-    if !normalized.contains_key("pattern")
-        && let Some(query) = ["Query", "Pattern"].iter().find_map(|key| normalized.get(*key).and_then(Value::as_str)).map(str::to_string)
-    {
-        normalized.insert("pattern".to_string(), Value::String(query));
-    }
-    if !normalized.contains_key("url")
-        && let Some(url) = normalized.get("Url").and_then(Value::as_str).map(str::to_string)
-    {
-        normalized.insert("url".to_string(), Value::String(url));
-    }
-    (mapped_name.to_string(), Value::Object(normalized))
 }
 
 /// Parse one NDJSON line emitted by `agy --output-format stream-json`.
@@ -338,7 +286,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<AgyEvent> {
                 "tool" => {
                     let info = &update["tool_info"];
                     let raw_name = update["tool_name"].as_str().or_else(|| info["name"].as_str()).unwrap_or("tool");
-                    let (name, input) = normalize_tool(raw_name, &info["parameters"]);
+                    let (name, input) = crate::cli_agents::normalize_tool(raw_name, &info["parameters"]);
                     if matches!(state, "DONE" | "ERROR" | "CANCELED") {
                         let output = info["output"]
                             .as_str()
@@ -367,28 +315,6 @@ pub fn parse_ndjson_line(line: &str) -> Option<AgyEvent> {
         }
         _ => None,
     }
-}
-
-/// Build the prompt passed to `agy --print`, including any side-conversation briefing and attached file paths.
-pub fn build_prompt(text: &str, files: &[Attached], briefing: Option<&str>) -> String {
-    let mut parts = Vec::new();
-    if let Some(brief) = briefing
-        && !brief.trim().is_empty()
-    {
-        parts.push(brief.trim().to_string());
-    }
-    if !files.is_empty() {
-        let mut list = String::from("Attached files:");
-        for file in files {
-            list.push_str("\n- ");
-            list.push_str(&file.path);
-        }
-        parts.push(list);
-    }
-    if !text.trim().is_empty() {
-        parts.push(text.to_string());
-    }
-    parts.join("\n\n")
 }
 
 /// Build the CLI argument list for one headless `agy` turn.
@@ -444,197 +370,10 @@ pub fn build_args(
     args
 }
 
-/// Parameters for executing a single headless `agy` turn.
-pub struct TurnParams<'a> {
-    pub workspace: &'a Path,
-    pub turn: u64,
-    pub prompt: String,
-    pub conversation_id: Option<String>,
-    pub model: String,
-    pub effort: String,
-    pub mode: Mode,
-    pub sandboxed: bool,
-    pub read_only: bool,
-}
-
-/// Callbacks bridging `agy` stream events into the owning `Session`.
-pub trait Sink {
-    fn log(&self, event: Event) -> Result<(), String>;
-    fn stream(&self, delta: StreamDelta);
-}
-
-/// Execute one headless streaming turn via `agy --print --output-format stream-json`.
-pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &CancellationToken) -> Result<&'static str, String> {
-    let bin = find_binary().ok_or_else(|| "未找到本机 agy CLI，请先安装并登录 Google Antigravity CLI。".to_string())?;
-    let args = build_args(
-        &params.prompt,
-        params.conversation_id.as_deref(),
-        &params.model,
-        &params.effort,
-        params.mode,
-        params.sandboxed,
-        params.read_only,
-    );
-    let mut cmd = Command::new(&bin);
-    cmd.args(&args)
-        .current_dir(params.workspace)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|error| format!("无法启动 agy CLI：{error}"))?;
-    let stdout = child.stdout.take().ok_or("agy stdout pipe unavailable")?;
-    let mut stderr = child.stderr.take();
-    let stderr_task = tokio::spawn(async move {
-        let mut buf = String::new();
-        if let Some(mut pipe) = stderr.take() {
-            let _ = pipe.read_to_string(&mut buf).await;
-        }
-        buf
-    });
-
-    let mut lines = BufReader::new(stdout).lines();
-    let mut logged_conv = params.conversation_id.clone();
-    let mut active_text = String::new();
-    let mut emitted_any_text = false;
-    let mut started_tools: HashMap<u64, (String, String)> = HashMap::new();
-    let mut result_error: Option<String> = None;
-
-    let mut record_conv = |conv: Option<String>| -> Result<(), String> {
-        if let Some(id) = conv
-            && !id.is_empty()
-            && logged_conv.as_deref() != Some(id.as_str())
-        {
-            sink.log(Event::ExternalSession { backend: BACKEND.to_string(), session_id: id.clone() })?;
-            logged_conv = Some(id);
-        }
-        Ok(())
-    };
-
-    let flush_text = |text: &mut String, usage: Value, tokens: Option<Tokens>, model: &str, emitted: &mut bool| -> Result<(), String> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        let body = std::mem::take(text);
-        *emitted = true;
-        sink.log(Event::AssistantMessage {
-            content: vec![json!({ "type": "text", "text": body })],
-            stop_reason: Some("end_turn".to_string()),
-            model: model.to_string(),
-            usage,
-            tokens,
-        })
-    };
-
-    let cancelled = loop {
-        let next_line = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                let _ = child.kill().await;
-                break true;
-            }
-            res = lines.next_line() => res,
-        };
-        let line = match next_line {
-            Ok(Some(line)) => line,
-            Ok(None) => break false,
-            Err(error) => {
-                let _ = child.kill().await;
-                return Err(format!("读取 agy 输出失败：{error}"));
-            }
-        };
-        let Some(ev) = parse_ndjson_line(&line) else { continue };
-        match ev {
-            AgyEvent::Init { conversation_id } => {
-                record_conv(conversation_id)?;
-            }
-            AgyEvent::AgentText { conversation_id, delta, done, usage, tokens, .. } => {
-                record_conv(conversation_id)?;
-                if !delta.is_empty() {
-                    active_text.push_str(&delta);
-                    sink.stream(StreamDelta::TextDelta { index: 0, text: delta });
-                }
-                if done {
-                    flush_text(&mut active_text, usage, tokens, &params.model, &mut emitted_any_text)?;
-                }
-            }
-            AgyEvent::ToolStart { conversation_id, step_index, name, input } => {
-                record_conv(conversation_id)?;
-                flush_text(&mut active_text, Value::Null, None, &params.model, &mut emitted_any_text)?;
-                let tool_use_id = format!("agy-{}-{step_index}", params.turn);
-                if let std::collections::hash_map::Entry::Vacant(slot) = started_tools.entry(step_index) {
-                    slot.insert((tool_use_id.clone(), name.clone()));
-                    sink.log(Event::AssistantMessage {
-                        content: vec![json!({ "type": "tool_use", "id": tool_use_id, "name": name, "input": input })],
-                        stop_reason: Some("tool_use".to_string()),
-                        model: params.model.clone(),
-                        usage: Value::Null,
-                        tokens: None,
-                    })?;
-                }
-            }
-            AgyEvent::ToolDone { conversation_id, step_index, name, input, output, is_error } => {
-                record_conv(conversation_id)?;
-                let (tool_use_id, tool_name) = match started_tools.remove(&step_index) {
-                    Some(existing) => existing,
-                    None => {
-                        let id = format!("agy-{}-{step_index}", params.turn);
-                        sink.log(Event::AssistantMessage {
-                            content: vec![json!({ "type": "tool_use", "id": id, "name": name, "input": input })],
-                            stop_reason: Some("tool_use".to_string()),
-                            model: params.model.clone(),
-                            usage: Value::Null,
-                            tokens: None,
-                        })?;
-                        (id, name)
-                    }
-                };
-                let meta = match tool_name.as_str() {
-                    "run_command" => json!({ "command": input["command"].as_str().unwrap_or(""), "output": output }),
-                    _ => Value::Null,
-                };
-                sink.log(Event::ToolResult { tool_use_id, tool: tool_name, content: output, is_error, meta, images: Vec::new() })?;
-            }
-            AgyEvent::Result { conversation_id, success, response, error, usage, tokens } => {
-                record_conv(conversation_id)?;
-                if !active_text.is_empty() {
-                    flush_text(&mut active_text, usage, tokens, &params.model, &mut emitted_any_text)?;
-                } else if !emitted_any_text && !response.trim().is_empty() {
-                    sink.log(Event::AssistantMessage {
-                        content: vec![json!({ "type": "text", "text": response })],
-                        stop_reason: Some("end_turn".to_string()),
-                        model: params.model.clone(),
-                        usage,
-                        tokens,
-                    })?;
-                    emitted_any_text = true;
-                }
-                if !success {
-                    result_error = error;
-                }
-            }
-        }
-    };
-
-    if cancelled {
-        let _ = child.wait().await;
-        return Ok("cancelled");
-    }
-
-    flush_text(&mut active_text, Value::Null, None, &params.model, &mut emitted_any_text)?;
-    let status = child.wait().await.map_err(|error| format!("等待 agy 进程结束失败：{error}"))?;
-    let stderr_text = stderr_task.await.unwrap_or_default();
-    if let Some(err) = result_error {
-        return Err(err);
-    }
-    if !status.success() {
-        let trimmed = stderr_text.trim();
-        return Err(if trimmed.is_empty() { format!("agy 进程异常退出（{status}）。") } else { trimmed.to_string() });
-    }
-    Ok("completed")
-}
-
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]

@@ -7,6 +7,7 @@ pub mod agent;
 pub mod anthropic;
 pub mod antigravity;
 pub mod aside;
+pub mod cli_agents;
 pub mod documents;
 pub mod env;
 pub mod events;

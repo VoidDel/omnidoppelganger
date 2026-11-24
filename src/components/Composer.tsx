@@ -4,6 +4,7 @@ import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { launchFrom } from "../lib/flight";
 import { type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { MODES, nextMode } from "../lib/modes";
+import { CLI_INFO, cliOf } from "../lib/providers";
 import { type Offer, type SlashChoice, type SlashCommand, completion, offers, parse } from "../lib/slash";
 import type { Image, Mode, Picked, Provider, Status } from "../lib/types";
 import { Mark } from "./Backdrop";
@@ -158,6 +159,7 @@ export function Composer(props: ComposerProps) {
   const { status, providers, listed, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
   const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given, placeholder, acceptDrops = true } = props;
   const provider = providers.find((known) => known.id === providerId);
+  const cli = cliOf(provider);
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const savedDraft = sessionKey ? drafts?.get(sessionKey) : undefined;
@@ -387,8 +389,10 @@ export function Composer(props: ComposerProps) {
         {mode === "bypass" && status === "idle" && !planReady && (
           <span className="trusted-note">全权托付中：分身什么都不请示。</span>
         )}
-        {provider?.protocol === "antigravity" && mode !== "bypass" && status === "idle" && !planReady && (
-          <span>Antigravity（agy CLI 无头流式模式）：工具执行与会话上下文由本机 agy 托管。</span>
+        {cli && mode !== "bypass" && status === "idle" && !planReady && (
+          <span>
+            {CLI_INFO[cli].label}（无头流式模式）：工具执行与会话上下文由本机 {CLI_INFO[cli].bin} 托管。
+          </span>
         )}
         {status === "idle" && planReady && (
           <>

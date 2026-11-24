@@ -20,7 +20,7 @@ OmniDoppelganger（`odg`）是一个跑在你自己电脑上的编码 agent 桌�
   - **侧边运行终端**：右栏「终端」标签（`Ctrl/Cmd+J` 或 `` Ctrl+` `` 快速唤出）提供跨平台交互式本地终端（支持多终端标签页、亮暗主题同步、自适应缩放、选中终端输出一键发给分身排错），并可随时切换回看分身执行过的历史命令
 - 工具：读文件、搜内容、按名找文件和列目录、改文件（带改动对比，可一次改多处，要么全改要么不改）、整文件写入、删除和移动文件、跑命令。读到 PNG、JPEG、GIF、WebP 图片时，交给能看图的模型去看（截图、自己画的图表、设计稿），对话里在这一步下面显示这张图。删除和移动走和改文件一样的审批，"撤回这一轮"也能把删掉的、挪走的放回原处。不会自己结束的命令（开发服务器、监视器）可以放到后台跑，分身随时看它的输出、给它输入（回答它问的话，每次先请示）、把它停掉；后台命令在应用关闭时一并结束
 - 代码导航：分身用 `code_nav` 借语言服务看代码，比按文字搜更准：查定义、查引用、查实现、看类型和文档、看文件大纲、按名找符号、查一个文件的错误和警告。支持 Rust（rust-analyzer）、C/C++（clangd）、TypeScript/JavaScript（typescript-language-server）、Python（pyright）、Go（gopls），要本机装好对应的语言服务。第一次问某种语言时起服务，大项目要索引一会儿；同一处洞府的分身共用一个服务，应用关闭时结束。除 TypeScript 外都设成不运行项目代码，不用请示；本机装的 typescript-language-server 会加载项目里的 TypeScript，启动前请示一次，可以"此府永准"。Rust、TypeScript/JavaScript、Python 的语言服务没装时，可以由本应用下载（按事先定好的校验码核对，放在 ~/.odg/lsp）：Rust 下载 rust-analyzer（约 15 MB）；TypeScript 下载 TypeScript 7（约 10 MB），它自带语言服务、不加载项目里的代码，用它时不用请示；Python 下载 Astral 的 ty（约 14–18 MB，代替 pyright，还在测试版）。都是独立的程序，不用装 Node 或 Python。分身会先请示，设置的「神通」里也能下载和移除；C/C++ 和 Go 的服务要自行安装。
-- 多家模型供应商：Anthropic、OpenAI、DeepSeek、Kimi（月之暗面）、GLM（智谱），以及任意 OpenAI 兼容服务和 Anthropic 兼容服务。同一种可以加好几个（比如两个中转、同一家的国内站和国际站），各起名字，密钥和地址各存各的。化出的分身先用设置里的那一家和那个模型，之后可以在两轮之间换，也能换到别家：点输入框下方的"心法"，上面一排是宗门（存了密钥的才能选），下面的列表是直接向那一家问来的（问不到时用内置的几个）；设置页里的模型列表也一样。换到别家时，前情照旧带着，只是前面那家的推演过程不带过去。输入框下方的"境界"单独给这个分身换推演深浅，不改设置里的默认
+- 多家模型供应商与本机 CLI 无头流式引擎：支持 Anthropic、OpenAI、DeepSeek、Kimi（月之暗面）、GLM（智谱）、任意 OpenAI/Anthropic 兼容服务，以及本机已安装的 **Google Antigravity（`agy`）**、**OpenAI Codex（`codex`）**、**Claude Code（`claude`）**、**Cursor（`cursor-agent`）**、**Grok（`grok`）** 五种无头流式 CLI 引擎（直接复用对应 CLI 的本机登录态，无需填写 API 密钥，自动持久化并恢复各自的会话 ID）。同一种宗门可以加好几个（比如两个中转、同一家的国内站和国际站），各起名字，密钥和地址各存各的。化出的分身先用设置里的那一家和那个模型，之后可以在两轮之间换，也能换到别家：点输入框下方的"心法"，上面一排是宗门，下面的列表是直接向那一家问来的（问不到时用内置的几个）；设置页里的模型列表也一样。换到别家时，前情照旧带着，只是前面那家的推演过程不带过去。输入框下方的"境界"单独给这个分身换推演深浅，不改设置里的默认
 - 五种禁制（权限模式），输入框下方切换，前四种也可以在输入框里按 Shift+Tab 轮换：
   - **步步请示**：改文件也要先批准
   - **府内自便**：文件夹内的改动自行执行，命令要批准（默认）
@@ -122,6 +122,8 @@ crates/odg-core/   核心库，不依赖桌面外壳
   anthropic.rs     Anthropic Messages API 流式客户端
   openai_responses.rs  OpenAI Responses API 流式客户端
   openai_chat.rs   Chat Completions 流式客户端：DeepSeek、Kimi、GLM 和其他兼容服务
+  cli_agents.rs    本机编码 CLI（agy、codex、claude、cursor-agent、grok）统一无头流式驱动与 NDJSON 解析
+  antigravity.rs   Google Antigravity（agy CLI）模型家族聚合、境界档位对应与事件解析
   llm.rs           客户端共用的请求、重试和报错处理
   tools.rs, tools/ 工具的规格与执行：文件、搜索、命令、后台命令、代码导航、联网、秘籍、MCP 资源、请教本尊、呈上计划、子分身、交付文件
   jobs.rs          后台命令：启动、读输出、停止、写输入
@@ -198,6 +200,7 @@ app-icon.svg       应用图标的源文件
 | 变量 | 作用 |
 |---|---|
 | `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`MOONSHOT_API_KEY`、`ZHIPUAI_API_KEY` | 对应供应商没有在设置里保存密钥时使用 |
+| `ODG_AGY_BIN`、`ODG_CODEX_BIN`、`ODG_CLAUDE_BIN`、`ODG_CURSOR_AGENT_BIN`、`ODG_GROK_BIN` | 手动指定对应本机 CLI 可执行文件的绝对路径（未设置时自动从 `PATH` 与常见安装目录探测） |
 | `ANTHROPIC_BASE_URL` | 把 Anthropic 请求发到自己的网关；此时不发送只有官方接口支持的字段。其他供应商的地址在设置里改 |
 | `ODG_E2E_WORKSPACE` | 端到端测试用：化出分身时直接用这个文件夹，不弹系统的选文件夹对话框 |
 | `ODG_HOME` | 会话和设置的存放目录，默认 `~/.odg`。设了它，密钥就存在这个目录自己的 `credentials.json` 里，不碰系统凭据管理器 |

@@ -13,6 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::anthropic::{self, AnthropicClient};
+use crate::cli_agents::CliKind;
 use crate::llm::{AssistantTurn, EndpointSource, Llm, LlmError, LlmRequest, StreamDelta, Tokens};
 use crate::openai_chat::ChatClient;
 use crate::openai_responses::ResponsesClient;
@@ -27,8 +28,8 @@ pub enum Protocol {
     Responses,
     /// OpenAI-style Chat Completions, with the provider's own extensions.
     Chat(Flavor),
-    /// Local Google Antigravity CLI (`agy`) running headless `stream-json`.
-    Antigravity,
+    /// Local coding-agent CLI (`agy`, `codex`, `claude`, `cursor-agent`, `grok`) running headless JSON streaming.
+    Cli(CliKind),
 }
 
 /// Which Chat Completions dialect a provider speaks. They differ in the
@@ -128,7 +129,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         id: "antigravity",
         name: "Antigravity (agy CLI)",
-        protocol: Protocol::Antigravity,
+        protocol: Protocol::Cli(CliKind::Antigravity),
         base_url: "",
         other_urls: &[],
         key_env: None,
@@ -139,6 +140,63 @@ pub const PROVIDERS: &[Provider] = &[
             ("gemini-4-hydrogen", "Gemini 4 Hydrogen"),
             ("claude-opus-5-5", "Claude Opus 5.5"),
             ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+        ],
+    },
+    Provider {
+        id: "codex",
+        name: "Codex (CLI)",
+        protocol: Protocol::Cli(CliKind::Codex),
+        base_url: "",
+        other_urls: &[],
+        key_env: None,
+        models: &[
+            ("gpt-5.4", "GPT-5.4"),
+            ("gpt-5.3-codex", "GPT-5.3 Codex"),
+            ("gpt-5.2-codex", "GPT-5.2 Codex"),
+            ("o4-mini", "o4-mini"),
+        ],
+    },
+    Provider {
+        id: "claude_code",
+        name: "Claude Code (CLI)",
+        protocol: Protocol::Cli(CliKind::ClaudeCode),
+        base_url: "",
+        other_urls: &[],
+        key_env: None,
+        models: &[
+            ("opus", "Claude Opus（最新）"),
+            ("sonnet", "Claude Sonnet（最新）"),
+            ("claude-opus-4-7", "Claude Opus 4.7"),
+            ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+            ("haiku", "Claude Haiku（最新）"),
+        ],
+    },
+    Provider {
+        id: "cursor",
+        name: "Cursor (cursor-agent)",
+        protocol: Protocol::Cli(CliKind::Cursor),
+        base_url: "",
+        other_urls: &[],
+        key_env: None,
+        models: &[
+            ("auto", "Auto（Cursor 默认）"),
+            ("claude-4.6-sonnet-thinking", "Claude Sonnet Thinking"),
+            ("claude-4.6-opus-thinking", "Claude Opus Thinking"),
+            ("gpt-5.4", "GPT-5.4"),
+            ("gemini-3.1-pro", "Gemini Pro"),
+        ],
+    },
+    Provider {
+        id: "grok",
+        name: "Grok (CLI)",
+        protocol: Protocol::Cli(CliKind::Grok),
+        base_url: "",
+        other_urls: &[],
+        key_env: None,
+        models: &[
+            ("grok-4.7", "Grok 4.7"),
+            ("grok-4-fast", "Grok 4 Fast"),
+            ("grok-code-fast-1", "Grok Code Fast"),
         ],
     },
 ];
@@ -200,6 +258,9 @@ pub const UNKNOWN_CONTEXT_WINDOW: u64 = 128_000;
 /// documentation as of November 2026. `None` for a model that is not listed:
 /// a newer one typed in by hand, or anything on a custom service.
 pub fn documented_window(provider: &str, model: &str) -> Option<u64> {
+    if let Some(Protocol::Cli(kind)) = self::provider(provider).map(|known| known.protocol) {
+        return Some(crate::cli_agents::context_window(kind));
+    }
     match (kind_id(provider), model) {
         ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => Some(1_000_000),
         ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(1_050_000),
@@ -210,7 +271,6 @@ pub fn documented_window(provider: &str, model: &str) -> Option<u64> {
         ("zhipu", "glm-5.1" | "glm-5v-turbo" | "glm-5-turbo" | "glm-5" | "glm-4.7" | "glm-4.7-flashx" | "glm-4.7-flash" | "glm-4.6") => Some(200_000),
         // Smaller than what an unlisted model is assumed to hold, so these must be said.
         ("zhipu", "glm-4.1v-thinking-flashx" | "glm-4.1v-thinking-flash") => Some(64_000),
-        ("antigravity", _) => Some(1_000_000),
         _ => None,
     }
 }
@@ -243,6 +303,9 @@ const WINDOW_FIELDS: [&str; 3] = ["max_input_tokens", "context_window", "context
 /// `None` where it does not say (a model typed in by hand, a custom service),
 /// in which case a picture is sent and the provider decides.
 pub fn vision(provider: &str, model: &str) -> Option<bool> {
+    if matches!(self::provider(provider).map(|known| known.protocol), Some(Protocol::Cli(_))) {
+        return Some(true);
+    }
     match (kind_id(provider), model) {
         ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => Some(true),
         ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(true),
@@ -251,7 +314,6 @@ pub fn vision(provider: &str, model: &str) -> Option<bool> {
         ("moonshot", "kimi-k3.1-pro" | "kimi-k3") => Some(true),
         ("zhipu", "glm-5.3-flash") => Some(true),
         ("zhipu", "glm-5.3") => Some(false),
-        ("antigravity", _) => Some(true),
         _ => None,
     }
 }
@@ -264,8 +326,8 @@ pub fn vision(provider: &str, model: &str) -> Option<bool> {
 /// models that are not for chat.
 pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -> Result<Vec<Listed>, String> {
     let known = provider(provider_id).ok_or_else(|| format!("there is no provider `{provider_id}`"))?;
-    if known.protocol == Protocol::Antigravity {
-        return crate::antigravity::list_models().await;
+    if let Protocol::Cli(kind) = known.protocol {
+        return kind.list_models(known.models).await;
     }
     let key = key.map(str::trim).filter(|key| !key.is_empty()).ok_or("no API key is saved for this provider")?;
     let base = base_url.trim_end_matches('/');
@@ -276,7 +338,7 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
     let request = match known.protocol {
         Protocol::Anthropic => http.get(format!("{base}/v1/models?limit=1000")).header("x-api-key", key).header("anthropic-version", anthropic::API_VERSION),
         Protocol::Responses | Protocol::Chat(_) => http.get(format!("{base}/models")).bearer_auth(key),
-        Protocol::Antigravity => unreachable!("handled above"),
+        Protocol::Cli(_) => unreachable!("handled above"),
     };
     let response = request.send().await.map_err(|error| format!("cannot reach the provider: {error}"))?;
     if !response.status().is_success() {
@@ -318,9 +380,9 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
             cached: count(&usage["prompt_tokens_details"]["cached_tokens"]).max(count(&usage["prompt_cache_hit_tokens"])),
             output: count(&usage["completion_tokens"]),
         },
-        Protocol::Antigravity => {
-            let cached = count(&usage["cache_read_tokens"]);
-            Tokens { input: count(&usage["input_tokens"]) + cached, cached, output: count(&usage["output_tokens"]) }
+        Protocol::Cli(_) => {
+            let cached = count(&usage["cache_read_tokens"]).max(count(&usage["cache_read_input_tokens"])).max(count(&usage["cached_input_tokens"]));
+            Tokens { input: count(&usage["input_tokens"]) + count(&usage["cache_read_tokens"]) + count(&usage["cache_read_input_tokens"]), cached, output: count(&usage["output_tokens"]) }
         }
     };
     (found.input > 0 || found.output > 0).then_some(found)
@@ -374,7 +436,7 @@ impl Llm for Router {
             Protocol::Anthropic => self.anthropic.stream(request, deltas, cancel).await,
             Protocol::Responses => self.responses.stream(request, deltas, cancel).await,
             Protocol::Chat(flavor) => self.chat.stream(flavor, request, deltas, cancel).await,
-            Protocol::Antigravity => Err(LlmError::Protocol("Antigravity runs through the local agy CLI backend".to_string())),
+            Protocol::Cli(kind) => Err(LlmError::Protocol(format!("{} runs through its local CLI backend", kind.display_name()))),
         }
     }
 }
@@ -388,12 +450,13 @@ pub fn effort_for(protocol: Protocol, effort: &str) -> Option<&'static str> {
     };
     match protocol {
         // These accept all five as they are.
-        Protocol::Anthropic | Protocol::Responses | Protocol::Antigravity => Some(level(["low", "medium", "high", "xhigh", "max"])),
+        Protocol::Anthropic | Protocol::Responses | Protocol::Cli(CliKind::Antigravity | CliKind::ClaudeCode) => Some(level(["low", "medium", "high", "xhigh", "max"])),
+        Protocol::Cli(CliKind::Codex) => Some(level(["low", "medium", "high", "xhigh", "xhigh"])),
         // DeepSeek takes none/low/high/max and itself maps medium and xhigh to high.
         Protocol::Chat(Flavor::DeepSeek) => Some(level(["low", "high", "high", "high", "max"])),
         // Kimi K3 and GLM-5.3 take low/high/max.
         Protocol::Chat(Flavor::Kimi | Flavor::Glm) => Some(level(["low", "high", "high", "max", "max"])),
-        Protocol::Chat(Flavor::Generic) => None,
+        Protocol::Chat(Flavor::Generic) | Protocol::Cli(CliKind::Cursor | CliKind::Grok) => None,
     }
 }
 
@@ -407,7 +470,7 @@ mod tests {
             assert_eq!(super::provider(provider.id).map(|found| found.id), Some(provider.id));
             // Only custom services and local CLI backends have no HTTP base URL; only custom services have no built-in models.
             let custom = provider.id.starts_with("custom");
-            let cli = provider.protocol == Protocol::Antigravity;
+            let cli = matches!(provider.protocol, Protocol::Cli(_));
             assert_eq!(provider.base_url.is_empty(), custom || cli, "{}", provider.id);
             assert_eq!(provider.models.is_empty(), custom, "{}", provider.id);
         }

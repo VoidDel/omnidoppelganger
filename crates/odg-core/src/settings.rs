@@ -585,8 +585,8 @@ impl SettingsStore {
     }
 
     pub fn key_status(&self, provider: &str) -> KeyStatus {
-        if crate::providers::provider(provider).is_some_and(|known| known.protocol == crate::providers::Protocol::Antigravity) {
-            return match crate::antigravity::find_binary() {
+        if let Some(crate::providers::Protocol::Cli(kind)) = crate::providers::provider(provider).map(|known| known.protocol) {
+            return match kind.find_binary() {
                 Some(path) => KeyStatus { source: "cli".to_string(), preview: Some(path.display().to_string()), plaintext: false },
                 None => KeyStatus { source: "none".to_string(), preview: None, plaintext: false },
             };

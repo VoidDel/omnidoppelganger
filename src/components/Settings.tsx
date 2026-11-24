@@ -3,7 +3,7 @@ import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Info } from "./Hint";
-import { setUp } from "../lib/providers";
+import { CLI_INFO, cliOf, setUp } from "../lib/providers";
 import { RuntimeSection } from "./Runtime";
 import { LanguageServersSection } from "./LanguageServers";
 import { EFFORT_NAMES, effortNote } from "../lib/efforts";
@@ -32,15 +32,17 @@ function useDraft(value: string, save: (value: string) => void) {
 }
 
 function KeyLine({ provider, status }: { provider: { key_env: string | null; protocol?: Provider["protocol"] }; status: KeyStatus }) {
+  const cli = cliOf(provider);
+  const cliBin = cli ? CLI_INFO[cli].bin : null;
   return (
     <>
       {status.source === "saved" && <span className="muted">{status.plaintext ? "密钥存在本机的明文文件里，只显示开头和结尾" : "密钥已存进系统凭据管理器，只显示开头和结尾"}</span>}
       {status.source === "env" && <span className="muted">正在用环境变量 {provider.key_env} 里的密钥</span>}
-      {status.source === "cli" && <span className="muted">复用本机 agy CLI 登录凭据（无需 API 密钥）</span>}
+      {status.source === "cli" && <span className="muted">复用本机 {cliBin ?? "CLI"} 登录凭据（无需 API 密钥）</span>}
       {status.source === "none" && (
         <span className="muted">
-          {provider.protocol === "antigravity"
-            ? "未检测到本机 agy CLI，请先安装并在终端运行 agy 登录"
+          {cliBin
+            ? `未检测到本机 ${cliBin} CLI，请先安装并在终端运行 ${cliBin} 完成登录`
             : `还没有密钥${provider.key_env ? `，也可以在启动前设置环境变量 ${provider.key_env}` : ""}`}
         </span>
       )}
@@ -97,13 +99,14 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
   // The provider this window sets: the one changed, or the one adding will make, the first of its kind while that is free.
   const target = provider?.id ?? (firstFree(view, kind.id) ? kind.id : null);
   const status = target ? (view.keys[target] ?? NO_KEY) : NO_KEY;
-  // Local CLI backends (such as Antigravity `agy`) reuse their own CLI login and need neither an API key nor an HTTP base URL.
-  const isCli = kind.protocol === "antigravity";
+  // Local CLI backends (`agy`, `codex`, `claude`, `cursor-agent`, `grok`) reuse their own CLI login and need neither an API key nor an HTTP base URL.
+  const cli = cliOf(kind);
+  const isCli = cli !== null;
   const takesAddress = target !== "anthropic" && !isCli;
   const save = async () => {
     const url = takesAddress ? address.trim() : "";
     if (!isCli && !key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
-    if (isCli && status.source === "none") return setWrong("未检测到本机 agy CLI，请先安装并在终端运行 agy 完成登录。");
+    if (cli && status.source === "none") return setWrong(`未检测到本机 ${CLI_INFO[cli].bin} CLI，请先安装并在终端运行 ${CLI_INFO[cli].bin} 完成登录。`);
     if (takesAddress && !kind.base_url && !url) return setWrong("这个宗门没有默认的接口地址，要填上。");
     setBusy(true);
     let id = provider?.id;
@@ -253,10 +256,11 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
       <ul className="key-list">
         {listed.map((provider) => {
           const status = statusOf(provider);
+          const cli = cliOf(provider);
           const address = settings.base_urls[provider.id];
           const removable = status.source === "saved" || !!address || provider.id !== provider.kind || !!settings.provider_names[provider.id];
-          // Where its requests go, when that can be set: the first Anthropic provider's address comes from the environment.
-          const shown = provider.id === "anthropic" ? "" : address || (provider.base_url ? "默认地址" : "未填地址");
+          // Where its requests go, when that can be set: the first Anthropic provider's address comes from the environment, and local CLIs have no HTTP URL.
+          const shown = provider.id === "anthropic" || cli ? "" : address || (provider.base_url ? "默认地址" : "未填地址");
           return (
             <li key={provider.id}>
               <div className="key-who">
@@ -274,7 +278,12 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
                     环境变量 <span className="mono">{provider.key_env}</span>
                   </>
                 )}
-                {status.source === "none" && "未填密钥"}
+                {status.source === "cli" && (
+                  <>
+                    本机 CLI <span className="mono">{status.preview}</span>
+                  </>
+                )}
+                {status.source === "none" && (cli ? `未装 ${CLI_INFO[cli].bin}` : "未填密钥")}
               </div>
               {shown && (
                 <div className="key-where mono" title={address || provider.base_url || undefined}>
@@ -515,7 +524,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
               <Combo
                 id="default-provider"
                 value={settings.provider}
-                options={setUp(view).map((provider) => ({ value: provider.id, text: provider.name, note: view.keys[provider.id]?.source === "none" ? "未填密钥" : "" }))}
+                options={setUp(view).map((provider) => ({ value: provider.id, text: provider.name, note: view.keys[provider.id]?.source === "none" ? (cliOf(provider) ? "未装 CLI" : "未填密钥") : "" }))}
                 editable={false}
                 onSave={(id) => onSave({ ...settings, provider: id, model: view.providers.find((provider) => provider.id === id)?.models[0]?.[0] ?? "" })}
               />

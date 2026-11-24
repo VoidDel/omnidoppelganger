@@ -593,8 +593,8 @@ impl<L: Llm> Session<L> {
     /// it does, so it can be stopped, and a message sent meanwhile opens a
     /// turn once it is done. Returns how many tokens the conversation held.
     pub async fn compact_now(&self) -> Result<u64, String> {
-        if providers::provider(&self.inner.provider()).is_some_and(|known| known.protocol == providers::Protocol::Antigravity) {
-            return Err("Antigravity (agy CLI) 由外部引擎自行管理上下文，无需手动凝练。".to_string());
+        if let Some(providers::Protocol::Cli(kind)) = providers::provider(&self.inner.provider()).map(|known| known.protocol) {
+            return Err(format!("{} 由本机 CLI 自行管理会话上下文，无需手动凝练。", kind.display_name()));
         }
         let cancel = {
             let mut state = self.inner.state.lock().unwrap();
@@ -958,26 +958,30 @@ impl<L: Llm> Inner<L> {
     async fn run_turn(&self, (text, images, files): Said, cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
         let started = std::time::SystemTime::now();
-        let is_antigravity = providers::provider(&self.provider()).is_some_and(|known| known.protocol == providers::Protocol::Antigravity);
-        let agy_text = is_antigravity.then(|| text.clone());
-        let agy_files = if is_antigravity { files.clone() } else { Vec::new() };
+        let cli_kind = match providers::provider(&self.provider()).map(|known| known.protocol) {
+            Some(providers::Protocol::Cli(kind)) => Some(kind),
+            _ => None,
+        };
+        let cli_text = cli_kind.is_some().then(|| text.clone());
+        let cli_files = if cli_kind.is_some() { files.clone() } else { Vec::new() };
         let opened = self
             .append(Event::TurnStart { turn })
             .and_then(|()| self.brief_before_message())
             .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images, files }))
             .and_then(|()| self.refresh_instructions())
             .and_then(|()| self.refresh_skills());
-        let (reason, error) = match opened {
-            Ok(()) if is_antigravity => {
+        let (reason, error) = match (opened, cli_kind) {
+            (Ok(()), Some(kind)) => {
                 let (conversation_id, briefing) = {
                     let log = self.log.lock().unwrap();
-                    let conv = crate::session::external_session(log.events(), crate::antigravity::BACKEND).map(str::to_string);
+                    let conv = crate::session::external_session(log.events(), kind.backend_key()).map(str::to_string);
                     let brief = self.aside.is_some().then(|| crate::session::last_brief(log.events()).map(str::to_string)).flatten();
                     (conv, brief)
                 };
-                let prompt = crate::antigravity::build_prompt(agy_text.as_deref().unwrap_or(""), &agy_files, briefing.as_deref());
+                let prompt = crate::cli_agents::build_prompt(cli_text.as_deref().unwrap_or(""), &cli_files, briefing.as_deref());
                 let tuning = self.tuning();
-                let params = crate::antigravity::TurnParams {
+                let params = crate::cli_agents::TurnParams {
+                    kind,
                     workspace: &self.workspace,
                     turn,
                     prompt,
@@ -988,8 +992,8 @@ impl<L: Llm> Inner<L> {
                     sandboxed: self.sandboxed(),
                     read_only: self.read_only,
                 };
-                struct AgySink<'a, L: Llm>(&'a Inner<L>);
-                impl<L: Llm> crate::antigravity::Sink for AgySink<'_, L> {
+                struct CliSink<'a, L: Llm>(&'a Inner<L>);
+                impl<L: Llm> crate::cli_agents::Sink for CliSink<'_, L> {
                     fn log(&self, event: Event) -> Result<(), String> {
                         self.0.append(event)
                     }
@@ -997,16 +1001,16 @@ impl<L: Llm> Inner<L> {
                         self.0.emit(UiEvent::Stream { session_id: self.0.id.clone(), delta });
                     }
                 }
-                match crate::antigravity::run_turn(params, &AgySink(self), cancel).await {
+                match crate::cli_agents::run_turn(params, &CliSink(self), cancel).await {
                     Ok(reason) => (reason, None),
                     Err(error) => ("error", Some(error)),
                 }
             }
-            Ok(()) => match self.run_steps(cancel).await {
+            (Ok(()), None) => match self.run_steps(cancel).await {
                 Ok(reason) => (reason, None),
                 Err(error) => ("error", Some(error)),
             },
-            Err(error) => ("error", Some(error)),
+            (Err(error), _) => ("error", Some(error)),
         };
         // The API rejects a conversation in which a tool call has no result, whatever stopped the turn.
         let unanswered = unanswered_tool_uses(self.log.lock().unwrap().events());

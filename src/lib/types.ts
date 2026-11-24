@@ -376,12 +376,14 @@ export interface KeyStatus {
   plaintext: boolean;
 }
 
+export type CliBackend = "antigravity" | "codex" | "claude_code" | "cursor" | "grok";
+
 /** A model provider as the core describes it. Pairs are `[id, display name]` and `[address, what it is]`. */
 /** A kind of provider, which providers are added as. */
 export interface ProviderKind {
   id: string;
   name: string;
-  protocol: "anthropic" | "responses" | "antigravity" | { chat: string };
+  protocol: "anthropic" | "responses" | { chat: string } | { cli: CliBackend };
   base_url: string;
   other_urls: [string, string][];
   key_env: string | null;
@@ -395,7 +397,7 @@ export interface Provider {
   kind: string;
   /** The name the user gave it, or its kind's. */
   name: string;
-  protocol: "anthropic" | "responses" | "antigravity" | { chat: string };
+  protocol: "anthropic" | "responses" | { chat: string } | { cli: CliBackend };
   base_url: string;
   other_urls: [string, string][];
   key_env: string | null;
