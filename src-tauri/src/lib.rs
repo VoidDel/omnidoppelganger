@@ -1048,6 +1048,20 @@ async fn send_message(app: State<'_, App>, id: String, text: String, images: Vec
     Ok(session.send_with(text, images, files))
 }
 
+/// Materialize the embedded app icon once into `~/.odg/app-icon.png` so OS notifications can display it.
+#[cfg(any(windows, target_os = "linux"))]
+fn notification_icon_path() -> Option<PathBuf> {
+    const ICON_PNG: &[u8] = include_bytes!("../icons/128x128.png");
+    let dir = settings::home();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("app-icon.png");
+    let up_to_date = std::fs::metadata(&path).ok().is_some_and(|m| m.len() == ICON_PNG.len() as u64);
+    if !up_to_date && std::fs::write(&path, ICON_PNG).is_err() {
+        return None;
+    }
+    Some(path)
+}
+
 /// Fire a best-effort native desktop notification when the app is unfocused (turn completed or waiting approval).
 #[tauri::command]
 async fn notify_desktop(title: String, body: String) {
@@ -1062,28 +1076,56 @@ async fn notify_desktop(title: String, body: String) {
         }
         #[cfg(target_os = "linux")]
         {
-            let _ = std::process::Command::new("notify-send").args([&title, &body]).output();
+            let mut cmd = std::process::Command::new("notify-send");
+            cmd.args(["-a", "OmniDoppelganger"]);
+            if let Some(icon) = notification_icon_path() {
+                cmd.arg("-i").arg(icon);
+            }
+            let _ = cmd.args([&title, &body]).output();
         }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            let esc = |s: &str| {
+            let xml_esc = |s: &str| {
                 s.replace('&', "&amp;")
                     .replace('<', "&lt;")
                     .replace('>', "&gt;")
                     .replace('"', "&quot;")
-                    .replace('\'', "''")
+                    .replace('\'', "&apos;")
             };
+            let ps_sq = |s: &str| s.replace('\'', "''");
+            let icon_path = notification_icon_path();
+            let reg_setup = if let Some(ref icon) = icon_path {
+                let icon_str = ps_sq(&icon.display().to_string());
+                format!(
+                    "$reg = 'HKCU:\\Software\\Classes\\AppUserModelId\\com.omnidoppelganger.app'; \
+                     if (!(Test-Path $reg)) {{ New-Item -Path $reg -Force > $null }}; \
+                     Set-ItemProperty -Path $reg -Name 'DisplayName' -Value 'OmniDoppelganger'; \
+                     Set-ItemProperty -Path $reg -Name 'IconUri' -Value '{icon_str}';"
+                )
+            } else {
+                String::new()
+            };
+            let logo_xml = if let Some(ref icon) = icon_path {
+                let uri = format!("file:///{}", icon.display().to_string().replace('\\', "/"));
+                format!(r#"<image placement="appLogoOverride" src="{}"/>"#, xml_esc(&uri))
+            } else {
+                String::new()
+            };
+            let toast_xml = format!(
+                r#"<toast><visual><binding template="ToastGeneric">{logo_xml}<text>{}</text><text>{}</text></binding></visual></toast>"#,
+                xml_esc(&title),
+                xml_esc(&body)
+            );
             let ps = format!(
-                "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
-                 $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
-                 $texts = $xml.GetElementsByTagName('text'); \
-                 $texts.Item(0).AppendChild($xml.CreateTextNode('{}')) > $null; \
-                 $texts.Item(1).AppendChild($xml.CreateTextNode('{}')) > $null; \
+                "{reg_setup} \
+                 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+                 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; \
+                 $xml = [Windows.Data.Xml.Dom.XmlDocument]::new(); \
+                 $xml.LoadXml('{}'); \
                  $toast = [Windows.UI.Notifications.ToastNotification]::new($xml); \
-                 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('OmniDoppelganger').Show($toast);",
-                esc(&title),
-                esc(&body)
+                 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.omnidoppelganger.app').Show($toast);",
+                ps_sq(&toast_xml)
             );
             let _ = std::process::Command::new("powershell")
                 .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
