@@ -9,7 +9,7 @@
 //! permission `Mode`, and sandbox flag onto the CLI's headless streaming command, then parses
 //! its NDJSON stdout stream into normalized [`CliEvent`] items for the session log and UI.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -388,6 +388,56 @@ pub fn build_handoff_brief(events: &[crate::events::Envelope], current_turn: u64
     }
     out.push_str("\n--- 以下是本轮用户的新指令 ---");
     Some(out)
+}
+
+/// Build a skills briefing for external CLI turns:
+/// - Whenever the user explicitly invokes an `odg` skill (e.g. `按秘籍「pptx」（skill）办` or `/pptx`),
+///   inline that skill's full `SKILL.md` instructions so every CLI executes it faithfully.
+/// - On the first turn of a CLI session (`include_catalog = true`), also include a compact catalog of
+///   available `odg` skills with their `SKILL.md` file paths so the CLI can read any matching skill on demand.
+pub fn build_skills_brief(skill_roots: &[PathBuf], user_text: &str, include_catalog: bool) -> Option<String> {
+    let skills = crate::skills::discover(skill_roots);
+    if skills.is_empty() {
+        return None;
+    }
+
+    let mut triggered: Vec<&crate::skills::Skill> = Vec::new();
+    for skill in &skills {
+        let name = skill.name.as_str();
+        let slash = format!("/{name}");
+        let by_menu = user_text.contains(&format!("「{name}」"));
+        let by_slash = user_text.split_whitespace().any(|tok| tok == slash);
+        if (by_menu || by_slash) && triggered.len() < 3 {
+            triggered.push(skill);
+        }
+    }
+
+    if triggered.is_empty() && !include_catalog {
+        return None;
+    }
+
+    let mut sections: Vec<String> = Vec::new();
+    for skill in &triggered {
+        if let Ok(body) = crate::skills::load(skill_roots, &skill.name) {
+            sections.push(format!(
+                "[已启用 odg 秘籍：{}（目录：{}）]\n请严格按照以下秘籍说明执行本轮任务：\n\n{}",
+                skill.name,
+                skill.directory.display(),
+                body
+            ));
+        }
+    }
+
+    if include_catalog {
+        let mut cat = String::from("[可用 odg 秘籍 / Skills]\n若任务匹配以下专项秘籍，请先读取对应的 SKILL.md 并按其中规范执行：\n");
+        for skill in &skills {
+            let md = skill.directory.join("SKILL.md");
+            cat.push_str(&format!("- {}: {} ({})\n", skill.name, skill.description, md.display()));
+        }
+        sections.push(cat);
+    }
+
+    if sections.is_empty() { None } else { Some(sections.join("\n\n")) }
 }
 
 /// Build the prompt string passed to an external CLI, prepending any side-conversation briefing and attached file paths.
@@ -1444,6 +1494,10 @@ pub struct TurnParams<'a> {
     pub mode: Mode,
     pub sandboxed: bool,
     pub read_only: bool,
+    /// Extra readable directories (e.g. `~/.odg/skills`) granted to CLIs that support `--add-dir`.
+    pub extra_dirs: Vec<PathBuf>,
+    /// Enabled `odg` MCP servers (`~/.odg/mcp.json`) to bridge into CLIs supporting per-turn MCP config.
+    pub mcp_servers: BTreeMap<String, crate::mcp::ServerConfig>,
 }
 
 /// Callbacks bridging external CLI stream events into the owning `Session`.
@@ -1898,6 +1952,101 @@ fn apply_prompt_delivery_args(kind: CliKind, args: &mut Vec<String>, prepared: &
     }
 }
 
+/// Insert CLI flags before the trailing `-- <prompt>` (or `-`) separator when present, or append at the end.
+fn insert_before_prompt_tail(args: &mut Vec<String>, extra: Vec<String>) {
+    if extra.is_empty() {
+        return;
+    }
+    let pos = if args.len() >= 2 && args[args.len() - 2] == "--" {
+        args.len() - 2
+    } else if args.last().is_some_and(|a| a == "-") {
+        args.len() - 1
+    } else {
+        args.len()
+    };
+    args.splice(pos..pos, extra);
+}
+
+/// Bridge enabled `odg` MCP servers (`~/.odg/mcp.json`) into CLIs that support per-turn MCP injection:
+/// - Claude Code: `--mcp-config <temp.json>`
+/// - Antigravity (`agy`): `--settings <temp.json>`
+/// - Codex: `-c mcp_servers.<name>.command=...` / `.args=[...]` / `.url=...`
+fn apply_mcp_bridge_args(
+    kind: CliKind,
+    args: &mut Vec<String>,
+    servers: &BTreeMap<String, crate::mcp::ServerConfig>,
+    turn: u64,
+) -> Option<TempPromptGuard> {
+    if servers.is_empty() {
+        return None;
+    }
+    match kind {
+        CliKind::ClaudeCode | CliKind::Antigravity => {
+            let mut map = serde_json::Map::new();
+            for (name, srv) in servers {
+                let mut entry = serde_json::Map::new();
+                if let Some(cmd) = srv.command.as_deref().filter(|c| !c.trim().is_empty()) {
+                    entry.insert("command".into(), json!(cmd));
+                    if !srv.args.is_empty() {
+                        entry.insert("args".into(), json!(srv.args));
+                    }
+                    if !srv.env.is_empty() {
+                        entry.insert("env".into(), json!(srv.env));
+                    }
+                } else if let Some(url) = srv.url.as_deref().filter(|u| !u.trim().is_empty()) {
+                    entry.insert("type".into(), json!("http"));
+                    entry.insert("url".into(), json!(url));
+                    if !srv.headers.is_empty() {
+                        entry.insert("headers".into(), json!(srv.headers));
+                    }
+                } else {
+                    continue;
+                }
+                map.insert(name.clone(), Value::Object(entry));
+            }
+            if map.is_empty() {
+                return None;
+            }
+            let dir = std::env::temp_dir().join("odg-mcp");
+            std::fs::create_dir_all(&dir).ok()?;
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let path = dir.join(format!("mcp-{}-{turn}-{stamp}.json", std::process::id()));
+            let payload = serde_json::to_vec_pretty(&json!({ "mcpServers": map })).ok()?;
+            std::fs::write(&path, payload).ok()?;
+            let flag = if kind == CliKind::ClaudeCode { "--mcp-config" } else { "--settings" };
+            insert_before_prompt_tail(args, vec![flag.to_string(), path.to_string_lossy().into_owned()]);
+            Some(TempPromptGuard(Some(path)))
+        }
+        CliKind::Codex => {
+            let mut flags = Vec::new();
+            for (name, srv) in servers {
+                if let Some(cmd) = srv.command.as_deref().filter(|c| !c.trim().is_empty())
+                    && let Ok(lit) = serde_json::to_string(cmd)
+                {
+                    flags.push("-c".to_string());
+                    flags.push(format!("mcp_servers.{name}.command={lit}"));
+                    if !srv.args.is_empty()
+                        && let Ok(arr) = serde_json::to_string(&srv.args)
+                    {
+                        flags.push("-c".to_string());
+                        flags.push(format!("mcp_servers.{name}.args={arr}"));
+                    }
+                } else if let Some(url) = srv.url.as_deref().filter(|u| !u.trim().is_empty())
+                    && let Ok(lit) = serde_json::to_string(url)
+                {
+                    flags.push("-c".to_string());
+                    flags.push(format!("mcp_servers.{name}.url={lit}"));
+                }
+            }
+            insert_before_prompt_tail(args, flags);
+            None
+        }
+        CliKind::Cursor | CliKind::Grok | CliKind::OpenCode => None,
+    }
+}
+
 /// Execute one headless streaming turn on any supported [`CliKind`].
 pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &CancellationToken) -> Result<&'static str, String> {
     let bin = params
@@ -1917,6 +2066,17 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         params.read_only,
     );
     apply_prompt_delivery_args(params.kind, &mut args, &prepared);
+    if params.kind == CliKind::Antigravity {
+        for dir in &params.extra_dirs {
+            if dir.is_dir()
+                && let Some(s) = dir.to_str()
+            {
+                args.push("--add-dir".to_string());
+                args.push(s.to_string());
+            }
+        }
+    }
+    let _mcp_guard = apply_mcp_bridge_args(params.kind, &mut args, &params.mcp_servers, params.turn);
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
         .current_dir(params.workspace)
@@ -2224,6 +2384,8 @@ mod tests {
             mode: Mode::Auto,
             sandboxed: false,
             read_only: false,
+            extra_dirs: Vec::new(),
+            mcp_servers: BTreeMap::new(),
         };
         let sink = TestSink(Mutex::new(Vec::new()));
         sink.log(Event::TurnStart { turn: 1 }).unwrap();
@@ -2368,6 +2530,8 @@ mod tests {
             mode: Mode::Auto,
             sandboxed: false,
             read_only: false,
+            extra_dirs: Vec::new(),
+            mcp_servers: BTreeMap::new(),
         };
         let codex_sink = VecSink(Mutex::new(Vec::new()));
         let mut codex_rec = TurnRecorder::new(&codex_params, &codex_sink);
@@ -2461,6 +2625,8 @@ mod tests {
             mode: Mode::Auto,
             sandboxed: false,
             read_only: false,
+            extra_dirs: Vec::new(),
+            mcp_servers: BTreeMap::new(),
         };
         let grok_sink = VecSink(Mutex::new(Vec::new()));
         let mut grok_rec = TurnRecorder::new(&grok_params, &grok_sink);
@@ -2521,5 +2687,66 @@ mod tests {
         assert!(agy_args.windows(2).any(|w| w[0] == "--add-dir" && w[1].contains("odg-prompts")));
         drop(agy_prep);
         assert!(!spilled_path.exists());
+    }
+
+    #[test]
+    fn bridges_odg_skills_and_mcp_servers_to_cli_turns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("demo-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo-skill\ndescription: 演示专项秘籍\n---\n\n第一步：先检查输入。\n第二步：输出结果。\n",
+        )
+        .unwrap();
+
+        let roots = vec![tmp.path().to_path_buf()];
+        let triggered = build_skills_brief(&roots, "按秘籍「demo-skill」（skill）办：处理这份数据", false).expect("triggered skill brief");
+        assert!(triggered.contains("第一步：先检查输入"));
+        assert!(!triggered.contains("[可用 odg 秘籍"));
+
+        let first_turn = build_skills_brief(&roots, "帮我看看代码", true).expect("catalog brief");
+        assert!(first_turn.contains("[可用 odg 秘籍 / Skills]"));
+        assert!(first_turn.contains("demo-skill: 演示专项秘籍"));
+        assert!(first_turn.contains("SKILL.md"));
+
+        let mut servers = BTreeMap::new();
+        servers.insert(
+            "docs".to_string(),
+            crate::mcp::ServerConfig {
+                command: Some("npx".into()),
+                args: vec!["-y".into(), "docs-mcp".into()],
+                ..Default::default()
+            },
+        );
+        servers.insert(
+            "remote".to_string(),
+            crate::mcp::ServerConfig {
+                url: Some("https://mcp.example.com".into()),
+                ..Default::default()
+            },
+        );
+
+        let mut claude_args = build_args(CliKind::ClaudeCode, "hi", None, None, "opus", "high", Mode::Auto, false, false);
+        let claude_guard = apply_mcp_bridge_args(CliKind::ClaudeCode, &mut claude_args, &servers, 1).expect("claude mcp temp file");
+        let cfg_idx = claude_args.iter().position(|a| a == "--mcp-config").expect("--mcp-config flag");
+        let sep_idx = claude_args.iter().position(|a| a == "--").expect("-- separator");
+        assert!(cfg_idx < sep_idx);
+        let cfg_path = PathBuf::from(&claude_args[cfg_idx + 1]);
+        let cfg_json: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        assert_eq!(cfg_json["mcpServers"]["docs"]["command"], "npx");
+        assert_eq!(cfg_json["mcpServers"]["remote"]["type"], "http");
+        drop(claude_guard);
+        assert!(!cfg_path.exists());
+
+        let mut codex_args = build_args(CliKind::Codex, "hi", None, None, "gpt-5.4", "high", Mode::Auto, false, false);
+        assert!(apply_mcp_bridge_args(CliKind::Codex, &mut codex_args, &servers, 1).is_none());
+        assert!(codex_args.iter().any(|a| a == "mcp_servers.docs.command=\"npx\""));
+        assert!(codex_args.iter().any(|a| a == "mcp_servers.remote.url=\"https://mcp.example.com\""));
+
+        let mut agy_args = build_args(CliKind::Antigravity, "hi", None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
+        let agy_guard = apply_mcp_bridge_args(CliKind::Antigravity, &mut agy_args, &servers, 1).expect("agy settings temp file");
+        assert!(agy_args.iter().any(|a| a == "--settings"));
+        drop(agy_guard);
     }
 }

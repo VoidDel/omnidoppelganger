@@ -102,10 +102,11 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
   // Local CLI backends (`agy`, `codex`, `claude`, `cursor-agent`, `grok`) reuse their own CLI login and need neither an API key nor an HTTP base URL.
   const cli = cliOf(kind);
   const isCli = cli !== null;
+  const isLocalGateway = kind.id === "magpie";
   const takesAddress = target !== "anthropic" && !isCli;
   const save = async () => {
     const url = takesAddress ? address.trim() : "";
-    if (!isCli && !key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
+    if (!isCli && !isLocalGateway && !key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
     if (cli && status.source === "none") return setWrong(`未检测到本机 ${CLI_INFO[cli].bin} CLI，请先安装并在终端运行 ${CLI_INFO[cli].bin} 完成登录。`);
     if (takesAddress && !kind.base_url && !url) return setWrong("这个宗门没有默认的接口地址，要填上。");
     setBusy(true);
@@ -124,8 +125,10 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
     const renamed = provider && name.trim() && name.trim() !== provider.name;
     // A name the same as its kind's is no name of its own, except for one added, which keeps the name it has.
     const names = renamed ? (name.trim() === kind.name && id === kind.id ? otherNames : { ...otherNames, [id]: name.trim() }) : base.provider_names;
-    const urls = url ? { ...otherUrls, [id]: url } : otherUrls;
-    if (url !== (base.base_urls[id] ?? "") || names !== base.provider_names) await onSave({ ...base, base_urls: urls, provider_names: names });
+    // For local loopback gateways (Magpie), persist the default URL when left blank so it appears in the configured 宗门 list without requiring an API key.
+    const effectiveUrl = url || (isLocalGateway && !key.trim() && status.source === "none" ? kind.base_url : "");
+    const urls = effectiveUrl ? { ...otherUrls, [id]: effectiveUrl } : otherUrls;
+    if (effectiveUrl !== (base.base_urls[id] ?? "") || names !== base.provider_names) await onSave({ ...base, base_urls: urls, provider_names: names });
     setBusy(false);
     onClose();
   };
@@ -164,8 +167,19 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
         <div className="field">
           {!isCli && (
             <>
-              <label htmlFor="key-value">{status.source === "saved" ? "换一个密钥（不换就留空）" : "API 密钥"}</label>
-              <input id="key-value" className="input" type="password" autoComplete="off" autoFocus placeholder="粘贴密钥" value={key} onChange={(event) => setKey(event.target.value)} />
+              <label htmlFor="key-value">
+                {status.source === "saved" ? "换一个密钥（不换就留空）" : isLocalGateway ? "API 密钥（可选，本机 Magpie 默认免密）" : "API 密钥"}
+              </label>
+              <input
+                id="key-value"
+                className="input"
+                type="password"
+                autoComplete="off"
+                autoFocus
+                placeholder={isLocalGateway ? "留空即可；若 Magpie 开启鉴权再填写" : "粘贴密钥"}
+                value={key}
+                onChange={(event) => setKey(event.target.value)}
+              />
             </>
           )}
           <p className="hint key-line">

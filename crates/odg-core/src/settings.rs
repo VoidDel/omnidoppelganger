@@ -666,7 +666,8 @@ impl SettingsStore {
     /// Where a provider's next request goes and with which key.
     pub fn endpoint(&self, provider_id: &str) -> Endpoint {
         let base_url = self.load().base_urls.get(provider_id).cloned().or_else(|| provider(provider_id).map(|known| known.base_url.to_string())).unwrap_or_default();
-        Endpoint { base_url, key: self.api_key(provider_id) }
+        let key = self.api_key(provider_id).or_else(|| (crate::providers::kind_id(provider_id) == "magpie").then(|| "magpie".to_string()));
+        Endpoint { base_url, key }
     }
 
     /// Where `web_search` searches: Zhipu's Web Search API, at the address

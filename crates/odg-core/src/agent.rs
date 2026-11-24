@@ -982,14 +982,24 @@ impl<L: Llm> Inner<L> {
                     } else {
                         None
                     };
-                    let combined = match (aside_brief, handoff_brief) {
-                        (Some(a), Some(h)) => Some(format!("{a}\n\n{h}")),
-                        (a, h) => a.or(h),
-                    };
+                    let skills_brief = crate::cli_agents::build_skills_brief(
+                        &self.skill_roots,
+                        cli_text.as_deref().unwrap_or(""),
+                        conv.is_none(),
+                    );
+                    let parts: Vec<String> = [aside_brief, handoff_brief, skills_brief].into_iter().flatten().collect();
+                    let combined = (!parts.is_empty()).then(|| parts.join("\n\n"));
                     (conv, combined)
                 };
                 let prompt = crate::cli_agents::build_prompt(cli_text.as_deref().unwrap_or(""), &cli_files, briefing.as_deref());
                 let tuning = self.tuning();
+                let extra_dirs: Vec<PathBuf> = self.skill_roots.iter().filter(|d| d.is_dir()).cloned().collect();
+                let mcp_servers = self
+                    .mcp
+                    .as_ref()
+                    .and_then(|hub| crate::mcp::parse_config(&hub.config_text()).ok())
+                    .map(|all| all.into_iter().filter(|(_, cfg)| !cfg.disabled).collect())
+                    .unwrap_or_default();
                 let params = crate::cli_agents::TurnParams {
                     kind,
                     workspace: &self.workspace,
@@ -1002,6 +1012,8 @@ impl<L: Llm> Inner<L> {
                     mode: self.mode(),
                     sandboxed: self.sandboxed(),
                     read_only: self.read_only,
+                    extra_dirs,
+                    mcp_servers,
                 };
                 struct CliSink<'a, L: Llm>(&'a Inner<L>);
                 impl<L: Llm> crate::cli_agents::Sink for CliSink<'_, L> {

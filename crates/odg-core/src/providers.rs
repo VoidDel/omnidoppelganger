@@ -127,6 +127,15 @@ pub const PROVIDERS: &[Provider] = &[
         models: &[],
     },
     Provider {
+        id: "magpie",
+        name: "Magpie（本机网关）",
+        protocol: Protocol::Chat(Flavor::Generic),
+        base_url: "http://127.0.0.1:3425/v1",
+        other_urls: &[("http://localhost:3425/v1", "localhost 别名")],
+        key_env: Some("MAGPIE_API_KEY"),
+        models: &[],
+    },
+    Provider {
         id: "antigravity",
         name: "Antigravity (agy CLI)",
         protocol: Protocol::Cli(CliKind::Antigravity),
@@ -343,7 +352,11 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
     if let Protocol::Cli(kind) = known.protocol {
         return kind.list_models(known.models).await;
     }
-    let key = key.map(str::trim).filter(|key| !key.is_empty()).ok_or("no API key is saved for this provider")?;
+    let key = key
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .or_else(|| (known.id == "magpie").then_some("magpie"))
+        .ok_or("no API key is saved for this provider")?;
     let base = base_url.trim_end_matches('/');
     if base.is_empty() {
         return Err("this provider has no address yet".to_string());
