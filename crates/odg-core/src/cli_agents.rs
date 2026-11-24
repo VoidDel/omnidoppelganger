@@ -15,7 +15,7 @@ use std::process::Stdio;
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -1706,15 +1706,97 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
     }
 }
 
+/// Safe command-line prompt byte budget before spilling to `stdin` (Codex / Claude Code)
+/// or a temporary UTF-8 file (Antigravity / Cursor / Grok).
+/// Windows `.cmd` wrappers cap command lines at ~8,191 chars (`CreateProcessW` at 32,767 chars,
+/// returning `os error 206`); Linux caps each argv entry (`MAX_ARG_STRLEN`) at 128 KB.
+#[cfg(windows)]
+const MAX_CLI_PROMPT_BYTES: usize = 6_000;
+#[cfg(not(windows))]
+const MAX_CLI_PROMPT_BYTES: usize = 64_000;
+
+struct TempPromptGuard(Option<PathBuf>);
+
+impl Drop for TempPromptGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+struct PreparedPrompt {
+    cli_prompt: String,
+    stdin_bytes: Option<Vec<u8>>,
+    extra_dir: Option<PathBuf>,
+    _guard: TempPromptGuard,
+}
+
+fn prepare_prompt_delivery(kind: CliKind, prompt: &str, turn: u64, limit: usize) -> Result<PreparedPrompt, String> {
+    if prompt.len() <= limit {
+        return Ok(PreparedPrompt {
+            cli_prompt: prompt.to_string(),
+            stdin_bytes: None,
+            extra_dir: None,
+            _guard: TempPromptGuard(None),
+        });
+    }
+    if matches!(kind, CliKind::Codex | CliKind::ClaudeCode) {
+        return Ok(PreparedPrompt {
+            cli_prompt: String::new(),
+            stdin_bytes: Some(prompt.as_bytes().to_vec()),
+            extra_dir: None,
+            _guard: TempPromptGuard(None),
+        });
+    }
+    let dir = std::env::temp_dir().join("odg-prompts");
+    std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建临时提示词目录：{error}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let path = dir.join(format!("prompt-{}-{turn}-{stamp}.txt", std::process::id()));
+    std::fs::write(&path, prompt.as_bytes()).map_err(|error| format!("无法写入临时提示词文件：{error}"))?;
+    let cli_prompt = format!(
+        "本轮用户的完整输入内容较长，已保存到文件：{}\n请先完整读取该文件的内容，再直接按其中的要求回答或处理。",
+        path.display()
+    );
+    Ok(PreparedPrompt {
+        cli_prompt,
+        stdin_bytes: None,
+        extra_dir: Some(dir),
+        _guard: TempPromptGuard(Some(path)),
+    })
+}
+
+/// Adjust `build_args` output when the prompt is delivered via `stdin` or accompanied by an extra readable directory.
+fn apply_prompt_delivery_args(kind: CliKind, args: &mut Vec<String>, prepared: &PreparedPrompt) {
+    if prepared.stdin_bytes.is_some() {
+        // Both `Codex` and `ClaudeCode` append `["--", prompt]` at the tail of `build_args`.
+        if args.len() >= 2 && args[args.len() - 2] == "--" {
+            args.truncate(args.len() - 2);
+        }
+        if kind == CliKind::Codex {
+            args.push("-".to_string());
+        }
+    }
+    if kind == CliKind::Antigravity
+        && let Some(dir) = prepared.extra_dir.as_deref().and_then(Path::to_str)
+    {
+        args.push("--add-dir".to_string());
+        args.push(dir.to_string());
+    }
+}
+
 /// Execute one headless streaming turn on any supported [`CliKind`].
 pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &CancellationToken) -> Result<&'static str, String> {
     let bin = params
         .kind
         .find_binary()
         .ok_or_else(|| format!("未找到本机 {}，请先安装并完成登录。", params.kind.display_name()))?;
-    let args = build_args(
+    let prepared = prepare_prompt_delivery(params.kind, &params.prompt, params.turn, MAX_CLI_PROMPT_BYTES)?;
+    let mut args = build_args(
         params.kind,
-        &params.prompt,
+        &prepared.cli_prompt,
         Some(params.workspace),
         params.conversation_id.as_deref(),
         &params.model,
@@ -1723,10 +1805,11 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         params.sandboxed,
         params.read_only,
     );
+    apply_prompt_delivery_args(params.kind, &mut args, &prepared);
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
         .current_dir(params.workspace)
-        .stdin(Stdio::null())
+        .stdin(if prepared.stdin_bytes.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -1735,6 +1818,14 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|error| format!("无法启动 {}：{error}", params.kind.display_name()))?;
+    if let Some(bytes) = prepared.stdin_bytes
+        && let Some(mut stdin_pipe) = child.stdin.take()
+    {
+        tokio::spawn(async move {
+            let _ = stdin_pipe.write_all(&bytes).await;
+            let _ = stdin_pipe.shutdown().await;
+        });
+    }
     let mut group_guard = ProcessGroupGuard(child.id());
     let stdout = child.stdout.take().ok_or("CLI stdout pipe unavailable")?;
     let mut stderr = child.stderr.take();
@@ -2241,5 +2332,36 @@ mod tests {
             .expect("Grok edit_file paired via call_id");
         assert_eq!(grok_meta["path"], "src/grok.rs");
         assert_eq!((grok_meta["added"].as_u64(), grok_meta["removed"].as_u64()), (Some(2), Some(1)));
+    }
+
+    #[test]
+    fn spills_oversized_prompts_to_stdin_or_temp_file() {
+        let huge = "x".repeat(256);
+
+        // Codex switches to `exec ... -` + stdin.
+        let codex_prep = prepare_prompt_delivery(CliKind::Codex, &huge, 2, 64).unwrap();
+        assert_eq!(codex_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
+        let mut codex_args = build_args(CliKind::Codex, &codex_prep.cli_prompt, None, None, "gpt-5.4", "high", Mode::Auto, false, false);
+        apply_prompt_delivery_args(CliKind::Codex, &mut codex_args, &codex_prep);
+        assert_eq!(codex_args.last().map(String::as_str), Some("-"));
+        assert!(!codex_args.iter().any(|a| a == "--"));
+
+        // Claude Code omits positional prompt and pipes via stdin.
+        let claude_prep = prepare_prompt_delivery(CliKind::ClaudeCode, &huge, 2, 64).unwrap();
+        assert_eq!(claude_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
+        let mut claude_args = build_args(CliKind::ClaudeCode, &claude_prep.cli_prompt, None, None, "opus", "high", Mode::Auto, false, false);
+        apply_prompt_delivery_args(CliKind::ClaudeCode, &mut claude_args, &claude_prep);
+        assert!(!claude_args.iter().any(|a| a == "--"));
+
+        // Antigravity spills to a temporary UTF-8 file, adds `--add-dir`, and cleans up on drop.
+        let agy_prep = prepare_prompt_delivery(CliKind::Antigravity, &huge, 2, 64).unwrap();
+        assert!(agy_prep.stdin_bytes.is_none());
+        let spilled_path = agy_prep._guard.0.clone().expect("temp prompt file");
+        assert_eq!(std::fs::read_to_string(&spilled_path).unwrap(), huge);
+        let mut agy_args = build_args(CliKind::Antigravity, &agy_prep.cli_prompt, None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
+        apply_prompt_delivery_args(CliKind::Antigravity, &mut agy_args, &agy_prep);
+        assert!(agy_args.windows(2).any(|w| w[0] == "--add-dir" && w[1].contains("odg-prompts")));
+        drop(agy_prep);
+        assert!(!spilled_path.exists());
     }
 }

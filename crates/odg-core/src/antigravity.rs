@@ -165,7 +165,13 @@ pub fn parse_models_output(raw: &str) -> (Vec<Listed>, HashMap<String, Vec<Strin
 pub async fn list_models() -> Result<Vec<Listed>, String> {
     let bin = find_binary().ok_or_else(|| "未找到本机 agy CLI，请先安装并登录 Google Antigravity CLI。".to_string())?;
     let mut cmd = Command::new(&bin);
-    cmd.arg("models").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.arg("models")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: prevent flashing a console window on Windows.
     let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
         .await
         .map_err(|_| "查询 agy models 超时（30 秒）。".to_string())?
