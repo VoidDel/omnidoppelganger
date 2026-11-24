@@ -180,8 +180,25 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
     let lower = raw_name.to_ascii_lowercase();
     let mapped_name = match lower.as_str() {
         "read_file" | "view_file" | "read" | "readtoolcall" => "read_file",
-        "write_file" | "write_to_file" | "write" | "writetoolcall" | "create_file" => "write_file",
-        "edit_file" | "replace_file_content" | "multi_replace_file_content" | "sed_file" | "edit" | "multiedit" | "edittoolcall" | "file_change" => "edit_file",
+        "write_file" | "write_to_file" | "write" | "writetoolcall" | "create_file" | "createfiletoolcall" => "write_file",
+        "edit_file"
+        | "replace_file_content"
+        | "multi_replace_file_content"
+        | "sed_file"
+        | "edit"
+        | "multiedit"
+        | "notebookedit"
+        | "edittoolcall"
+        | "strreplace"
+        | "str_replace"
+        | "strreplacetoolcall"
+        | "str_replace_editor"
+        | "str_replace_based_edit_tool"
+        | "apply_patch"
+        | "applypatch"
+        | "applypatchtoolcall"
+        | "file_change" => "edit_file",
+        "delete_file" | "remove_file" | "delete" | "deletetoolcall" | "deletefiletoolcall" => "delete_file",
         "run_command" | "bash" | "shell" | "command_execution" | "shelltoolcall" | "bashtoolcall" | "runterminalcommand" => "run_command",
         "grep_search" | "search" | "grep" | "greptoolcall" => "search",
         "find_by_name" | "list_dir" | "find_files" | "glob" | "ls" | "globtoolcall" | "lstoolcall" => "find_files",
@@ -250,10 +267,21 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
         normalized.insert("todos".to_string(), Value::Array(todos));
     }
     if !normalized.contains_key("path")
-        && let Some(path) = ["file_path", "Path", "TargetFile", "AbsolutePath", "DirectoryPath", "SearchDirectory", "SearchPath", "target_file"]
-            .iter()
-            .find_map(|key| normalized.get(*key).and_then(Value::as_str))
-            .map(str::to_string)
+        && let Some(path) = [
+            "file_path",
+            "Path",
+            "TargetFile",
+            "AbsolutePath",
+            "DirectoryPath",
+            "SearchDirectory",
+            "SearchPath",
+            "target_file",
+            "notebook_path",
+            "relative_workspace_path",
+        ]
+        .iter()
+        .find_map(|key| normalized.get(*key).and_then(Value::as_str))
+        .map(str::to_string)
     {
         normalized.insert("path".to_string(), Value::String(path));
     }
@@ -516,29 +544,42 @@ impl StreamParser {
                         }
                     }
                     "file_change" => {
-                        let first_path = item["changes"]
-                            .as_array()
-                            .and_then(|arr| arr.first())
-                            .and_then(|c| c["path"].as_str())
-                            .unwrap_or("");
-                        let input = json!({ "path": first_path });
-                        if done {
-                            let summary = item["changes"]
-                                .as_array()
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|c| Some(format!("{}: {}", c["kind"].as_str().unwrap_or("edit"), c["path"].as_str()?)))
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
-                                })
-                                .unwrap_or_default();
-                            let failed = item["status"].as_str() == Some("failed");
-                            vec![CliEvent::ToolDone { conversation_id: None, call_key: item_id, name: Some("edit_file".into()), input, output: summary, is_error: failed }]
-                        } else if ty == "item.started" && !first_path.is_empty() {
-                            vec![CliEvent::ToolStart { conversation_id: None, call_key: item_id, name: "edit_file".into(), input }]
-                        } else {
-                            Vec::new()
+                        let Some(changes) = item["changes"].as_array() else { return Vec::new() };
+                        let failed = item["status"].as_str() == Some("failed");
+                        let mut events = Vec::new();
+                        for (idx, change) in changes.iter().enumerate() {
+                            let Some(path) = change["path"].as_str().filter(|p| !p.is_empty()) else { continue };
+                            let kind_str = change["kind"].as_str().unwrap_or("update").to_ascii_lowercase();
+                            let tool_name = match kind_str.as_str() {
+                                "add" | "create" => "write_file",
+                                "delete" | "remove" => "delete_file",
+                                _ => "edit_file",
+                            };
+                            let mut input = json!({ "path": path });
+                            if let Some(diff_str) = change["diff"].as_str().or_else(|| change["patch"].as_str()) {
+                                input["diff"] = Value::String(diff_str.to_string());
+                            }
+                            let key = if changes.len() == 1 { item_id.clone() } else { format!("{item_id}-{idx}") };
+                            if done {
+                                let output = format!("{kind_str}: {path}");
+                                events.push(CliEvent::ToolDone {
+                                    conversation_id: None,
+                                    call_key: key,
+                                    name: Some(tool_name.into()),
+                                    input,
+                                    output,
+                                    is_error: failed,
+                                });
+                            } else if ty == "item.started" {
+                                events.push(CliEvent::ToolStart {
+                                    conversation_id: None,
+                                    call_key: key,
+                                    name: tool_name.into(),
+                                    input,
+                                });
+                            }
                         }
+                        events
                     }
                     "mcp_tool_call" => {
                         let raw = format!("mcp__{}__{}", item["server"].as_str().unwrap_or("mcp"), item["tool"].as_str().unwrap_or("call"));
@@ -698,24 +739,65 @@ impl StreamParser {
                 }
             }
             "tool_call" => {
-                let call_key = v["call_id"].as_str().map(str::to_string).unwrap_or_else(|| self.next_key("cursor"));
+                let call_key = v["call_id"]
+                    .as_str()
+                    .or_else(|| v["id"].as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.next_key("cursor"));
                 let subtype = v["subtype"].as_str().unwrap_or("");
-                // Cursor nests `{"readToolCall": {"args": {...}}}` inside `tool_call`.
-                let (raw_name, raw_args) = v["tool_call"]
-                    .as_object()
-                    .and_then(|map| map.iter().next())
-                    .map(|(k, val)| (k.as_str(), val.get("args").unwrap_or(val)))
-                    .unwrap_or(("tool", &v["args"]));
-                let (name, input) = normalize_tool(raw_name, raw_args);
+                // Cursor nests `{"readToolCall": {"args": {...}, "result": {"success": {...}}}}` inside `tool_call`,
+                // or emits top-level `{"name": "writeToolCall", "function": {"name": ..., "arguments": ...}}`.
+                let nested = v["tool_call"].as_object().and_then(|map| map.iter().next());
+                let raw_name = nested
+                    .map(|(k, _)| k.as_str())
+                    .or_else(|| v["name"].as_str())
+                    .or_else(|| v["function"]["name"].as_str())
+                    .unwrap_or("tool");
+                let parsed_fn_args: Option<Value> = v["function"]["arguments"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok());
+                let raw_args = nested
+                    .map(|(_, val)| val.get("args").unwrap_or(val))
+                    .or(parsed_fn_args.as_ref())
+                    .or_else(|| (!v["function"]["arguments"].is_null()).then(|| &v["function"]["arguments"]))
+                    .unwrap_or(&v["args"]);
+                let (name, mut input) = normalize_tool(raw_name, raw_args);
                 if subtype == "completed" {
-                    let res = &v["result"];
-                    let is_error = res["success"].as_bool() == Some(false) || res["is_error"].as_bool() == Some(true) || !res["error"].is_null();
-                    let output = res["content"]
-                        .as_str()
-                        .or_else(|| res["stdout"].as_str())
-                        .or_else(|| res["error"].as_str())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| if res.is_null() { String::new() } else { res.to_string() });
+                    let res = nested.and_then(|(_, val)| val.get("result")).unwrap_or(&v["result"]);
+                    let is_error = res["success"].as_bool() == Some(false)
+                        || res["is_error"].as_bool() == Some(true)
+                        || !res["error"].is_null()
+                        || !res["rejected"].is_null();
+                    let payload = if res["success"].is_object() { &res["success"] } else { res };
+                    if let Some(created_lines) = payload["linesCreated"].as_u64()
+                        && let Some(obj) = input.as_object_mut()
+                    {
+                        obj.insert("linesCreated".to_string(), json!(created_lines));
+                    }
+                    let output = if is_error {
+                        res["error"]["message"]
+                            .as_str()
+                            .or_else(|| res["error"].as_str())
+                            .or_else(|| res["rejected"]["reason"].as_str())
+                            .or_else(|| payload["stderr"].as_str())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| res.to_string())
+                    } else if name == "run_command" && payload["exitCode"].is_i64() {
+                        let code = payload["exitCode"].as_i64().unwrap_or(0);
+                        let stdout = payload["stdout"].as_str().or_else(|| payload["output"].as_str()).unwrap_or("");
+                        format!("Command exited with code {code}.\n\nCommand output:\n{stdout}")
+                    } else if name == "read_file"
+                        && payload["content"].as_str().is_none_or(str::is_empty)
+                        && let Some(total) = payload["totalLines"].as_u64()
+                    {
+                        format!("{total} lines")
+                    } else {
+                        payload["content"]
+                            .as_str()
+                            .or_else(|| payload["stdout"].as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
                     vec![CliEvent::ToolDone { conversation_id: conv, call_key, name: Some(name), input, output, is_error }]
                 } else {
                     vec![CliEvent::ToolStart { conversation_id: conv, call_key, name, input }]
@@ -761,16 +843,89 @@ impl StreamParser {
                 }
             }
             "tool_use" | "tool_call" => {
-                let call_key = v["id"].as_str().or_else(|| v["tool_use_id"].as_str()).map(str::to_string).unwrap_or_else(|| self.next_key("grok"));
-                let raw_name = v["name"].as_str().or_else(|| v["tool"].as_str()).unwrap_or("tool");
-                let args = if !v["input"].is_null() { &v["input"] } else { &v["arguments"] };
+                let node = if v["part"].is_object() { &v["part"] } else { &v };
+                let call_key = node["call_id"]
+                    .as_str()
+                    .or_else(|| node["callID"].as_str())
+                    .or_else(|| node["id"].as_str())
+                    .or_else(|| node["tool_use_id"].as_str())
+                    .or_else(|| v["call_id"].as_str())
+                    .or_else(|| v["callID"].as_str())
+                    .or_else(|| v["id"].as_str())
+                    .or_else(|| v["tool_use_id"].as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.next_key("grok"));
+                let raw_name = node["name"]
+                    .as_str()
+                    .or_else(|| node["tool"].as_str())
+                    .or_else(|| node["function"]["name"].as_str())
+                    .unwrap_or("tool");
+                let parsed_fn_args: Option<Value> = node["arguments"]
+                    .as_str()
+                    .or_else(|| node["function"]["arguments"].as_str())
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok());
+                let args = if !node["state"]["input"].is_null() {
+                    &node["state"]["input"]
+                } else if !node["input"].is_null() {
+                    &node["input"]
+                } else if let Some(ref parsed) = parsed_fn_args {
+                    parsed
+                } else if !node["arguments"].is_null() {
+                    &node["arguments"]
+                } else {
+                    &node["function"]["arguments"]
+                };
                 let (name, input) = normalize_tool(raw_name, args);
-                vec![CliEvent::ToolStart { conversation_id: conv, call_key, name, input }]
+                let state_status = node["state"]["status"].as_str().unwrap_or("");
+                if matches!(state_status, "completed" | "error") {
+                    let is_error = state_status == "error" || node["is_error"].as_bool().unwrap_or(false);
+                    let output = node["state"]["output"]
+                        .as_str()
+                        .or_else(|| node["state"]["error"].as_str())
+                        .map(str::to_string)
+                        .unwrap_or_default();
+                    vec![
+                        CliEvent::ToolStart {
+                            conversation_id: conv.clone(),
+                            call_key: call_key.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                        },
+                        CliEvent::ToolDone {
+                            conversation_id: conv,
+                            call_key,
+                            name: Some(name),
+                            input,
+                            output,
+                            is_error,
+                        },
+                    ]
+                } else {
+                    vec![CliEvent::ToolStart { conversation_id: conv, call_key, name, input }]
+                }
             }
             "tool_result" => {
-                let call_key = v["tool_use_id"].as_str().or_else(|| v["id"].as_str()).unwrap_or("").to_string();
-                let output = extract_content_text(&v["content"]);
-                let is_error = v["is_error"].as_bool().unwrap_or(false);
+                let node = if v["part"].is_object() { &v["part"] } else { &v };
+                let call_key = node["tool_use_id"]
+                    .as_str()
+                    .or_else(|| node["call_id"].as_str())
+                    .or_else(|| node["callID"].as_str())
+                    .or_else(|| node["id"].as_str())
+                    .or_else(|| v["tool_use_id"].as_str())
+                    .or_else(|| v["call_id"].as_str())
+                    .or_else(|| v["callID"].as_str())
+                    .or_else(|| v["id"].as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let content = if !node["content"].is_null() {
+                    &node["content"]
+                } else if !node["output"].is_null() {
+                    &node["output"]
+                } else {
+                    &node["result"]
+                };
+                let output = extract_content_text(content);
+                let is_error = node["is_error"].as_bool().or_else(|| v["is_error"].as_bool()).unwrap_or(false);
                 vec![CliEvent::ToolDone { conversation_id: conv, call_key, name: None, input: Value::Null, output, is_error }]
             }
             "step_finish" => {
@@ -937,8 +1092,14 @@ fn parse_plus_minus_lines(text: &str) -> Option<(usize, usize)> {
 fn estimate_edit_lines(tool_name: &str, input: &Value, path: &str) -> (usize, usize) {
     let count_lines = |s: &str| if s.is_empty() { 0 } else { s.lines().count() };
     if tool_name == "write_file" {
-        if let Some(content) = ["Content", "content", "file_text"].iter().find_map(|k| input.get(*k).and_then(Value::as_str)) {
+        if let Some(content) = ["Content", "content", "file_text", "fileText"]
+            .iter()
+            .find_map(|k| input.get(*k).and_then(Value::as_str))
+        {
             return (count_lines(content), 0);
+        }
+        if let Some(lines) = input["linesCreated"].as_u64() {
+            return (lines as usize, 0);
         }
         if !path.is_empty()
             && let Ok(disk) = std::fs::read_to_string(path)
@@ -947,15 +1108,100 @@ fn estimate_edit_lines(tool_name: &str, input: &Value, path: &str) -> (usize, us
         }
         return (0, 0);
     }
-    let added = ["Replacement", "new_string", "new_str"]
+    if let Some(edits) = input["edits"].as_array() {
+        let mut total_added = 0usize;
+        let mut total_removed = 0usize;
+        for edit in edits {
+            total_added += ["new_string", "new_str", "newString", "Replacement"]
+                .iter()
+                .find_map(|k| edit.get(*k).and_then(Value::as_str))
+                .map_or(0, count_lines);
+            total_removed += ["old_string", "old_str", "oldString", "Target"]
+                .iter()
+                .find_map(|k| edit.get(*k).and_then(Value::as_str))
+                .map_or(0, count_lines);
+        }
+        if total_added > 0 || total_removed > 0 {
+            return (total_added, total_removed);
+        }
+    }
+    let added = ["Replacement", "new_string", "new_str", "newString", "new_source", "streamContent"]
         .iter()
         .find_map(|k| input.get(*k).and_then(Value::as_str))
         .map_or(0, count_lines);
-    let removed = ["Target", "old_string", "old_str"]
+    let removed = ["Target", "old_string", "old_str", "oldString"]
         .iter()
         .find_map(|k| input.get(*k).and_then(Value::as_str))
         .map_or(0, count_lines);
     (added, removed)
+}
+
+/// Parse a standard unified diff (`@@ -old,len +new,len @@`) emitted by CLIs like Codex `file_change`
+/// into a [`crate::tools::LineDiff`] when pre-edit disk state was not captured on `ToolStart`.
+fn parse_unified_diff(diff_text: &str) -> Option<crate::tools::LineDiff> {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut hunks: Vec<Value> = Vec::new();
+    let mut current: Option<(usize, usize, Vec<Value>)> = None;
+    let mut total_hunk_lines = 0usize;
+
+    let parse_start = |spec: &str, prefix: char| -> Option<usize> {
+        let rest = spec.strip_prefix(prefix)?;
+        let num = rest.split(',').next()?;
+        num.parse::<usize>().ok()
+    };
+
+    for raw in diff_text.replace("\r\n", "\n").lines() {
+        if let Some(after_at) = raw.strip_prefix("@@ ")
+            && let Some((header, _)) = after_at.split_once(" @@")
+        {
+            if let Some((os, ns, lines)) = current.take()
+                && !lines.is_empty()
+            {
+                hunks.push(json!({ "old_start": os, "new_start": ns, "lines": lines }));
+            }
+            let mut parts = header.split_whitespace();
+            let old_start = parts.next().and_then(|s| parse_start(s, '-')).unwrap_or(1);
+            let new_start = parts.next().and_then(|s| parse_start(s, '+')).unwrap_or(1);
+            current = Some((old_start, new_start, Vec::new()));
+            continue;
+        }
+        let Some((_, _, ref mut lines)) = current else { continue };
+        if raw.starts_with("\\ No newline") {
+            continue;
+        }
+        if let Some(rest) = raw.strip_prefix('+') {
+            added += 1;
+            total_hunk_lines += 1;
+            if total_hunk_lines <= 400 {
+                lines.push(json!({ "kind": "+", "text": rest }));
+            }
+        } else if let Some(rest) = raw.strip_prefix('-') {
+            removed += 1;
+            total_hunk_lines += 1;
+            if total_hunk_lines <= 400 {
+                lines.push(json!({ "kind": "-", "text": rest }));
+            }
+        } else if let Some(rest) = raw.strip_prefix(' ')
+            && total_hunk_lines <= 400
+        {
+            lines.push(json!({ "kind": " ", "text": rest }));
+        }
+    }
+    if let Some((os, ns, lines)) = current.take()
+        && !lines.is_empty()
+    {
+        hunks.push(json!({ "old_start": os, "new_start": ns, "lines": lines }));
+    }
+    if hunks.is_empty() && added == 0 && removed == 0 {
+        return None;
+    }
+    if total_hunk_lines > 400 {
+        return Some(crate::tools::LineDiff { added, removed, hunk: Value::Null, hunks: Vec::new() });
+    }
+    let hunk = hunks.first().cloned().unwrap_or(Value::Null);
+    let multi = if hunks.len() > 1 { hunks } else { Vec::new() };
+    Some(crate::tools::LineDiff { added, removed, hunk, hunks: multi })
 }
 
 /// Resolve a tool path against `workspace`, returning `(absolute_path, display_path)` where
@@ -1189,7 +1435,7 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                 {
                     self.known_files.insert(path.clone(), bytes);
                 }
-                let (file_existed_at_start, before_bytes) = if matches!(name.as_str(), "edit_file" | "write_file") {
+                let (file_existed_at_start, before_bytes) = if matches!(name.as_str(), "edit_file" | "write_file" | "delete_file") {
                     let existed = target.as_ref().is_some_and(|(p, _)| p.is_file());
                     let bytes = target.as_ref().and_then(|(p, _)| read_file_bytes_capped(p));
                     (existed, bytes)
@@ -1226,6 +1472,13 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                                 && let Some(obj) = existing.input.as_object_mut()
                             {
                                 obj.insert("path".to_string(), path_val);
+                            }
+                        }
+                        for extra_key in ["diff", "linesCreated"] {
+                            if let Some(val) = input.get(extra_key).cloned()
+                                && let Some(obj) = existing.input.as_object_mut()
+                            {
+                                obj.entry(extra_key.to_string()).or_insert(val);
                             }
                         }
                         (existing, true)
@@ -1266,6 +1519,8 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                 let (mut clean_output, mut meta) = clean_tool_result(&started.name, &started.input, &output, is_error);
                 if matches!(started.name.as_str(), "edit_file" | "write_file") && !is_error {
                     self.enrich_file_edit(&call_key, &started, had_start, &mut clean_output, &mut meta);
+                } else if started.name == "delete_file" && !is_error {
+                    self.enrich_file_delete(&started, &mut clean_output, &mut meta);
                 }
                 self.sink.log(Event::ToolResult {
                     tool_use_id: started.id,
@@ -1330,7 +1585,10 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                 _ => None,
             }
         } else {
-            None
+            started.input["diff"]
+                .as_str()
+                .and_then(parse_unified_diff)
+                .or_else(|| clean_output.contains("@@ -").then(|| parse_unified_diff(clean_output)).flatten())
         };
 
         let mut transcript_summary: Option<String> = None;
@@ -1393,6 +1651,57 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
             } else if added > 0 || removed > 0 {
                 *clean_output = format!("Changed {shown}: {added} lines added, {removed} lines removed.");
             }
+        }
+    }
+
+    fn enrich_file_delete(&mut self, started: &StartedTool, clean_output: &mut String, meta: &mut Value) {
+        let Some((ref resolved, ref shown)) = started.target else { return };
+        let prior_known = self.known_files.remove(resolved);
+        let prev_bytes = started.before_bytes.as_deref().or(prior_known.as_deref());
+        let abs_file = resolved.to_string_lossy().into_owned();
+
+        let mut built = json!({
+            "path": shown,
+            "file": abs_file,
+            "deleted": true,
+        });
+        let mut removed_lines = 0usize;
+        if let Some(prev) = prev_bytes {
+            built["bytes"] = json!(prev.len());
+            if let Ok(text) = std::str::from_utf8(prev)
+                && !text.contains('\0')
+            {
+                let diff = crate::tools::line_diff(&text.replace("\r\n", "\n"), "");
+                removed_lines = diff.removed;
+                built["removed"] = json!(diff.removed);
+                built["hunk"] = diff.hunk;
+            }
+            if !self.params.read_only
+                && !resolved.exists()
+                && let Some(snap_dir) = self.params.snapshots
+                && crate::tools::inside_workspace(self.params.workspace, resolved)
+                && !crate::tools::in_git_directory(self.params.workspace, resolved)
+                && let Ok(before_snap) = crate::undo::save(snap_dir, prev)
+            {
+                built["changes"] = json!([{
+                    "file": abs_file,
+                    "path": shown,
+                    "before": before_snap,
+                    "after": Value::Null,
+                }]);
+            }
+        } else if let Some(diff) = started.input["diff"].as_str().and_then(parse_unified_diff) {
+            removed_lines = diff.removed;
+            built["removed"] = json!(diff.removed);
+            built["hunk"] = diff.hunk;
+        }
+        *meta = built;
+        if clean_output.trim().is_empty() {
+            *clean_output = if removed_lines > 0 {
+                format!("Deleted {shown} ({removed_lines} lines).")
+            } else {
+                format!("Deleted {shown}.")
+            };
         }
     }
 }
@@ -1776,5 +2085,161 @@ mod tests {
         assert_eq!(found.0, 25);
         assert_eq!(found.1, 40);
         assert!(found.2.contains("(+25/-40 lines)"));
+    }
+
+    #[test]
+    fn tracks_codex_multifile_patch_claude_multiedit_cursor_nested_result_and_grok_call_id() {
+        use std::sync::Mutex;
+
+        struct VecSink(Mutex<Vec<Event>>);
+        impl Sink for VecSink {
+            fn log(&self, event: Event) -> Result<(), String> {
+                self.0.lock().unwrap().push(event);
+                Ok(())
+            }
+            fn stream(&self, _delta: StreamDelta) {}
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("repo");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+
+        // 1) Codex: single `item.completed` `file_change` (no `item.started`) with 3 files (`update` with unified diff, `add`, `delete`).
+        let created_rs = ws.join("src/new_mod.rs");
+        std::fs::write(&created_rs, "pub fn x() {}\npub fn y() {}\n").unwrap();
+        let codex_params = TurnParams {
+            kind: CliKind::Codex,
+            workspace: &ws,
+            snapshots: None,
+            turn: 1,
+            prompt: "patch".into(),
+            conversation_id: None,
+            model: "gpt-5.4".into(),
+            effort: "high".into(),
+            mode: Mode::Auto,
+            sandboxed: false,
+            read_only: false,
+        };
+        let codex_sink = VecSink(Mutex::new(Vec::new()));
+        let mut codex_rec = TurnRecorder::new(&codex_params, &codex_sink);
+        let mut codex_parser = StreamParser::default();
+        let codex_line = json!({
+            "type": "item.completed",
+            "item": {
+                "id": "item_7",
+                "type": "file_change",
+                "status": "completed",
+                "changes": [
+                    {
+                        "path": "src/lib.rs",
+                        "kind": "update",
+                        "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,3 @@\n fn a() {}\n-fn old() {}\n+fn new1() {}\n+fn new2() {}\n"
+                    },
+                    { "path": created_rs.to_string_lossy(), "kind": "add" },
+                    { "path": "src/obsolete.rs", "kind": "delete", "diff": "@@ -1,2 +0,0 @@\n-dead1\n-dead2\n" }
+                ]
+            }
+        })
+        .to_string();
+        for ev in codex_parser.parse_line(CliKind::Codex, &codex_line) {
+            codex_rec.handle_event(ev).unwrap();
+        }
+        let codex_results: Vec<(String, Value)> = codex_sink
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                Event::ToolResult { tool, meta, .. } => Some((tool.clone(), meta.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(codex_results.len(), 3);
+        assert_eq!((codex_results[0].0.as_str(), codex_results[0].1["path"].as_str(), codex_results[0].1["added"].as_u64(), codex_results[0].1["removed"].as_u64()), ("edit_file", Some("src/lib.rs"), Some(2), Some(1)));
+        assert!(codex_results[0].1["hunk"].is_object());
+        assert_eq!((codex_results[1].0.as_str(), codex_results[1].1["path"].as_str(), codex_results[1].1["created"].as_bool(), codex_results[1].1["added"].as_u64()), ("write_file", Some("src/new_mod.rs"), Some(true), Some(2)));
+        assert_eq!((codex_results[2].0.as_str(), codex_results[2].1["deleted"].as_bool(), codex_results[2].1["removed"].as_u64()), ("delete_file", Some(true), Some(2)));
+
+        // 2) Claude Code `MultiEdit` fallback estimation on `edits` array.
+        let (_, multi_in) = normalize_tool(
+            "MultiEdit",
+            &json!({
+                "file_path": "src/app.ts",
+                "edits": [
+                    { "old_string": "a\n", "new_string": "a1\na2\n" },
+                    { "old_string": "b1\nb2\n", "new_string": "b\n" }
+                ]
+            }),
+        );
+        let (_, multi_meta) = clean_tool_result("edit_file", &multi_in, "", false);
+        assert_eq!((multi_meta["added"].as_u64(), multi_meta["removed"].as_u64()), (Some(3), Some(3)));
+
+        // 3) Cursor `strReplaceToolCall` + nested `result.success`.
+        let mut cursor_parser = StreamParser::default();
+        let cur_start = cursor_parser.parse_line(
+            CliKind::Cursor,
+            r#"{"type":"tool_call","subtype":"started","call_id":"c9","tool_call":{"strReplaceToolCall":{"args":{"path":"src/main.rs"}}}}"#,
+        );
+        assert_eq!(cur_start[0], CliEvent::ToolStart {
+            conversation_id: None,
+            call_key: "c9".into(),
+            name: "edit_file".into(),
+            input: json!({ "path": "src/main.rs" }),
+        });
+        let cur_read_done = cursor_parser.parse_line(
+            CliKind::Cursor,
+            r#"{"type":"tool_call","subtype":"completed","call_id":"c10","tool_call":{"readToolCall":{"args":{"path":"src/main.rs"},"result":{"success":{"totalLines":88}}}}}"#,
+        );
+        if let CliEvent::ToolDone { output, is_error, .. } = &cur_read_done[0] {
+            assert!(!is_error);
+            assert_eq!(output, "88 lines");
+        } else {
+            panic!("expected ToolDone");
+        }
+
+        // 4) Grok `tool_use` + `tool_result` paired via `call_id`.
+        let grok_file = ws.join("src/grok.rs");
+        std::fs::write(&grok_file, "let x = 1;\n").unwrap();
+        let grok_params = TurnParams {
+            kind: CliKind::Grok,
+            workspace: &ws,
+            snapshots: None,
+            turn: 1,
+            prompt: "edit".into(),
+            conversation_id: None,
+            model: "grok-4".into(),
+            effort: "high".into(),
+            mode: Mode::Auto,
+            sandboxed: false,
+            read_only: false,
+        };
+        let grok_sink = VecSink(Mutex::new(Vec::new()));
+        let mut grok_rec = TurnRecorder::new(&grok_params, &grok_sink);
+        let mut grok_parser = StreamParser::default();
+        for ev in grok_parser.parse_line(
+            CliKind::Grok,
+            &json!({"type":"tool_use","tool":"str_replace_editor","call_id":"call_42","input":{"path":grok_file.to_string_lossy()}}).to_string(),
+        ) {
+            grok_rec.handle_event(ev).unwrap();
+        }
+        std::fs::write(&grok_file, "let x = 2;\nlet y = 3;\n").unwrap();
+        for ev in grok_parser.parse_line(
+            CliKind::Grok,
+            r#"{"type":"tool_result","call_id":"call_42","content":"ok"}"#,
+        ) {
+            grok_rec.handle_event(ev).unwrap();
+        }
+        let grok_meta = grok_sink
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|e| match e {
+                Event::ToolResult { tool, meta, .. } if tool == "edit_file" => Some(meta.clone()),
+                _ => None,
+            })
+            .expect("Grok edit_file paired via call_id");
+        assert_eq!(grok_meta["path"], "src/grok.rs");
+        assert_eq!((grok_meta["added"].as_u64(), grok_meta["removed"].as_u64()), (Some(2), Some(1)));
     }
 }
