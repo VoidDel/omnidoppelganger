@@ -421,16 +421,55 @@ mod tests {
 
         assert_eq!(hub.list("sess-1").len(), 1);
         hub.resize(&info.id, 100, 30).unwrap();
-        hub.write(&info.id, "echo odg_pty_ok\r").unwrap();
 
-        // Wait up to 3s for shell output.
-        for _ in 0..60 {
-            if collected.lock().unwrap().contains("odg_pty_ok") {
+        let has_marker = || {
+            let raw = collected.lock().unwrap();
+            if raw.contains("odg_pty_ok") {
+                return true;
+            }
+            // Strip ANSI CSI sequences (`ESC [ ... letter`) in case ConPTY splits characters across cursor moves.
+            let mut plain = String::with_capacity(raw.len());
+            let mut chars = raw.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' && chars.peek() == Some(&'[') {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                } else {
+                    plain.push(c);
+                }
+            }
+            plain.contains("odg_pty_ok")
+        };
+
+        // Cold PowerShell startup on Windows ConPTY (especially on CI runners) can take several seconds
+        // and may drop keystrokes sent before PSReadLine initializes: wait briefly for initial output,
+        // then write the marker command (re-sending once if needed) with a generous 15s budget.
+        for _ in 0..40 {
+            if !collected.lock().unwrap().is_empty() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        assert!(collected.lock().unwrap().contains("odg_pty_ok"));
+        hub.write(&info.id, "echo odg_pty_ok\r\n").unwrap();
+
+        for tick in 0..150 {
+            if has_marker() {
+                break;
+            }
+            if tick == 40 || tick == 90 {
+                let _ = hub.write(&info.id, "echo odg_pty_ok\r\n");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(
+            has_marker(),
+            "PTY did not echo marker; collected output: {:?}",
+            collected.lock().unwrap().as_str()
+        );
 
         hub.close_session("sess-1");
         assert!(hub.list("sess-1").is_empty());

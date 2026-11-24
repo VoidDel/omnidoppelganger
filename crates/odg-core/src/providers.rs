@@ -495,11 +495,11 @@ mod tests {
     fn every_provider_is_reachable_and_has_a_default_model_or_asks_for_one() {
         for provider in PROVIDERS {
             assert_eq!(super::provider(provider.id).map(|found| found.id), Some(provider.id));
-            // Only custom services and local CLI backends have no HTTP base URL; only custom services have no built-in models.
+            // Only custom services and local CLI backends have no HTTP base URL; custom services and local gateways (Magpie) fetch models dynamically.
             let custom = provider.id.starts_with("custom");
             let cli = matches!(provider.protocol, Protocol::Cli(_));
             assert_eq!(provider.base_url.is_empty(), custom || cli, "{}", provider.id);
-            assert_eq!(provider.models.is_empty(), custom, "{}", provider.id);
+            assert_eq!(provider.models.is_empty(), custom || provider.id == "magpie", "{}", provider.id);
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);
         assert_eq!(provider("custom_anthropic").unwrap().protocol, Protocol::Anthropic);

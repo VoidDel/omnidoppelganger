@@ -1308,6 +1308,13 @@ async fn a_subagent_asks_for_approval_in_its_own_session() {
 
     let asked = fixture.approval().await;
     let [child] = fixture.session.children().try_into().ok().expect("one subagent");
+    // `Event::ApprovalRequested` is emitted just before `set_status(WaitingApproval)`, so wait briefly for the status flip on multi-threaded runtimes.
+    for _ in 0..50 {
+        if child.status() == Status::WaitingApproval {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     // The subagent waits; the agent that delegated to it is still at work, on the call.
     assert_eq!((child.status(), fixture.session.status()), (Status::WaitingApproval, Status::Running));
     assert!(!fixture.session.resolve_approval(&asked, Decision::AllowOnce));
