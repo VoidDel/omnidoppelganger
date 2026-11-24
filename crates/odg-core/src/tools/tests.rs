@@ -827,6 +827,23 @@ async fn lists_and_reads_the_resources_of_the_users_mcp_servers() {
 }
 
 #[tokio::test]
+async fn mcp_tool_call_forwards_images_only_when_model_supports_vision() {
+    let (directory, mut context) = context();
+    let hub = Arc::new(crate::mcp::McpHub::new(directory.path().join("mcp.json"), tokio::runtime::Handle::current()));
+    hub.insert("echo", crate::mcp::testing::echo_server().await);
+    context.mcp = Some(hub);
+
+    let shot = execute("mcp__echo__echo", &json!({ "text": "screenshot" }), &context).await;
+    assert!(!shot.is_error);
+    assert_eq!(shot.images, [Image { media_type: "image/png".into(), data: "aGk=".into() }]);
+    assert_eq!(shot.meta, json!({ "mcp": true, "pictures": 1 }));
+
+    context.vision = Some(false);
+    let blind = execute("mcp__echo__echo", &json!({ "text": "screenshot" }), &context).await;
+    assert!(blind.images.is_empty());
+}
+
+#[tokio::test]
 async fn run_command_respects_cwd_and_rejects_missing_or_non_directory_cwd() {
     let (directory, context) = context();
     let sub = directory.path().join("packages/app");

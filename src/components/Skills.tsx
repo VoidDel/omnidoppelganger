@@ -11,6 +11,7 @@ const LOOKS: Record<string, { title: string; seal: string }> = {
   "code-review": { title: "审查改动", seal: "审" },
   debugging: { title: "系统排错", seal: "究" },
   "writing-tests": { title: "编写测试", seal: "验" },
+  "e2e-verification": { title: "端到端验收", seal: "测" },
   refactoring: { title: "安全重构", seal: "理" },
   "writing-docs": { title: "撰写文档", seal: "述" },
   "frontend-design": { title: "界面设计", seal: "绘" },

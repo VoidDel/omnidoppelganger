@@ -223,7 +223,10 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         other if crate::mcp::split_name(other).is_some() => match &context.mcp {
             Some(hub) => {
                 let result = hub.call(other, input, &context.cancel).await;
-                Ok(ToolOutput { content: result.content, is_error: result.is_error, meta: json!({ "mcp": true }), images: Vec::new() })
+                let seen = context.vision != Some(false);
+                let images: Vec<Image> = if seen { result.images.iter().map(|(media_type, data)| Image { media_type: media_type.clone(), data: data.clone() }).collect() } else { Vec::new() };
+                let meta = if result.images.is_empty() { json!({ "mcp": true }) } else { json!({ "mcp": true, "pictures": result.images.len() }) };
+                Ok(ToolOutput { content: result.content, is_error: result.is_error, meta, images })
             }
             None => Err(ToolOutput::error(format!("No MCP server is connected, so `{other}` cannot be called."))),
         },

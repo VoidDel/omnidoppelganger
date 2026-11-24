@@ -2,6 +2,8 @@
 // window through WebView2's remote debugging port: evaluate script in the
 // page, type, and press keys. Node's own WebSocket is all it needs.
 
+import { writeFileSync } from "node:fs";
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Connect to the page served on a debugging port, waiting for the app to open it. */
@@ -103,6 +105,12 @@ export async function connect(port, timeoutMs = 60_000) {
     },
     /** Whether the page shows this text anywhere. */
     waitForText: (text, timeout) => waitFor(`the text "${text}"`, `document.body.innerText.includes(${JSON.stringify(text)})`, timeout),
+    /** Capture a PNG screenshot of the viewport and write it to `filePath` (or return the base64 data). */
+    screenshot: async (filePath) => {
+      const { data } = await send("Page.captureScreenshot", { format: "png" });
+      if (filePath) writeFileSync(filePath, Buffer.from(data, "base64"));
+      return data;
+    },
     close: () => socket.close(),
   };
 }

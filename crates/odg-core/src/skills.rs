@@ -126,6 +126,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("code-review", include_str!("../skills/code-review/SKILL.md")),
     ("debugging", include_str!("../skills/debugging/SKILL.md")),
     ("writing-tests", include_str!("../skills/writing-tests/SKILL.md")),
+    ("e2e-verification", include_str!("../skills/e2e-verification/SKILL.md")),
     ("refactoring", include_str!("../skills/refactoring/SKILL.md")),
     ("writing-docs", include_str!("../skills/writing-docs/SKILL.md")),
     ("frontend-design", include_str!("../skills/frontend-design/SKILL.md")),

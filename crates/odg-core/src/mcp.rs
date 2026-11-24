@@ -104,6 +104,8 @@ pub struct McpTool {
 pub struct CallResult {
     pub content: String,
     pub is_error: bool,
+    /// `(media_type, base64)` for each image returned by the tool.
+    pub images: Vec<(String, String)>,
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
@@ -415,7 +417,7 @@ impl Server {
         Ok(read)
     }
 
-    /// Call a tool and flatten what it returns into text.
+    /// Call a tool, keeping returned images so multimodal models can inspect screenshots.
     pub async fn call(&self, tool: &str, arguments: &Value, cancel: &CancellationToken) -> CallResult {
         let arguments = if arguments.is_object() { arguments.clone() } else { json!({}) };
         let answer = tokio::select! {
@@ -424,8 +426,9 @@ impl Server {
         };
         let result = match answer {
             Ok(result) => result,
-            Err(error) => return CallResult { content: format!("The tool call failed: {error}"), is_error: true },
+            Err(error) => return CallResult { content: format!("The tool call failed: {error}"), is_error: true, images: Vec::new() },
         };
+        let mut images = Vec::new();
         let parts: Vec<String> = result["content"]
             .as_array()
             .map(Vec::as_slice)
@@ -433,8 +436,34 @@ impl Server {
             .iter()
             .map(|part| match part["type"].as_str() {
                 Some("text") => part["text"].as_str().unwrap_or_default().to_string(),
-                Some("image" | "audio") => format!("[{} returned by the tool; it is not shown here]", part["mimeType"].as_str().unwrap_or("media")),
-                Some("resource") => part["resource"]["text"].as_str().map(str::to_string).unwrap_or_else(|| format!("[resource {}]", part["resource"]["uri"].as_str().unwrap_or_default())),
+                Some("image") => {
+                    let kind = part["mimeType"].as_str().unwrap_or_default();
+                    if crate::events::IMAGE_TYPES.contains(&kind)
+                        && let Some(data) = part["data"].as_str().filter(|data| !data.is_empty())
+                    {
+                        images.push((kind.to_string(), data.to_string()));
+                        format!("[a {kind} picture, shown to you here]")
+                    } else {
+                        format!("[{} returned by the tool; it is not shown here]", if kind.is_empty() { "image" } else { kind })
+                    }
+                }
+                Some("audio") => format!("[{} returned by the tool; it is not shown here]", part["mimeType"].as_str().unwrap_or("audio")),
+                Some("resource") => {
+                    let resource = &part["resource"];
+                    if let Some(text) = resource["text"].as_str() {
+                        text.to_string()
+                    } else if let Some(blob) = resource["blob"].as_str().filter(|blob| !blob.is_empty()) {
+                        let kind = resource["mimeType"].as_str().unwrap_or_default();
+                        if crate::events::IMAGE_TYPES.contains(&kind) {
+                            images.push((kind.to_string(), blob.to_string()));
+                            format!("[a {kind} picture, shown to you here]")
+                        } else {
+                            format!("[resource {}]", resource["uri"].as_str().unwrap_or_default())
+                        }
+                    } else {
+                        format!("[resource {}]", resource["uri"].as_str().unwrap_or_default())
+                    }
+                }
                 Some("resource_link") => format!("[link to {}]", part["uri"].as_str().unwrap_or_default()),
                 _ => part.to_string(),
             })
@@ -451,7 +480,7 @@ impl Server {
         if content.is_empty() {
             content = "(the tool returned nothing)".to_string();
         }
-        CallResult { content, is_error: result["isError"].as_bool().unwrap_or(false) }
+        CallResult { content, is_error: result["isError"].as_bool().unwrap_or(false), images }
     }
 }
 
@@ -681,7 +710,7 @@ impl McpHub {
         };
         match found {
             Some((server, tool)) => server.call(&tool, input, cancel).await,
-            None => CallResult { content: format!("No connected MCP server offers `{name}`. The server may have stopped or been removed from the settings."), is_error: true },
+            None => CallResult { content: format!("No connected MCP server offers `{name}`. The server may have stopped or been removed from the settings."), is_error: true, images: Vec::new() },
         }
     }
 
@@ -878,8 +907,8 @@ mod tests {
         assert_eq!(server.tools[1].input_schema, json!({ "type": "object" }));
         let cancel = CancellationToken::new();
         let said = server.call("echo", &json!({ "text": "分身" }), &cancel).await;
-        assert_eq!(said, CallResult { content: "分身\n[image/png returned by the tool; it is not shown here]".into(), is_error: false });
-        assert_eq!(server.call("fail now", &json!({}), &cancel).await, CallResult { content: "it broke".into(), is_error: true });
+        assert_eq!(said, CallResult { content: "分身\n[a image/png picture, shown to you here]".into(), is_error: false, images: vec![("image/png".into(), "aGk=".into())] });
+        assert_eq!(server.call("fail now", &json!({}), &cancel).await, CallResult { content: "it broke".into(), is_error: true, images: Vec::new() });
 
         let hub = McpHub::new("unused.json", tokio::runtime::Handle::current());
         hub.insert("echo", server);
@@ -910,7 +939,7 @@ mod tests {
         let config = ServerConfig { url: Some(format!("{address}/mcp")), headers: [("authorization".to_string(), "Bearer t".to_string())].into(), ..Default::default() };
         let server = Server::connect(&config).await.unwrap();
         assert_eq!(server.tools[0].name, "add");
-        assert_eq!(server.call("add", &json!({ "a": 1, "b": 2 }), &CancellationToken::new()).await, CallResult { content: "3".into(), is_error: false });
+        assert_eq!(server.call("add", &json!({ "a": 1, "b": 2 }), &CancellationToken::new()).await, CallResult { content: "3".into(), is_error: false, images: Vec::new() });
 
         let requests = requests.await.unwrap();
         let lower: Vec<String> = requests.iter().map(|request| request.to_lowercase()).collect();
