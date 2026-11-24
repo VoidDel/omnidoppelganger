@@ -620,3 +620,8 @@ export interface PtyExitPayload {
   exit_code: number | null;
 }
 
+export interface WorkspaceChangedPayload {
+  workspace: string;
+  git: boolean;
+}
+

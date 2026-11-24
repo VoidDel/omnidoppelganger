@@ -423,6 +423,7 @@ export default function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [inWorkbench, setInWorkbench] = useState(false);
   const [manualTick, setManualTick] = useState(0);
+  const [buildTick, setBuildTick] = useState(0);
   const [gitState, setGitState] = useState<GitStatus | null>(null);
 
   const isProjectSession = !!active && !chatting(active);
@@ -441,8 +442,8 @@ export default function App() {
     }
   }, [activeWorkspace, isProjectSession, leftTab]);
 
-  // Auto-refresh token for FileTree, GitPanel, and CodeViewer whenever session events or user actions touch disk.
-  const fsRefreshTick = useMemo(() => {
+  // Auto-refresh tokens for FileTree/CodeViewer (`fsRefreshTick`) and GitPanel (`gitRefreshTick`).
+  const gitRefreshTick = useMemo(() => {
     let count = manualTick;
     for (const env of state.events) {
       if (
@@ -458,21 +459,39 @@ export default function App() {
     }
     return count;
   }, [state.events, manualTick]);
+  const fsRefreshTick = gitRefreshTick + buildTick;
 
   const bumpRefresh = useCallback(() => setManualTick((n) => n + 1), []);
 
-  // Watch the active project workspace on disk so external edits and PTY git/file commands auto-refresh UI.
+  // Watch the active project workspace on disk so external edits, build outputs, and PTY commands auto-refresh UI.
   useEffect(() => {
     const targetId = inChat && isProjectSession && activeId ? activeId : null;
     api.watchWorkspace(targetId).catch(() => undefined);
   }, [inChat, isProjectSession, activeId, activeWorkspace]);
 
   useEffect(() => {
-    // A change on disk refreshes the tree, Git and what is open; the list of 分身 does not depend on it.
-    const stop = api.onWorkspaceChanged(() => bumpRefresh());
+    // Source/Git changes refresh both FileTree and Git; build-output changes (`target/`, `dist/`) refresh FileTree only.
+    const stop = api.onWorkspaceChanged(({ git }) => {
+      if (git) bumpRefresh();
+      else setBuildTick((n) => n + 1);
+    });
     return () => {
       stop.then((unlisten) => unlisten()).catch(() => undefined);
     };
+  }, [bumpRefresh]);
+
+  useEffect(() => {
+    // Also re-sync when returning focus to the window (e.g. after building or moving files in Explorer/Finder).
+    let lastFocusAt = 0;
+    const onFocus = () => {
+      const now = Date.now();
+      if (now - lastFocusAt >= 1500) {
+        lastFocusAt = now;
+        bumpRefresh();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [bumpRefresh]);
 
   // Git status: at once for a newly opened workspace, then once per burst of changes, not once per change.
@@ -496,7 +515,7 @@ export default function App() {
       fresh ? 0 : 300,
     );
     return () => clearTimeout(timer);
-  }, [isProjectSession, activeId, activeWorkspace, fsRefreshTick]);
+  }, [isProjectSession, activeId, activeWorkspace, gitRefreshTick]);
 
   // A branch switched outside the app (in the terminal, or another tool) shows in the title bar once Git sees it.
   const seenBranch = useRef<string | null>(null);
@@ -1017,7 +1036,7 @@ export default function App() {
                   sessionId={active.id}
                   isWorktree={!!active.worktree}
                   status={gitState}
-                  refreshTick={fsRefreshTick}
+                  refreshTick={gitRefreshTick}
                   working={state.status !== "idle"}
                   onStatusChanged={(next) => {
                     // Staging hands back the new status itself; anything else (commit, branch, sync) asks for it again.
@@ -1193,7 +1212,7 @@ export default function App() {
                       path={tab.path}
                       stage={tab.stage}
                       commit={tab.commit}
-                      refreshTick={fsRefreshTick}
+                      refreshTick={gitRefreshTick}
                       onOpenSource={(relPath, line) => openWorkbenchFile(relPath, false, line)}
                       onQuoteDiff={quoteIntoChat}
                     />

@@ -174,8 +174,11 @@ export const api = {
   onPtyExit: (handler: (payload: PtyExitPayload) => void) =>
     listen<PtyExitPayload>("pty-exit", (event) => handler(event.payload)),
   watchWorkspace: (id: string | null) => invoke<void>("watch_workspace", { id }),
-  onWorkspaceChanged: (handler: (workspace: string) => void) =>
-    listen<string>("workspace-changed", (event) => handler(event.payload)),
+  onWorkspaceChanged: (handler: (payload: { workspace: string; git: boolean }) => void) =>
+    listen<{ workspace: string; git: boolean } | string>("workspace-changed", (event) => {
+      const p = event.payload;
+      handler(typeof p === "string" ? { workspace: p, git: true } : p);
+    }),
   /** A picture the session's 分身 wrote, either from a recorded `snapshot` or as it is now on disk. */
   picture: (id: string, path: string, snapshot?: string) => invoke<Image>("picture", { id, path, snapshot: snapshot ?? null }),
   /** Ask for a folder with the system dialog, titled `title`. Resolves null when the user closes it. */

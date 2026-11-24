@@ -7,55 +7,106 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::Serialize;
 use tokio::sync::mpsc;
 
 pub const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
-const DEBOUNCE_WINDOW: Duration = Duration::from_millis(350);
+const SOURCE_DEBOUNCE: Duration = Duration::from_millis(350);
+const BUILD_DEBOUNCE: Duration = Duration::from_millis(800);
 
-const NOISY_DIRS: &[&str] = &[
+/// Directories whose contents are typically gitignored build outputs or package trees:
+/// changes inside them should refresh the `FileTree` (if expanded) without spawning `git status`.
+const BUILD_OR_DEP_DIRS: &[&str] = &[
     "node_modules",
     "target",
     "dist",
+    "build",
+    "out",
+    ".next",
+    "coverage",
+];
+
+/// Internal compiler / tool scratch directories that churn thousands of files mid-build
+/// and never hold user-facing deliverables.
+const EPHEMERAL_CACHE_DIRS: &[&str] = &[
+    "incremental",
+    ".fingerprint",
     ".pnpm-store",
     "__pycache__",
     ".pytest_cache",
-    ".next",
     ".turbo",
     ".cache",
 ];
 
-/// Decide whether a filesystem change at `path` inside `workspace` is meaningful to the UI.
-pub fn is_relevant_path(workspace: &Path, path: &Path) -> bool {
-    let rel = path.strip_prefix(workspace).unwrap_or(path);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PathImpact {
+    /// Ephemeral lock/temp/object file: ignore completely.
+    None,
+    /// Build output or dependency directory: refresh `FileTree` & file viewers only (skip `git status`).
+    TreeOnly,
+    /// Source file or Git ref/index: refresh both `FileTree` and `GitPanel`.
+    TreeAndGit,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceChanged {
+    pub workspace: String,
+    pub git: bool,
+}
+
+fn strip_verbatim(path: &Path) -> &Path {
+    path.to_str()
+        .and_then(|s| s.strip_prefix(r"\\?\"))
+        .map(Path::new)
+        .unwrap_or(path)
+}
+
+/// Classify how a filesystem change at `path` inside `workspace` should refresh the UI.
+pub fn classify_path(workspace: &Path, path: &Path) -> PathImpact {
+    let ws = strip_verbatim(workspace);
+    let p = strip_verbatim(path);
+    let rel = p.strip_prefix(ws).unwrap_or(p);
     let parts: Vec<String> = rel
         .components()
         .filter_map(|c| match c {
-            Component::Normal(p) => Some(p.to_string_lossy().into_owned()),
+            Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
             _ => None,
         })
         .collect();
     if parts.is_empty() {
-        return false;
+        return PathImpact::None;
     }
 
     let leaf = parts.last().map(String::as_str).unwrap_or("");
     if leaf == ".DS_Store" || leaf.ends_with(".tmp") || leaf.ends_with(".swp") || leaf.ends_with(".lock") || leaf.ends_with('~') {
-        return false;
-    }
-
-    if parts.iter().any(|seg| NOISY_DIRS.iter().any(|n| seg.eq_ignore_ascii_case(n))) {
-        return false;
+        return PathImpact::None;
     }
 
     if let Some(git_idx) = parts.iter().position(|seg| seg.eq_ignore_ascii_case(".git")) {
         let after = &parts[git_idx + 1..];
-        return matches!(
+        return if matches!(
             after.first().map(String::as_str),
             Some("HEAD" | "index" | "packed-refs" | "MERGE_HEAD" | "REBASE_HEAD" | "refs")
-        );
+        ) {
+            PathImpact::TreeAndGit
+        } else {
+            PathImpact::None
+        };
     }
 
-    true
+    // Ignore deep churn inside internal compiler/cache scratch folders (while still noticing if the folder itself is created/removed).
+    if parts.len() > 1 && parts[..parts.len() - 1].iter().any(|seg| EPHEMERAL_CACHE_DIRS.iter().any(|c| seg.eq_ignore_ascii_case(c))) {
+        return PathImpact::None;
+    }
+    if parts.iter().any(|seg| EPHEMERAL_CACHE_DIRS.iter().any(|c| seg.eq_ignore_ascii_case(c))) {
+        return PathImpact::TreeOnly;
+    }
+
+    if parts.iter().any(|seg| BUILD_OR_DEP_DIRS.iter().any(|n| seg.eq_ignore_ascii_case(n))) {
+        return PathImpact::TreeOnly;
+    }
+
+    PathImpact::TreeAndGit
 }
 
 struct ActiveWatch {
@@ -80,7 +131,7 @@ impl WorkspaceWatcher {
 
     pub fn watch<F>(&self, workspace: Option<PathBuf>, runtime: tokio::runtime::Handle, on_changed: F) -> Result<(), String>
     where
-        F: Fn(String) + Send + Sync + 'static,
+        F: Fn(WorkspaceChanged) + Send + Sync + 'static,
     {
         let mut guard = self.active.lock().unwrap();
         let Some(target) = workspace.and_then(|p| p.canonicalize().ok()) else {
@@ -92,15 +143,22 @@ impl WorkspaceWatcher {
             return Ok(());
         }
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<PathImpact>();
         let filter_root = target.clone();
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res
                     && !matches!(event.kind, notify::EventKind::Access(_))
-                    && event.paths.iter().any(|p| is_relevant_path(&filter_root, p))
                 {
-                    let _ = tx.send(());
+                    let impact = event
+                        .paths
+                        .iter()
+                        .map(|p| classify_path(&filter_root, p))
+                        .max()
+                        .unwrap_or(PathImpact::None);
+                    if impact != PathImpact::None {
+                        let _ = tx.send(impact);
+                    }
                 }
             },
             Config::default(),
@@ -128,13 +186,31 @@ impl WorkspaceWatcher {
             }
         }
 
-        let watched_str = target.to_string_lossy().into_owned();
+        let watched_str = strip_verbatim(&target).to_string_lossy().into_owned();
         let callback = Arc::new(on_changed);
         runtime.spawn(async move {
-            while rx.recv().await.is_some() {
-                tokio::time::sleep(DEBOUNCE_WINDOW).await;
-                while rx.try_recv().is_ok() {}
-                callback(watched_str.clone());
+            while let Some(first) = rx.recv().await {
+                let mut impact = first;
+                loop {
+                    let wait = if impact == PathImpact::TreeAndGit { SOURCE_DEBOUNCE } else { BUILD_DEBOUNCE };
+                    tokio::time::sleep(wait).await;
+                    let mut more = false;
+                    while let Ok(next) = rx.try_recv() {
+                        more = true;
+                        if next > impact {
+                            impact = next;
+                        }
+                    }
+                    // For build-output bursts (`target/`, `dist/`, `node_modules/`), wait until writes settle;
+                    // for normal source edits, emit promptly after the first debounce window.
+                    if !more || impact == PathImpact::TreeAndGit {
+                        break;
+                    }
+                }
+                callback(WorkspaceChanged {
+                    workspace: watched_str.clone(),
+                    git: impact == PathImpact::TreeAndGit,
+                });
             }
         });
 
@@ -152,18 +228,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filters_noisy_build_and_git_object_paths_while_keeping_source_and_git_head() {
+    fn classifies_source_build_bundle_and_ephemeral_paths() {
         let root = Path::new("/tmp/demo");
-        assert!(is_relevant_path(root, Path::new("/tmp/demo/src/main.rs")));
-        assert!(is_relevant_path(root, Path::new("/tmp/demo/.gitignore")));
-        assert!(is_relevant_path(root, Path::new("/tmp/demo/.git/HEAD")));
-        assert!(is_relevant_path(root, Path::new("/tmp/demo/.git/index")));
-        assert!(is_relevant_path(root, Path::new("/tmp/demo/.git/refs/heads/main")));
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/src/main.rs")), PathImpact::TreeAndGit);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/.gitignore")), PathImpact::TreeAndGit);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/HEAD")), PathImpact::TreeAndGit);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/index")), PathImpact::TreeAndGit);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/refs/heads/main")), PathImpact::TreeAndGit);
 
-        assert!(!is_relevant_path(root, Path::new("/tmp/demo/.git/index.lock")));
-        assert!(!is_relevant_path(root, Path::new("/tmp/demo/.git/objects/12/3456")));
-        assert!(!is_relevant_path(root, Path::new("/tmp/demo/target/debug/app")));
-        assert!(!is_relevant_path(root, Path::new("/tmp/demo/node_modules/pkg/index.js")));
-        assert!(!is_relevant_path(root, Path::new("/tmp/demo/.DS_Store")));
+        // Build outputs (`target/release/bundle/nsis/*.exe`, `dist/*`) refresh FileTree without triggering Git!
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/target/release/bundle/nsis/OmniDoppelganger_0.7.0_x64-setup.exe")),
+            PathImpact::TreeOnly
+        );
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/dist/index.html")), PathImpact::TreeOnly);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/node_modules/pkg/index.js")), PathImpact::TreeOnly);
+
+        // Windows `\\?\` verbatim prefixes are stripped symmetrically.
+        assert_eq!(strip_verbatim(Path::new(r"\\?\D:\proj")), Path::new(r"D:\proj"));
+        #[cfg(windows)]
+        assert_eq!(
+            classify_path(Path::new(r"\\?\D:\proj"), Path::new(r"D:\proj\target\release\bundle\nsis\setup.exe")),
+            PathImpact::TreeOnly
+        );
+
+        // Lock files, git objects, and Cargo incremental/fingerprint scratch dirs are ignored completely.
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/index.lock")), PathImpact::None);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/objects/12/3456")), PathImpact::None);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/target/release/incremental/app/s-123.bin")), PathImpact::None);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/target/debug/.fingerprint/app/invoked.timestamp")), PathImpact::None);
+        assert_eq!(classify_path(root, Path::new("/tmp/demo/.DS_Store")), PathImpact::None);
     }
 }
