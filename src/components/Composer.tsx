@@ -387,6 +387,9 @@ export function Composer(props: ComposerProps) {
         {mode === "bypass" && status === "idle" && !planReady && (
           <span className="trusted-note">全权托付中：分身什么都不请示。</span>
         )}
+        {provider?.protocol === "antigravity" && mode !== "bypass" && status === "idle" && !planReady && (
+          <span>Antigravity（agy CLI 无头流式模式）：工具执行与会话上下文由本机 agy 托管。</span>
+        )}
         {status === "idle" && planReady && (
           <>
             <span>计划已呈上。本尊点头，就换个禁制让它动手：</span>

@@ -66,6 +66,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   /* No space above: the band that holds 本尊's words sticks to the very top, and brings its own. */
   padding: 0 24px 24px;
   display: flex;
@@ -265,6 +266,25 @@
 .original.queued {
   border-style: dashed;
   box-shadow: none;
+  align-items: center;
+}
+
+.original.queued .said-text {
+  flex: 1;
+}
+
+.queued-now {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  color: var(--jade);
+}
+
+.queued-now:hover:not(:disabled) {
+  border-color: var(--jade);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
 }
 
 .said-meta {

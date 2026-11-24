@@ -283,6 +283,8 @@ interface Props {
   versionOf?: (path: string, snapshot?: string) => number | undefined;
   /** In a side conversation: hand what the 分身 said here to the main 分身, as words said to it during its work. */
   onForward?: (text: string) => void;
+  /** Interrupt the step in flight so queued steering messages are heard immediately. */
+  onDeliverNow?: () => void;
 }
 
 /** Undoing cannot itself be undone, so the icon asks once more, in a bubble, before it acts. */
@@ -332,7 +334,8 @@ function SaidText({ text }: { text: string }) {
 }
 
 /** A message sent while the 分身 works, which it has not heard yet. */
-function Queued({ text }: { text: string }) {
+function Queued({ text, onDeliverNow }: { text: string; onDeliverNow?: () => void }) {
+  const [sent, setSent] = useState(false);
   return (
     <div className="said-queued">
       <div className="original queued">
@@ -340,15 +343,32 @@ function Queued({ text }: { text: string }) {
           音
         </span>
         <div className="said-text">{text || "（附件）"}</div>
+        {onDeliverNow && (
+          <button
+            type="button"
+            className="icon-button queued-now"
+            disabled={sent}
+            title={sent ? "正在立即传音…" : "立即传音：打断当前这一步，马上把这句话交给分身"}
+            onClick={() => {
+              setSent(true);
+              onDeliverNow();
+            }}
+          >
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2.2 3.2 13.8 8 2.2 12.8l2.2-4.8-2.2-4.8zM4.4 8h4.2" />
+            </svg>
+            <span className="sr-only">立即传音</span>
+          </button>
+        )}
       </div>
       <div className="said-foot">
-        <span className="said-meta">传音在途，分身做完这一步就会听到</span>
+        <span className="said-meta">{sent ? "正在打断当前步骤，立即传音…" : "传音在途，分身做完这一步就会听到"}</span>
       </div>
     </div>
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture, versionOf, onForward }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture, versionOf, onForward, onDeliverNow }: Props) {
   const family = { sessions, onOpen };
   const undoable = undoableTurns(rows, copied);
   /** Where a fork's own conversation begins: said once, between what it copied and what it did itself. */
@@ -519,7 +539,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                     </p>
                   )}
                   {/* Words sent after the order while the 分身 works wait here, under what it is working on, until it hears them. */}
-                  {last && queued.map((text, at) => <Queued key={at} text={text} />)}
+                  {last && queued.map((text, at) => <Queued key={at} text={text} onDeliverNow={frozen ? undefined : onDeliverNow} />)}
                 </div>
                 <div className={`turn-did ${last && status === "running" ? "live" : ""}`}>
                   {parts(row.items).map((part) =>
@@ -547,7 +567,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
             <section className="turn">
               <div className="turn-said">
                 {queued.map((text, at) => (
-                  <Queued key={at} text={text} />
+                  <Queued key={at} text={text} onDeliverNow={frozen ? undefined : onDeliverNow} />
                 ))}
               </div>
             </section>

@@ -585,6 +585,12 @@ impl SettingsStore {
     }
 
     pub fn key_status(&self, provider: &str) -> KeyStatus {
+        if crate::providers::provider(provider).is_some_and(|known| known.protocol == crate::providers::Protocol::Antigravity) {
+            return match crate::antigravity::find_binary() {
+                Some(path) => KeyStatus { source: "cli".to_string(), preview: Some(path.display().to_string()), plaintext: false },
+                None => KeyStatus { source: "none".to_string(), preview: None, plaintext: false },
+            };
+        }
         let (key, source, plaintext) = match self.saved_key(provider) {
             Some((key, plaintext)) => (Some(key), "saved", plaintext),
             None => match Self::env_key(provider) {

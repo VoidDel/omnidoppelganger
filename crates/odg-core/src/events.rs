@@ -392,6 +392,10 @@ pub enum Event {
     /// last one is not logged again. See [`crate::aside`]. Since format 20.
     #[serde(rename = "aside/briefed")]
     AsideBriefed { brief: String },
+    /// Conversation handle on an external agent CLI backend (e.g. `antigravity` / `agy`),
+    /// stored so subsequent turns and app restarts resume the same external conversation. Since format 21.
+    #[serde(rename = "external/session")]
+    ExternalSession { backend: String, session_id: String },
     #[serde(rename = "user/message")]
     UserMessage {
         text: String,

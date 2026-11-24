@@ -17,7 +17,7 @@ export const EFFORT_HINTS: Record<string, string> = {
 
 /** How a provider's effort setting lands, for a note under the realms. */
 export function effortNote(provider: Provider | undefined): string {
-  if (!provider || provider.protocol === "anthropic" || provider.protocol === "responses") return "";
+  if (!provider || provider.protocol === "anthropic" || provider.protocol === "responses" || provider.protocol === "antigravity") return "";
   switch (provider.protocol.chat) {
     case "deep_seek":
       return "DeepSeek 只分低、高、极三档：筑基和元婴按金丹算。";

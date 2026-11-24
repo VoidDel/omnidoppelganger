@@ -151,6 +151,7 @@ export function AsidePane({ main, visible, sessions, renderComposer, onForward, 
           onOpenFile={(path, reveal, snapshot, version) => api.openAttachment(aside.id, path, reveal, snapshot, version)}
           onPicture={(path, snapshot) => api.picture(aside.id, path, snapshot)}
           onForward={onForward}
+          onDeliverNow={() => api.deliverQueued(aside.id).catch((error) => onError(String(error)))}
         />
       )}
       {aside &&

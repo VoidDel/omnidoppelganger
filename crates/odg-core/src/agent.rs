@@ -593,6 +593,9 @@ impl<L: Llm> Session<L> {
     /// it does, so it can be stopped, and a message sent meanwhile opens a
     /// turn once it is done. Returns how many tokens the conversation held.
     pub async fn compact_now(&self) -> Result<u64, String> {
+        if providers::provider(&self.inner.provider()).is_some_and(|known| known.protocol == providers::Protocol::Antigravity) {
+            return Err("Antigravity (agy CLI) 由外部引擎自行管理上下文，无需手动凝练。".to_string());
+        }
         let cancel = {
             let mut state = self.inner.state.lock().unwrap();
             if state.status != Status::Idle {
@@ -639,6 +642,17 @@ impl<L: Llm> Session<L> {
     /// Stop the running turn. The turn ends as `cancelled` once the current operation returns.
     pub fn cancel(&self) {
         self.inner.state.lock().unwrap().cancel.cancel();
+    }
+
+    /// Interrupt the step in flight so messages waiting in the inbox are heard at once.
+    /// Returns false when nothing was waiting (already picked up), so a late click never cancels the work it meant to trigger.
+    pub fn deliver_queued(&self) -> bool {
+        let state = self.inner.state.lock().unwrap();
+        if state.status == Status::Idle || state.inbox.is_empty() {
+            return false;
+        }
+        state.cancel.cancel();
+        true
     }
 }
 
@@ -944,6 +958,9 @@ impl<L: Llm> Inner<L> {
     async fn run_turn(&self, (text, images, files): Said, cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
         let started = std::time::SystemTime::now();
+        let is_antigravity = providers::provider(&self.provider()).is_some_and(|known| known.protocol == providers::Protocol::Antigravity);
+        let agy_text = is_antigravity.then(|| text.clone());
+        let agy_files = if is_antigravity { files.clone() } else { Vec::new() };
         let opened = self
             .append(Event::TurnStart { turn })
             .and_then(|()| self.brief_before_message())
@@ -951,6 +968,40 @@ impl<L: Llm> Inner<L> {
             .and_then(|()| self.refresh_instructions())
             .and_then(|()| self.refresh_skills());
         let (reason, error) = match opened {
+            Ok(()) if is_antigravity => {
+                let (conversation_id, briefing) = {
+                    let log = self.log.lock().unwrap();
+                    let conv = crate::session::external_session(log.events(), crate::antigravity::BACKEND).map(str::to_string);
+                    let brief = self.aside.is_some().then(|| crate::session::last_brief(log.events()).map(str::to_string)).flatten();
+                    (conv, brief)
+                };
+                let prompt = crate::antigravity::build_prompt(agy_text.as_deref().unwrap_or(""), &agy_files, briefing.as_deref());
+                let tuning = self.tuning();
+                let params = crate::antigravity::TurnParams {
+                    workspace: &self.workspace,
+                    turn,
+                    prompt,
+                    conversation_id,
+                    model: self.model(),
+                    effort: tuning.effort,
+                    mode: self.mode(),
+                    sandboxed: self.sandboxed(),
+                    read_only: self.read_only,
+                };
+                struct AgySink<'a, L: Llm>(&'a Inner<L>);
+                impl<L: Llm> crate::antigravity::Sink for AgySink<'_, L> {
+                    fn log(&self, event: Event) -> Result<(), String> {
+                        self.0.append(event)
+                    }
+                    fn stream(&self, delta: StreamDelta) {
+                        self.0.emit(UiEvent::Stream { session_id: self.0.id.clone(), delta });
+                    }
+                }
+                match crate::antigravity::run_turn(params, &AgySink(self), cancel).await {
+                    Ok(reason) => (reason, None),
+                    Err(error) => ("error", Some(error)),
+                }
+            }
             Ok(()) => match self.run_steps(cancel).await {
                 Ok(reason) => (reason, None),
                 Err(error) => ("error", Some(error)),
@@ -996,13 +1047,13 @@ impl<L: Llm> Inner<L> {
         // The provider refused the last request as too long, and the conversation was compacted for it.
         let mut overflowed = false;
         for _ in 0..MAX_STEPS {
+            if cancel.is_cancelled() {
+                return Ok("cancelled");
+            }
             let queued: Vec<Said> = self.state.lock().unwrap().inbox.drain(..).collect();
             for (text, images, files) in queued {
                 self.brief_before_message()?;
                 self.append(Event::UserMessage { text, steering: true, mode: self.mode(), images, files })?;
-            }
-            if cancel.is_cancelled() {
-                return Ok("cancelled");
             }
 
             let tuning = self.tuning();

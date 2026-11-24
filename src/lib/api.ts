@@ -103,6 +103,8 @@ export const api = {
   /** Undo the agent's file edits from `turn` on. Rejects while a turn is running. */
   undoTurn: (id: string, turn: number) => invoke<{ restored: string[]; skipped: string[] }>("undo_turn", { id, turn }),
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),
+  /** Interrupt the current step so queued steering messages are heard immediately; resolves false if already picked up. */
+  deliverQueued: (id: string) => invoke<boolean>("deliver_queued", { id }),
   /** Have the model summarize the conversation now, between turns. Resolves with how many tokens it held before. */
   compactSession: (id: string) => invoke<number>("compact_session", { id }),
   getSettings: () => invoke<SettingsView>("get_settings"),

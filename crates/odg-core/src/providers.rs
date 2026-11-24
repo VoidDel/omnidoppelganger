@@ -27,6 +27,8 @@ pub enum Protocol {
     Responses,
     /// OpenAI-style Chat Completions, with the provider's own extensions.
     Chat(Flavor),
+    /// Local Google Antigravity CLI (`agy`) running headless `stream-json`.
+    Antigravity,
 }
 
 /// Which Chat Completions dialect a provider speaks. They differ in the
@@ -123,6 +125,21 @@ pub const PROVIDERS: &[Provider] = &[
         key_env: None,
         models: &[],
     },
+    Provider {
+        id: "antigravity",
+        name: "Antigravity (agy CLI)",
+        protocol: Protocol::Antigravity,
+        base_url: "",
+        other_urls: &[],
+        key_env: None,
+        models: &[
+            ("gemini-4-neon-high", "Gemini 4 Neon (High)"),
+            ("gemini-4-neon-medium", "Gemini 4 Neon (Medium)"),
+            ("gemini-4-carbon-medium", "Gemini 4 Carbon (Medium)"),
+            ("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+            ("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
+        ],
+    },
 ];
 
 /// The kind of provider `id` names: a kind's own id, which is also the first
@@ -192,6 +209,7 @@ pub fn documented_window(provider: &str, model: &str) -> Option<u64> {
         ("zhipu", "glm-5.1" | "glm-5v-turbo" | "glm-5-turbo" | "glm-5" | "glm-4.7" | "glm-4.7-flashx" | "glm-4.7-flash" | "glm-4.6") => Some(200_000),
         // Smaller than what an unlisted model is assumed to hold, so these must be said.
         ("zhipu", "glm-4.1v-thinking-flashx" | "glm-4.1v-thinking-flash") => Some(64_000),
+        ("antigravity", _) => Some(1_000_000),
         _ => None,
     }
 }
@@ -232,6 +250,7 @@ pub fn vision(provider: &str, model: &str) -> Option<bool> {
         ("moonshot", "kimi-k3.1-pro" | "kimi-k3") => Some(true),
         ("zhipu", "glm-5.3-flash") => Some(true),
         ("zhipu", "glm-5.3") => Some(false),
+        ("antigravity", _) => Some(true),
         _ => None,
     }
 }
@@ -244,6 +263,9 @@ pub fn vision(provider: &str, model: &str) -> Option<bool> {
 /// models that are not for chat.
 pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -> Result<Vec<Listed>, String> {
     let known = provider(provider_id).ok_or_else(|| format!("there is no provider `{provider_id}`"))?;
+    if known.protocol == Protocol::Antigravity {
+        return crate::antigravity::list_models().await;
+    }
     let key = key.map(str::trim).filter(|key| !key.is_empty()).ok_or("no API key is saved for this provider")?;
     let base = base_url.trim_end_matches('/');
     if base.is_empty() {
@@ -253,6 +275,7 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
     let request = match known.protocol {
         Protocol::Anthropic => http.get(format!("{base}/v1/models?limit=1000")).header("x-api-key", key).header("anthropic-version", anthropic::API_VERSION),
         Protocol::Responses | Protocol::Chat(_) => http.get(format!("{base}/models")).bearer_auth(key),
+        Protocol::Antigravity => unreachable!("handled above"),
     };
     let response = request.send().await.map_err(|error| format!("cannot reach the provider: {error}"))?;
     if !response.status().is_success() {
@@ -294,6 +317,10 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
             cached: count(&usage["prompt_tokens_details"]["cached_tokens"]).max(count(&usage["prompt_cache_hit_tokens"])),
             output: count(&usage["completion_tokens"]),
         },
+        Protocol::Antigravity => {
+            let cached = count(&usage["cache_read_tokens"]);
+            Tokens { input: count(&usage["input_tokens"]) + cached, cached, output: count(&usage["output_tokens"]) }
+        }
     };
     (found.input > 0 || found.output > 0).then_some(found)
 }
@@ -346,6 +373,7 @@ impl Llm for Router {
             Protocol::Anthropic => self.anthropic.stream(request, deltas, cancel).await,
             Protocol::Responses => self.responses.stream(request, deltas, cancel).await,
             Protocol::Chat(flavor) => self.chat.stream(flavor, request, deltas, cancel).await,
+            Protocol::Antigravity => Err(LlmError::Protocol("Antigravity runs through the local agy CLI backend".to_string())),
         }
     }
 }
@@ -359,7 +387,7 @@ pub fn effort_for(protocol: Protocol, effort: &str) -> Option<&'static str> {
     };
     match protocol {
         // These accept all five as they are.
-        Protocol::Anthropic | Protocol::Responses => Some(level(["low", "medium", "high", "xhigh", "max"])),
+        Protocol::Anthropic | Protocol::Responses | Protocol::Antigravity => Some(level(["low", "medium", "high", "xhigh", "max"])),
         // DeepSeek takes none/low/high/max and itself maps medium and xhigh to high.
         Protocol::Chat(Flavor::DeepSeek) => Some(level(["low", "high", "high", "high", "max"])),
         // Kimi K3 and GLM-5.3 take low/high/max.
@@ -376,9 +404,10 @@ mod tests {
     fn every_provider_is_reachable_and_has_a_default_model_or_asks_for_one() {
         for provider in PROVIDERS {
             assert_eq!(super::provider(provider.id).map(|found| found.id), Some(provider.id));
-            // Only the services the user names have no address and no models of their own.
+            // Only custom services and local CLI backends have no HTTP base URL; only custom services have no built-in models.
             let custom = provider.id.starts_with("custom");
-            assert_eq!(provider.base_url.is_empty(), custom, "{}", provider.id);
+            let cli = provider.protocol == Protocol::Antigravity;
+            assert_eq!(provider.base_url.is_empty(), custom || cli, "{}", provider.id);
             assert_eq!(provider.models.is_empty(), custom, "{}", provider.id);
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);

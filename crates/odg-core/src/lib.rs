@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod anthropic;
+pub mod antigravity;
 pub mod aside;
 pub mod documents;
 pub mod env;

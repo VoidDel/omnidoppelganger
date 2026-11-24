@@ -1212,6 +1212,11 @@ async fn cancel_turn(app: State<'_, App>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn deliver_queued(app: State<'_, App>, id: String) -> Result<bool, String> {
+    Ok(app.live(&id)?.deliver_queued())
+}
+
+#[tauri::command]
 fn get_settings(app: State<'_, App>) -> SettingsView {
     app.settings_view()
 }
@@ -1405,6 +1410,7 @@ pub fn run() {
             list_models,
             undo_turn,
             cancel_turn,
+            deliver_queued,
             compact_session,
             get_settings,
             save_settings,

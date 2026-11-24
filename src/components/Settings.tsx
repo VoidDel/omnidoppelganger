@@ -31,12 +31,19 @@ function useDraft(value: string, save: (value: string) => void) {
   };
 }
 
-function KeyLine({ provider, status }: { provider: { key_env: string | null }; status: KeyStatus }) {
+function KeyLine({ provider, status }: { provider: { key_env: string | null; protocol?: Provider["protocol"] }; status: KeyStatus }) {
   return (
     <>
       {status.source === "saved" && <span className="muted">{status.plaintext ? "密钥存在本机的明文文件里，只显示开头和结尾" : "密钥已存进系统凭据管理器，只显示开头和结尾"}</span>}
       {status.source === "env" && <span className="muted">正在用环境变量 {provider.key_env} 里的密钥</span>}
-      {status.source === "none" && <span className="muted">还没有密钥{provider.key_env ? `，也可以在启动前设置环境变量 ${provider.key_env}` : ""}</span>}
+      {status.source === "cli" && <span className="muted">复用本机 agy CLI 登录凭据（无需 API 密钥）</span>}
+      {status.source === "none" && (
+        <span className="muted">
+          {provider.protocol === "antigravity"
+            ? "未检测到本机 agy CLI，请先安装并在终端运行 agy 登录"
+            : `还没有密钥${provider.key_env ? `，也可以在启动前设置环境变量 ${provider.key_env}` : ""}`}
+        </span>
+      )}
       {status.preview && <span className="mono">{status.preview}</span>}
     </>
   );
@@ -90,11 +97,13 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
   // The provider this window sets: the one changed, or the one adding will make, the first of its kind while that is free.
   const target = provider?.id ?? (firstFree(view, kind.id) ? kind.id : null);
   const status = target ? (view.keys[target] ?? NO_KEY) : NO_KEY;
-  // The first Anthropic provider's address comes from the environment; every other one has its own.
-  const takesAddress = target !== "anthropic";
+  // Local CLI backends (such as Antigravity `agy`) reuse their own CLI login and need neither an API key nor an HTTP base URL.
+  const isCli = kind.protocol === "antigravity";
+  const takesAddress = target !== "anthropic" && !isCli;
   const save = async () => {
     const url = takesAddress ? address.trim() : "";
-    if (!key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
+    if (!isCli && !key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
+    if (isCli && status.source === "none") return setWrong("未检测到本机 agy CLI，请先安装并在终端运行 agy 完成登录。");
     if (takesAddress && !kind.base_url && !url) return setWrong("这个宗门没有默认的接口地址，要填上。");
     setBusy(true);
     let id = provider?.id;
@@ -150,8 +159,12 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
           <input id="key-name" className="input" placeholder={kind.name} value={name} onChange={(event) => setName(event.target.value)} />
         </div>
         <div className="field">
-          <label htmlFor="key-value">{status.source === "saved" ? "换一个密钥（不换就留空）" : "API 密钥"}</label>
-          <input id="key-value" className="input" type="password" autoComplete="off" autoFocus placeholder="粘贴密钥" value={key} onChange={(event) => setKey(event.target.value)} />
+          {!isCli && (
+            <>
+              <label htmlFor="key-value">{status.source === "saved" ? "换一个密钥（不换就留空）" : "API 密钥"}</label>
+              <input id="key-value" className="input" type="password" autoComplete="off" autoFocus placeholder="粘贴密钥" value={key} onChange={(event) => setKey(event.target.value)} />
+            </>
+          )}
           <p className="hint key-line">
             <KeyLine provider={{ ...kind, key_env: target === kind.id ? kind.key_env : null }} status={status} />
           </p>

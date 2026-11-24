@@ -902,6 +902,7 @@ export default function App() {
             onOpenFile={openFile}
             onPicture={pictureOf}
             versionOf={versionOf}
+            onDeliverNow={replay ? undefined : () => api.deliverQueued(active.id).catch(fail)}
           />
         </Guard>
       )}

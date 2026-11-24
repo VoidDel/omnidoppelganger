@@ -2,7 +2,9 @@
 
 .app {
   height: 100%;
+  overflow: hidden;
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   grid-template-columns: var(--sidebar-width, 236px) minmax(0, 1fr);
 }
 
@@ -90,6 +92,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 16px;

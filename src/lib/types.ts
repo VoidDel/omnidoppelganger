@@ -49,6 +49,7 @@ export type SessionEvent =
   | { type: "skills/listed"; data: { skills: Skill[] } }
   | { type: "turn/start"; data: { turn: number } }
   | { type: "aside/briefed"; data: { brief: string } }
+  | { type: "external/session"; data: { backend: string; session_id: string } }
   | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode; images?: Image[]; files?: Attached[] } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }
   | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
@@ -369,7 +370,7 @@ export interface Settings {
 }
 
 export interface KeyStatus {
-  source: "saved" | "env" | "none";
+  source: "saved" | "env" | "cli" | "none";
   preview: string | null;
   /** The saved key is in a plain-text file, not in the system's credential manager. */
   plaintext: boolean;
@@ -380,7 +381,7 @@ export interface KeyStatus {
 export interface ProviderKind {
   id: string;
   name: string;
-  protocol: "anthropic" | "responses" | { chat: string };
+  protocol: "anthropic" | "responses" | "antigravity" | { chat: string };
   base_url: string;
   other_urls: [string, string][];
   key_env: string | null;
@@ -394,7 +395,7 @@ export interface Provider {
   kind: string;
   /** The name the user gave it, or its kind's. */
   name: string;
-  protocol: "anthropic" | "responses" | { chat: string };
+  protocol: "anthropic" | "responses" | "antigravity" | { chat: string };
   base_url: string;
   other_urls: [string, string][];
   key_env: string | null;

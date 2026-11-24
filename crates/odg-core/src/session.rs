@@ -34,9 +34,10 @@ use crate::providers::DEFAULT_PROVIDER;
 /// an older build would not know. Format 19 adds snapshots on `files/made` and
 /// the `artifact/restored` event for deliverable version history. Format 20
 /// adds `aside` to the header and the `aside/briefed` event, for side
-/// conversations. A build from before a format refuses its sessions rather
-/// than misread them.
-pub const FORMAT_VERSION: u32 = 20;
+/// conversations. Format 21 adds the `external/session` event for external
+/// CLI agent backends (such as Antigravity `agy`). A build from before a
+/// format refuses its sessions rather than misread them.
+pub const FORMAT_VERSION: u32 = 21;
 const FILE_NAME: &str = "session.v1.jsonl";
 
 #[derive(Debug, thiserror::Error)]
@@ -663,6 +664,14 @@ pub fn aside(events: &[Envelope]) -> Option<&str> {
 pub fn last_brief(events: &[Envelope]) -> Option<&str> {
     events.iter().rev().find_map(|envelope| match &envelope.event {
         Event::AsideBriefed { brief } => Some(brief.as_str()),
+        _ => None,
+    })
+}
+
+/// The most recent external backend conversation id logged for `backend` (e.g. `antigravity`).
+pub fn external_session<'a>(events: &'a [Envelope], backend: &str) -> Option<&'a str> {
+    events.iter().rev().find_map(|envelope| match &envelope.event {
+        Event::ExternalSession { backend: kind, session_id } if kind == backend => Some(session_id.as_str()),
         _ => None,
     })
 }

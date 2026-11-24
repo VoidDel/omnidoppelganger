@@ -214,6 +214,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -255,6 +256,7 @@
 
 /* The files, as the lines of a ledger in a frame of its own, its corners rounded as the page's other cards are. */
 .file-list {
+  flex: none;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);

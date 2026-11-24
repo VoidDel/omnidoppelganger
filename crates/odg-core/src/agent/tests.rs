@@ -1177,6 +1177,30 @@ async fn a_message_queued_when_the_turn_stops_opens_the_next_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn deliver_queued_interrupts_a_running_step_only_while_messages_are_waiting() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut fixture = fixture(ScriptedLlm::new(vec![says("heard right away")], Some(gate.clone())));
+    assert!(!fixture.session.deliver_queued(), "idle session has nothing queued");
+    fixture.session.send("start".into());
+    while fixture.llm.requests.lock().unwrap().is_empty() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!fixture.session.deliver_queued(), "running session with empty inbox is not cancelled");
+    assert!(fixture.session.send("deliver now".into()));
+    assert!(fixture.session.deliver_queued(), "running session with queued message is interrupted immediately");
+    while fixture.llm.requests.lock().unwrap().len() < 2 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    gate.add_permits(1);
+    fixture.idle().await;
+
+    assert_eq!(fixture.kinds(), [
+        "turn/start", "user/message", "turn/end", "turn/start", "user/message", "assistant/message", "turn/end"
+    ]);
+    assert_eq!(fixture.end().0, "completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn never_runs_tools_of_a_cut_off_or_malformed_message() {
     let cut_off = Ok(AssistantTurn {
         content: vec![json!({ "type": "tool_use", "id": "t1", "name": "edit_file", "input": {} })],
