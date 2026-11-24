@@ -578,9 +578,10 @@ impl<L: Llm> Session<L> {
         self.inner.jobs.running()
     }
 
-    /// End every background command now, this session's and its subagents'.
-    /// For when the app exits or the session is deleted.
+    /// End every background command and any running turn now, this session's
+    /// and its subagents'. For when the app exits or the session is deleted.
     pub fn kill_jobs(&self) {
+        self.cancel();
         self.inner.jobs.kill_all();
         for child in self.children() {
             child.kill_jobs();

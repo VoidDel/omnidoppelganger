@@ -529,10 +529,37 @@ export function undoableTurns(rows: Row[], copied = 0): Set<number> {
   return new Set(own.map((row) => row.turn).filter((turn) => turn > 0 && turn <= last));
 }
 
+/** Extract normalized todos from either native `update_todos` metadata or external CLI `update_steps` / `TodoWrite` inputs. */
+export function todosOf(item: ToolItem): Todo[] | null {
+  if (item.result?.meta?.todos) return item.result.meta.todos;
+  if (item.name !== "update_todos" && item.name !== "update_steps" && item.name !== "TodoWrite") return null;
+  const raw = Array.isArray(item.input.todos) ? item.input.todos : Array.isArray(item.input.steps) ? item.input.steps : null;
+  if (!raw) return null;
+  const parsed: Todo[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const rec = entry as Record<string, unknown>;
+    const text = [rec.text, rec.title, rec.content].find((v): v is string => typeof v === "string" && v.trim().length > 0)?.trim();
+    if (!text) continue;
+    const rawStatus = typeof rec.status === "string" ? rec.status : "pending";
+    const status: Todo["status"] =
+      rawStatus === "done" || rawStatus === "completed" || rawStatus === "skipped"
+        ? "done"
+        : rawStatus === "in_progress" || rawStatus === "active"
+          ? "in_progress"
+          : "pending";
+    parsed.push({ text, status });
+  }
+  return parsed;
+}
+
 /** The to-do list as the agent last wrote it; empty when it never wrote one. */
 export function todos(rows: Row[]): Todo[] {
-  const written = rows.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool" && item.name === "update_todos" && !!item.result && !item.result.isError);
-  return written[written.length - 1]?.result?.meta?.todos ?? [];
+  const written = rows
+    .flatMap((row) => row.items)
+    .filter((item): item is ToolItem => item.kind === "tool" && !!item.result && !item.result.isError && todosOf(item) !== null);
+  const last = written[written.length - 1];
+  return last ? (todosOf(last) ?? []) : [];
 }
 
 /** Commands that ran, in order, for the terminal panel. */

@@ -9,7 +9,7 @@
 //! side panel, and read-only aside all work seamlessly.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -288,12 +288,27 @@ pub fn parse_ndjson_line(line: &str) -> Option<AgyEvent> {
                     let raw_name = update["tool_name"].as_str().or_else(|| info["name"].as_str()).unwrap_or("tool");
                     let (name, input) = crate::cli_agents::normalize_tool(raw_name, &info["parameters"]);
                     if matches!(state, "DONE" | "ERROR" | "CANCELED") {
-                        let output = info["output"]
-                            .as_str()
-                            .or_else(|| update["error"].as_str())
-                            .unwrap_or("")
-                            .to_string();
                         let is_error = state != "DONE" || info["is_error"].as_bool().unwrap_or(false);
+                        let raw_output = [
+                            info["output"].as_str(),
+                            info["result"].as_str(),
+                            info["error"].as_str(),
+                            info["error_message"].as_str(),
+                            info["errorMessage"].as_str(),
+                            update["error"].as_str(),
+                            update["error_message"].as_str(),
+                            update["errorMessage"].as_str(),
+                            update["status_detail"].as_str(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .find(|s| !s.trim().is_empty())
+                        .unwrap_or("");
+                        let output = if raw_output.is_empty() && is_error {
+                            "外部 CLI 执行此步骤未通过权限确认或返回错误（若需自动放行命令，可将禁制切换为「放手施为」）。".to_string()
+                        } else {
+                            raw_output.to_string()
+                        };
                         Some(AgyEvent::ToolDone { conversation_id: conv, step_index, name, input, output, is_error })
                     } else {
                         Some(AgyEvent::ToolStart { conversation_id: conv, step_index, name, input })
@@ -318,8 +333,10 @@ pub fn parse_ndjson_line(line: &str) -> Option<AgyEvent> {
 }
 
 /// Build the CLI argument list for one headless `agy` turn.
+#[allow(clippy::too_many_arguments)]
 pub fn build_args(
     prompt: &str,
+    workspace: Option<&Path>,
     conversation_id: Option<&str>,
     model: &str,
     effort: &str,
@@ -328,6 +345,10 @@ pub fn build_args(
     read_only: bool,
 ) -> Vec<String> {
     let mut args = vec!["--print".to_string(), prompt.to_string(), "--output-format".to_string(), "stream-json".to_string()];
+    if let Some(dir) = workspace.and_then(Path::to_str).filter(|s| !s.trim().is_empty()) {
+        args.push("--add-dir".to_string());
+        args.push(dir.to_string());
+    }
     if let Some(id) = conversation_id.filter(|id| !id.trim().is_empty()) {
         args.push("--conversation".to_string());
         args.push(id.to_string());
@@ -354,11 +375,10 @@ pub fn build_args(
                 args.push("--mode".to_string());
                 args.push("accept-edits".to_string());
             }
-            Mode::Auto => {
-                args.push("--mode".to_string());
-                args.push("auto".to_string());
-            }
-            Mode::Bypass => {
+            // In `agy --print` mode, `--mode auto` is gated behind an inactive rollout flag and falls back
+            // to `request-review`, which soft-denies any command confirmation and aborts the turn.
+            // Auto-approve tool permissions in `Mode::Auto` and `Mode::Bypass` (confined by `--sandbox` when enabled).
+            Mode::Auto | Mode::Bypass => {
                 args.push("--dangerously-skip-permissions".to_string());
             }
             Mode::Manual => {}
@@ -456,14 +476,28 @@ mod tests {
 
     #[test]
     fn builds_agy_args_with_resume_mode_and_sandbox() {
-        let args = build_args("hello", Some("c-1"), "gemini-4-neon", "high", Mode::Edit, true, false);
+        let args = build_args("hello", Some(Path::new("/tmp/ws")), Some("c-1"), "gemini-4-neon", "high", Mode::Edit, true, false);
         assert_eq!(
             args,
-            ["--print", "hello", "--output-format", "stream-json", "--conversation", "c-1", "--model", "gemini-4-neon-high", "--mode", "accept-edits", "--sandbox"]
+            [
+                "--print",
+                "hello",
+                "--output-format",
+                "stream-json",
+                "--add-dir",
+                "/tmp/ws",
+                "--conversation",
+                "c-1",
+                "--model",
+                "gemini-4-neon-high",
+                "--mode",
+                "accept-edits",
+                "--sandbox",
+            ]
         );
-        let bypass = build_args("hi", None, "", "", Mode::Bypass, false, false);
-        assert_eq!(bypass, ["--print", "hi", "--output-format", "stream-json", "--dangerously-skip-permissions"]);
-        let ro = build_args("hi", None, "", "", Mode::Bypass, false, true);
+        let auto = build_args("hi", None, None, "", "", Mode::Auto, false, false);
+        assert_eq!(auto, ["--print", "hi", "--output-format", "stream-json", "--dangerously-skip-permissions"]);
+        let ro = build_args("hi", None, None, "", "", Mode::Bypass, false, true);
         assert_eq!(ro, ["--print", "hi", "--output-format", "stream-json", "--mode", "plan"]);
     }
 }

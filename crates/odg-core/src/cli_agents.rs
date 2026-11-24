@@ -175,7 +175,7 @@ pub enum CliEvent {
 }
 
 /// Map external CLI tool names and parameter keys onto OmniDoppelganger's built-in tool shapes so
-/// `ToolCard` displays native seals (`读`, `写`, `改`, `跑`, `搜`, `寻`, `查`) and readable targets.
+/// `ToolCard` displays native seals (`读`, `写`, `改`, `跑`, `搜`, `寻`, `谋`) and readable targets.
 pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
     let lower = raw_name.to_ascii_lowercase();
     let mapped_name = match lower.as_str() {
@@ -188,9 +188,67 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
         "search_web" | "web_search" | "websearch" => "web_search",
         "read_url_content" | "fetch_url" | "webfetch" => "fetch_url",
         "generate_image" => "generate_image",
+        "update_steps" | "todowrite" | "todo_write" | "update_todos" => "update_todos",
         _ => raw_name,
     };
     let mut normalized = params.as_object().cloned().unwrap_or_default();
+    if mapped_name == "update_todos"
+        && !normalized.contains_key("todos")
+        && let Some(raw_steps) = normalized.get("steps")
+    {
+        let parsed_arr = raw_steps
+            .as_array()
+            .cloned()
+            .or_else(|| raw_steps.as_str().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()));
+        if let Some(items) = parsed_arr {
+            let todos: Vec<Value> = items
+                .into_iter()
+                .filter_map(|item| {
+                    let text = item["title"]
+                        .as_str()
+                        .or_else(|| item["text"].as_str())
+                        .or_else(|| item["content"].as_str())?
+                        .trim()
+                        .to_string();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let status = match item["status"].as_str().unwrap_or("pending") {
+                        "done" | "completed" | "skipped" => "done",
+                        "in_progress" | "active" => "in_progress",
+                        _ => "pending",
+                    };
+                    Some(json!({ "text": text, "status": status }))
+                })
+                .collect();
+            normalized.insert("todos".to_string(), Value::Array(todos));
+        }
+    } else if mapped_name == "update_todos"
+        && let Some(items) = normalized.get("todos").and_then(Value::as_array).cloned()
+    {
+        // Normalize Claude Code's `TodoWrite` (`content` field) to OmniDoppelganger's `text` field.
+        let todos: Vec<Value> = items
+            .into_iter()
+            .filter_map(|item| {
+                let text = item["text"]
+                    .as_str()
+                    .or_else(|| item["content"].as_str())
+                    .or_else(|| item["title"].as_str())?
+                    .trim()
+                    .to_string();
+                if text.is_empty() {
+                    return None;
+                }
+                let status = match item["status"].as_str().unwrap_or("pending") {
+                    "done" | "completed" | "skipped" => "done",
+                    "in_progress" | "active" => "in_progress",
+                    _ => "pending",
+                };
+                Some(json!({ "text": text, "status": status }))
+            })
+            .collect();
+        normalized.insert("todos".to_string(), Value::Array(todos));
+    }
     if !normalized.contains_key("path")
         && let Some(path) = ["file_path", "Path", "TargetFile", "AbsolutePath", "DirectoryPath", "SearchDirectory", "SearchPath", "target_file"]
             .iter()
@@ -244,6 +302,7 @@ pub fn build_prompt(text: &str, files: &[Attached], briefing: Option<&str>) -> S
 pub fn build_args(
     kind: CliKind,
     prompt: &str,
+    workspace: Option<&Path>,
     conversation_id: Option<&str>,
     model: &str,
     effort: &str,
@@ -255,7 +314,7 @@ pub fn build_args(
     let model = model.trim();
     let effort = effort.trim();
     match kind {
-        CliKind::Antigravity => crate::antigravity::build_args(prompt, resume, model, effort, mode, sandboxed, read_only),
+        CliKind::Antigravity => crate::antigravity::build_args(prompt, workspace, resume, model, effort, mode, sandboxed, read_only),
         CliKind::Codex => {
             let mut args = vec!["exec".to_string()];
             if let Some(thread_id) = resume {
@@ -752,6 +811,162 @@ fn anthropic_like_tokens(usage: &Value) -> Option<Tokens> {
     (input > 0 || output > 0).then_some(Tokens { input, cached, output })
 }
 
+/// Strip `agy`'s leading `"Created At: ...\nCompleted At: ...\n"` envelope and synthesize
+/// the [`Event::ToolResult`] `meta` fields that `ToolCard`, `changedFiles`, and `todos` read.
+pub fn clean_tool_result(tool_name: &str, input: &Value, raw_output: &str, is_error: bool) -> (String, Value) {
+    let mut cleaned = raw_output.replace("\r\n", "\n");
+    loop {
+        let trimmed = cleaned.trim_start_matches('\n');
+        if let Some(rest) = trimmed.strip_prefix("Created At:")
+            && let Some((_, after)) = rest.split_once('\n')
+        {
+            cleaned = after.to_string();
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("Completed At:")
+            && let Some((_, after)) = rest.split_once('\n')
+        {
+            cleaned = after.to_string();
+            continue;
+        }
+        break;
+    }
+    let cleaned = cleaned.trim_start_matches('\n').to_string();
+
+    match tool_name {
+        "run_command" => {
+            let mut exit_code: Option<i64> = None;
+            let mut body = cleaned.as_str();
+            if let Some(rest) = body.strip_prefix("Command exited with code ")
+                && let Some((code_part, after_line)) = rest.split_once('.')
+            {
+                exit_code = code_part.trim().parse::<i64>().ok();
+                let rem = after_line.trim_start_matches(['\r', '\n']);
+                if let Some(cmd_out) = rem.strip_prefix("Command output:\n") {
+                    body = cmd_out;
+                } else if rem.trim() == "No output from the command." {
+                    body = "";
+                } else {
+                    body = rem;
+                }
+            }
+            let code = exit_code.unwrap_or(if is_error { 1 } else { 0 });
+            let out_str = body.to_string();
+            let meta = json!({
+                "command": input["command"].as_str().unwrap_or(""),
+                "output": out_str,
+                "exit_code": code,
+            });
+            (out_str, meta)
+        }
+        "read_file" => {
+            let lines = parse_leading_line_count(&cleaned).unwrap_or_else(|| if cleaned.is_empty() { 0 } else { cleaned.lines().count() });
+            let meta = json!({
+                "path": input["path"].as_str().unwrap_or(""),
+                "lines": lines,
+            });
+            (cleaned, meta)
+        }
+        "write_file" | "edit_file" => {
+            let path = input["path"].as_str().unwrap_or("");
+            let (added, removed) = parse_plus_minus_lines(&cleaned).unwrap_or_else(|| estimate_edit_lines(tool_name, input, path));
+            let meta = json!({
+                "path": path,
+                "file": path,
+                "created": tool_name == "write_file",
+                "added": added,
+                "removed": removed,
+            });
+            (cleaned, meta)
+        }
+        "update_todos" => {
+            let todos = input.get("todos").cloned().unwrap_or_else(|| json!([]));
+            (cleaned, json!({ "todos": todos }))
+        }
+        "find_files" => {
+            let entries = cleaned.lines().filter(|l| !l.trim().is_empty()).count();
+            (cleaned, json!({ "entries": entries }))
+        }
+        "search" => {
+            let matches = cleaned.lines().filter(|l| !l.trim().is_empty()).count();
+            (cleaned, json!({ "matches": matches }))
+        }
+        _ => (cleaned, Value::Null),
+    }
+}
+
+fn parse_leading_line_count(text: &str) -> Option<usize> {
+    let first = text.lines().next()?.trim();
+    // Matches `"1413 lines, 79900 bytes"` or `"40 lines"`.
+    if let Some((num, _)) = first.split_once(" lines")
+        && let Ok(n) = num.trim().parse::<usize>()
+    {
+        return Some(n);
+    }
+    // Matches `"Showing lines 1-80 of 1413"`.
+    if let Some(rest) = first.strip_prefix("Showing lines ")
+        && let Some((range, _)) = rest.split_once(" of ")
+        && let Some((start, end)) = range.split_once('-')
+        && let (Ok(s), Ok(e)) = (start.trim().parse::<usize>(), end.trim().parse::<usize>())
+        && e >= s
+    {
+        return Some(e - s + 1);
+    }
+    None
+}
+
+fn parse_plus_minus_lines(text: &str) -> Option<(usize, usize)> {
+    // Matches `"(+23/-7 lines)"` in `agy` edit summaries.
+    let open = text.find("(+")?;
+    let rest = &text[open + 2..];
+    let (plus, after_slash) = rest.split_once("/-")?;
+    let (minus, _) = after_slash.split_once(" lines)")?;
+    Some((plus.trim().parse().ok()?, minus.trim().parse().ok()?))
+}
+
+fn estimate_edit_lines(tool_name: &str, input: &Value, path: &str) -> (usize, usize) {
+    let count_lines = |s: &str| if s.is_empty() { 0 } else { s.lines().count() };
+    if tool_name == "write_file" {
+        if let Some(content) = ["Content", "content", "file_text"].iter().find_map(|k| input.get(*k).and_then(Value::as_str)) {
+            return (count_lines(content), 0);
+        }
+        if !path.is_empty()
+            && let Ok(disk) = std::fs::read_to_string(path)
+        {
+            return (count_lines(&disk), 0);
+        }
+        return (0, 0);
+    }
+    let added = ["Replacement", "new_string", "new_str"]
+        .iter()
+        .find_map(|k| input.get(*k).and_then(Value::as_str))
+        .map_or(0, count_lines);
+    let removed = ["Target", "old_string", "old_str"]
+        .iter()
+        .find_map(|k| input.get(*k).and_then(Value::as_str))
+        .map_or(0, count_lines);
+    (added, removed)
+}
+
+/// Synchronous guard that kills the CLI process group if the async task is dropped abruptly
+/// (e.g. on app exit or hot-reload), preventing orphan CLI instances from mutating the same session.
+struct ProcessGroupGuard(Option<u32>);
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        let Some(pid) = self.0.take() else { return };
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).output();
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = std::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).output();
+        }
+    }
+}
+
 /// Parameters for executing a single headless CLI turn.
 pub struct TurnParams<'a> {
     pub kind: CliKind,
@@ -781,6 +996,7 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
     let args = build_args(
         params.kind,
         &params.prompt,
+        Some(params.workspace),
         params.conversation_id.as_deref(),
         &params.model,
         &params.effort,
@@ -793,8 +1009,14 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         .current_dir(params.workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|error| format!("无法启动 {}：{error}", params.kind.display_name()))?;
+    let mut group_guard = ProcessGroupGuard(child.id());
     let stdout = child.stdout.take().ok_or("CLI stdout pipe unavailable")?;
     let mut stderr = child.stderr.take();
     let stderr_task = tokio::spawn(async move {
@@ -844,7 +1066,7 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         let next_line = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                let _ = child.kill().await;
+                crate::tools::kill_tree(&mut child).await;
                 break true;
             }
             res = lines.next_line() => res,
@@ -853,7 +1075,8 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
             Ok(Some(line)) => line,
             Ok(None) => break false,
             Err(error) => {
-                let _ = child.kill().await;
+                crate::tools::kill_tree(&mut child).await;
+                group_guard.0 = None;
                 return Err(format!("读取 {} 输出失败：{error}", params.kind.display_name()));
             }
         };
@@ -905,11 +1128,8 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
                             (id, resolved_name, input)
                         }
                     };
-                    let meta = match tool_name.as_str() {
-                        "run_command" => json!({ "command": tool_input["command"].as_str().unwrap_or(""), "output": output }),
-                        _ => Value::Null,
-                    };
-                    sink.log(Event::ToolResult { tool_use_id, tool: tool_name, content: output, is_error, meta, images: Vec::new() })?;
+                    let (clean_output, meta) = clean_tool_result(&tool_name, &tool_input, &output, is_error);
+                    sink.log(Event::ToolResult { tool_use_id, tool: tool_name, content: clean_output, is_error, meta, images: Vec::new() })?;
                 }
                 CliEvent::Result { conversation_id, success, response, error, usage, tokens } => {
                     record_conv(conversation_id)?;
@@ -934,12 +1154,14 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
     };
 
     if cancelled {
+        group_guard.0 = None;
         let _ = child.wait().await;
         return Ok("cancelled");
     }
 
     flush_text(&mut active_text, Value::Null, None, &params.model, &mut emitted_any_text)?;
     let status = child.wait().await.map_err(|error| format!("等待 {} 结束失败：{error}", params.kind.display_name()))?;
+    group_guard.0 = None;
     let stderr_text = stderr_task.await.unwrap_or_default();
     if let Some(err) = result_error {
         return Err(err);
@@ -961,34 +1183,73 @@ mod tests {
 
     #[test]
     fn builds_codex_claude_cursor_and_grok_cli_arguments() {
-        let codex = build_args(CliKind::Codex, "fix bug", None, "gpt-5.4", "max", Mode::Edit, false, false);
+        let codex = build_args(CliKind::Codex, "fix bug", None, None, "gpt-5.4", "max", Mode::Edit, false, false);
         assert_eq!(
             codex,
             ["exec", "--json", "--skip-git-repo-check", "--model", "gpt-5.4", "-c", "model_reasoning_effort=\"xhigh\"", "--sandbox", "workspace-write", "--", "fix bug"]
         );
-        let codex_resume = build_args(CliKind::Codex, "next", Some("thr-1"), "gpt-5.4", "high", Mode::Edit, false, false);
+        let codex_resume = build_args(CliKind::Codex, "next", None, Some("thr-1"), "gpt-5.4", "high", Mode::Edit, false, false);
         assert_eq!(
             codex_resume,
             ["exec", "resume", "thr-1", "--json", "--skip-git-repo-check", "--model", "gpt-5.4", "-c", "model_reasoning_effort=\"high\"", "--", "next"]
         );
 
-        let claude = build_args(CliKind::ClaudeCode, "review", Some("ses-9"), "opus", "xhigh", Mode::Bypass, false, false);
+        let claude = build_args(CliKind::ClaudeCode, "review", None, Some("ses-9"), "opus", "xhigh", Mode::Bypass, false, false);
         assert_eq!(
             claude,
             ["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--resume", "ses-9", "--model", "opus", "--effort", "xhigh", "--permission-mode", "bypassPermissions", "--dangerously-skip-permissions", "--", "review"]
         );
 
-        let cursor = build_args(CliKind::Cursor, "explain", Some("chat-2"), "auto", "high", Mode::Plan, false, false);
+        let cursor = build_args(CliKind::Cursor, "explain", None, Some("chat-2"), "auto", "high", Mode::Plan, false, false);
         assert_eq!(
             cursor,
             ["--print", "--output-format", "stream-json", "--stream-partial-output", "--resume", "chat-2", "--mode", "plan", "--", "explain"]
         );
 
-        let grok = build_args(CliKind::Grok, "hello", Some("g-1"), "grok-4.7", "high", Mode::Auto, true, false);
+        let grok = build_args(CliKind::Grok, "hello", None, Some("g-1"), "grok-4.7", "high", Mode::Auto, true, false);
         assert_eq!(
             grok,
             ["--no-auto-update", "--output-format", "streaming-json", "--resume", "g-1", "--model", "grok-4.7", "--sandbox", "workspace-write", "--always-approve", "-p", "hello"]
         );
+    }
+
+    #[test]
+    fn normalizes_update_steps_and_synthesizes_tool_result_meta() {
+        let (name, input) = normalize_tool(
+            "update_steps",
+            &json!({
+                "steps": [
+                    { "title": "构建引擎", "status": "done" },
+                    { "title": "渲染质检", "status": "in_progress" },
+                    { "title": "交付文件", "status": "pending" }
+                ]
+            }),
+        );
+        assert_eq!(name, "update_todos");
+        let (_, todo_meta) = clean_tool_result(&name, &input, "Created At: 2026-11-24T14:00:00+08:00\nCompleted At: 2026-11-24T14:00:01+08:00\nOK", false);
+        assert_eq!(
+            todo_meta["todos"],
+            json!([
+                { "text": "构建引擎", "status": "done" },
+                { "text": "渲染质检", "status": "in_progress" },
+                { "text": "交付文件", "status": "pending" }
+            ])
+        );
+
+        let (cmd_out, cmd_meta) = clean_tool_result(
+            "run_command",
+            &json!({ "command": "echo hi" }),
+            "Created At: 2026-11-24T14:00:00+08:00\nCompleted At: 2026-11-24T14:00:01+08:00\nCommand exited with code 0.\n\nCommand output:\nhi\n",
+            false,
+        );
+        assert_eq!(cmd_out, "hi\n");
+        assert_eq!(cmd_meta["exit_code"], 0);
+
+        let (_, read_meta) = clean_tool_result("read_file", &json!({ "path": "a.py" }), "1413 lines, 79900 bytes", false);
+        assert_eq!(read_meta["lines"], 1413);
+
+        let (_, edit_meta) = clean_tool_result("edit_file", &json!({ "path": "a.py" }), "Made 1 replacement in a.py starting at line 10 (+23/-7 lines).", false);
+        assert_eq!((edit_meta["added"].as_u64(), edit_meta["removed"].as_u64()), (Some(23), Some(7)));
     }
 
     #[test]

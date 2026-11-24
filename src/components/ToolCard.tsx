@@ -1,5 +1,5 @@
 import { type CSSProperties, createContext, useContext, useEffect, useState } from "react";
-import { type Item, type ToolItem, editsFiles, fileSize, mcpTool, shortCount } from "../lib/fold";
+import { type Item, type ToolItem, editsFiles, fileSize, mcpTool, shortCount, todosOf } from "../lib/fold";
 import type { Decision, DiffHunk, Image, Mode, SessionItem } from "../lib/types";
 import { Light } from "./Light";
 import { Diff, ModelText } from "./Markdown";
@@ -114,7 +114,14 @@ export function useFresh(): { className: string; style: CSSProperties | undefine
 export type Weight = "live" | "failed" | "wrote" | "act" | "quiet";
 
 /** Acts that only look: they change nothing and reach nowhere outside the machine. */
-const LOOKS = new Set(["read_file", "search", "find_files", "code_nav", "list_mcp_resources", "read_mcp_resource", "load_skill", "update_todos", "command_output"]);
+const LOOKS = new Set(["read_file", "search", "find_files", "code_nav", "list_mcp_resources", "read_mcp_resource", "load_skill", "update_todos", "update_steps", "update_focus", "command_output"]);
+
+/** Shorten verbose external CLI scratch/brain directory prefixes for readable one-line headers. */
+function compactCliPaths(value: string): string {
+  return value
+    .replace(/(?:\/Users\/[^/\s]+|~|[A-Za-z]:\\Users\\[^\\\s]+)[/\\]\.gemini[/\\]antigravity[^/\\\s]*[/\\]brain[/\\][0-9a-f-]+[/\\]scratch[/\\]/gi, "[暂存]/")
+    .replace(/(?:\/Users\/[^/\s]+|~|[A-Za-z]:\\Users\\[^\\\s]+)[/\\]\.gemini[/\\]antigravity[^/\\\s]*[/\\]brain[/\\][0-9a-f-]+[/\\]/gi, "[脑海]/");
+}
 
 /** Whether nothing came of an act because it was not let to, or was taken back. */
 export const voided = (tool: ToolItem) => tool.approval?.decision === "deny" || !!tool.result?.meta?.refused || !!tool.undone;
@@ -159,9 +166,16 @@ export function sealOf(tool: ToolItem): string {
     case "stop_command":
       return "止";
     case "update_todos":
+    case "update_steps":
       return "谋";
     case "delegate":
+    case "invoke_subagent":
+    case "Task":
       return "遣";
+    case "manage_task":
+      return "观";
+    case "ask_question":
+      return "问";
     case "load_skill":
       return "技";
     case "install_skill":
@@ -234,7 +248,9 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       // A picture is looked at, not read: its kind and size instead of a count of lines.
       const kind = meta?.picture?.replace("image/", "").toUpperCase();
       const looked = kind && [kind, meta?.width && meta?.height ? `${meta.width}×${meta.height}` : ""].filter(Boolean).join("，");
-      return { verb: kind ? "看图" : "读取", target: text("path"), outcome: waiting || (result!.isError ? "没读到" : looked || `${meta?.lines ?? 0} 行`) };
+      const lines = meta?.lines ?? 0;
+      const countText = lines > 0 || meta?.shown !== undefined ? `${lines} 行` : "已读";
+      return { verb: kind ? "看图" : "读取", target: compactCliPaths(text("path")), outcome: waiting || (result!.isError ? "没读到" : looked || countText) };
     }
     case "search":
       return {
@@ -251,32 +267,50 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
     case "find_files":
       return {
         verb: text("glob") ? "查找" : "列出",
-        target: text("glob") || text("path") || "洞府",
+        target: compactCliPaths(text("glob") || text("path")) || "洞府",
         outcome: waiting || (result!.isError ? "没找成" : `${meta?.entries ?? 0} 项${meta?.truncated ? "以上" : ""}`),
       };
     case "edit_file":
-    case "write_file":
+    case "write_file": {
+      const added = meta?.added ?? 0;
+      const removed = meta?.removed ?? 0;
+      const hasCounts = added > 0 || removed > 0 || !!meta?.after;
+      const doneLabel = hasCounts ? `加 ${added} 行，删 ${removed} 行` : tool.name === "write_file" || meta?.created ? "已写入" : "已修改";
       return {
         verb: meta?.created ? "新建" : tool.name === "write_file" ? "重写" : "修改",
-        target: text("path"),
-        outcome: waiting || (result!.isError ? "没改成" : `加 ${meta?.added ?? 0} 行，删 ${meta?.removed ?? 0} 行`),
+        target: compactCliPaths(text("path")),
+        outcome: waiting || (result!.isError ? "没改成" : doneLabel),
       };
+    }
     case "delete_file":
       return {
         verb: "删除",
-        target: text("path"),
+        target: compactCliPaths(text("path")),
         outcome: waiting || (result!.isError ? "没删成" : meta?.removed !== undefined ? `删去 ${meta.removed} 行` : fileSize(meta?.bytes ?? 0)),
       };
     case "move_file":
-      return { verb: "挪动", target: `${text("path")} → ${text("to")}`, outcome: waiting || (result!.isError ? "没挪成" : "已挪") };
+      return { verb: "挪动", target: `${compactCliPaths(text("path"))} → ${compactCliPaths(text("to"))}`, outcome: waiting || (result!.isError ? "没挪成" : "已挪") };
     case "run_command": {
-      const ended = meta?.stopped === "timed out" ? "超时停止" : meta?.stopped ? "已停止" : meta?.exit_code === 0 ? "成功" : `退出码 ${meta?.exit_code ?? "未知"}`;
+      const hasCode = meta?.exit_code !== undefined && meta?.exit_code !== null;
+      const ended =
+        meta?.stopped === "timed out"
+          ? "超时停止"
+          : meta?.stopped
+            ? "已停止"
+            : hasCode
+              ? meta!.exit_code === 0
+                ? "成功"
+                : `退出码 ${meta!.exit_code}`
+              : result?.isError
+                ? "执行失败"
+                : "成功";
       // Said only where it holds: the command could write nowhere but the workspace and the temporary directories.
       const where = meta?.sandboxed ? "结界内，" : "";
       const cwd = meta?.cwd ?? text("cwd").trim();
-      const target = cwd && cwd !== "." ? `[${cwd}] ${text("command")}` : text("command");
+      const cmdText = compactCliPaths(text("command"));
+      const target = cwd && cwd !== "." ? `[${compactCliPaths(cwd)}] ${cmdText}` : cmdText;
       if (meta?.background) return { verb: "后台运行", target, outcome: waiting || `${where}已起，编号 ${meta.job}` };
-      return { verb: "运行", target, outcome: waiting || (meta ? where + ended : "没有运行") };
+      return { verb: "运行", target, outcome: waiting || (meta || result ? where + ended : "没有运行") };
     }
     case "list_mcp_resources":
       return { verb: "看法器资源", target: text("server"), outcome: waiting || (result!.isError ? "没看到" : `${meta?.results ?? 0} 项`) };
@@ -357,15 +391,27 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       const counted = operation === "diagnostics" ? `${meta?.errors ?? 0} 错，共 ${meta?.results ?? 0} 条` : operation === "hover" ? "已得" : `${meta?.results ?? 0} 处`;
       return { verb, target: [`${text("path")}${line}`, what].filter(Boolean).join("  "), outcome: waiting || (result!.isError ? "没查成" : counted) };
     }
-    case "update_todos": {
-      const list = meta?.todos ?? [];
+    case "update_todos":
+    case "update_steps": {
+      const list = todosOf(tool) ?? [];
       const current = list.find((todo) => todo.status === "in_progress")?.text ?? "";
       return { verb: "记计划", target: current, outcome: waiting || (result!.isError ? "没记成" : `${list.filter((todo) => todo.status === "done").length} / ${list.length} 已办`) };
     }
     default: {
       const borrowed = mcpTool(tool.name);
       if (borrowed) return { verb: `法器 ${borrowed.server}`, target: borrowed.tool, outcome: waiting || (result!.isError ? "失败" : "完成") };
-      return { verb: tool.name, target: "", outcome: waiting || (result!.isError ? "失败" : "完成") };
+      const cliTarget = text("focus") || text("Role") || text("description") || text("TaskId") || text("path") || text("command");
+      const cliVerb =
+        tool.name === "update_focus"
+          ? "心神聚焦"
+          : tool.name === "invoke_subagent" || tool.name === "Task"
+            ? "派出子分身"
+            : tool.name === "manage_task"
+              ? "察看后台任务"
+              : tool.name === "ask_question"
+                ? "请教本尊"
+                : tool.name;
+      return { verb: cliVerb, target: cliTarget, outcome: waiting || (result!.isError ? "失败" : "完成") };
     }
   }
 }
