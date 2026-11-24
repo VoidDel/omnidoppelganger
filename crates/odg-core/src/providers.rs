@@ -133,11 +133,12 @@ pub const PROVIDERS: &[Provider] = &[
         other_urls: &[],
         key_env: None,
         models: &[
-            ("gemini-4-neon-high", "Gemini 4 Neon (High)"),
-            ("gemini-4-neon-medium", "Gemini 4 Neon (Medium)"),
-            ("gemini-4-carbon-medium", "Gemini 4 Carbon (Medium)"),
-            ("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
-            ("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
+            ("gemini-4-neon", "Gemini 4 Neon"),
+            ("gemini-4-carbon", "Gemini 4 Carbon"),
+            ("gemini-4-argon", "Gemini 4 Argon"),
+            ("gemini-4-hydrogen", "Gemini 4 Hydrogen"),
+            ("claude-opus-5-5", "Claude Opus 5.5"),
+            ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
         ],
     },
 ];

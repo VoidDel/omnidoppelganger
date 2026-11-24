@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -24,6 +25,103 @@ use crate::policy::Mode;
 use crate::providers::Listed;
 
 pub const BACKEND: &str = "antigravity";
+
+/// Effort suffixes that `agy models` bakes into variant model ids, ordered lowest to highest.
+const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Cached mapping from base model id (e.g. `gemini-4-neon`) to the ordered effort suffixes
+/// that the local `agy models` reported for it (empty when the model has no effort variants).
+static VARIANT_CACHE: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+
+fn variant_cache() -> &'static Mutex<HashMap<String, Vec<String>>> {
+    VARIANT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Split a raw `agy` model id & display name into `(base_id, base_name, Option<effort_level>)`.
+/// E.g. `("gemini-4-neon-xhigh", "Gemini 4 Neon (XHigh)")` -> `("gemini-4-neon", "Gemini 4 Neon", Some("xhigh"))`.
+pub fn split_effort_variant<'a>(id: &'a str, display: &'a str) -> (&'a str, &'a str, Option<&'static str>) {
+    for &level in &EFFORT_LEVELS {
+        let dash = format!("-{level}");
+        if let Some(base_id) = id.strip_suffix(&dash)
+            && !base_id.is_empty()
+        {
+            let base_name = strip_effort_paren(display, level);
+            return (base_id, base_name, Some(level));
+        }
+    }
+    (id, display, None)
+}
+
+fn strip_effort_paren<'a>(display: &'a str, level: &str) -> &'a str {
+    let trimmed = display.trim();
+    if let Some(open) = trimmed.rfind('(')
+        && trimmed.ends_with(')')
+    {
+        let inside = &trimmed[open + 1..trimmed.len() - 1];
+        if inside.eq_ignore_ascii_case(level) {
+            return trimmed[..open].trim_end();
+        }
+    }
+    trimmed
+}
+
+/// Fallback supported effort levels for known `agy` model families when `agy models` has not yet been queried.
+fn known_efforts(base_id: &str) -> &'static [&'static str] {
+    match base_id {
+        "gemini-4-neon" | "gemini-4-hydrogen" => &["low", "medium", "high", "xhigh"],
+        "gemini-4-carbon" | "gemini-4-argon" | "gemini-3.8-flash" | "claude-opus-5-5" | "claude-sonnet-5-5" => &["low", "medium", "high"],
+        "gpt-oss-120b" => &["medium"],
+        _ => &[],
+    }
+}
+
+/// Choose the closest supported effort level in `available` for `requested`:
+/// exact match first, otherwise the highest level <= requested, otherwise the lowest available level.
+fn pick_closest_effort<'a>(requested: &str, available: &'a [String]) -> Option<&'a str> {
+    if available.is_empty() {
+        return None;
+    }
+    let rank = |level: &str| EFFORT_LEVELS.iter().position(|known| *known == level).unwrap_or(2);
+    let target = rank(requested);
+    if let Some(exact) = available.iter().find(|level| rank(level) == target) {
+        return Some(exact.as_str());
+    }
+    // Highest available level not exceeding requested (e.g. `max` -> `xhigh` or `high`).
+    if let Some(lower) = available.iter().filter(|level| rank(level) < target).max_by_key(|level| rank(level)) {
+        return Some(lower.as_str());
+    }
+    // Otherwise clamp up to the lowest available level (e.g. `low` -> `medium` for gpt-oss-120b).
+    available.iter().min_by_key(|level| rank(level)).map(String::as_str)
+}
+
+/// Resolve a session's `(model, effort)` into the concrete `(--model, Option<--effort>)` pair to pass to `agy`.
+/// Accepts either a base model id (`gemini-4-neon`) or a legacy suffixed id (`gemini-4-neon-high`).
+/// Because `agy` rejects `--effort` when `--model` already encodes an effort suffix (e.g. `gemini-4-neon-low`
+/// with `--effort=xhigh`), `--effort` is omitted whenever a concrete `--model` is supplied.
+pub fn resolve_model_for_effort(model: &str, effort: &str) -> (String, Option<String>) {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        let eff = effort.trim();
+        return (String::new(), (!eff.is_empty()).then(|| eff.to_string()));
+    }
+    let (base_id, _, original_suffix) = split_effort_variant(trimmed, trimmed);
+    let requested = if effort.trim().is_empty() { original_suffix.unwrap_or("high") } else { effort.trim() };
+
+    let available: Vec<String> = {
+        let cache = variant_cache().lock().unwrap();
+        if let Some(levels) = cache.get(base_id) {
+            levels.clone()
+        } else {
+            known_efforts(base_id).iter().map(|s| (*s).to_string()).collect()
+        }
+    };
+
+    if let Some(chosen) = pick_closest_effort(requested, &available) {
+        (format!("{base_id}-{chosen}"), None)
+    } else {
+        (trimmed.to_string(), None)
+    }
+}
 
 /// Locate the `agy` CLI binary on this machine.
 /// Checks `ODG_AGY_BIN`, then `PATH`, then common per-user / Homebrew install locations
@@ -57,10 +155,12 @@ pub fn find_binary() -> Option<PathBuf> {
     fallbacks.into_iter().find(|path| path.is_file())
 }
 
-/// Parse the text output of `agy models` into [`Listed`] model entries.
-/// Strips carriage-return spinner frames emitted before the table.
-pub fn parse_models_output(raw: &str) -> Vec<Listed> {
-    let mut models = Vec::new();
+/// Parse the text output of `agy models` into deduplicated base [`Listed`] model entries,
+/// grouping effort-suffixed variants (`-low`, `-medium`, `-high`, `-xhigh`, `-max`) under one base model
+/// and recording each family's supported effort levels so `境界` selects the matching variant.
+pub fn parse_models_output(raw: &str) -> (Vec<Listed>, HashMap<String, Vec<String>>) {
+    let mut models: Vec<Listed> = Vec::new();
+    let mut variants: HashMap<String, Vec<String>> = HashMap::new();
     for line in raw.lines() {
         // Spinner frames overwrite via `\r`; keep only the final segment on each line.
         let segment = line.rsplit('\r').next().unwrap_or("").trim();
@@ -77,11 +177,18 @@ pub fn parse_models_output(raw: &str) -> Vec<Listed> {
             continue;
         }
         let display = parts.next().map(str::trim).filter(|name| !name.is_empty()).unwrap_or(id);
-        if !models.iter().any(|existing: &Listed| existing.id == id) {
-            models.push(Listed { id: id.to_string(), name: display.to_string(), context_window: Some(1_000_000) });
+        let (base_id, base_name, level) = split_effort_variant(id, display);
+        let entry = variants.entry(base_id.to_string()).or_default();
+        if let Some(level) = level
+            && !entry.iter().any(|existing| existing == level)
+        {
+            entry.push(level.to_string());
+        }
+        if !models.iter().any(|existing| existing.id == base_id) {
+            models.push(Listed { id: base_id.to_string(), name: base_name.to_string(), context_window: Some(1_000_000) });
         }
     }
-    models
+    (models, variants)
 }
 
 /// Ask the local `agy` CLI which models the signed-in account can use.
@@ -102,10 +209,11 @@ pub async fn list_models() -> Result<Vec<Listed>, String> {
         });
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let models = parse_models_output(&stdout);
+    let (models, variants) = parse_models_output(&stdout);
     if models.is_empty() {
         Err("agy models 未返回可用模型，请先在终端运行 `agy` 确认已登录。".to_string())
     } else {
+        *variant_cache().lock().unwrap() = variants;
         Ok(models)
     }
 }
@@ -298,13 +406,14 @@ pub fn build_args(
         args.push("--conversation".to_string());
         args.push(id.to_string());
     }
-    if !model.trim().is_empty() {
+    let (resolved_model, resolved_effort) = resolve_model_for_effort(model, effort);
+    if !resolved_model.is_empty() {
         args.push("--model".to_string());
-        args.push(model.trim().to_string());
+        args.push(resolved_model);
     }
-    if !effort.trim().is_empty() {
+    if let Some(eff) = resolved_effort {
         args.push("--effort".to_string());
-        args.push(effort.trim().to_string());
+        args.push(eff);
     }
     if read_only {
         args.push("--mode".to_string());
@@ -529,16 +638,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_agy_models_output_ignoring_spinner_frames() {
-        let raw = "\r⠋ Fetching available models...\r⠙ Fetching available models...\rgemini-4-neon-high             Gemini 4 Neon (High)\nclaude-opus-5-5-high           Claude Opus 5.5 (High)\nwarning: something\n";
-        let listed = parse_models_output(raw);
+    fn parses_agy_models_output_grouping_effort_variants() {
+        let raw = "\r⠋ Fetching available models...\r⠙ Fetching available models...\rgemini-4-neon-high             Gemini 4 Neon (High)\ngemini-4-neon-xhigh            Gemini 4 Neon (XHigh)\ngemini-4-neon-low              Gemini 4 Neon (Low)\nclaude-opus-5-5-high           Claude Opus 5.5 (High)\nclaude-opus-5-5-medium         Claude Opus 5.5 (Medium)\ngemini-pro-orchestrator-neon   Orchestrator (Neon)\nwarning: something\n";
+        let (listed, variants) = parse_models_output(raw);
         assert_eq!(
             listed,
             vec![
-                Listed { id: "gemini-4-neon-high".into(), name: "Gemini 4 Neon (High)".into(), context_window: Some(1_000_000) },
-                Listed { id: "claude-opus-5-5-high".into(), name: "Claude Opus 5.5 (High)".into(), context_window: Some(1_000_000) },
+                Listed { id: "gemini-4-neon".into(), name: "Gemini 4 Neon".into(), context_window: Some(1_000_000) },
+                Listed { id: "claude-opus-5-5".into(), name: "Claude Opus 5.5".into(), context_window: Some(1_000_000) },
+                Listed { id: "gemini-pro-orchestrator-neon".into(), name: "Orchestrator (Neon)".into(), context_window: Some(1_000_000) },
             ]
         );
+        assert_eq!(variants["gemini-4-neon"], vec!["high", "xhigh", "low"]);
+        assert_eq!(variants["claude-opus-5-5"], vec!["high", "medium"]);
+        assert!(variants["gemini-pro-orchestrator-neon"].is_empty());
+    }
+
+    #[test]
+    fn maps_effort_to_closest_supported_agy_variant() {
+        assert_eq!(resolve_model_for_effort("gemini-4-neon", "xhigh"), ("gemini-4-neon-xhigh".into(), None));
+        // `max` clamps down to `xhigh` for gemini-4-neon, and to `high` for claude-opus-5-5.
+        assert_eq!(resolve_model_for_effort("gemini-4-neon", "max"), ("gemini-4-neon-xhigh".into(), None));
+        assert_eq!(resolve_model_for_effort("claude-opus-5-5", "max"), ("claude-opus-5-5-high".into(), None));
+        assert_eq!(resolve_model_for_effort("claude-opus-5-5", "xhigh"), ("claude-opus-5-5-high".into(), None));
+        // Legacy suffixed id still respects the current effort setting without passing a conflicting --effort flag.
+        assert_eq!(resolve_model_for_effort("gemini-4-neon-low", "xhigh"), ("gemini-4-neon-xhigh".into(), None));
+        // Single-variant model clamps up or down to its only supported level.
+        assert_eq!(resolve_model_for_effort("gpt-oss-120b", "low"), ("gpt-oss-120b-medium".into(), None));
+        assert_eq!(resolve_model_for_effort("gpt-oss-120b", "max"), ("gpt-oss-120b-medium".into(), None));
+        // Model without effort variants keeps its id unchanged.
+        assert_eq!(resolve_model_for_effort("gemini-pro-orchestrator-neon", "high"), ("gemini-pro-orchestrator-neon".into(), None));
+        // Empty model forwards --effort directly to agy's default model.
+        assert_eq!(resolve_model_for_effort("", "xhigh"), (String::new(), Some("xhigh".into())));
     }
 
     #[test]
@@ -586,10 +717,10 @@ mod tests {
 
     #[test]
     fn builds_agy_args_with_resume_mode_and_sandbox() {
-        let args = build_args("hello", Some("c-1"), "gemini-4-neon-high", "high", Mode::Edit, true, false);
+        let args = build_args("hello", Some("c-1"), "gemini-4-neon", "high", Mode::Edit, true, false);
         assert_eq!(
             args,
-            ["--print", "hello", "--output-format", "stream-json", "--conversation", "c-1", "--model", "gemini-4-neon-high", "--effort", "high", "--mode", "accept-edits", "--sandbox"]
+            ["--print", "hello", "--output-format", "stream-json", "--conversation", "c-1", "--model", "gemini-4-neon-high", "--mode", "accept-edits", "--sandbox"]
         );
         let bypass = build_args("hi", None, "", "", Mode::Bypass, false, false);
         assert_eq!(bypass, ["--print", "hi", "--output-format", "stream-json", "--dangerously-skip-permissions"]);
