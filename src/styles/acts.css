@@ -570,6 +570,27 @@
   background: color-mix(in srgb, var(--sheet) 55%, transparent);
 }
 
+.sign-keys {
+  margin-left: auto;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.sign-keys kbd {
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--sheet) 65%, transparent);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
 /* Why the 护法 would not pass it, in cinnabar: it is the reason 本尊 is asked. */
 .sign-review {
   margin: 0;

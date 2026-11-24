@@ -38,6 +38,11 @@ export interface SidebarProps {
   onSettings: () => void;
   /** Ids of the sessions that hold the text, in their title, folder, or conversation. */
   onSearch: (query: string) => Promise<string[]>;
+  onRenameSession?: (id: string, title: string) => void;
+  onForkSession?: (id: string) => void;
+  onDeleteSession?: (id: string) => void;
+  onCleanScheduled?: (ids: string[]) => void;
+  onRevealWorkspace?: (id: string) => void;
 }
 
 /** The time, looked at again every so often, so that what is said of how long ago stays true. */
@@ -101,12 +106,53 @@ export function Sidebar({
   onNewIn,
   onSettings,
   onSearch,
+  onRenameSession,
+  onForkSession,
+  onDeleteSession,
+  onCleanScheduled,
+  onRevealWorkspace,
 }: SidebarProps) {
   const now = useNow(30_000);
   const [folded, toggleFolded] = useFolded();
   const [query, setQuery] = useState("");
   const [dragging, setDragging] = useState(false);
   const held = useRef(false);
+  const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number; confirm?: "delete" | "clean" } | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const closeOnPointer = (event: PointerEvent) => {
+      if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return;
+      setMenu(null);
+    };
+    const closeOnKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setMenu(null);
+      }
+    };
+    const close = () => setMenu(null);
+    window.addEventListener("pointerdown", closeOnPointer, true);
+    window.addEventListener("keydown", closeOnKey, true);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnPointer, true);
+      window.removeEventListener("keydown", closeOnKey, true);
+      window.removeEventListener("blur", close);
+    };
+  }, [menu]);
+
+  const openMenu = (sessionId: string, clientX: number, clientY: number) => {
+    const x = Math.max(8, Math.min(clientX, window.innerWidth - 228));
+    const y = Math.max(8, Math.min(clientY, window.innerHeight - 236));
+    setMenu({ sessionId, x, y });
+  };
+
+  const idleScheduledIds = sessions.filter((s) => !!s.schedule && s.status === "idle").map((s) => s.id);
+  const menuSession = menu ? sessions.find((s) => s.id === menu.sessionId) ?? null : null;
   /** The sessions the search found; null while nothing is searched for. */
   const [found, setFound] = useState<Set<string> | null>(null);
   useEffect(() => {
@@ -145,6 +191,7 @@ export function Sidebar({
 
   return (
     <nav className="sidebar" aria-label="侧边导航">
+      <div className="sidebar-drag" data-tauri-drag-region />
       {onResize && (
         <div
           className={`sidebar-edge ${dragging ? "dragging" : ""}`}
@@ -306,35 +353,93 @@ export function Sidebar({
                 items.map((session) => {
                   const child = !!childOf(session);
                   const state = session.status === "waiting_approval" ? "await" : session.status === "running" ? "busy" : "";
+                  if (renaming?.id === session.id) {
+                    const commitRename = () => {
+                      if (renaming.draft.trim() !== session.title) onRenameSession?.(session.id, renaming.draft);
+                      setRenaming(null);
+                    };
+                    return (
+                      <div className={`session-rename ${child ? "child" : ""}`} key={session.id}>
+                        <input
+                          className="input session-rename-input"
+                          aria-label="会话名"
+                          autoFocus
+                          value={renaming.draft}
+                          placeholder="留空则用第一句话作名"
+                          onChange={(e) => setRenaming({ id: session.id, draft: e.target.value })}
+                          onBlur={commitRename}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.nativeEvent.isComposing) commitRename();
+                            if (e.key === "Escape") setRenaming(null);
+                          }}
+                        />
+                      </div>
+                    );
+                  }
+                  const hasMenu = !!(onRenameSession || onForkSession || onDeleteSession || onRevealWorkspace);
                   return (
-                    <button
-                      type="button"
-                      key={session.id}
-                      className={`row-button session ${child ? "child" : ""} ${state}`}
-                      aria-current={page === "chat" && session.id === activeId ? "true" : undefined}
-                      onClick={() => onOpen(session.id)}
-                    >
-                      {/* How it stands, as a seal: 候 in cinnabar while it waits for 本尊, 运 in jade while it works, a plain ring at rest. */}
-                      <span className={`row-seal ${state}`} title={state === "await" ? "候旨：在等本尊定夺" : state === "busy" ? "运功中" : undefined} aria-hidden={state ? undefined : "true"}>
-                        {state === "busy" && <Light />}
-                        {state === "await" ? "候" : state === "busy" ? "运" : ""}
-                      </span>
-                      <span className="row-text">
-                        <span className="row-title">{titleOf(session)}</span>
-                        {/* Under the title, small: when it was last at work, and what kind of 分身 it is. A 子分身 keeps to one line. */}
-                        {!child && (
-                          <span className="row-meta">
-                            <span className="row-when" title={new Date(session.updated_at).toLocaleString()}>
-                              {state === "await" ? "候旨" : state === "busy" ? "运功中" : ago(session.updated_at, now)}
+                    <div className={`session-slot ${child ? "child" : ""} ${menu?.sessionId === session.id ? "menu-open" : ""}`} key={session.id}>
+                      <button
+                        type="button"
+                        className={`row-button session ${child ? "child" : ""} ${state}`}
+                        aria-current={page === "chat" && session.id === activeId ? "true" : undefined}
+                        onClick={() => onOpen(session.id)}
+                        onContextMenu={
+                          hasMenu
+                            ? (e) => {
+                                e.preventDefault();
+                                openMenu(session.id, e.clientX, e.clientY);
+                              }
+                            : undefined
+                        }
+                      >
+                        {/* How it stands, as a seal: 候 in cinnabar while it waits for 本尊, 运 in jade while it works, a plain ring at rest. */}
+                        <span className={`row-seal ${state}`} title={state === "await" ? "候旨：在等本尊定夺" : state === "busy" ? "运功中" : undefined} aria-hidden={state ? undefined : "true"}>
+                          {state === "busy" && <Light />}
+                          {state === "await" ? "候" : state === "busy" ? "运" : ""}
+                        </span>
+                        <span className="row-text">
+                          <span className="row-title">{titleOf(session)}</span>
+                          {/* Under the title, small: when it was last at work, and what kind of 分身 it is. A 子分身 keeps to one line. */}
+                          {!child && (
+                            <span className="row-meta">
+                              <span className="row-when" title={new Date(session.updated_at).toLocaleString()}>
+                                {state === "await" ? "候旨" : state === "busy" ? "运功中" : ago(session.updated_at, now)}
+                              </span>
+                              {session.fork && <span className="chip kin" title="分叉：它的前情抄自另一个分身">分叉</span>}
+                              {session.schedule && <span className="chip kin" title={`功课「${session.schedule}」到时辰化出的分身`}>功课</span>}
+                              {session.worktree && <span className="chip kin" title={`用独立的工作树，分支 ${session.worktree.branch}`}>独立</span>}
+                              {!open(session.id) && family(session.id).length > 0 && <span className="chip kin" title="它派出过的子分身，点开这个分身就能看到">{family(session.id).length} 子</span>}
                             </span>
-                            {session.fork && <span className="chip kin" title="分叉：它的前情抄自另一个分身">分叉</span>}
-                            {session.schedule && <span className="chip kin" title={`功课「${session.schedule}」到时辰化出的分身`}>功课</span>}
-                            {session.worktree && <span className="chip kin" title={`用独立的工作树，分支 ${session.worktree.branch}`}>独立</span>}
-                            {!open(session.id) && family(session.id).length > 0 && <span className="chip kin" title="它派出过的子分身，点开这个分身就能看到">{family(session.id).length} 子</span>}
-                          </span>
-                        )}
-                      </span>
-                    </button>
+                          )}
+                        </span>
+                      </button>
+                      {hasMenu && !child && (
+                        <button
+                          type="button"
+                          className="session-more"
+                          aria-label={`管理「${titleOf(session)}」`}
+                          aria-haspopup="menu"
+                          aria-expanded={menu?.sessionId === session.id}
+                          title="管理分身（右键也可唤出）"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (menu?.sessionId === session.id) {
+                              setMenu(null);
+                              return;
+                            }
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            openMenu(session.id, rect.right, rect.bottom + 4);
+                          }}
+                        >
+                          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                            <circle cx="3.5" cy="8" r="1.25" />
+                            <circle cx="8" cy="8" r="1.25" />
+                            <circle cx="12.5" cy="8" r="1.25" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
             </div>
@@ -374,6 +479,126 @@ export function Sidebar({
           设置
         </button>
       </div>
+      {menu && menuSession && (
+        <div
+          ref={menuRef}
+          className="session-menu"
+          role="menu"
+          aria-label={`「${titleOf(menuSession)}」操作菜单`}
+          style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
+        >
+          {menu.confirm === "delete" ? (
+            <div className="session-menu-confirm">
+              <p>删除「{titleOf(menuSession)}」及其快照，不可恢复。</p>
+              <div className="session-menu-confirm-acts">
+                <button type="button" className="button text small" onClick={() => setMenu({ ...menu, confirm: undefined })}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="button solid small"
+                  onClick={() => {
+                    const id = menuSession.id;
+                    setMenu(null);
+                    onDeleteSession?.(id);
+                  }}
+                >
+                  确认删掉
+                </button>
+              </div>
+            </div>
+          ) : menu.confirm === "clean" ? (
+            <div className="session-menu-confirm">
+              <p>一并清理 {idleScheduledIds.length} 个已收功的功课分身？</p>
+              <div className="session-menu-confirm-acts">
+                <button type="button" className="button text small" onClick={() => setMenu({ ...menu, confirm: undefined })}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="button solid small"
+                  onClick={() => {
+                    const ids = [...idleScheduledIds];
+                    setMenu(null);
+                    onCleanScheduled?.(ids);
+                  }}
+                >
+                  确认清扫
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {onRenameSession && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="session-menu-item"
+                  onClick={() => {
+                    setRenaming({ id: menuSession.id, draft: menuSession.title });
+                    setMenu(null);
+                  }}
+                >
+                  重命名分身
+                </button>
+              )}
+              {!menuSession.parent && onForkSession && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="session-menu-item"
+                  onClick={() => {
+                    const id = menuSession.id;
+                    setMenu(null);
+                    onForkSession(id);
+                  }}
+                >
+                  从此处分叉会话
+                </button>
+              )}
+              {onRevealWorkspace && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="session-menu-item"
+                  onClick={() => {
+                    const id = menuSession.id;
+                    setMenu(null);
+                    onRevealWorkspace(id);
+                  }}
+                >
+                  在文件夹中显示洞府
+                </button>
+              )}
+              {onCleanScheduled && menuSession.schedule && idleScheduledIds.length > 1 && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="session-menu-item"
+                  onClick={() => setMenu({ ...menu, confirm: "clean" })}
+                >
+                  清扫已办功课分身（{idleScheduledIds.length}）
+                </button>
+              )}
+              {onDeleteSession && (
+                <>
+                  <div className="session-menu-sep" role="separator" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="session-menu-item danger"
+                    disabled={menuSession.status !== "idle"}
+                    title={menuSession.status !== "idle" ? "分身正在运功或候旨，请先收回" : undefined}
+                    onClick={() => setMenu({ ...menu, confirm: "delete" })}
+                  >
+                    删除这个分身…
+                  </button>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </nav>
   );
 }

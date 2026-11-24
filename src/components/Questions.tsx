@@ -39,6 +39,8 @@ function AskSheet({ tool, frozen, onAnswer }: Props) {
   const [sent, setSent] = useState(false);
   const seconds = useSecondsLeft(expiresAt, frozen);
   const advance = useRef<number | undefined>(undefined);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   useEffect(() => () => window.clearTimeout(advance.current), []);
   const question = questions[at];
   const draft = drafts[at];
@@ -59,8 +61,36 @@ function AskSheet({ tool, frozen, onAnswer }: Props) {
     onAnswer(tool.id, answers);
   };
   const many = questions.length > 1;
+  useEffect(() => {
+    if (locked) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      const el = sheetRef.current;
+      if (!el || el.offsetParent === null) return;
+      if (document.querySelector("dialog[open], .slash-menu, [role='menu'], .confirm-bubble, .combo-list")) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".xterm, .aside-pane")) return;
+      const inOutsideField =
+        (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
+        !el.contains(target) &&
+        target.value.trim().length > 0;
+      const mod = event.metaKey || event.ctrlKey;
+      if (mod && !event.altKey && !event.shiftKey && event.key === "Enter" && !inOutsideField) {
+        event.preventDefault();
+        setSent(true);
+        onAnswer(tool.id, questions.map((each, index) => replyOf(each, drafts[index])));
+        return;
+      }
+      if (many && event.altKey && !mod && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        event.preventDefault();
+        setAt((cur) => (cur + (event.key === "ArrowRight" ? 1 : questions.length - 1)) % questions.length);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [locked, many, questions, drafts, onAnswer, tool.id]);
   return (
-    <div className={`sign-sheet ask-sheet ${frozen ? "frozen" : ""}`}>
+    <div ref={sheetRef} className={`sign-sheet ask-sheet ${frozen ? "frozen" : ""}`}>
       <div className="sign-head">
         <h2>{many ? `分身有 ${questions.length} 件事请教本尊` : "分身有事请教本尊"}</h2>
         {/* With nobody answering in time, the 分身 decides for itself. */}
@@ -159,6 +189,15 @@ function AskSheet({ tool, frozen, onAnswer }: Props) {
         <button type="button" className="button text" disabled={sent} onClick={() => hand(null)}>
           不答，交给分身自定
         </button>
+        <span className="sign-keys" aria-hidden="true">
+          <kbd>{isMac ? "⌘↵" : "Ctrl+Enter"}</kbd> 呈上
+          {many ? (
+            <>
+              {" · "}
+              <kbd>{isMac ? "⌥←/→" : "Alt+←/→"}</kbd> 切题
+            </>
+          ) : null}
+        </span>
       </div>
     </div>
   );

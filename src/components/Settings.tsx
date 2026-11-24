@@ -530,8 +530,8 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
   return (
     <div className="settings">
       {/* Inside what scrolls, and kept at its top: the strip then lines up with the column under it, whatever the scrollbar takes. */}
-      <header className="settings-tabs">
-        <div className="settings-tabs-inner">
+      <header className="settings-tabs" data-tauri-drag-region>
+        <div className="settings-tabs-inner" data-tauri-drag-region>
         {TABS.map((item) => (
           <button type="button" className="tab" key={item.id} aria-pressed={tab === item.id} title={item.hint} onClick={() => setTab(item.id)}>
             <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">

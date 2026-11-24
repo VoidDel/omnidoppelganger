@@ -52,6 +52,8 @@
   --jade-ink: #ffffff;
   --jade-tint: #d8eae4;
   --jade-tint-ink: #17564d;
+  --jade-soft: #e4f0ec;
+  --jade-line: #7eb8ae;
   --talisman: #f6e7a8;
   --talisman-line: #d9bc55;
   --talisman-under: #e8c84a;
@@ -96,6 +98,8 @@
   --jade-ink: #0b1416;
   --jade-tint: #1b3f3b;
   --jade-tint-ink: #bfede3;
+  --jade-soft: #163330;
+  --jade-line: #2f6c63;
   /* In the dark the talisman is still yellow paper, lit: the one bright thing on the desk. Its ink is dark. */
   --talisman: #ecd88c;
   --talisman-line: #b8962e;

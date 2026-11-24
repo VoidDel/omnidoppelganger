@@ -58,7 +58,7 @@ export function SessionHeader({
   };
   const busy = session.status !== "idle";
   return (
-    <header className="main-header">
+    <header className="main-header" data-tauri-drag-region>
       {sidebarHidden && onToggleSidebar && (
         <button type="button" className="icon-button" title="展开左侧栏 (Ctrl/Cmd+B)" onClick={onToggleSidebar}>
           <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -121,7 +121,7 @@ export function SessionHeader({
           )}
         </div>
       </div>
-      <span className="spacer" />
+      <span className="spacer" data-tauri-drag-region />
       {draft === null && (
         <>
           {/* Pictures to look at, words for a screen reader and for the pointer that rests on one. */}

@@ -225,7 +225,8 @@
     opacity var(--d-move) ease;
 }
 
-.composer-row .select-button:has(.stones):is(:hover, :focus-visible, [aria-expanded="true"]) .value {
+.composer-row .select-button:has(.stones):is(:hover, :focus-visible, [aria-expanded="true"]) .value,
+.main > .composer .composer-row .select-button:has(.stones.used) .value {
   max-width: 160px;
   margin-left: 0;
   opacity: 1;
@@ -492,8 +493,8 @@ dialog.paste-viewer {
   max-height: 84vh;
   margin: auto;
   padding: 0;
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
   background: var(--sheet);
   color: var(--ink);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.24);
@@ -531,7 +532,7 @@ dialog.paste-viewer::backdrop {
 .paste-kind-badge {
   flex: none;
   padding: 1px 6px;
-  border-radius: var(--r-1);
+  border-radius: var(--r-paper);
   background: var(--control);
   border: 1px solid var(--line);
   font-size: var(--t-micro);
@@ -563,7 +564,7 @@ dialog.paste-viewer::backdrop {
 .paste-viewer-tabs {
   display: inline-flex;
   padding: 2px;
-  border-radius: var(--r-1);
+  border-radius: var(--r-control);
   background: var(--control);
   border: 1px solid var(--line);
 }
@@ -574,7 +575,7 @@ dialog.paste-viewer::backdrop {
   color: var(--ink-2);
   font-size: var(--t-micro);
   padding: 2px 8px;
-  border-radius: calc(var(--r-1) - 1px);
+  border-radius: calc(var(--r-control) - 2px);
   cursor: pointer;
 }
 

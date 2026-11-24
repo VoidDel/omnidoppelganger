@@ -1,4 +1,4 @@
-import { type CSSProperties, createContext, useContext, useEffect, useState } from "react";
+import { type CSSProperties, createContext, useContext, useEffect, useRef, useState } from "react";
 import { type Item, type ToolItem, editsFiles, fileSize, mcpTool, shortCount, todosOf } from "../lib/fold";
 import type { Decision, DiffHunk, Image, Mode, SessionItem } from "../lib/types";
 import { Light } from "./Light";
@@ -659,6 +659,38 @@ export function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
   const seconds = useSecondsLeft(approval.expiresAt, frozen);
   /** Whether the explanation behind the mark after the title is open. */
   const [explained, setExplained] = useState(false);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  useEffect(() => {
+    if (frozen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      const el = sheetRef.current;
+      if (!el || el.offsetParent === null) return;
+      if (document.querySelector("dialog[open], .slash-menu, [role='menu'], .confirm-bubble, .combo-list")) return;
+      // Only the first visible SignSheet handles global approval shortcuts.
+      const firstVisible = [...document.querySelectorAll<HTMLElement>(".sign-sheet:not(.ask-sheet):not(.frozen)")].find((node) => node.offsetParent !== null);
+      if (firstVisible && firstVisible !== el) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".xterm, .aside-pane")) return;
+      const inField = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable;
+      const hasTyped =
+        (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.value.trim().length > 0;
+      const mod = event.metaKey || event.ctrlKey;
+      if (mod && !event.altKey && event.key === "Enter" && !hasTyped) {
+        event.preventDefault();
+        if (event.shiftKey && approval.grant) onDecide(tool.id, "allow_session");
+        else if (!event.shiftKey) onDecide(tool.id, "allow_once");
+        return;
+      }
+      if (mod && !event.altKey && !event.shiftKey && event.key === "Backspace" && !inField) {
+        event.preventDefault();
+        onDecide(tool.id, "deny");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [frozen, approval.grant, onDecide, tool.id]);
   const asked = ASK[approval.reason] ?? ASK.command;
   // Deleting and moving are asked about as edits are, under their own word.
   const doing = tool.name === "delete_file" ? "删除" : tool.name === "move_file" ? "挪动" : null;
@@ -670,7 +702,7 @@ export function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
     (approval.reason === "command" && mode === "auto" ? "放手施为只自行放行只读、构建、测试类且不碰洞府之外的命令，这条不在其列。" : "") +
     (oneByOne ? "这条命令带有管道、分号、引号、变量之类的写法，或者会执行任意代码，只能逐条批准。" : "");
   return (
-    <div className={`sign-sheet ${frozen ? "frozen" : ""}`}>
+    <div ref={sheetRef} className={`sign-sheet ${frozen ? "frozen" : ""}`}>
       <div className="sign-head">
         <h2>{ask.title}</h2>
         {/* Why this asks and what allowing it means: a tip behind a mark, shown on hover or focus; a click keeps it open. */}
@@ -713,6 +745,17 @@ export function SignSheet({ tool, mode, frozen, onDecide }: SignSheetProps) {
         <button type="button" className="button text" onClick={() => onDecide(tool.id, "deny")}>
           驳回
         </button>
+        <span className="sign-keys" aria-hidden="true">
+          <kbd>{isMac ? "⌘↵" : "Ctrl+Enter"}</kbd> 准
+          {approval.grant ? (
+            <>
+              {" · "}
+              <kbd>{isMac ? "⌘⇧↵" : "Ctrl+Shift+Enter"}</kbd> 常准
+            </>
+          ) : null}
+          {" · "}
+          <kbd>{isMac ? "⌘⌫" : "Ctrl+Backspace"}</kbd> 驳
+        </span>
       </div>
     </div>
   );

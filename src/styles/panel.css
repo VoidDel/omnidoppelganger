@@ -106,6 +106,7 @@
   border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
 
 /* The panel's left edge, to drag: a thin strip over the border that shows itself when pointed at. */
@@ -236,6 +237,11 @@
   gap: var(--s-3);
 }
 
+.panel-sub {
+  margin: -4px 0 2px;
+  font-size: var(--t-micro);
+}
+
 .panel-meta {
   font-size: var(--t-micro);
   color: var(--ink-2);
@@ -338,7 +344,7 @@
   padding: 0;
   list-style: none;
   border-top: 1px solid var(--line);
-  background: var(--paper);
+  background: var(--bg);
 }
 
 .version-row {
@@ -736,9 +742,27 @@
 }
 
 .strip-tabs .tab {
-  min-width: 36px;
-  min-height: 36px;
-  padding: 0;
+  min-width: 44px;
+  min-height: 42px;
+  padding: 4px 2px;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.strip-word {
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+@container (max-width: 350px) {
+  .tabs .tab:not([aria-pressed="true"]) .tab-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* Written down the strip as on a scroll, faint: there is nothing here yet. */

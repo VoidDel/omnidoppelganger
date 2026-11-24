@@ -203,8 +203,13 @@ export function Jump({ mode = "all", sessions, acts, onOpen, onSearch, onSearchF
         ))}
       </ul>
       <p className="jump-keys">
-        <kbd>↑</kbd>
-        <kbd>↓</kbd> 选，<kbd>Enter</kbd> 打开，<kbd>Esc</kbd> 回
+        <span>
+          <kbd>↑</kbd>
+          <kbd>↓</kbd> 选，<kbd>Enter</kbd> 打开，<kbd>Esc</kbd> 回
+        </span>
+        <span className="jump-keys-more">
+          <kbd>Ctrl/⌘+P</kbd> 搜文件 · <kbd>Ctrl/⌘+B</kbd> 左栏 · <kbd>Ctrl/⌘+J</kbd> 终端 · <kbd>Shift+Tab</kbd> 禁制
+        </span>
       </p>
     </dialog>
   );

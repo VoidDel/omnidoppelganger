@@ -176,13 +176,16 @@ interface Props {
   onSave: (schedule: Schedule) => Promise<string | null>;
   onDelete: (id: string) => Promise<string | null>;
   onRun: (id: string) => Promise<string | null>;
+  onCleanSessions?: (ids: string[]) => void;
 }
 
 /** The 功课 page: the tasks set to start by themselves, and the form that sets one. */
-export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, onPick, onSave, onDelete, onRun }: Props) {
+export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, onPick, onSave, onDelete, onRun, onCleanSessions }: Props) {
   /** The form that is open: for a new schedule, or for the one with its id. */
   const [draft, setDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const idleScheduledIds = sessions.filter((s) => !!s.schedule && s.status === "idle").map((s) => s.id);
   const [wrong, setWrong] = useState<string | null>(null);
   // The times shown ("下次") are read against the clock, so the page looks again as it moves.
   const [now, setNow] = useState(() => new Date());
@@ -340,6 +343,31 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
               <button type="button" className="button primary" onClick={() => setDraft(blank(workspace, mode, new Date()))}>
                 添一门功课
               </button>
+              {onCleanSessions && idleScheduledIds.length > 0 && (
+                <span className="bubble-anchor">
+                  <button
+                    type="button"
+                    className="button outline"
+                    aria-expanded={cleaning}
+                    onClick={() => setCleaning(!cleaning)}
+                  >
+                    清扫已办分身（{idleScheduledIds.length}）
+                  </button>
+                  {cleaning && (
+                    <ConfirmBubble
+                      label="清扫已办功课分身"
+                      confirm="确认清扫"
+                      onConfirm={() => {
+                        setCleaning(false);
+                        onCleanSessions(idleScheduledIds);
+                      }}
+                      onCancel={() => setCleaning(false)}
+                    >
+                      <p>将删掉 {idleScheduledIds.length} 个已收功的功课分身及其快照；功课本身的设置不受影响。</p>
+                    </ConfirmBubble>
+                  )}
+                </span>
+              )}
             </div>
           )}
         </section>

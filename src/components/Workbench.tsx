@@ -138,11 +138,26 @@ export function WorkbenchTabsBar({
           );
         })}
       </div>
-      {tabs.length > 1 && (
+      {(tabs.length > 1 || (inWorkbench && chatStatus === "waiting_approval")) && (
         <div className="workbench-bar-acts">
-          <button type="button" className="button text small" title="关闭全部文件标签" onClick={onCloseAllTabs}>
-            全关
-          </button>
+          {inWorkbench && chatStatus === "waiting_approval" && (
+            <button
+              type="button"
+              className="wb-await-pill"
+              title="主分身有操作或提问等待本尊定夺，点击切回对话批阅"
+              onClick={onSelectChat}
+            >
+              <span className="seal small" aria-hidden="true">
+                候
+              </span>
+              <span>分身候旨 · 去定夺</span>
+            </button>
+          )}
+          {tabs.length > 1 && (
+            <button type="button" className="button text small" title="关闭全部文件标签" onClick={onCloseAllTabs}>
+              全关
+            </button>
+          )}
         </div>
       )}
     </div>

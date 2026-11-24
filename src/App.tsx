@@ -199,6 +199,18 @@ function useSidebar() {
   return [sidebar, setSidebar] as const;
 }
 
+function useCompactLayout() {
+  const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 1100px)").matches);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1100px)");
+    const sync = () => setCompact(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+  return compact;
+}
+
 function usePanel() {
   const [panel, setPanel] = useState<{ width: number; hidden: boolean }>(() => {
     try {
@@ -222,6 +234,9 @@ function usePanel() {
 const pressed = { x: 0, y: 0 };
 if (typeof window !== "undefined") {
   window.addEventListener("pointerdown", (event) => Object.assign(pressed, { x: event.clientX, y: event.clientY }), true);
+  if ("__TAURI_INTERNALS__" in window && /Mac/.test(navigator.platform || navigator.userAgent)) {
+    document.documentElement.dataset.macosOverlay = "true";
+  }
 }
 
 /**
@@ -354,6 +369,27 @@ export default function App() {
     [made],
   );
 
+  const cleanScheduledSessions = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return;
+      let removed = 0;
+      for (const id of ids) {
+        try {
+          await api.deleteSession(id);
+          dispatch({ type: "deleted", id });
+          removed++;
+        } catch (error) {
+          fail(error);
+          break;
+        }
+      }
+      if (removed > 0) {
+        dispatch({ type: "note", note: `已清扫 ${removed} 个已收功的功课分身。` });
+      }
+    },
+    [fail],
+  );
+
   const open = (id: string) => {
     dispatch({ type: "opening", id });
     api.openSession(id).then((view) => dispatch({ type: "opened", view }), fail);
@@ -428,9 +464,11 @@ export default function App() {
   const missingKey = !!defaultProvider && state.settings?.keys[defaultProvider.id]?.source === "none";
   const inSettings = state.page === "settings";
   const inChat = state.page === "chat";
+  const compactLayout = useCompactLayout();
   const [sidebar, setSidebar] = useSidebar();
   const [leftTab, setLeftTab] = useState<SidebarTab>("sessions");
   const [panel, setPanel] = usePanel();
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [summonPanelTab, setSummonPanelTab] = useState<{ id: number; tab: PanelTab } | null>(null);
 
   // Workbench tabs for the active workspace (file viewer & git diff viewer).
@@ -668,11 +706,15 @@ export default function App() {
   }, [showWorkbench, wbTabs, activeTabId]);
 
   const canAside = !!active && !active.parent && !replay;
-  const showPanel = inChat && !!active && !panel.hidden;
-  // With nothing in it, the panel stands as a strip, until a tab there is pressed; the next 分身 starts again.
+  const panelHidden = compactLayout ? !drawerOpen : panel.hidden;
+  const showPanel = inChat && !!active && !panelHidden;
+  // With nothing in it, the panel stands as a strip, until a tab there is pressed; in drawer mode it always opens full-width.
   const [peek, setPeek] = useState(false);
-  useEffect(() => setPeek(false), [state.activeId]);
-  const strip = files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
+  useEffect(() => {
+    setPeek(false);
+    setDrawerOpen(false);
+  }, [state.activeId]);
+  const strip = !compactLayout && files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
 
   /** Words or files for the side conversation's box: what is quoted from the code while the code is in the middle. */
   const [asideSeed, setAsideSeed] = useState<{ id: number; text?: string; append?: boolean; attachPaths?: string[] } | null>(null);
@@ -682,6 +724,7 @@ export default function App() {
       if (showWorkbench && canAside) {
         setAsideSeed({ id: Date.now(), text: quoteText, append: true });
         setPanel((cur) => ({ ...cur, hidden: false }));
+        setDrawerOpen(true);
         setPeek(true);
         setSummonPanelTab({ id: Date.now(), tab: "chat" });
       } else {
@@ -697,6 +740,7 @@ export default function App() {
       if (showWorkbench && canAside) {
         setAsideSeed({ id: Date.now(), attachPaths: [absPath] });
         setPanel((cur) => ({ ...cur, hidden: false }));
+        setDrawerOpen(true);
         setPeek(true);
         setSummonPanelTab({ id: Date.now(), tab: "chat" });
       } else {
@@ -710,6 +754,7 @@ export default function App() {
   const summonAside = useCallback(() => {
     dispatch({ type: "page", page: "chat" });
     setPanel((cur) => ({ ...cur, hidden: false }));
+    setDrawerOpen(true);
     setPeek(true);
     setSummonPanelTab({ id: Date.now(), tab: "chat" });
   }, [setPanel]);
@@ -717,15 +762,28 @@ export default function App() {
   const summonTerminal = useCallback(() => {
     dispatch({ type: "page", page: "chat" });
     setPanel((cur) => ({ ...cur, hidden: false }));
+    setDrawerOpen(true);
     setPeek(true);
     setSummonPanelTab({ id: Date.now(), tab: "terminal" });
   }, [setPanel]);
 
-  const shortcutContext = useRef({ inChat, isProjectSession, hasActive: !!active });
-  shortcutContext.current = { inChat, isProjectSession, hasActive: !!active };
+  const shortcutContext = useRef({ inChat, isProjectSession, hasActive: !!active, compactLayout, drawerOpen });
+  shortcutContext.current = { inChat, isProjectSession, hasActive: !!active, compactLayout, drawerOpen };
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        !event.defaultPrevented &&
+        shortcutContext.current.compactLayout &&
+        shortcutContext.current.drawerOpen &&
+        !document.querySelector("dialog[open], .slash-menu, [role='menu'], .confirm-bubble, .combo-list") &&
+        !(event.target instanceof HTMLElement && event.target.closest(".xterm"))
+      ) {
+        event.preventDefault();
+        setDrawerOpen(false);
+        return;
+      }
       const mod = event.ctrlKey || event.metaKey;
       const lower = event.key.toLowerCase();
       if (mod && !event.altKey && lower === "k") {
@@ -1081,10 +1139,21 @@ export default function App() {
             onNewIn={(workspace, isolated) => api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view }), fail)}
             onSettings={toSettings}
             onSearch={api.searchSessions}
+            onRenameSession={(id, title) => api.renameSession(id, title).then((item) => dispatch({ type: "session", item }), fail)}
+            onForkSession={(id) =>
+              api.forkSession(id).then((view) => {
+                dispatch({ type: "opened", view });
+                dispatch({ type: "note", note: "已分叉：这是一个新的分身，带着到现在为止的全部对话。只分了对话：洞府里的文件是同一份，还是现在的样子。" });
+              }, fail)
+            }
+            onDeleteSession={(id) => api.deleteSession(id).then(() => dispatch({ type: "deleted", id }), fail)}
+            onCleanScheduled={(ids) => void cleanScheduledSessions(ids)}
+            onRevealWorkspace={(id) => void api.openWorkspaceEntry(id, "", true).catch(fail)}
           />
         </Guard>
       )}
       <main className="main">
+        <div className="stage-drag" data-tauri-drag-region />
         {/* What went wrong, or went well: under the session's title where there is one, at the top of the page otherwise. */}
         {!(inChat && active) && banners}
         {inSettings && state.settings ? (
@@ -1156,6 +1225,7 @@ export default function App() {
                 (error) => String(error),
               )
             }
+            onCleanSessions={(ids) => void cleanScheduledSessions(ids)}
           />
           </Guard>
         ) : active ? (
@@ -1179,8 +1249,17 @@ export default function App() {
               }
               sidebarHidden={sidebar.hidden}
               onToggleSidebar={() => setSidebar((cur) => ({ ...cur, hidden: false }))}
-              panelHidden={panel.hidden}
-              onTogglePanel={() => setPanel({ ...panel, hidden: !panel.hidden })}
+              panelHidden={panelHidden}
+              onTogglePanel={() => {
+                if (compactLayout) {
+                  setDrawerOpen((open) => {
+                    if (!open) setPeek(true);
+                    return !open;
+                  });
+                } else {
+                  setPanel({ ...panel, hidden: !panel.hidden });
+                }
+              }}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
               onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
             />
@@ -1340,6 +1419,9 @@ export default function App() {
           onClose={() => setJumping(null)}
         />
       )}
+      {showPanel && compactLayout && (
+        <div className="panel-scrim" aria-hidden="true" onClick={() => setDrawerOpen(false)} />
+      )}
       {showPanel && (
         <Guard name="侧栏" className="panel" resetKey={state.activeId}>
           <SidePanel
@@ -1445,6 +1527,7 @@ export default function App() {
             onOpenFile={openFile}
             onRestoreArtifact={restoreArtifact}
             onSaveArtifactCopy={saveArtifactCopy}
+            onCloseDrawer={compactLayout ? () => setDrawerOpen(false) : undefined}
           />
         </Guard>
       )}

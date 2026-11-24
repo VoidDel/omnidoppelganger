@@ -382,17 +382,86 @@
 
 @media (max-width: 1100px) {
   .app.with-panel {
-    grid-template-columns: 236px minmax(0, 1fr);
+    grid-template-columns: var(--sidebar-width, 236px) minmax(0, 1fr);
+  }
+
+  .app.sidebar-hidden.with-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* At narrower widths, the right panel slides over the main stage as a drawer instead of vanishing. */
+  .panel-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 24;
+    background: rgb(16 27 29 / 0.28);
+    backdrop-filter: blur(1px);
+    animation: come var(--d-quick) ease;
   }
 
   .app.with-panel .panel {
-    display: none;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
+    width: min(var(--panel-width, 380px), calc(100vw - 56px));
+    box-shadow: -16px 0 40px -12px rgb(0 0 0 / 0.28);
+    animation: drawer-in var(--d-move) var(--ease-out);
   }
+}
 
-  /* No room for the panel at this width, so nothing to put away or bring back. */
-  .panel-toggle {
-    display: none;
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
   }
+}
+
+/* ---------- macOS overlay titlebar integration ---------- */
+
+.sidebar-drag,
+.stage-drag {
+  display: none;
+}
+
+:root[data-macos-overlay="true"] .sidebar {
+  padding-top: 38px;
+}
+
+:root[data-macos-overlay="true"] .sidebar-drag {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 34px;
+  z-index: 4;
+}
+
+:root[data-macos-overlay="true"] .stage-drag {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  z-index: 2;
+}
+
+/* When a header bar already occupies the top of .main, let its own drag region take over so header buttons stay clickable. */
+:root[data-macos-overlay="true"] .main:has(.main-header, .settings-tabs) > .stage-drag {
+  display: none;
+}
+
+/* Keep content clear of macOS traffic lights when the left sidebar is collapsed. */
+:root[data-macos-overlay="true"] .app.sidebar-hidden .main-header,
+:root[data-macos-overlay="true"] .app.sidebar-hidden .settings-tabs {
+  padding-left: 84px;
+}
+
+:root[data-macos-overlay="true"] .app.sidebar-hidden .main:not(:has(.main-header, .settings-tabs)) {
+  padding-top: 20px;
 }
 
 /* ---------- a part of the page that could not be drawn ---------- */

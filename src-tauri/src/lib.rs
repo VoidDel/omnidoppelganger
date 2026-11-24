@@ -1373,6 +1373,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_title_bar_style(tauri::TitleBarStyle::Overlay);
+                let _ = window.set_title("");
+            }
+
             let home = settings::home();
             let settings = Arc::new(SettingsStore::at_home());
             let key_source = settings.clone();

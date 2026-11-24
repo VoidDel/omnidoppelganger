@@ -607,8 +607,14 @@
   font-size: var(--t-micro);
   color: var(--ink-2);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.jump-keys-more {
+  opacity: 0.85;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -182,6 +182,139 @@
   animation: unfold var(--d-move) var(--ease-out);
 }
 
+.session-slot {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.session-slot:not(.child) .row-button.session {
+  padding-right: 26px;
+}
+
+.session-more {
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-2);
+  display: inline-grid;
+  place-items: center;
+  opacity: 0;
+  transition:
+    opacity var(--d-quick) ease,
+    background-color var(--d-quick) ease,
+    color var(--d-quick) ease;
+}
+
+.session-slot:hover .session-more,
+.session-slot.menu-open .session-more,
+.session-more:focus-visible {
+  opacity: 1;
+}
+
+.session-more:hover,
+.session-slot.menu-open .session-more {
+  border-color: var(--line);
+  background: var(--sheet);
+  color: var(--jade);
+}
+
+.session-rename {
+  padding: 4px 2px;
+}
+
+.session-rename.child {
+  margin-left: 18px;
+}
+
+.session-rename-input {
+  min-height: 30px;
+  padding: 2px 8px;
+  font-size: var(--t-small);
+}
+
+.session-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 188px;
+  max-width: 240px;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: 0 10px 28px rgb(16 27 29 / 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: unfold var(--d-quick) var(--ease-out);
+}
+
+.session-menu-item {
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: calc(var(--r-control) - 2px);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--t-small);
+  text-align: left;
+}
+
+.session-menu-item:hover:not(:disabled),
+.session-menu-item:focus-visible {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.session-menu-item.danger {
+  color: var(--cinnabar-ink);
+}
+
+.session-menu-item.danger:hover:not(:disabled),
+.session-menu-item.danger:focus-visible {
+  background: var(--cinnabar-tint);
+  color: var(--cinnabar-ink);
+}
+
+.session-menu-sep {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--line);
+}
+
+.session-menu-confirm {
+  padding: 8px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: var(--t-micro);
+  line-height: 1.5;
+}
+
+.session-menu-confirm p {
+  margin: 0;
+}
+
+.session-menu-confirm-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.session-menu-confirm-acts .button.small {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: var(--t-micro);
+}
+
 .group-add {
   flex: none;
   width: 26px;

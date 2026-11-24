@@ -27,7 +27,7 @@ const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
   {
     id: "files",
     name: "改动",
-    title: "改动：分身动过的文件",
+    title: "改动：当前分身在本会话中累计修改过的文件（仓库未提交变更见左栏 Git）",
     icon: (
       <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 1.8h5.2L12 4.6v9.6H4z" />
@@ -38,7 +38,7 @@ const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
   {
     id: "terminal",
     name: "终端",
-    title: "终端：分身跑过的命令和输出",
+    title: "终端：随时打开本机交互式终端，或回看分身跑过的命令 (Ctrl/Cmd+J)",
     icon: (
       <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
         <rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" />
@@ -350,8 +350,11 @@ function FileRow({
 
 /** The side panel's width in pixels: as the user left it, within what leaves the center column room. */
 export const PANEL_WIDTH = { initial: 380, least: 280 };
-export const fitPanel = (width: number, sidebarWidth = 236) =>
-  Math.round(Math.min(Math.max(width, PANEL_WIDTH.least), Math.max(PANEL_WIDTH.least, Math.min(680, window.innerWidth - sidebarWidth - 360))));
+export const fitPanel = (width: number, sidebarWidth = 236) => {
+  const overlay = typeof window !== "undefined" && window.innerWidth <= 1100;
+  const ceiling = overlay ? Math.min(680, window.innerWidth - 64) : Math.min(680, window.innerWidth - sidebarWidth - 360);
+  return Math.round(Math.min(Math.max(width, PANEL_WIDTH.least), Math.max(PANEL_WIDTH.least, ceiling)));
+};
 
 export interface SidePanelProps {
   files: ChangedFile[];
@@ -385,6 +388,8 @@ export interface SidePanelProps {
   onRestoreArtifact?: (path: string, snapshot: string, version: number) => Promise<RestoredArtifact>;
   /** Save a historical deliverable version as a sibling copy in the workspace. */
   onSaveArtifactCopy?: (path: string, snapshot: string, version: number) => Promise<string>;
+  /** Optional close callback when rendered as a narrow-window overlay drawer. */
+  onCloseDrawer?: () => void;
 }
 
 export function SidePanel({
@@ -407,6 +412,7 @@ export function SidePanel({
   onOpenFile,
   onRestoreArtifact,
   onSaveArtifactCopy,
+  onCloseDrawer,
 }: SidePanelProps) {
   const hasAside = !!renderAside;
   const [tab, setTab] = useState<PanelTab>("files");
@@ -466,25 +472,25 @@ export function SidePanel({
   if (narrow) {
     return (
       <aside className="panel strip" aria-label="旁聊、改动与终端">
-        <div className="strip-tabs">
+        <div className="strip-tabs" data-tauri-drag-region>
           {visibleTabs.map((each) => (
             <button
               type="button"
               key={each.id}
-              className="tab"
-              title={each.id === "chat" ? each.title : `${each.title}。还是空的，点开看`}
+              className="tab strip-tab"
+              title={each.id === "chat" || each.id === "terminal" ? each.title : `${each.title}。点开查看`}
               onClick={() => {
                 setTab(each.id);
                 onWiden();
               }}
             >
               {each.icon}
-              <span className="sr-only">{each.name}</span>
+              <span className="strip-word">{each.name}</span>
             </button>
           ))}
         </div>
-        {/* Written down the strip, as on a scroll: why there is nothing here yet. */}
-        <p className="strip-note">分身尚未动手</p>
+        {/* Written down the strip, as on a scroll: side chat & terminal stand ready anytime. */}
+        <p className="strip-note">旁聊终端随时可用</p>
       </aside>
     );
   }
@@ -512,17 +518,38 @@ export function SidePanel({
           if (event.key === "ArrowRight") onResize(fitPanel(width - 24, sidebarWidth));
         }}
       />
-      <div className="tabs">
-        {/* Pictures to look at; each one's name is in its title and for a screen reader. */}
-        {visibleTabs.map((each) => (
-          <button type="button" key={each.id} className="tab" aria-pressed={tab === each.id} title={each.title} onClick={() => setTab(each.id)}>
-            {each.icon}
-            {each.id === "chat" && <span className="tab-word">旁聊</span>}
-            <span className="sr-only">{each.id === "chat" ? "" : each.id === "plan" || each.id === "products" ? `${each.name} ` : each.name}</span>
-            {each.id === "plan" && todos.length > 0 && <span className="count">{`${done}/${todos.length}`}</span>}
-            {each.id === "products" && products.length > 0 && <span className="count">{products.length}</span>}
-          </button>
-        ))}
+      <div className="tabs" data-tauri-drag-region>
+        {/* Each tab shows its icon and two-character name; when the panel is dragged narrow, inactive labels fold into sr-only. */}
+        {visibleTabs.map((each) => {
+          const badge =
+            each.id === "plan" && todos.length > 0
+              ? `${done}/${todos.length}`
+              : each.id === "products" && products.length > 0
+                ? `${products.length}`
+                : null;
+          return (
+            <button type="button" key={each.id} className="tab" aria-pressed={tab === each.id} title={each.title} onClick={() => setTab(each.id)}>
+              {each.icon}
+              <span className="tab-word">{each.name}</span>
+              {badge && (
+                <>
+                  <span className="sr-only"> </span>
+                  <span className="count">{badge}</span>
+                </>
+              )}
+            </button>
+          );
+        })}
+        {onCloseDrawer && (
+          <>
+            <span className="spacer" />
+            <button type="button" className="icon-button small" title="收起右侧抽屉 (Esc)" aria-label="收起右侧抽屉" onClick={onCloseDrawer}>
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                <path d="M4 4l8 8M12 4l-8 8" />
+              </svg>
+            </button>
+          </>
+        )}
       </div>
       {hasAside && (
         <div className="side-chat-pane" style={{ display: tab === "chat" ? "flex" : "none" }}>
@@ -587,14 +614,18 @@ export function SidePanel({
       ) : tab === "files" ? (
         <div className="panel-body">
           <div className="panel-head">
-            <h2>分身动过的文件</h2>
+            <h2>本分身累计改动</h2>
             {files.length > 0 && (
               <span className="panel-meta">
                 {files.length} 个，<span className="in">+{files.reduce((sum, file) => sum + file.added, 0)}</span> <span className="out">−{files.reduce((sum, file) => sum + file.removed, 0)}</span>
               </span>
             )}
           </div>
-          {files.length === 0 && <p className="muted">分身还没有改过文件。</p>}
+          {files.length === 0 ? (
+            <p className="muted">这个分身还没有改过文件。此处统计本会话各轮累计编辑；查看与提交 Git 工作区变更请切到左栏「Git」。</p>
+          ) : (
+            <p className="panel-sub muted">本会话累计编辑记录（Git 暂存与提交见左栏「Git」）</p>
+          )}
           <div className="file-list">
             {files.map((file) => (
               <FileRow key={file.path} file={file} onOpenFile={onOpenFile} onInspectFile={onInspectFile} />

@@ -159,7 +159,7 @@ const COMMAND_ORDER = ["new", "aside", "fork", "compact", "model", "effort", "mo
 function Stones({ part }: { part: number }) {
   const full = Math.min(Math.max(part, 0), 1);
   return (
-    <span className={`stones ${full >= 0.9 ? "hot" : full >= 0.7 ? "warm" : ""}`} aria-hidden="true">
+    <span className={`stones ${full > 0 ? "used" : ""} ${full >= 0.9 ? "hot" : full >= 0.7 ? "warm" : ""}`} aria-hidden="true">
       {[0, 1, 2, 3, 4].map((at) => (
         <span key={at} style={{ "--lit": Math.min(Math.max(full * 5 - at, 0), 1) } as CSSProperties} />
       ))}
