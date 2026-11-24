@@ -58,7 +58,7 @@ export type SessionEvent =
   | { type: "question/asked"; data: { tool_use_id: string; questions: Question[]; expires_at?: string } }
   | { type: "question/answered"; data: { tool_use_id: string; answers?: Reply[]; declined?: boolean; timed_out?: boolean } }
   | { type: "guardian/reviewed"; data: { tool_use_id: string; model: string; allowed: boolean; reason: string; verdict?: string; failed?: boolean; tokens?: Tokens } }
-  | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null } }
+  | { type: "tool/result"; data: { tool_use_id: string; tool: string; content: string; is_error: boolean; meta: ToolMeta | null; images?: Image[] } }
   | { type: "files/restored"; data: { turn: number; restored: string[]; skipped: string[] } }
   | { type: "files/made"; data: { turn: number; files: string[]; snapshots?: Record<string, string>; sizes?: Record<string, number> } }
   | {

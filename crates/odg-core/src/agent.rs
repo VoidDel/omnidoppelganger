@@ -971,6 +971,7 @@ impl<L: Llm> Inner<L> {
             .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images, files }))
             .and_then(|()| self.refresh_instructions())
             .and_then(|()| self.refresh_skills());
+        let mut extra_artifacts: Vec<PathBuf> = Vec::new();
         let (reason, error) = match (opened, cli_kind) {
             (Ok(()), Some(kind)) => {
                 let (conversation_id, briefing) = {
@@ -1025,7 +1026,10 @@ impl<L: Llm> Inner<L> {
                     }
                 }
                 match crate::cli_agents::run_turn(params, &CliSink(self), cancel).await {
-                    Ok(reason) => (reason, None),
+                    Ok(outcome) => {
+                        extra_artifacts = outcome.extra_artifacts;
+                        (outcome.reason, None)
+                    }
                     Err(error) => ("error", Some(error)),
                 }
             }
@@ -1047,7 +1051,12 @@ impl<L: Llm> Inner<L> {
         let snapshot_dir = self.snapshots.clone();
         let read_only = self.read_only;
         let (files, snapshots, sizes) = tokio::task::spawn_blocking(move || {
-            let made = if read_only { Vec::new() } else { crate::made::since(&root, started) };
+            let mut made = if read_only { Vec::new() } else { crate::made::since(&root, started) };
+            for extra in extra_artifacts {
+                if extra.is_file() && !made.contains(&extra) {
+                    made.push(extra);
+                }
+            }
             let mut files = Vec::with_capacity(made.len());
             let mut snapshots = std::collections::BTreeMap::new();
             let mut sizes = std::collections::BTreeMap::new();

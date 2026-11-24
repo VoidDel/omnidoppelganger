@@ -8,7 +8,7 @@ export interface ToolItem {
   id: string;
   name: string;
   input: Record<string, unknown>;
-  result?: { content: string; isError: boolean; meta: ToolMeta | null };
+  result?: { content: string; isError: boolean; meta: ToolMeta | null; images?: Image[] };
   /** `grant` is what allowing for the session covers; without one, the request is approved each time. */
   approval?: { reason: string; detail: string; grant?: string; decision?: Decision; expiresAt?: string; timedOut?: boolean };
   /**
@@ -164,7 +164,7 @@ export function fold(events: Envelope[]): Row[] {
       case "tool/result": {
         const tool = tools.get(event.data.tool_use_id);
         if (tool) {
-          tool.result = { content: event.data.content, isError: event.data.is_error, meta: event.data.meta };
+          tool.result = { content: event.data.content, isError: event.data.is_error, meta: event.data.meta, images: event.data.images };
           tool.ts = event.ts;
         }
         break;

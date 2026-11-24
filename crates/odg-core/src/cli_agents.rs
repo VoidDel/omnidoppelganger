@@ -1515,6 +1515,25 @@ struct StartedTool {
     file_existed_at_start: bool,
 }
 
+/// Outcome of a single external CLI turn.
+#[derive(Debug, Default)]
+pub struct TurnOutcome {
+    pub reason: &'static str,
+    /// Newly created image/screenshot files outside the workspace observed during the turn
+    /// (e.g. in an external CLI's scratch directory) so they still appear in 「产物」.
+    pub extra_artifacts: Vec<PathBuf>,
+}
+
+fn image_media_type(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|e| e.to_str())?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
 /// Stateful per-turn event recorder translating [`CliEvent`] items into session log [`Event`]s,
 /// capturing pre/post file contents across `ToolStart` -> `ToolDone` so external CLI edits get
 /// accurate `+added / -removed` counts, unified diff hunks, workspace-relative display paths, and undo snapshots.
@@ -1527,6 +1546,8 @@ struct TurnRecorder<'a, S: Sink> {
     emitted_any_text: bool,
     started_tools: HashMap<String, StartedTool>,
     known_files: HashMap<PathBuf, Vec<u8>>,
+    turn_started: std::time::SystemTime,
+    external_artifacts: Vec<PathBuf>,
     result_error: Option<String>,
 }
 
@@ -1541,6 +1562,8 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
             emitted_any_text: false,
             started_tools: HashMap::new(),
             known_files: HashMap::new(),
+            turn_started: std::time::SystemTime::now(),
+            external_artifacts: Vec::new(),
             result_error: None,
         }
     }
@@ -1682,6 +1705,25 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                     self.known_files.insert(path.clone(), bytes);
                 }
                 let (mut clean_output, mut meta) = clean_tool_result(&started.name, &started.input, &output, is_error);
+                if started.name == "read_file"
+                    && !is_error
+                    && let Some((ref path, _)) = started.target
+                    && let Some(media_type) = image_media_type(path)
+                    && path.is_file()
+                {
+                    meta["picture"] = json!(media_type);
+                    meta["file"] = json!(path.display().to_string());
+                    // External CLIs (e.g. agy) often write E2E screenshots into their own scratch directory
+                    // outside the workspace. Track newly created images so they also appear in 「产物」.
+                    let in_workspace = path.starts_with(self.params.workspace);
+                    let created_this_turn = std::fs::metadata(path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .is_some_and(|mtime| mtime + std::time::Duration::from_secs(2) >= self.turn_started);
+                    if !in_workspace && created_this_turn && !self.external_artifacts.contains(path) {
+                        self.external_artifacts.push(path.clone());
+                    }
+                }
                 if matches!(started.name.as_str(), "edit_file" | "write_file") && !is_error {
                     self.enrich_file_edit(&call_key, &started, had_start, &mut clean_output, &mut meta);
                 } else if started.name == "delete_file" && !is_error {
@@ -2048,8 +2090,71 @@ fn apply_mcp_bridge_args(
     }
 }
 
+/// Build `agy mcp add ...` arguments for one enabled `odg` MCP server.
+fn build_agy_mcp_add_args(name: &str, srv: &crate::mcp::ServerConfig) -> Option<Vec<String>> {
+    if srv.disabled {
+        return None;
+    }
+    let mut args = vec!["mcp".to_string(), "add".to_string()];
+    if let Some(cmd) = srv.command.as_deref().filter(|c| !c.trim().is_empty()) {
+        args.push("--type".to_string());
+        args.push("stdio".to_string());
+        for (k, v) in &srv.env {
+            args.push("--env".to_string());
+            args.push(format!("{k}={v}"));
+        }
+        args.push(name.to_string());
+        args.push("--".to_string());
+        args.push(cmd.to_string());
+        args.extend(srv.args.iter().cloned());
+        Some(args)
+    } else if let Some(url) = srv.url.as_deref().filter(|u| !u.trim().is_empty()) {
+        args.push("--type".to_string());
+        args.push("http".to_string());
+        for (k, v) in &srv.headers {
+            args.push("--header".to_string());
+            args.push(format!("{k}: {v}"));
+        }
+        args.push(name.to_string());
+        args.push(url.to_string());
+        Some(args)
+    } else {
+        None
+    }
+}
+
+/// Sync enabled `odg` MCP servers (`~/.odg/mcp.json`) into Antigravity CLI via `agy mcp add`.
+/// Cached by a serialized snapshot so unchanged configs add zero per-turn latency.
+async fn sync_antigravity_mcp(bin: &Path, servers: &std::collections::BTreeMap<String, crate::mcp::ServerConfig>) {
+    static LAST_SYNCED: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+    let enabled: Vec<(&String, &crate::mcp::ServerConfig)> = servers.iter().filter(|(_, s)| !s.disabled).collect();
+    if enabled.is_empty() {
+        return;
+    }
+    let sig = serde_json::to_string(&enabled).unwrap_or_default();
+    let cache = LAST_SYNCED.get_or_init(|| std::sync::Mutex::new(None));
+    if cache.lock().unwrap().as_deref() == Some(sig.as_str()) {
+        return;
+    }
+    let mut all_ok = true;
+    for (name, srv) in enabled {
+        let Some(add_args) = build_agy_mcp_add_args(name, srv) else { continue };
+        let mut cmd = Command::new(bin);
+        cmd.args(&add_args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000);
+        let ran = tokio::time::timeout(std::time::Duration::from_secs(8), cmd.status()).await;
+        if !matches!(ran, Ok(Ok(status)) if status.success()) {
+            all_ok = false;
+        }
+    }
+    if all_ok {
+        *cache.lock().unwrap() = Some(sig);
+    }
+}
+
 /// Execute one headless streaming turn on any supported [`CliKind`].
-pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &CancellationToken) -> Result<&'static str, String> {
+pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &CancellationToken) -> Result<TurnOutcome, String> {
     let bin = params
         .kind
         .find_binary()
@@ -2076,6 +2181,7 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
                 args.push(s.to_string());
             }
         }
+        sync_antigravity_mcp(&bin, &params.mcp_servers).await;
     }
     let _mcp_guard = apply_mcp_bridge_args(params.kind, &mut args, &params.mcp_servers, params.turn);
     let mut cmd = Command::new(&bin);
@@ -2139,7 +2245,7 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
     if cancelled {
         group_guard.0 = None;
         let _ = child.wait().await;
-        return Ok("cancelled");
+        return Ok(TurnOutcome { reason: "cancelled", extra_artifacts: recorder.external_artifacts });
     }
 
     recorder.flush_text(Value::Null, None)?;
@@ -2157,7 +2263,7 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
             trimmed.to_string()
         });
     }
-    Ok("completed")
+    Ok(TurnOutcome { reason: "completed", extra_artifacts: recorder.external_artifacts })
 }
 
 #[cfg(test)]
@@ -2748,5 +2854,76 @@ mod tests {
         let mut agy_args = build_args(CliKind::Antigravity, "hi", None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
         assert!(apply_mcp_bridge_args(CliKind::Antigravity, &mut agy_args, &servers, 1).is_none());
         assert!(!agy_args.iter().any(|a| a == "--settings"));
+        assert_eq!(
+            build_agy_mcp_add_args("docs", &servers["docs"]).unwrap(),
+            ["mcp", "add", "--type", "stdio", "docs", "--", "npx", "-y", "docs-mcp"]
+        );
+        assert_eq!(
+            build_agy_mcp_add_args("remote", &servers["remote"]).unwrap(),
+            ["mcp", "add", "--type", "http", "remote", "https://mcp.example.com"]
+        );
+    }
+
+    #[test]
+    fn cli_read_file_on_external_screenshot_sets_picture_meta_and_tracks_artifact() {
+        let ws = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let shot = scratch.path().join("01-home.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        struct Capture(std::sync::Mutex<Vec<Event>>);
+        impl Sink for Capture {
+            fn log(&self, event: Event) -> Result<(), String> {
+                self.0.lock().unwrap().push(event);
+                Ok(())
+            }
+            fn stream(&self, _delta: StreamDelta) {}
+        }
+
+        let params = TurnParams {
+            kind: CliKind::Antigravity,
+            workspace: ws.path(),
+            snapshots: None,
+            turn: 1,
+            prompt: "test ui".into(),
+            model: "gemini-4-neon".into(),
+            effort: "high".into(),
+            mode: Mode::Auto,
+            sandboxed: false,
+            read_only: false,
+            conversation_id: None,
+            extra_dirs: Vec::new(),
+            mcp_servers: std::collections::BTreeMap::new(),
+        };
+        let sink = Capture(std::sync::Mutex::new(Vec::new()));
+        let mut recorder = TurnRecorder::new(&params, &sink);
+        recorder
+            .handle_event(CliEvent::ToolStart {
+                conversation_id: None,
+                call_key: "c1".into(),
+                name: "read_file".into(),
+                input: json!({ "path": shot.display().to_string() }),
+            })
+            .unwrap();
+        recorder
+            .handle_event(CliEvent::ToolDone {
+                conversation_id: None,
+                call_key: "c1".into(),
+                name: Some("read_file".into()),
+                input: Value::Null,
+                output: "Read image".into(),
+                is_error: false,
+            })
+            .unwrap();
+
+        let events = sink.0.lock().unwrap();
+        let result = events.iter().find_map(|e| match e {
+            Event::ToolResult { tool, meta, .. } if tool == "read_file" => Some(meta.clone()),
+            _ => None,
+        });
+        let meta = result.expect("read_file ToolResult");
+        assert_eq!(meta["picture"], "image/png");
+        assert_eq!(meta["file"], shot.display().to_string());
+        assert_eq!(recorder.external_artifacts, vec![shot]);
     }
 }

@@ -90,6 +90,21 @@ export function Written({ path, name, snapshot, version }: { path: string; name:
   );
 }
 
+/** Inline thumbnails for images returned directly by a tool (e.g. Playwright / Chrome DevTools MCP screenshots). */
+function ResultPictures({ images }: { images: Image[] }) {
+  const [viewing, setViewing] = useState<number | null>(null);
+  return (
+    <div className="written">
+      {images.map((img, index) => (
+        <button key={index} type="button" className="shot written-shot" title="点开看大图" onClick={() => setViewing(index)}>
+          <img src={imageSource(img)} alt={`工具返回的图片 ${index + 1}`} />
+        </button>
+      ))}
+      {viewing !== null && <Viewer images={images} at={viewing} whose="工具返回的" onClose={() => setViewing(null)} />}
+    </div>
+  );
+}
+
 /** The things that came onto the page together last, counted, so that each can follow the one before it. */
 const arrivals = { at: 0, count: 0 };
 
@@ -544,6 +559,7 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
       )}
       {body && open && <div className="did-body">{body}</div>}
       {written && !voided(tool) && <Written path={written} name={written.replace(/^.*[\\/]/, "")} snapshot={result?.meta?.snapshot} />}
+      {!written && handed.length === 0 && !voided(tool) && result && !result.isError && result.images && result.images.length > 0 && <ResultPictures images={result.images} />}
       {handed.map((path) => (
         <Written key={path} path={path} name={path.replace(/^.*[\\/]/, "")} snapshot={result?.meta?.snapshots?.[path]} />
       ))}
