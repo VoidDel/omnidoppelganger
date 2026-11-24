@@ -515,24 +515,30 @@ impl StreamParser {
                             Vec::new()
                         }
                     }
-                    "file_change" if done => {
+                    "file_change" => {
                         let first_path = item["changes"]
                             .as_array()
                             .and_then(|arr| arr.first())
                             .and_then(|c| c["path"].as_str())
                             .unwrap_or("");
-                        let summary = item["changes"]
-                            .as_array()
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|c| Some(format!("{}: {}", c["kind"].as_str().unwrap_or("edit"), c["path"].as_str()?)))
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            })
-                            .unwrap_or_default();
                         let input = json!({ "path": first_path });
-                        let failed = item["status"].as_str() == Some("failed");
-                        vec![CliEvent::ToolDone { conversation_id: None, call_key: item_id, name: Some("edit_file".into()), input, output: summary, is_error: failed }]
+                        if done {
+                            let summary = item["changes"]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|c| Some(format!("{}: {}", c["kind"].as_str().unwrap_or("edit"), c["path"].as_str()?)))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                })
+                                .unwrap_or_default();
+                            let failed = item["status"].as_str() == Some("failed");
+                            vec![CliEvent::ToolDone { conversation_id: None, call_key: item_id, name: Some("edit_file".into()), input, output: summary, is_error: failed }]
+                        } else if ty == "item.started" && !first_path.is_empty() {
+                            vec![CliEvent::ToolStart { conversation_id: None, call_key: item_id, name: "edit_file".into(), input }]
+                        } else {
+                            Vec::new()
+                        }
                     }
                     "mcp_tool_call" => {
                         let raw = format!("mcp__{}__{}", item["server"].as_str().unwrap_or("mcp"), item["tool"].as_str().unwrap_or("call"));
@@ -811,9 +817,7 @@ fn anthropic_like_tokens(usage: &Value) -> Option<Tokens> {
     (input > 0 || output > 0).then_some(Tokens { input, cached, output })
 }
 
-/// Strip `agy`'s leading `"Created At: ...\nCompleted At: ...\n"` envelope and synthesize
-/// the [`Event::ToolResult`] `meta` fields that `ToolCard`, `changedFiles`, and `todos` read.
-pub fn clean_tool_result(tool_name: &str, input: &Value, raw_output: &str, is_error: bool) -> (String, Value) {
+fn strip_agy_timestamp_envelope(raw_output: &str) -> String {
     let mut cleaned = raw_output.replace("\r\n", "\n");
     loop {
         let trimmed = cleaned.trim_start_matches('\n');
@@ -831,7 +835,13 @@ pub fn clean_tool_result(tool_name: &str, input: &Value, raw_output: &str, is_er
         }
         break;
     }
-    let cleaned = cleaned.trim_start_matches('\n').to_string();
+    cleaned.trim_start_matches('\n').to_string()
+}
+
+/// Strip `agy`'s leading `"Created At: ...\nCompleted At: ...\n"` envelope and synthesize
+/// the [`Event::ToolResult`] `meta` fields that `ToolCard`, `changedFiles`, and `todos` read.
+pub fn clean_tool_result(tool_name: &str, input: &Value, raw_output: &str, is_error: bool) -> (String, Value) {
+    let cleaned = strip_agy_timestamp_envelope(raw_output);
 
     match tool_name {
         "run_command" => {
@@ -948,6 +958,103 @@ fn estimate_edit_lines(tool_name: &str, input: &Value, path: &str) -> (usize, us
     (added, removed)
 }
 
+/// Resolve a tool path against `workspace`, returning `(absolute_path, display_path)` where
+/// `display_path` is forward-slash workspace-relative when inside `workspace` (even across symlinked
+/// roots like `/tmp` -> `/private/tmp`), or the resolved path otherwise.
+fn resolve_workspace_path(workspace: &Path, raw: &str) -> (PathBuf, String) {
+    let trimmed = raw.trim();
+    let unquoted = if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    let resolved = crate::tools::resolve(workspace, unquoted);
+    if let Ok(rel) = resolved.strip_prefix(workspace) {
+        let s = rel.to_string_lossy().replace('\\', "/");
+        return (resolved, if s.is_empty() { ".".to_string() } else { s });
+    }
+    if let Some(rel) = canonical_relative_path(workspace, &resolved) {
+        return (resolved, rel);
+    }
+    let shown = crate::tools::display(workspace, &resolved);
+    (resolved, shown)
+}
+
+fn canonical_relative_path(workspace: &Path, path: &Path) -> Option<String> {
+    let canon_ws = workspace.canonicalize().ok()?;
+    let mut existing = path.to_path_buf();
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let canon_base = loop {
+        if let Ok(canon) = existing.canonicalize() {
+            break canon;
+        }
+        missing.push(existing.file_name()?.to_os_string());
+        existing = existing.parent()?.to_path_buf();
+    };
+    let full = missing.iter().rev().fold(canon_base, |acc, part| acc.join(part));
+    let rel = full.strip_prefix(&canon_ws).ok()?;
+    let s = rel.to_string_lossy().replace('\\', "/");
+    Some(if s.is_empty() { ".".to_string() } else { s })
+}
+
+fn relativize_tool_input(workspace: &Path, input: &mut Value) -> Option<(PathBuf, String)> {
+    let raw = input.get("path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty())?.to_string();
+    let (resolved, shown) = resolve_workspace_path(workspace, &raw);
+    if let Some(obj) = input.as_object_mut() {
+        obj.insert("path".to_string(), Value::String(shown.clone()));
+    }
+    Some((resolved, shown))
+}
+
+fn read_file_bytes_capped(path: &Path) -> Option<Vec<u8>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > crate::tools::READ_FILE_BYTES {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
+/// Fallback for `agy --output-format stream-json`, which omits `Target`/`Replacement` and `tool_info.output`
+/// on `edit_file` stdout events while recording `"Made N replacement(s) in ... (+A/-R lines)."` in its local
+/// `transcript.jsonl` under `~/.gemini/antigravity-cli/brain/<conv_id>/.system_generated/logs/transcript.jsonl`.
+fn lookup_agy_transcript_edit_in(home: &Path, conv_id: &str, call_key: &str) -> Option<(usize, usize, String)> {
+    let conv = conv_id.trim();
+    if conv.is_empty() || conv.len() > 128 || !conv.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return None;
+    }
+    let step_index = call_key.parse::<u64>().ok()?;
+    let needle_tight = format!("\"step_index\":{step_index}");
+    let needle_spaced = format!("\"step_index\": {step_index}");
+    for root in [".gemini/antigravity-cli/brain", ".gemini/antigravity/brain"] {
+        let path = home.join(root).join(conv).join(".system_generated").join("logs").join("transcript.jsonl");
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_file() || meta.len() > 20 * 1024 * 1024 {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        for line in content.lines().rev() {
+            if !line.contains(&needle_tight) && !line.contains(&needle_spaced) {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            if v["step_index"].as_u64() != Some(step_index) {
+                continue;
+            }
+            let Some(raw_text) = v["content"].as_str() else { continue };
+            let cleaned = strip_agy_timestamp_envelope(raw_text);
+            if let Some((added, removed)) = parse_plus_minus_lines(&cleaned) {
+                return Some((added, removed, cleaned));
+            }
+        }
+    }
+    None
+}
+
+fn lookup_agy_transcript_edit(conv_id: Option<&str>, call_key: &str) -> Option<(usize, usize, String)> {
+    let home = dirs::home_dir()?;
+    lookup_agy_transcript_edit_in(&home, conv_id?, call_key)
+}
+
 /// Synchronous guard that kills the CLI process group if the async task is dropped abruptly
 /// (e.g. on app exit or hot-reload), preventing orphan CLI instances from mutating the same session.
 struct ProcessGroupGuard(Option<u32>);
@@ -971,6 +1078,7 @@ impl Drop for ProcessGroupGuard {
 pub struct TurnParams<'a> {
     pub kind: CliKind,
     pub workspace: &'a Path,
+    pub snapshots: Option<&'a Path>,
     pub turn: u64,
     pub prompt: String,
     pub conversation_id: Option<String>,
@@ -985,6 +1093,308 @@ pub struct TurnParams<'a> {
 pub trait Sink {
     fn log(&self, event: Event) -> Result<(), String>;
     fn stream(&self, delta: StreamDelta);
+}
+
+struct StartedTool {
+    id: String,
+    name: String,
+    input: Value,
+    target: Option<(PathBuf, String)>,
+    before_bytes: Option<Vec<u8>>,
+    file_existed_at_start: bool,
+}
+
+/// Stateful per-turn event recorder translating [`CliEvent`] items into session log [`Event`]s,
+/// capturing pre/post file contents across `ToolStart` -> `ToolDone` so external CLI edits get
+/// accurate `+added / -removed` counts, unified diff hunks, workspace-relative display paths, and undo snapshots.
+struct TurnRecorder<'a, S: Sink> {
+    params: &'a TurnParams<'a>,
+    sink: &'a S,
+    backend_key: &'static str,
+    logged_conv: Option<String>,
+    active_text: String,
+    emitted_any_text: bool,
+    started_tools: HashMap<String, StartedTool>,
+    known_files: HashMap<PathBuf, Vec<u8>>,
+    result_error: Option<String>,
+}
+
+impl<'a, S: Sink> TurnRecorder<'a, S> {
+    fn new(params: &'a TurnParams<'a>, sink: &'a S) -> Self {
+        Self {
+            params,
+            sink,
+            backend_key: params.kind.backend_key(),
+            logged_conv: params.conversation_id.clone(),
+            active_text: String::new(),
+            emitted_any_text: false,
+            started_tools: HashMap::new(),
+            known_files: HashMap::new(),
+            result_error: None,
+        }
+    }
+
+    fn record_conv(&mut self, conv: Option<String>) -> Result<(), String> {
+        if let Some(id) = conv
+            && !id.is_empty()
+            && self.logged_conv.as_deref() != Some(id.as_str())
+        {
+            self.sink.log(Event::ExternalSession {
+                backend: self.backend_key.to_string(),
+                session_id: id.clone(),
+            })?;
+            self.logged_conv = Some(id);
+        }
+        Ok(())
+    }
+
+    fn flush_text(&mut self, usage: Value, tokens: Option<Tokens>) -> Result<(), String> {
+        if self.active_text.is_empty() {
+            return Ok(());
+        }
+        let body = std::mem::take(&mut self.active_text);
+        self.emitted_any_text = true;
+        self.sink.log(Event::AssistantMessage {
+            content: vec![json!({ "type": "text", "text": body })],
+            stop_reason: Some("end_turn".to_string()),
+            model: self.params.model.clone(),
+            usage,
+            tokens,
+        })
+    }
+
+    fn handle_event(&mut self, ev: CliEvent) -> Result<(), String> {
+        match ev {
+            CliEvent::Init { conversation_id } => {
+                self.record_conv(conversation_id)?;
+            }
+            CliEvent::AgentText { conversation_id, delta, done, usage, tokens } => {
+                self.record_conv(conversation_id)?;
+                if !delta.is_empty() {
+                    self.active_text.push_str(&delta);
+                    self.sink.stream(StreamDelta::TextDelta { index: 0, text: delta });
+                }
+                if done {
+                    self.flush_text(usage, tokens)?;
+                }
+            }
+            CliEvent::ToolStart { conversation_id, call_key, name, mut input } => {
+                self.record_conv(conversation_id)?;
+                self.flush_text(Value::Null, None)?;
+                let target = relativize_tool_input(self.params.workspace, &mut input);
+                if name == "read_file"
+                    && let Some((ref path, _)) = target
+                    && !self.known_files.contains_key(path)
+                    && let Some(bytes) = read_file_bytes_capped(path)
+                {
+                    self.known_files.insert(path.clone(), bytes);
+                }
+                let (file_existed_at_start, before_bytes) = if matches!(name.as_str(), "edit_file" | "write_file") {
+                    let existed = target.as_ref().is_some_and(|(p, _)| p.is_file());
+                    let bytes = target.as_ref().and_then(|(p, _)| read_file_bytes_capped(p));
+                    (existed, bytes)
+                } else {
+                    (false, None)
+                };
+                let tool_use_id = format!("{}-{}-{call_key}", self.backend_key, self.params.turn);
+                if let std::collections::hash_map::Entry::Vacant(slot) = self.started_tools.entry(call_key) {
+                    self.sink.log(Event::AssistantMessage {
+                        content: vec![json!({ "type": "tool_use", "id": tool_use_id, "name": name, "input": input })],
+                        stop_reason: Some("tool_use".to_string()),
+                        model: self.params.model.clone(),
+                        usage: Value::Null,
+                        tokens: None,
+                    })?;
+                    slot.insert(StartedTool {
+                        id: tool_use_id,
+                        name,
+                        input,
+                        target,
+                        before_bytes,
+                        file_existed_at_start,
+                    });
+                }
+            }
+            CliEvent::ToolDone { conversation_id, call_key, name, mut input, output, is_error } => {
+                self.record_conv(conversation_id)?;
+                let (started, had_start) = match self.started_tools.remove(&call_key) {
+                    Some(mut existing) => {
+                        if existing.target.is_none() {
+                            existing.target = relativize_tool_input(self.params.workspace, &mut input);
+                            if existing.target.is_some()
+                                && let Some(path_val) = input.get("path").cloned()
+                                && let Some(obj) = existing.input.as_object_mut()
+                            {
+                                obj.insert("path".to_string(), path_val);
+                            }
+                        }
+                        (existing, true)
+                    }
+                    None => {
+                        self.flush_text(Value::Null, None)?;
+                        let resolved_name = name.unwrap_or_else(|| "tool".to_string());
+                        let target = relativize_tool_input(self.params.workspace, &mut input);
+                        let id = format!("{}-{}-{call_key}", self.backend_key, self.params.turn);
+                        self.sink.log(Event::AssistantMessage {
+                            content: vec![json!({ "type": "tool_use", "id": id, "name": resolved_name, "input": input })],
+                            stop_reason: Some("tool_use".to_string()),
+                            model: self.params.model.clone(),
+                            usage: Value::Null,
+                            tokens: None,
+                        })?;
+                        (
+                            StartedTool {
+                                id,
+                                name: resolved_name,
+                                input,
+                                target,
+                                before_bytes: None,
+                                file_existed_at_start: false,
+                            },
+                            false,
+                        )
+                    }
+                };
+                if started.name == "read_file"
+                    && !is_error
+                    && let Some((ref path, _)) = started.target
+                    && !self.known_files.contains_key(path)
+                    && let Some(bytes) = read_file_bytes_capped(path)
+                {
+                    self.known_files.insert(path.clone(), bytes);
+                }
+                let (mut clean_output, mut meta) = clean_tool_result(&started.name, &started.input, &output, is_error);
+                if matches!(started.name.as_str(), "edit_file" | "write_file") && !is_error {
+                    self.enrich_file_edit(&call_key, &started, had_start, &mut clean_output, &mut meta);
+                }
+                self.sink.log(Event::ToolResult {
+                    tool_use_id: started.id,
+                    tool: started.name,
+                    content: clean_output,
+                    is_error,
+                    meta,
+                    images: Vec::new(),
+                })?;
+            }
+            CliEvent::Result { conversation_id, success, response, error, usage, tokens } => {
+                self.record_conv(conversation_id)?;
+                if !self.active_text.is_empty() {
+                    self.flush_text(usage, tokens)?;
+                } else if !self.emitted_any_text && !response.trim().is_empty() {
+                    self.sink.log(Event::AssistantMessage {
+                        content: vec![json!({ "type": "text", "text": response })],
+                        stop_reason: Some("end_turn".to_string()),
+                        model: self.params.model.clone(),
+                        usage,
+                        tokens,
+                    })?;
+                    self.emitted_any_text = true;
+                }
+                if !success {
+                    self.result_error = error;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn enrich_file_edit(&mut self, call_key: &str, started: &StartedTool, had_start: bool, clean_output: &mut String, meta: &mut Value) {
+        let Some((ref resolved, ref shown)) = started.target else { return };
+        let after_bytes = read_file_bytes_capped(resolved);
+        let prior_known = self.known_files.get(resolved).cloned();
+
+        let (created, prev_bytes, verified_for_undo): (bool, Option<&[u8]>, bool) = if had_start && !started.file_existed_at_start {
+            let exists_now = after_bytes.is_some() || resolved.is_file();
+            (exists_now, None, after_bytes.is_some())
+        } else if let Some(ref b) = started.before_bytes
+            && after_bytes.as_deref() != Some(b.as_slice())
+        {
+            (false, Some(b.as_slice()), after_bytes.is_some())
+        } else if let Some(ref k) = prior_known
+            && after_bytes.as_deref() != Some(k.as_slice())
+        {
+            (false, Some(k.as_slice()), after_bytes.is_some())
+        } else {
+            let guessed_created = !had_start && started.name == "write_file" && prior_known.is_none();
+            (guessed_created, None, false)
+        };
+
+        let computed_diff = if created && verified_for_undo {
+            after_bytes
+                .as_deref()
+                .and_then(|after| std::str::from_utf8(after).ok())
+                .map(|after_str| crate::tools::line_diff("", &after_str.replace("\r\n", "\n")))
+        } else if let (Some(prev), Some(after)) = (prev_bytes, after_bytes.as_deref()) {
+            match (std::str::from_utf8(prev), std::str::from_utf8(after)) {
+                (Ok(before_str), Ok(after_str)) => Some(crate::tools::line_diff(&before_str.replace("\r\n", "\n"), &after_str.replace("\r\n", "\n"))),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let mut transcript_summary: Option<String> = None;
+        let (added, removed) = if let Some(ref diff) = computed_diff {
+            (diff.added, diff.removed)
+        } else if let Some(counts) = parse_plus_minus_lines(clean_output) {
+            counts
+        } else if self.params.kind == CliKind::Antigravity
+            && let Some((a, r, summary)) = lookup_agy_transcript_edit(self.logged_conv.as_deref(), call_key)
+        {
+            transcript_summary = Some(summary);
+            (a, r)
+        } else {
+            estimate_edit_lines(&started.name, &started.input, &resolved.to_string_lossy())
+        };
+
+        if let Some(ref after) = after_bytes {
+            self.known_files.insert(resolved.clone(), after.clone());
+        }
+
+        let abs_file = resolved.to_string_lossy().into_owned();
+        let mut built = json!({
+            "path": shown,
+            "file": abs_file,
+            "created": created,
+            "added": added,
+            "removed": removed,
+        });
+        if let Some(diff) = computed_diff {
+            built["hunk"] = diff.hunk;
+            if !diff.hunks.is_empty() {
+                built["hunks"] = json!(diff.hunks);
+            }
+        }
+        if !self.params.read_only
+            && verified_for_undo
+            && let (Some(snap_dir), Some(after)) = (self.params.snapshots, after_bytes.as_deref())
+            && crate::tools::inside_workspace(self.params.workspace, resolved)
+            && !crate::tools::in_git_directory(self.params.workspace, resolved)
+        {
+            let before_snap = prev_bytes.and_then(|prev| crate::undo::save(snap_dir, prev).ok());
+            if created || before_snap.is_some() {
+                built["before"] = json!(before_snap);
+                built["after"] = json!(crate::undo::fingerprint(after));
+                if (after.len() as u64) <= crate::undo::ARTIFACT_SNAPSHOT_BYTES
+                    && let Ok(after_snap) = crate::undo::save(snap_dir, after)
+                {
+                    built["snapshot"] = json!(after_snap);
+                }
+                built["bytes"] = json!(after.len());
+            }
+        }
+        *meta = built;
+
+        if clean_output.trim().is_empty() {
+            if let Some(summary) = transcript_summary.filter(|s| !s.trim().is_empty()) {
+                *clean_output = summary;
+            } else if created {
+                *clean_output = format!("Created {shown} ({added} lines).");
+            } else if added > 0 || removed > 0 {
+                *clean_output = format!("Changed {shown}: {added} lines added, {removed} lines removed.");
+            }
+        }
+    }
 }
 
 /// Execute one headless streaming turn on any supported [`CliKind`].
@@ -1029,38 +1439,7 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
 
     let mut lines = BufReader::new(stdout).lines();
     let mut parser = StreamParser::default();
-    let mut logged_conv = params.conversation_id.clone();
-    let mut active_text = String::new();
-    let mut emitted_any_text = false;
-    let mut started_tools: HashMap<String, (String, String, Value)> = HashMap::new();
-    let mut result_error: Option<String> = None;
-
-    let backend_key = params.kind.backend_key();
-    let mut record_conv = |conv: Option<String>| -> Result<(), String> {
-        if let Some(id) = conv
-            && !id.is_empty()
-            && logged_conv.as_deref() != Some(id.as_str())
-        {
-            sink.log(Event::ExternalSession { backend: backend_key.to_string(), session_id: id.clone() })?;
-            logged_conv = Some(id);
-        }
-        Ok(())
-    };
-
-    let flush_text = |text: &mut String, usage: Value, tokens: Option<Tokens>, model: &str, emitted: &mut bool| -> Result<(), String> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        let body = std::mem::take(text);
-        *emitted = true;
-        sink.log(Event::AssistantMessage {
-            content: vec![json!({ "type": "text", "text": body })],
-            stop_reason: Some("end_turn".to_string()),
-            model: model.to_string(),
-            usage,
-            tokens,
-        })
-    };
+    let mut recorder = TurnRecorder::new(&params, sink);
 
     let cancelled = loop {
         let next_line = tokio::select! {
@@ -1081,75 +1460,7 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
             }
         };
         for ev in parser.parse_line(params.kind, &line) {
-            match ev {
-                CliEvent::Init { conversation_id } => {
-                    record_conv(conversation_id)?;
-                }
-                CliEvent::AgentText { conversation_id, delta, done, usage, tokens } => {
-                    record_conv(conversation_id)?;
-                    if !delta.is_empty() {
-                        active_text.push_str(&delta);
-                        sink.stream(StreamDelta::TextDelta { index: 0, text: delta });
-                    }
-                    if done {
-                        flush_text(&mut active_text, usage, tokens, &params.model, &mut emitted_any_text)?;
-                    }
-                }
-                CliEvent::ToolStart { conversation_id, call_key, name, input } => {
-                    record_conv(conversation_id)?;
-                    flush_text(&mut active_text, Value::Null, None, &params.model, &mut emitted_any_text)?;
-                    let tool_use_id = format!("{backend_key}-{}-{call_key}", params.turn);
-                    if let std::collections::hash_map::Entry::Vacant(slot) = started_tools.entry(call_key) {
-                        slot.insert((tool_use_id.clone(), name.clone(), input.clone()));
-                        sink.log(Event::AssistantMessage {
-                            content: vec![json!({ "type": "tool_use", "id": tool_use_id, "name": name, "input": input })],
-                            stop_reason: Some("tool_use".to_string()),
-                            model: params.model.clone(),
-                            usage: Value::Null,
-                            tokens: None,
-                        })?;
-                    }
-                }
-                CliEvent::ToolDone { conversation_id, call_key, name, input, output, is_error } => {
-                    record_conv(conversation_id)?;
-                    let (tool_use_id, tool_name, tool_input) = match started_tools.remove(&call_key) {
-                        Some(existing) => existing,
-                        None => {
-                            flush_text(&mut active_text, Value::Null, None, &params.model, &mut emitted_any_text)?;
-                            let resolved_name = name.unwrap_or_else(|| "tool".to_string());
-                            let id = format!("{backend_key}-{}-{call_key}", params.turn);
-                            sink.log(Event::AssistantMessage {
-                                content: vec![json!({ "type": "tool_use", "id": id, "name": resolved_name, "input": input })],
-                                stop_reason: Some("tool_use".to_string()),
-                                model: params.model.clone(),
-                                usage: Value::Null,
-                                tokens: None,
-                            })?;
-                            (id, resolved_name, input)
-                        }
-                    };
-                    let (clean_output, meta) = clean_tool_result(&tool_name, &tool_input, &output, is_error);
-                    sink.log(Event::ToolResult { tool_use_id, tool: tool_name, content: clean_output, is_error, meta, images: Vec::new() })?;
-                }
-                CliEvent::Result { conversation_id, success, response, error, usage, tokens } => {
-                    record_conv(conversation_id)?;
-                    if !active_text.is_empty() {
-                        flush_text(&mut active_text, usage, tokens, &params.model, &mut emitted_any_text)?;
-                    } else if !emitted_any_text && !response.trim().is_empty() {
-                        sink.log(Event::AssistantMessage {
-                            content: vec![json!({ "type": "text", "text": response })],
-                            stop_reason: Some("end_turn".to_string()),
-                            model: params.model.clone(),
-                            usage,
-                            tokens,
-                        })?;
-                        emitted_any_text = true;
-                    }
-                    if !success {
-                        result_error = error;
-                    }
-                }
-            }
+            recorder.handle_event(ev)?;
         }
     };
 
@@ -1159,11 +1470,11 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         return Ok("cancelled");
     }
 
-    flush_text(&mut active_text, Value::Null, None, &params.model, &mut emitted_any_text)?;
+    recorder.flush_text(Value::Null, None)?;
     let status = child.wait().await.map_err(|error| format!("等待 {} 结束失败：{error}", params.kind.display_name()))?;
     group_guard.0 = None;
     let stderr_text = stderr_task.await.unwrap_or_default();
-    if let Some(err) = result_error {
+    if let Some(err) = recorder.result_error {
         return Err(err);
     }
     if !status.success() {
@@ -1314,5 +1625,156 @@ mod tests {
         let mut grok = StreamParser::default();
         let gt = grok.parse_line(CliKind::Grok, r#"{"type":"text","session_id":"g9","text":"Done"}"#);
         assert_eq!(gt, vec![CliEvent::AgentText { conversation_id: Some("g9".into()), delta: "Done".into(), done: false, usage: Value::Null, tokens: None }]);
+    }
+
+    #[test]
+    fn turn_recorder_computes_agy_edit_diffs_relativizes_paths_and_records_undo_snapshots() {
+        use std::sync::Mutex;
+
+        struct TestSink(Mutex<Vec<crate::events::Envelope>>);
+        impl Sink for TestSink {
+            fn log(&self, event: Event) -> Result<(), String> {
+                let mut guard = self.0.lock().unwrap();
+                let seq = guard.len() as u64 + 1;
+                guard.push(crate::events::Envelope {
+                    seq,
+                    ts: "2026-11-24T08:00:00Z".to_string(),
+                    event,
+                });
+                Ok(())
+            }
+            fn stream(&self, _delta: StreamDelta) {}
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("Firmware");
+        let snap_dir = tmp.path().join("snapshots");
+        let motor_dir = workspace.join("peripheral").join("src");
+        std::fs::create_dir_all(&motor_dir).unwrap();
+        let motor_c = motor_dir.join("motor.c");
+        std::fs::write(&motor_c, "int a = 1;\nint b = 2;\nint c = 3;\n").unwrap();
+
+        let params = TurnParams {
+            kind: CliKind::Antigravity,
+            workspace: &workspace,
+            snapshots: Some(&snap_dir),
+            turn: 1,
+            prompt: "fix motor".into(),
+            conversation_id: Some("35f75987-1c92-4e43-907b-a54a7f66ac2f".into()),
+            model: "gemini-4-neon".into(),
+            effort: "xhigh".into(),
+            mode: Mode::Auto,
+            sandboxed: false,
+            read_only: false,
+        };
+        let sink = TestSink(Mutex::new(Vec::new()));
+        sink.log(Event::TurnStart { turn: 1 }).unwrap();
+        let mut recorder = TurnRecorder::new(&params, &sink);
+
+        // 1) `agy` edit_file omits Target/Replacement and sends empty output "".
+        let abs_motor = motor_c.to_string_lossy().into_owned();
+        let (_, edit_input) = normalize_tool("edit_file", &json!({ "Path": abs_motor }));
+        recorder
+            .handle_event(CliEvent::ToolStart {
+                conversation_id: None,
+                call_key: "121".into(),
+                name: "edit_file".into(),
+                input: edit_input.clone(),
+            })
+            .unwrap();
+        std::fs::write(&motor_c, "int a = 1;\nint b = 20;\nint b2 = 21;\nint c = 3;\n").unwrap();
+        recorder
+            .handle_event(CliEvent::ToolDone {
+                conversation_id: None,
+                call_key: "121".into(),
+                name: Some("edit_file".into()),
+                input: edit_input,
+                output: String::new(),
+                is_error: false,
+            })
+            .unwrap();
+
+        // 2) `agy` write_file creates a brand-new test script in workspace.
+        let new_test = workspace.join("scripts").join("test_io_park_host.py");
+        let (_, write_input) = normalize_tool("write_file", &json!({ "Path": new_test.to_string_lossy() }));
+        recorder
+            .handle_event(CliEvent::ToolStart {
+                conversation_id: None,
+                call_key: "137".into(),
+                name: "write_file".into(),
+                input: write_input.clone(),
+            })
+            .unwrap();
+        std::fs::create_dir_all(new_test.parent().unwrap()).unwrap();
+        std::fs::write(&new_test, "def test_park():\n    assert True\n").unwrap();
+        recorder
+            .handle_event(CliEvent::ToolDone {
+                conversation_id: None,
+                call_key: "137".into(),
+                name: Some("write_file".into()),
+                input: write_input,
+                output: String::new(),
+                is_error: false,
+            })
+            .unwrap();
+
+        let events = sink.0.lock().unwrap().clone();
+        let edit_res = events
+            .iter()
+            .find_map(|env| match &env.event {
+                Event::ToolResult { tool, meta, .. } if tool == "edit_file" => Some(meta.clone()),
+                _ => None,
+            })
+            .expect("edit_file ToolResult logged");
+        assert_eq!(edit_res["path"], "peripheral/src/motor.c");
+        assert_eq!(edit_res["file"], motor_c.to_string_lossy().as_ref());
+        assert_eq!(edit_res["created"], false);
+        assert_eq!(edit_res["added"], 2);
+        assert_eq!(edit_res["removed"], 1);
+        assert!(edit_res["hunk"].is_object(), "expected structured diff hunk");
+
+        let write_res = events
+            .iter()
+            .find_map(|env| match &env.event {
+                Event::ToolResult { tool, meta, .. } if tool == "write_file" => Some(meta.clone()),
+                _ => None,
+            })
+            .expect("write_file ToolResult logged");
+        assert_eq!(write_res["path"], "scripts/test_io_park_host.py");
+        assert_eq!(write_res["created"], true);
+        assert_eq!(write_res["added"], 2);
+        assert_eq!(write_res["removed"], 0);
+
+        // Verify undo restores `motor.c` to its original content and deletes the created script!
+        let plan = crate::undo::plan(&events, 1);
+        assert_eq!(plan.len(), 2);
+        let outcome = crate::undo::apply(&plan, &snap_dir);
+        assert_eq!(outcome.restored, vec!["peripheral/src/motor.c", "scripts/test_io_park_host.py"]);
+        assert_eq!(std::fs::read_to_string(&motor_c).unwrap(), "int a = 1;\nint b = 2;\nint c = 3;\n");
+        assert!(!new_test.exists());
+    }
+
+    #[test]
+    fn extracts_agy_transcript_fallback_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conv = "35f75987-1c92-4e43-907b-a54a7f66ac2f";
+        let log_dir = tmp
+            .path()
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("brain")
+            .join(conv)
+            .join(".system_generated")
+            .join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        std::fs::write(
+            log_dir.join("transcript.jsonl"),
+            r#"{"step_index":125,"source":"MODEL","type":"GENERIC","status":"DONE","content":"Created At: 2026-11-24T15:45:15+08:00\nCompleted At: 2026-11-24T15:45:28+08:00\nMade 1 replacement in /Users/x/motor.c starting at line 906 (+25/-40 lines)."}"#,
+        )
+        .unwrap();
+        let found = lookup_agy_transcript_edit_in(tmp.path(), conv, "125").expect("transcript fallback");
+        assert_eq!(found.0, 25);
+        assert_eq!(found.1, 40);
+        assert!(found.2.contains("(+25/-40 lines)"));
     }
 }

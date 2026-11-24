@@ -457,13 +457,13 @@ pub(super) async fn find_files(input: &Value, context: &ToolContext) -> Result<T
     Ok(ToolOutput::ok(content, json!({ "path": shown, "glob": glob, "entries": found.len(), "truncated": truncated })))
 }
 
-struct LineDiff {
-    added: usize,
-    removed: usize,
+pub(crate) struct LineDiff {
+    pub(crate) added: usize,
+    pub(crate) removed: usize,
     /// First hunk (`{ old_start, new_start, lines: [{ kind: " " | "-" | "+", text }] }`), or null when too long to show.
-    hunk: Value,
+    pub(crate) hunk: Value,
     /// All hunks when a change spans more than one non-adjacent region; empty otherwise.
-    hunks: Vec<Value>,
+    pub(crate) hunks: Vec<Value>,
 }
 
 /// One contiguous changed region in full-file 0-based line coordinates.
@@ -574,7 +574,7 @@ fn myers_spans(old: &[&str], new: &[&str], offset_old: usize, offset_new: usize,
 
 /// Multi-hunk line diff between two texts, keeping two lines of context around
 /// each changed region and merging nearby hunks whose context meets.
-fn line_diff(before: &str, after: &str) -> LineDiff {
+pub(crate) fn line_diff(before: &str, after: &str) -> LineDiff {
     let old: Vec<&str> = before.lines().collect();
     let new: Vec<&str> = after.lines().collect();
     let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();

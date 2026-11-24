@@ -22,6 +22,7 @@ pub use commands::shell;
 pub(crate) use commands::{kill_tree, strip_ansi};
 pub use extras::{ASK_USER, DelegateTask, OPTIONS, PRESENT_PLAN, QUESTIONS, SUBAGENTS, TODO_STATES, answered, delegate_tasks, questions, todo_items};
 pub use files::edits_files;
+pub(crate) use files::line_diff;
 #[cfg(test)]
 use files::picture;
 pub use specs::{ask_user_spec, delegate_spec, image_spec, mcp_resource_specs, present_plan_spec, search_spec, specs};

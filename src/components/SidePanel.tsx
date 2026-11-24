@@ -305,7 +305,7 @@ function FileRow({
         {/* At the line's end: inspect inside workbench, open with system's program, or reveal in folder. */}
         {(where || onInspectFile) && (
           <span className="file-acts">
-            {!file.gone && onInspectFile && (
+            {!file.gone && onInspectFile && !/^(?:\/|[A-Za-z]:[\\/])/.test(file.path) && (
               <button type="button" className="icon-button" title="在中间工作台查看源码" onClick={() => onInspectFile(file.path.replace(/\\/g, "/"))}>
                 <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M5.5 5 2.5 8l3 3M10.5 5l3 3-3 3M9 3.5 7 12.5" />

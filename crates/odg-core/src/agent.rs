@@ -984,6 +984,7 @@ impl<L: Llm> Inner<L> {
                 let params = crate::cli_agents::TurnParams {
                     kind,
                     workspace: &self.workspace,
+                    snapshots: Some(&self.snapshots),
                     turn,
                     prompt,
                     conversation_id,
