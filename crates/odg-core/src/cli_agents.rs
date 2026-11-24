@@ -1969,8 +1969,10 @@ fn insert_before_prompt_tail(args: &mut Vec<String>, extra: Vec<String>) {
 
 /// Bridge enabled `odg` MCP servers (`~/.odg/mcp.json`) into CLIs that support per-turn MCP injection:
 /// - Claude Code: `--mcp-config <temp.json>`
-/// - Antigravity (`agy`): `--settings <temp.json>`
 /// - Codex: `-c mcp_servers.<name>.command=...` / `.args=[...]` / `.url=...`
+///
+/// Note: Antigravity (`agy`) manages MCP servers via `agy mcp add` rather than `--settings`,
+/// and rejects `"mcpServers"` in `--settings`, so we do not pass `--settings` to `agy`.
 fn apply_mcp_bridge_args(
     kind: CliKind,
     args: &mut Vec<String>,
@@ -1981,7 +1983,7 @@ fn apply_mcp_bridge_args(
         return None;
     }
     match kind {
-        CliKind::ClaudeCode | CliKind::Antigravity => {
+        CliKind::ClaudeCode => {
             let mut map = serde_json::Map::new();
             for (name, srv) in servers {
                 let mut entry = serde_json::Map::new();
@@ -2015,8 +2017,7 @@ fn apply_mcp_bridge_args(
             let path = dir.join(format!("mcp-{}-{turn}-{stamp}.json", std::process::id()));
             let payload = serde_json::to_vec_pretty(&json!({ "mcpServers": map })).ok()?;
             std::fs::write(&path, payload).ok()?;
-            let flag = if kind == CliKind::ClaudeCode { "--mcp-config" } else { "--settings" };
-            insert_before_prompt_tail(args, vec![flag.to_string(), path.to_string_lossy().into_owned()]);
+            insert_before_prompt_tail(args, vec!["--mcp-config".to_string(), path.to_string_lossy().into_owned()]);
             Some(TempPromptGuard(Some(path)))
         }
         CliKind::Codex => {
@@ -2043,7 +2044,7 @@ fn apply_mcp_bridge_args(
             insert_before_prompt_tail(args, flags);
             None
         }
-        CliKind::Cursor | CliKind::Grok | CliKind::OpenCode => None,
+        CliKind::Antigravity | CliKind::Cursor | CliKind::Grok | CliKind::OpenCode => None,
     }
 }
 
@@ -2745,8 +2746,7 @@ mod tests {
         assert!(codex_args.iter().any(|a| a == "mcp_servers.remote.url=\"https://mcp.example.com\""));
 
         let mut agy_args = build_args(CliKind::Antigravity, "hi", None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
-        let agy_guard = apply_mcp_bridge_args(CliKind::Antigravity, &mut agy_args, &servers, 1).expect("agy settings temp file");
-        assert!(agy_args.iter().any(|a| a == "--settings"));
-        drop(agy_guard);
+        assert!(apply_mcp_bridge_args(CliKind::Antigravity, &mut agy_args, &servers, 1).is_none());
+        assert!(!agy_args.iter().any(|a| a == "--settings"));
     }
 }
