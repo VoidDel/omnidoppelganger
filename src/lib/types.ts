@@ -274,6 +274,27 @@ export interface ModelUsageEntry {
   cooldown_reason?: string | null;
 }
 
+/** One rolling quota window returned by `agy -p /usage --output-format json`. */
+export interface QuotaBucket {
+  id: string;
+  name: string;
+  window: string;
+  remaining_percent: number;
+  reset_time?: string | null;
+  description?: string | null;
+}
+
+export interface QuotaGroup {
+  name: string;
+  description?: string | null;
+  buckets: QuotaBucket[];
+}
+
+export interface AntigravityQuota {
+  fetched_at: string;
+  groups: QuotaGroup[];
+}
+
 /** The Git worktree made for a session that works apart from the folder's own files. */
 export interface Worktree {
   /** The folder the user chose; the session is listed under it. */

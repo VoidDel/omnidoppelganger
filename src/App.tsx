@@ -919,7 +919,7 @@ export default function App() {
         name: taken.has(name.toLowerCase()) ? `skill-${name}` : name,
         label: "秘籍",
         aliases: [skill.name],
-        hint: `秘籍：${skill.description}`,
+        hint: skill.description,
         arg: "<要办的事>",
         unavailable: working,
         run: (task) => send(task ? `按秘籍「${skill.name}」（skill）办：${task}` : `按秘籍「${skill.name}」（skill）办。`),

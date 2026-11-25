@@ -1138,6 +1138,11 @@ fn reset_model_usage() -> Vec<odg_core::model_usage::ModelUsageEntry> {
     store.list()
 }
 
+#[tauri::command]
+async fn get_antigravity_quota(force: Option<bool>) -> Result<odg_core::antigravity::AntigravityQuota, String> {
+    odg_core::antigravity::fetch_quota(force.unwrap_or(false)).await
+}
+
 /// Fire a best-effort native desktop notification when the app is unfocused (turn completed or waiting approval).
 #[tauri::command]
 async fn notify_desktop(title: String, body: String) {
@@ -1571,6 +1576,7 @@ pub fn run() {
             get_model_usage,
             clear_model_cooldown,
             reset_model_usage,
+            get_antigravity_quota,
             fork_session,
             list_schedules,
             save_schedule,

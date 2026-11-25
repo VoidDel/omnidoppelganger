@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { shortCount } from "../lib/fold";
 import { cooldownRemainingMs, findModelUsage, formatCooldown, todayTokens } from "../lib/modelUsage";
 import { BYPASS, MODES, modeOf } from "../lib/modes";
@@ -72,10 +72,38 @@ export interface PopupProps {
   summon?: number;
 }
 
+/** Keeps a `.mode-menu` popup horizontally inside the viewport without flashing. */
+function useKeepInView(open: boolean) {
+  const menu = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const el = menu.current;
+      if (!el) return;
+      el.style.left = "0px";
+      const rect = el.getBoundingClientRect();
+      const margin = 12;
+      let dx = 0;
+      if (rect.right > window.innerWidth - margin) {
+        dx = window.innerWidth - margin - rect.right;
+      }
+      if (rect.left + dx < margin) {
+        dx = margin - rect.left;
+      }
+      el.style.left = `${Math.round(dx)}px`;
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
+  return menu;
+}
+
 /** A button in the composer row whose menu opens above it, and closes on Escape or a click elsewhere. */
 export function Popup({ label, title, disabled, name, children, summon = 0 }: PopupProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const menu = useKeepInView(open);
   useEffect(() => {
     if (summon > 0 && !disabled) setOpen(true);
   }, [summon, disabled]);
@@ -91,7 +119,7 @@ export function Popup({ label, title, disabled, name, children, summon = 0 }: Po
         {label}
       </button>
       {open && (
-        <div className="mode-menu" role="menu" aria-label={name}>
+        <div className="mode-menu" ref={menu} role="menu" aria-label={name}>
           {children(() => setOpen(false))}
         </div>
       )}
@@ -123,6 +151,9 @@ export interface ModelListProps {
   nowMs?: number;
 }
 
+/** Session-lifetime cache of live model lists per provider so opening the picker doesn't re-query every time. */
+const modelListCache = new Map<string, [string, string][]>();
+
 /**
  * The models to choose from, a provider at a time: the session's own first, then the others the user added, under
  * the names given them. Each lists what it says it serves, or its built-in suggestions while that is unknown.
@@ -130,20 +161,41 @@ export interface ModelListProps {
 export function ModelList({ providers, listed, keyed, providerId, model, onPick, onAutoFallback, listModels, modelUsage = [], nowMs = Date.now() }: ModelListProps) {
   /** The provider whose models are listed. */
   const [showing, setShowing] = useState(providerId);
-  const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: [string, string][]; why?: string }>({ state: "asking", models: [] });
+  const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: [string, string][]; why?: string }>(() => {
+    const cached = modelListCache.get(providerId);
+    return cached ? { state: "told", models: cached } : { state: "asking", models: [] };
+  });
+  const [refreshTick, setRefreshTick] = useState(0);
   const [filter, setFilter] = useState("");
-  // Asked each time a provider is shown: its list changes, and so does the key it is asked with.
+  const forceRefresh = useRef(false);
+  // Use cached list when available; fetch on cache miss or explicit refresh.
   useEffect(() => {
     let current = true;
-    setAsked({ state: "asking", models: [] });
+    const force = forceRefresh.current;
+    forceRefresh.current = false;
+    const cached = modelListCache.get(showing);
+    if (cached && !force) {
+      setAsked({ state: "told", models: cached });
+      return;
+    }
+    setAsked((prev) => ({ state: "asking", models: cached ?? prev.models }));
     listModels(showing).then(
-      (models) => current && setAsked({ state: "told", models }),
-      (error) => current && setAsked({ state: "failed", models: [], why: String(error) }),
+      (models) => {
+        modelListCache.set(showing, models);
+        if (current) setAsked({ state: "told", models });
+      },
+      (error) => {
+        if (current) setAsked({ state: "failed", models: cached ?? [], why: String(error) });
+      },
     );
     return () => {
       current = false;
     };
-  }, [showing, listModels]);
+  }, [showing, listModels, refreshTick]);
+  const triggerRefresh = () => {
+    forceRefresh.current = true;
+    setRefreshTick((n) => n + 1);
+  };
   const provider = providers.find((known) => known.id === showing);
   const home = showing === providerId;
   // If the provider returned a live list of models and the session's current model is no longer in it,
@@ -157,7 +209,7 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
     fellBack.current = key;
     onAutoFallback(providerId, asked.models[0][0]);
   }, [home, onAutoFallback, asked, providerId, model]);
-  const known = asked.state === "told" ? asked.models : (provider?.models ?? []);
+  const known = asked.models.length > 0 ? asked.models : (provider?.models ?? []);
   // The model in use is always there to return to, even when the provider's list leaves it out.
   const models = !home || known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
   const shown = models.filter(([id, name]) => `${id} ${name}`.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -193,12 +245,31 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
       <div className="mode-menu-head">
         <span>
           {name(showing)} 的心法
-          <Info>换了之后，这个分身接下来的话由新心法来答，前情照旧带着。列表是向这个宗门问来的，问不到时列内置的几门。</Info>
+          <Info>换了之后，这个分身接下来的话由新心法来答，前情照旧带着。列表会缓存，点右侧刷新按钮可重新向宗门拉取。</Info>
         </span>
-        <span>{asked.state === "asking" ? "正在问它有哪些…" : asked.state === "told" ? `它报了 ${asked.models.length} 门` : "没问到，先列内置的"}</span>
+        <span className="menu-head-right">
+          <span>{asked.state === "asking" ? "查询中…" : asked.state === "told" ? `共 ${asked.models.length} 门` : "内置列表"}</span>
+          <button
+            type="button"
+            className={`quota-refresh-btn ${asked.state === "asking" ? "spinning" : ""}`}
+            disabled={asked.state === "asking"}
+            title={asked.state === "asking" ? "正在拉取模型列表…" : "刷新模型列表"}
+            aria-label={asked.state === "asking" ? "正在拉取模型列表…" : "刷新模型列表"}
+            onClick={triggerRefresh}
+          >
+            <svg aria-hidden="true" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.45-3.72" />
+              <path d="M13.5 2.75v2.75h-2.75" />
+            </svg>
+          </button>
+        </span>
       </div>
       {asked.state === "failed" && <p className="menu-note">{asked.why}</p>}
-      {models.length > 8 && <input className="input menu-filter" type="search" placeholder="筛一筛" aria-label="筛选心法" autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} />}
+      {models.length > 8 && (
+        <div className="menu-filter-row">
+          <input className="input menu-filter" type="search" placeholder="筛一筛" aria-label="筛选心法" autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} />
+        </div>
+      )}
       <div className="menu-scroll">
         {shown.map(([id, display]) => {
           const stat = findModelUsage(modelUsage, showing, id);
@@ -248,6 +319,7 @@ export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (m
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
   const current = modeOf(mode);
+  const menu = useKeepInView(open);
   return (
     <div className="mode-picker" ref={root} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
       <button
@@ -263,7 +335,7 @@ export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (m
         <span className="value">{current.name}</span>
       </button>
       {open && (
-        <div className="mode-menu" role="menu" aria-label="禁制">
+        <div className="mode-menu" ref={menu} role="menu" aria-label="禁制">
           <div className="mode-menu-head">
             <span>禁制</span>
             <span>

@@ -1253,3 +1253,113 @@
   color: var(--jade);
   font-weight: 600;
 }
+
+/* Antigravity subscription quota panel in Settings */
+.quota-panel {
+  margin-bottom: var(--s-3);
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper-2, transparent);
+}
+
+.quota-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  margin-bottom: 10px;
+}
+
+.quota-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.quota-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.quota-group-title {
+  font-size: var(--t-small);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.quota-buckets {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quota-bucket {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quota-bucket-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.quota-bucket-name {
+  color: var(--ink-2);
+}
+
+.quota-bucket-pct {
+  font-family: var(--mono);
+  font-weight: 700;
+}
+
+.quota-bucket-pct.high {
+  color: var(--jade);
+}
+
+.quota-bucket-pct.mid {
+  color: var(--gold-ink, #a67c00);
+}
+
+.quota-bucket-pct.low {
+  color: var(--cinnabar-ink);
+}
+
+.quota-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 80%, transparent);
+  overflow: hidden;
+}
+
+.quota-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+.quota-fill.high {
+  background: var(--jade);
+}
+
+.quota-fill.mid {
+  background: var(--gold, #d9bc55);
+}
+
+.quota-fill.low {
+  background: var(--cinnabar);
+}
+
+.quota-bucket-meta {
+  font-size: 11px;
+  color: var(--ink-2);
+}

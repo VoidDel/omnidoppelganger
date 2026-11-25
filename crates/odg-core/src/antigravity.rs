@@ -12,8 +12,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::process::Command;
 
@@ -396,6 +397,152 @@ pub fn build_args(
     args
 }
 
+/// One rolling quota window returned by `agy -p /usage --output-format json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaBucket {
+    pub id: String,
+    pub name: String,
+    /// Window identifier such as `"5h"` or `"weekly"`.
+    pub window: String,
+    /// Remaining percentage (0..=100).
+    pub remaining_percent: u8,
+    /// RFC3339 UTC timestamp when this window fully refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// One model group in Antigravity subscription quota (e.g. `Gemini Models`, `Claude and GPT models`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaGroup {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub buckets: Vec<QuotaBucket>,
+}
+
+/// Live Antigravity subscription quota snapshot obtained from `agy -p /usage --output-format json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AntigravityQuota {
+    pub fetched_at: String,
+    pub groups: Vec<QuotaGroup>,
+}
+
+const QUOTA_CACHE_TTL: Duration = Duration::from_secs(60);
+const QUOTA_TIMEOUT: Duration = Duration::from_secs(18);
+
+/// Parse the stdout of `agy -p /usage --output-format json` into [`AntigravityQuota`].
+/// Tolerates leading diagnostic log lines before the JSON object.
+pub fn parse_usage_json(raw: &str) -> Result<AntigravityQuota, String> {
+    let json_line = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('{') && line.ends_with('}'))
+        .or_else(|| {
+            let start = raw.find('{')?;
+            let end = raw.rfind('}')?;
+            (end > start).then(|| &raw[start..=end])
+        })
+        .ok_or_else(|| "agy /usage 未返回有效 JSON。".to_string())?;
+
+    let root: Value = serde_json::from_str(json_line).map_err(|e| format!("解析 agy /usage JSON 失败：{e}"))?;
+    if let Some(status) = root["status"].as_str()
+        && !status.eq_ignore_ascii_case("SUCCESS")
+    {
+        let err = root["error"].as_str().or_else(|| root["response"].as_str()).unwrap_or(status);
+        return Err(format!("agy /usage 查询失败：{err}"));
+    }
+
+    let mut groups = Vec::new();
+    if let Some(arr) = root["command"]["data"]["groups"].as_array() {
+        for g in arr {
+            let name = g["name"].as_str().unwrap_or_default().trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let description = g["description"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+            let mut buckets = Vec::new();
+            if let Some(bs) = g["buckets"].as_array() {
+                for b in bs {
+                    let frac = b["remaining_fraction"]
+                        .as_f64()
+                        .or_else(|| b["remainingFraction"].as_f64());
+                    let Some(frac) = frac.filter(|f| f.is_finite()) else {
+                        continue;
+                    };
+                    let pct = (frac.clamp(0.0, 1.0) * 100.0).round() as u8;
+                    buckets.push(QuotaBucket {
+                        id: b["id"].as_str().unwrap_or_default().to_string(),
+                        name: b["name"].as_str().unwrap_or_default().to_string(),
+                        window: b["window"].as_str().unwrap_or_default().to_string(),
+                        remaining_percent: pct,
+                        reset_time: b["reset_time"]
+                            .as_str()
+                            .or_else(|| b["resetTime"].as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string),
+                        description: b["description"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+                    });
+                }
+            }
+            if !buckets.is_empty() {
+                groups.push(QuotaGroup { name, description, buckets });
+            }
+        }
+    }
+
+    if groups.is_empty() {
+        return Err("agy /usage 未返回任何配额分组（请确认已在终端完成 agy 登录）。".to_string());
+    }
+    Ok(AntigravityQuota {
+        fetched_at: chrono::Utc::now().to_rfc3339(),
+        groups,
+    })
+}
+
+/// Query Antigravity subscription quota via `agy -p /usage --output-format json`.
+/// Results are cached for 60 seconds unless `force` is true.
+pub async fn fetch_quota(force: bool) -> Result<AntigravityQuota, String> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, AntigravityQuota)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if !force
+        && let Some((at, quota)) = cache.lock().unwrap().as_ref()
+        && at.elapsed() < QUOTA_CACHE_TTL
+    {
+        return Ok(quota.clone());
+    }
+
+    let bin = find_binary().ok_or_else(|| "未检测到本机 agy CLI，请先安装并登录。".to_string())?;
+    let mut cmd = Command::new(&bin);
+    cmd.args(["-p", "/usage", "--output-format", "json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+
+    let output = tokio::time::timeout(QUOTA_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| "查询 agy /usage 超时（18s）。".to_string())?
+        .map_err(|e| format!("运行 agy /usage 失败：{e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let quota = parse_usage_json(&stdout).map_err(|e| {
+        if !output.status.success() && !stderr.trim().is_empty() {
+            format!("agy /usage 失败：{}", stderr.trim())
+        } else {
+            e
+        }
+    })?;
+
+    *cache.lock().unwrap() = Some((Instant::now(), quota.clone()));
+    Ok(quota)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -505,5 +652,20 @@ mod tests {
         assert_eq!(auto, ["--print", "hi", "--output-format", "stream-json", "--dangerously-skip-permissions"]);
         let ro = build_args("hi", None, None, "", "", Mode::Bypass, false, true);
         assert_eq!(ro, ["--print", "hi", "--output-format", "stream-json", "--mode", "plan"]);
+    }
+
+    #[test]
+    fn parses_agy_usage_json_with_leading_diagnostics() {
+        let raw = r#"I1125 10:25:11.000 12345 cache.go:1] unauthenticated lookup
+{"conversation_id":"","status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","description":"Models within this group: Gemini 4 Neon","buckets":[{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.932756,"reset_time":"2026-12-01T01:23:14Z"},{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.965979,"reset_time":"2026-11-25T05:37:06Z"}]},{"name":"Claude and GPT models","buckets":[{"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.494687,"reset_time":"2026-11-30T06:44:26Z"},{"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"2026-11-25T07:25:24Z"}]}]}}}"#;
+        let quota = parse_usage_json(raw).unwrap();
+        assert_eq!(quota.groups.len(), 2);
+        assert_eq!(quota.groups[0].name, "Gemini Models");
+        assert_eq!(quota.groups[0].buckets[0].remaining_percent, 93);
+        assert_eq!(quota.groups[0].buckets[0].window, "weekly");
+        assert_eq!(quota.groups[0].buckets[1].remaining_percent, 97);
+        assert_eq!(quota.groups[0].buckets[1].window, "5h");
+        assert_eq!(quota.groups[1].buckets[0].remaining_percent, 49);
+        assert_eq!(quota.groups[1].buckets[1].remaining_percent, 100);
     }
 }

@@ -287,10 +287,15 @@ describe("usage", () => {
 
   it("sums what every request cost and reports what the conversation holds now", () => {
     const events = log(user("one"), counted(1000, 0, 50), user("two"), counted(1100, 1000, 60));
-    expect(usage(events)).toEqual({ context: 1160, spent: { input: 2100, cached: 1000, output: 110 } });
+    expect(usage(events)).toMatchObject({ context: 1160, spent: { input: 2100, cached: 1000, output: 110 } });
     // A message logged before counts existed adds nothing and leaves the context as it was.
-    expect(usage([...events, ...log(said({ type: "text", text: "old" }))])).toEqual(usage(events));
-    expect(usage([])).toEqual({ context: 0, spent: { input: 0, cached: 0, output: 0 } });
+    const withOld = usage([...events, ...log(said({ type: "text", text: "old" }))]);
+    expect({ context: withOld.context, spent: withOld.spent }).toEqual({ context: 1160, spent: { input: 2100, cached: 1000, output: 110 } });
+    expect(usage([])).toEqual({
+      context: 0,
+      spent: { input: 0, cached: 0, output: 0 },
+      breakdown: { prompt: 0, input: 0, output: 0, skill: 0, mcp: 0, tools: 0 },
+    });
   });
 
   it("starts the context over at a compaction, whose own request still counts as spent", () => {
@@ -301,9 +306,37 @@ describe("usage", () => {
       counted(700, 0, 40),
     );
     expect(usage(events.slice(0, 3)).context).toBe(300);
-    expect(usage(events)).toEqual({ context: 740, spent: { input: 18900, cached: 9000, output: 440 } });
+    expect(usage(events)).toMatchObject({ context: 740, spent: { input: 18900, cached: 9000, output: 440 } });
     const rows = fold(events);
     expect(rows[0].items.map((item) => item.kind)).toEqual(["text", "compacted", "text"]);
+  });
+
+  it("breaks down context tokens by category and reconciles to reported context", () => {
+    const events = log(
+      { type: "instructions/loaded", data: { path: "CLAUDE.md", content: "System instructions for the project." } },
+      { type: "skills/listed", data: { skills: [{ name: "review", description: "Code review workflow" }] } },
+      user("Please inspect the repository"),
+      said(
+        { type: "text", text: "Loading skill and calling tools." },
+        call("s1", "load_skill", { name: "review" }),
+        call("m1", "mcp__github__list_prs", { repo: "odg" }),
+        call("t1", "read_file", { path: "README.md" }),
+      ),
+      { type: "tool/result", data: { tool_use_id: "s1", tool: "load_skill", content: "Skill body ".repeat(20), is_error: false, meta: null } },
+      { type: "tool/result", data: { tool_use_id: "m1", tool: "mcp__github__list_prs", content: "PR list ".repeat(15), is_error: false, meta: null } },
+      { type: "tool/result", data: { tool_use_id: "t1", tool: "read_file", content: "README content ".repeat(25), is_error: false, meta: null } },
+      counted(1900, 500, 100),
+    );
+    const { context, breakdown } = usage(events);
+    expect(context).toBe(2000);
+    expect(breakdown.prompt).toBeGreaterThan(0);
+    expect(breakdown.input).toBeGreaterThan(0);
+    expect(breakdown.output).toBeGreaterThan(0);
+    expect(breakdown.skill).toBeGreaterThan(0);
+    expect(breakdown.mcp).toBeGreaterThan(0);
+    expect(breakdown.tools).toBeGreaterThan(0);
+    const sum = breakdown.prompt + breakdown.input + breakdown.output + breakdown.skill + breakdown.mcp + breakdown.tools;
+    expect(sum).toBe(context);
   });
 });
 

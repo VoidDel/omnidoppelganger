@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { launchFrom } from "../lib/flight";
 import { type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
-import { allTokens, cooldownRemainingMs, findModelUsage, formatCooldown, todayTokens, useModelUsage } from "../lib/modelUsage";
+import { allTokens, cooldownRemainingMs, findModelUsage, formatCooldown, formatResetIn, quotaGroupForModel, quotaWindowLabel, todayTokens, useAntigravityQuota, useModelUsage } from "../lib/modelUsage";
 import { MODES, nextMode } from "../lib/modes";
 import { type PasteKind, detectPasteKind, nextPastedFilename, shouldCollapsePaste } from "../lib/paste";
 import { CLI_INFO, cliOf } from "../lib/providers";
@@ -153,7 +153,7 @@ export interface ComposerProps {
 }
 
 /** The order the "/" menu lists the commands in; any not named here (a skill's) come after, as given. */
-const COMMAND_ORDER = ["new", "aside", "fork", "compact", "model", "effort", "mode", "files", "git", "terminal", "rename", "replay", "init", "review", "skills", "mcp", "schedule", "settings"];
+const COMMAND_ORDER = ["new", "aside", "fork", "compact", "usage", "model", "effort", "mode", "files", "git", "terminal", "rename", "replay", "init", "review", "skills", "mcp", "schedule", "settings"];
 
 /**
  * How full the conversation is, as five 灵石 lit one after another: each stands for a fifth of the room there is
@@ -198,9 +198,12 @@ function useBoxHeight() {
 
 export function Composer(props: ComposerProps) {
   const { status, providers, listed, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
-  const { entries: modelUsage, nowMs, clearCooldown } = useModelUsage(`${status}:${usage.spent.input}:${usage.spent.output}:${providerId}:${model}`);
+  const { entries: modelUsage, nowMs, refresh: refreshModelUsage, clearCooldown } = useModelUsage(`${status}:${usage.spent.input}:${usage.spent.output}:${providerId}:${model}`);
   const activeModelStat = findModelUsage(modelUsage, providerId, model);
   const activeCooldownMs = cooldownRemainingMs(activeModelStat, nowMs);
+  const isAgyModel = providerId === "antigravity" || model.toLowerCase().startsWith("agy-cli/");
+  const agyQuota = useAntigravityQuota(isAgyModel && !props.aside);
+  const activeQuotaGroup = isAgyModel ? quotaGroupForModel(agyQuota.quota, model) : undefined;
   const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given, placeholder, acceptDrops = true, aside = false } = props;
   const provider = providers.find((known) => known.id === providerId);
   const cli = cliOf(provider);
@@ -258,6 +261,8 @@ export function Composer(props: ComposerProps) {
   // The "/" commands: the box's own, for what it holds the controls of, and the window's.
   /** Changed to open the 心法 menu, from "/model". */
   const [modelSummon, setModelSummon] = useState(0);
+  /** Changed to open the 灵石 / 用量 menu, from "/usage". */
+  const [usageSummon, setUsageSummon] = useState(0);
   const effortChoices: SlashChoice[] = efforts.map((level) => ({ value: level, label: EFFORT_NAMES[level] ?? level, hint: EFFORT_HINTS[level] }));
   const modeChoices: SlashChoice[] = MODES.map((one) => ({ value: one.value, label: one.name, hint: one.hint }));
   const picked = (choices: SlashChoice[], arg: string, what: string) =>
@@ -296,6 +301,17 @@ export function Composer(props: ComposerProps) {
         const choice = picked(modeChoices, arg, "种禁制");
         if (typeof choice === "string") return choice;
         onMode(choice.value as Mode);
+      },
+    },
+    {
+      name: "usage",
+      label: "用量",
+      aliases: ["用量", "额度", "灵石"],
+      hint: "查看灵石用量、模型累计消耗、冷却倒计时与订阅额度",
+      run: () => {
+        refreshModelUsage();
+        if (isAgyModel) agyQuota.refresh(true);
+        setUsageSummon((n) => n + 1);
       },
     },
   ];
@@ -625,39 +641,48 @@ export function Composer(props: ComposerProps) {
           {menu.length > 0 && (
             <div className="slash-menu" id="slash-menu" role="listbox" aria-label="命令" ref={menuList}>
               {menu[0].kind === "choice" && <div className="mode-menu-head">{`/${menu[0].command.name}：${menu[0].command.hint}`}</div>}
-              {menu.map((offer, at) => (
-                <div
-                  key={offer.kind === "choice" ? offer.choice.value : offer.command.name}
-                  id={`slash-${at}`}
-                  role="option"
-                  aria-selected={at === Math.min(chosen, menu.length - 1)}
-                  aria-disabled={!!offer.command.unavailable}
-                  className="slash-option"
-                  title={offer.command.unavailable}
-                  onMouseEnter={() => setChosen(at)}
-                  // Taken on the press, so that the box keeps the focus the menu was opened from.
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    accept(offer);
-                  }}
-                >
-                  {offer.kind === "choice" ? (
-                    <>
-                      <span className="slash-name">{offer.choice.label}</span>
-                      <span className="slash-arg mono">{offer.choice.value}</span>
-                      <span className="slash-hint">{offer.choice.hint}</span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="slash-name mono">/{offer.command.name}</span>
-                      <span className="slash-label">{offer.command.label}</span>
-                      {offer.command.arg && <span className="slash-arg">{offer.command.arg}</span>}
-                      <span className="slash-hint">{offer.command.unavailable ?? offer.command.hint}</span>
-                    </>
-                  )}
-                </div>
-              ))}
-              <p className="menu-note">↑↓ 选，Tab 补全，回车执行，Esc 收起</p>
+              <div className="slash-list">
+                {menu.map((offer, at) => {
+                  const hintText = offer.kind === "choice" ? offer.choice.hint : (offer.command.unavailable ?? offer.command.hint);
+                  return (
+                    <div
+                      key={offer.kind === "choice" ? offer.choice.value : offer.command.name}
+                      id={`slash-${at}`}
+                      role="option"
+                      aria-selected={at === Math.min(chosen, menu.length - 1)}
+                      aria-disabled={!!offer.command.unavailable}
+                      className="slash-option"
+                      title={hintText}
+                      onMouseEnter={() => setChosen(at)}
+                      // Taken on the press, so that the box keeps the focus the menu was opened from.
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        accept(offer);
+                      }}
+                    >
+                      {offer.kind === "choice" ? (
+                        <>
+                          <div className="slash-option-head">
+                            <span className="slash-name">{offer.choice.label}</span>
+                            <span className="slash-arg mono">{offer.choice.value}</span>
+                          </div>
+                          {offer.choice.hint && <span className="slash-hint">{offer.choice.hint}</span>}
+                        </>
+                      ) : (
+                        <>
+                          <div className="slash-option-head">
+                            <span className="slash-name mono">/{offer.command.name}</span>
+                            <span className="slash-label">{offer.command.label}</span>
+                            {offer.command.arg && <span className="slash-arg">{offer.command.arg}</span>}
+                          </div>
+                          {hintText && <span className="slash-hint">{hintText}</span>}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="slash-foot">↑↓ 选择 · Tab 补全 · 回车执行 · Esc 收起</p>
             </div>
           )}
           <label htmlFor="composer-input" className="sr-only">
@@ -861,13 +886,18 @@ export function Composer(props: ComposerProps) {
             {!aside && (
               <Popup
                 name="灵石"
-              title={`灵石：前情占了 ${shortCount(usage.context)}，到 ${shortCount(contextLimit)} 就凝成摘要。点开看累计用量、改上限`}
+                summon={usageSummon}
+              title={
+                cli
+                  ? `灵石：前情占了 ${shortCount(usage.context)}。点开看用量详情`
+                  : `灵石：前情占了 ${shortCount(usage.context)}，到 ${shortCount(contextLimit)} 就凝成摘要。点开看累计用量、改上限`
+              }
               label={
                 <>
                   <Stones part={contextLimit > 0 ? usage.context / contextLimit : 0} />
-                  <span className="label sr-only">灵石</span>
-                  <span className="value">
-                    {shortCount(usage.context)} / {shortCount(contextLimit)}
+                  <span className="label sr-only">
+                    灵石 {shortCount(usage.context)}
+                    {!cli ? ` / ${shortCount(contextLimit)}` : ""}
                   </span>
                 </>
               }
@@ -875,12 +905,86 @@ export function Composer(props: ComposerProps) {
               {(close) => (
                 <>
                   <div className="mode-menu-head">
-                    <span>灵石</span>
-                    <span>这个分身累计</span>
+                    <span className="stones-head-title">
+                      <span>灵石</span>
+                      <span className="stones-head-ratio mono">
+                        {shortCount(usage.context)}
+                        {!cli ? ` / ${shortCount(contextLimit)}` : ""}
+                      </span>
+                    </span>
+                    {(() => {
+                      const cachePct = usage.spent.input > 0 ? Math.min(100, Math.round((usage.spent.cached / usage.spent.input) * 100)) : 0;
+                      const inputTip =
+                        usage.spent.cached > 0
+                          ? `累计输入 ${shortCount(usage.spent.input)}（缓存 ${shortCount(usage.spent.cached)} · ${cachePct}%）`
+                          : `累计输入 ${shortCount(usage.spent.input)}`;
+                      return (
+                        <span className="stones-pills">
+                          <span
+                            className="stones-pill stones-pill-input mono"
+                            style={{ "--cache-pct": `${cachePct}%` } as CSSProperties}
+                            data-tip={inputTip}
+                            aria-label={inputTip}
+                          >
+                            {shortCount(usage.spent.input)}
+                          </span>
+                          <span className="stones-pill mono" data-tip={`累计输出 ${shortCount(usage.spent.output)}`} aria-label={`累计输出 ${shortCount(usage.spent.output)}`}>
+                            {shortCount(usage.spent.output)}
+                          </span>
+                        </span>
+                      );
+                    })()}
                   </div>
-                  <p className="menu-note">
-                    输入 {shortCount(usage.spent.input)}（其中 {shortCount(usage.spent.cached)} 读自缓存，便宜得多），输出 {shortCount(usage.spent.output)}。眼下的前情占 {shortCount(usage.context)}。
-                  </p>
+                  {(() => {
+                    const b = usage.breakdown;
+                    const rows = [
+                      { key: "prompt", label: "提示词", value: b.prompt, cls: "seg-prompt" },
+                      { key: "input", label: "输入", value: b.input, cls: "seg-input" },
+                      { key: "output", label: "输出", value: b.output, cls: "seg-output" },
+                      { key: "skill", label: "秘籍", value: b.skill, cls: "seg-skill" },
+                      { key: "mcp", label: "法器", value: b.mcp, cls: "seg-mcp" },
+                      { key: "tools", label: "工具", value: b.tools, cls: "seg-tools" },
+                    ];
+                    const used = rows.reduce((s, r) => s + r.value, 0);
+                    if (used === 0) return null;
+                    const denom = cli ? used : Math.max(used, contextLimit);
+                    const free = Math.max(0, denom - used);
+                    return (
+                      <div className="token-chart" aria-label="前情用量分段柱状图">
+                        <div className="token-stack" role="img" aria-label={cli ? `前情占用 ${shortCount(used)}` : `前情占用 ${shortCount(used)} / ${shortCount(denom)}`}>
+                          {rows
+                            .filter((r) => r.value > 0)
+                            .map((r) => {
+                              const pct = Math.round((r.value / used) * 100);
+                              return (
+                                <span
+                                  key={r.key}
+                                  className={`token-stack-seg ${r.cls}`}
+                                  style={{ flexGrow: r.value }}
+                                  title={`${r.label}：${shortCount(r.value)}（占已用 ${pct}%）`}
+                                />
+                              );
+                            })}
+                          {free > 0 && <span className="token-stack-seg seg-free" style={{ flexGrow: free }} title={`剩余空间：${shortCount(free)}`} />}
+                        </div>
+                        <div className="token-legend">
+                          {rows.map((r) => {
+                            const pct = Math.round((r.value / used) * 100);
+                            return (
+                              <div className={`token-legend-item ${r.value === 0 ? "zero" : ""}`} key={r.key} title={`${r.label}：${shortCount(r.value)}（${pct}%）`}>
+                                <span className={`token-dot ${r.cls}`} aria-hidden="true" />
+                                <span className="token-legend-name">{r.label}</span>
+                                <span className="token-legend-val mono">
+                                  {shortCount(r.value)}
+                                  <span className="token-bar-pct">{pct}%</span>
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {activeModelStat && (
                     <>
                       <div className="mode-menu-head">
@@ -905,67 +1009,136 @@ export function Composer(props: ComposerProps) {
                       </p>
                     </>
                   )}
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="mode-option plain"
-                    disabled={busy || usage.context === 0}
-                    title={busy ? "分身运功时不能凝练，等它收功" : usage.context === 0 ? "还没有前情可凝" : undefined}
-                    onClick={() => {
-                      onCompact();
-                      close();
-                    }}
-                  >
-                    <span className="mode-text">
-                      <span className="name">现在就凝成摘要</span>
-                      <span className="hint">不等到上限：让分身把前情凝成一段摘要，之后的请求省灵石。摘要会丢掉细节</span>
-                    </span>
-                    <span />
-                  </button>
-                  <div className="mode-menu-head">
-                    <span>前情上限</span>
-                    <span>到了就凝成摘要</span>
-                  </div>
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={contextAuto}
-                    className="mode-option plain"
-                    onClick={() => {
-                      if (!contextAuto) onLimit("auto");
-                      close();
-                    }}
-                  >
-                    <span className="mode-text">
-                      <span className="name">自动</span>
-                      <span className="hint">按心法自己的窗口，用到八成：这门是 {shortCount(contextCeiling)}</span>
-                    </span>
-                    {contextAuto ? CHECK : <span />}
-                  </button>
-                  {limits.map((limit) => {
-                    // A setting above what the model can hold lands on the model's own ceiling.
-                    const chosen = !contextAuto && limit === Math.min(contextSetting, contextCeiling);
-                    return (
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={chosen}
-                        key={limit}
-                        className="mode-option plain"
-                        onClick={() => {
-                          if (!chosen) onLimit(limit);
-                          close();
-                        }}
-                      >
-                        <span className="mode-text">
-                          <span className="name">{shortCount(limit)}</span>
-                          {limit === contextCeiling && <span className="hint">这门心法装得下的最多</span>}
-                        </span>
-                        {chosen ? CHECK : <span />}
-                      </button>
-                    );
-                  })}
-                  <p className="menu-note">每次请求都要把整段前情发给心法，上限越高，长对话越费灵石。对所有分身生效；别的数可以到设置里填。</p>
+                  {isAgyModel && (
+                    <>
+                      <div className="mode-menu-head">
+                        <span>{activeQuotaGroup?.name ?? "Antigravity 订阅额度"}</span>
+                        <button
+                          type="button"
+                          className={`quota-refresh-btn ${agyQuota.loading ? "spinning" : ""}`}
+                          disabled={agyQuota.loading}
+                          title={agyQuota.loading ? "查询中…" : "刷新订阅额度"}
+                          aria-label={agyQuota.loading ? "查询中…" : "刷新订阅额度"}
+                          onClick={() => agyQuota.refresh(true)}
+                        >
+                          <svg aria-hidden="true" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M13.5 8a5.5 5.5 0 1 1-1.45-3.72" />
+                            <path d="M13.5 2.75v2.75h-2.75" />
+                          </svg>
+                        </button>
+                      </div>
+                      {activeQuotaGroup ? (
+                        <div className="quota-bars">
+                          {[...activeQuotaGroup.buckets]
+                            .sort((a, b) => {
+                              const rank = (w: string) => (w === "5h" ? 0 : w === "weekly" ? 1 : 2);
+                              return rank(a.window) - rank(b.window);
+                            })
+                            .map((b) => {
+                              const resetIn = formatResetIn(b.reset_time, agyQuota.nowMs);
+                              const pct = Math.max(0, Math.min(100, b.remaining_percent));
+                              const label = b.window === "5h" ? "5h" : b.window === "weekly" ? "7d" : quotaWindowLabel(b.window, b.name);
+                              const tone = pct <= 10 ? "critical" : pct <= 30 ? "low" : "ok";
+                              return (
+                                <div className="quota-bar-item" key={b.id || b.window}>
+                                  <div className="quota-bar-head">
+                                    <span className="quota-bar-label">
+                                      <strong className="mono">{label}</strong>
+                                      {resetIn && <span className="quota-bar-reset">{resetIn}后刷新</span>}
+                                    </span>
+                                    <span className="quota-bar-pct mono">{pct}%</span>
+                                  </div>
+                                  <div className="quota-bar-track" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={`${label} 剩余额度 ${pct}%`}>
+                                    <span className={`quota-bar-fill ${tone}`} style={{ width: `${pct}%` }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      ) : (
+                        <p className="menu-note">{agyQuota.error ?? (agyQuota.loading ? "正在查询订阅额度…" : "暂无额度数据")}</p>
+                      )}
+                    </>
+                  )}
+                  {!cli && (
+                    <>
+                      {(() => {
+                        const effective = Math.min(contextSetting, contextCeiling);
+                        const selectValue = contextAuto ? "auto" : String(effective);
+                        const hasCustom = !contextAuto && !limits.includes(effective);
+                        const limitTip = `自动：按心法自己的窗口用到八成（这门是 ${shortCount(contextCeiling)}）；${shortCount(contextCeiling)} 为这门心法装得下的最多。每次请求都要把整段前情发给心法，上限越高，长对话越费灵石。对所有分身生效；别的数可以到设置里填。`;
+                        return (
+                          <>
+                            <div className="mode-menu-head">
+                              <span className="limit-head-label">
+                                前情上限
+                                <span className="limit-help" tabIndex={0} role="note" aria-label={limitTip} data-tip={limitTip}>
+                                  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                                    <circle cx="8" cy="8" r="6.25" />
+                                    <path d="M8 4.6v4" />
+                                    <circle cx="8" cy="11.2" r="0.65" fill="currentColor" stroke="none" />
+                                  </svg>
+                                </span>
+                              </span>
+                              <span>到了就凝成摘要</span>
+                            </div>
+                            <div className="limit-select-row">
+                              <select
+                                className="limit-select"
+                                aria-label="前情上限"
+                                value={selectValue}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  if (v === "auto") {
+                                    if (!contextAuto) onLimit("auto");
+                                  } else {
+                                    const num = Number(v);
+                                    if (contextAuto || num !== effective) onLimit(num);
+                                  }
+                                }}
+                              >
+                                <option value="auto">自动</option>
+                                {limits.map((limit) => (
+                                  <option key={limit} value={String(limit)}>
+                                    {shortCount(limit)}
+                                  </option>
+                                ))}
+                                {hasCustom && <option value={String(effective)}>{shortCount(effective)}</option>}
+                              </select>
+                            </div>
+                          </>
+                        );
+                      })()}
+                      {(() => {
+                        const compactTip = busy
+                          ? "分身运功时不能凝练，等它收功"
+                          : usage.context === 0
+                            ? "还没有前情可凝"
+                            : "不等到上限：让分身把前情凝成一段摘要，之后的请求省灵石。摘要会丢掉细节";
+                        return (
+                          <div className="compact-action-row">
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="compact-action-btn"
+                              disabled={busy || usage.context === 0}
+                              data-tip={compactTip}
+                              aria-label={`凝成摘要：${compactTip}`}
+                              onClick={() => {
+                                onCompact();
+                                close();
+                              }}
+                            >
+                              <span className="seal small" aria-hidden="true">
+                                凝
+                              </span>
+                              <span>凝成摘要</span>
+                            </button>
+                          </div>
+                        );
+                      })()}
+                    </>
+                  )}
                 </>
               )}
               </Popup>

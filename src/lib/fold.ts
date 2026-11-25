@@ -251,16 +251,51 @@ export const shortCount = (count: number) => {
 };
 
 /** What the session has spent, and how full its context is. */
+/** Per-category token breakdown of the active conversation context. */
+export interface UsageBreakdown {
+  /** System prompt, tool schemas, and project instructions (CLAUDE.md / AGENTS.md). */
+  prompt: number;
+  /** User messages and attached images/files. */
+  input: number;
+  /** Assistant text, thinking, and tool call arguments. */
+  output: number;
+  /** Listed skill catalog and `load_skill` contents. */
+  skill: number;
+  /** MCP tool calls and MCP resource reads. */
+  mcp: number;
+  /** Built-in tool outputs (`read_file`, `run_command`, `grep`, etc.). */
+  tools: number;
+}
+
 export interface Usage {
   /** Tokens the conversation holds now: what the last request sent and got back. */
   context: number;
   /** Totals over every request of the session, summaries included. */
   spent: Tokens;
+  /** Breakdown of the current context window by category. */
+  breakdown: UsageBreakdown;
+}
+
+/** Fast CJK + ASCII token estimator for categorizing context usage. */
+export function estimateTokens(text: string | undefined | null): number {
+  if (!text) return 0;
+  let cjk = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3000 && code <= 0x303f) || (code >= 0xff00 && code <= 0xffef)) {
+      cjk++;
+    }
+  }
+  const other = text.length - cjk;
+  return Math.ceil(cjk * 0.7 + other / 4);
 }
 
 export function usage(events: Envelope[]): Usage {
   const spent: Tokens = { input: 0, cached: 0, output: 0 };
   let context = 0;
+  const raw: UsageBreakdown = { prompt: 0, input: 0, output: 0, skill: 0, mcp: 0, tools: 0 };
+  let instructionsTokens = 0;
+  let skillsCatalogTokens = 0;
   const add = (tokens: Tokens | undefined) => {
     if (!tokens) return;
     spent.input += tokens.input;
@@ -268,22 +303,75 @@ export function usage(events: Envelope[]): Usage {
     spent.output += tokens.output;
   };
   for (const event of events) {
-    if (event.type === "assistant/message") {
+    if (event.type === "instructions/loaded") {
+      instructionsTokens = estimateTokens(event.data.content);
+    } else if (event.type === "skills/listed") {
+      skillsCatalogTokens = event.data.skills.reduce((sum, s) => sum + estimateTokens(s.name) + estimateTokens(s.description) + 6, 0);
+    } else if (event.type === "user/message") {
+      raw.input += estimateTokens(event.data.text);
+      raw.input += (event.data.images?.length ?? 0) * 1000;
+      for (const file of event.data.files ?? []) {
+        raw.input += file.content ? estimateTokens(file.content) : 30;
+      }
+    } else if (event.type === "assistant/message") {
       add(event.data.tokens);
       if (event.data.tokens) context = event.data.tokens.input + event.data.tokens.output;
+      for (const block of event.data.content ?? []) {
+        if (block.type === "text") raw.output += estimateTokens(block.text);
+        else if (block.type === "thinking") raw.output += estimateTokens(block.thinking);
+        else if (block.type === "tool_use") {
+          const argTokens = estimateTokens(JSON.stringify(block.input ?? {})) + 12;
+          if (block.name === "load_skill") raw.skill += argTokens;
+          else if (mcpTool(block.name) || block.name === "list_mcp_resources" || block.name === "read_mcp_resource") raw.mcp += argTokens;
+          else raw.output += argTokens;
+        }
+      }
     } else if (event.type === "guardian/reviewed") {
       // The 护法's requests are spent too; they are no part of the conversation.
       add(event.data.tokens);
     } else if (event.type === "tool/result") {
       // So is a search a provider ran in a request of its own.
       add(event.data.meta?.tokens);
+      const bodyTokens = estimateTokens(event.data.content) + (event.data.images?.length ?? 0) * 1000;
+      if (event.data.tool === "load_skill") raw.skill += bodyTokens;
+      else if (mcpTool(event.data.tool) || event.data.tool === "list_mcp_resources" || event.data.tool === "read_mcp_resource") raw.mcp += bodyTokens;
+      else raw.tools += bodyTokens;
     } else if (event.type === "context/compacted") {
       add(event.data.tokens);
       // Only the summary is left, which is what its request wrote.
       context = event.data.tokens?.output ?? 0;
+      raw.input = 0;
+      raw.output = event.data.tokens?.output ?? estimateTokens(event.data.summary);
+      raw.skill = 0;
+      raw.mcp = 0;
+      raw.tools = 0;
     }
   }
-  return { context, spent };
+  raw.prompt = instructionsTokens;
+  raw.skill += skillsCatalogTokens;
+
+  // Reconcile estimates with the provider's actual `context` token count:
+  // Any unattributed remainder belongs to the system prompt & tool schemas;
+  // if estimates exceed actual `context`, scale proportionally so the bars sum to `context`.
+  const nonPrompt = raw.input + raw.output + raw.skill + raw.mcp + raw.tools;
+  const totalEst = raw.prompt + nonPrompt;
+  let breakdown: UsageBreakdown = raw;
+  if (context > 0) {
+    if (totalEst <= context) {
+      breakdown = { ...raw, prompt: raw.prompt + (context - totalEst) };
+    } else if (totalEst > 0) {
+      const scale = context / totalEst;
+      breakdown = {
+        prompt: Math.round(raw.prompt * scale),
+        input: Math.round(raw.input * scale),
+        output: Math.round(raw.output * scale),
+        skill: Math.round(raw.skill * scale),
+        mcp: Math.round(raw.mcp * scale),
+        tools: Math.round(raw.tools * scale),
+      };
+    }
+  }
+  return { context, spent, breakdown };
 }
 
 /** A content block of the message being generated. */
