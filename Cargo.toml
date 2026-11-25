@@ -7,5 +7,7 @@ members = ["crates/odg-core", "crates/odg-cli", "src-tauri"]
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# Keep `unwind` so `std::panic::catch_unwind` in `documents.rs` / `pdf.rs`
+# catches panics from third-party PDF/Office parsers instead of aborting the app.
+panic = "unwind"
 strip = true

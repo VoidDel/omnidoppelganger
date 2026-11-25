@@ -178,13 +178,31 @@ pub fn kind_of_bytes(bytes: &[u8], name: &str) -> Option<Result<Kind, DocError>>
 /// The words of a document of this kind.
 pub fn text(bytes: &[u8], kind: Kind) -> Result<Extracted, DocError> {
     // The readers are new to some files they are given, and may panic on one: that is a file they cannot read, not a crash.
-    let read = std::panic::catch_unwind(|| match kind {
-        Kind::Pdf => crate::pdf::read(bytes).map(|(pages, text)| (Some(pages), text)),
-        Kind::Word => crate::office::word(bytes).map(|text| (None, text)),
-        Kind::Excel => crate::office::sheets(bytes).map(|(sheets, text)| (Some(sheets), text)),
-        Kind::PowerPoint => crate::office::slides(bytes).map(|(slides, text)| (Some(slides), text)),
-    });
-    let (parts, mut text) = read.unwrap_or(Err(DocError::Unreadable))?;
+    // On Windows the default thread stack is only 1 MB, which deeply nested PDFs can overflow in `lopdf` / `pdf-extract`,
+    // so PDF extraction runs on an 8 MB scoped worker thread.
+    let read: Result<(Option<usize>, String), DocError> = if kind == Kind::Pdf {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("odg-pdf".to_string())
+                .stack_size(8 * 1024 * 1024)
+                .spawn_scoped(scope, || {
+                    std::panic::catch_unwind(|| crate::pdf::read(bytes).map(|(pages, text)| (Some(pages), text)))
+                        .unwrap_or(Err(DocError::Unreadable))
+                })
+                .ok()
+                .and_then(|handle| handle.join().ok())
+                .unwrap_or(Err(DocError::Unreadable))
+        })
+    } else {
+        std::panic::catch_unwind(|| match kind {
+            Kind::Pdf => unreachable!(),
+            Kind::Word => crate::office::word(bytes).map(|text| (None, text)),
+            Kind::Excel => crate::office::sheets(bytes).map(|(sheets, text)| (Some(sheets), text)),
+            Kind::PowerPoint => crate::office::slides(bytes).map(|(slides, text)| (Some(slides), text)),
+        })
+        .unwrap_or(Err(DocError::Unreadable))
+    };
+    let (parts, mut text) = read?;
     if text.trim().is_empty() {
         return Err(DocError::NoText);
     }
