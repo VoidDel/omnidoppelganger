@@ -473,24 +473,27 @@ export function SidePanel({
     return (
       <aside className="panel strip" aria-label="旁聊、改动与终端">
         <div className="strip-tabs" data-tauri-drag-region>
-          {visibleTabs.map((each) => (
-            <button
-              type="button"
-              key={each.id}
-              className="tab strip-tab"
-              title={each.id === "chat" || each.id === "terminal" ? each.title : `${each.title}。点开查看`}
-              onClick={() => {
-                setTab(each.id);
-                onWiden();
-              }}
-            >
-              {each.icon}
-              <span className="strip-word">{each.name}</span>
-            </button>
-          ))}
+          {visibleTabs.map((each) => {
+            const count = each.id === "chat" ? 0 : counts[each.id];
+            const tip = each.id === "chat" || each.id === "terminal" ? each.title : `${each.name}${count > 0 ? ` (${count})` : ""} · ${each.title}`;
+            return (
+              <button
+                type="button"
+                key={each.id}
+                className="tab strip-tab"
+                title={tip}
+                aria-label={each.name}
+                onClick={() => {
+                  setTab(each.id);
+                  onWiden();
+                }}
+              >
+                {each.icon}
+                <span className="sr-only">{each.name}</span>
+              </button>
+            );
+          })}
         </div>
-        {/* Written down the strip, as on a scroll: side chat & terminal stand ready anytime. */}
-        <p className="strip-note">旁聊终端随时可用</p>
       </aside>
     );
   }
@@ -519,7 +522,7 @@ export function SidePanel({
         }}
       />
       <div className="tabs" data-tauri-drag-region>
-        {/* Each tab shows its icon and two-character name; when the panel is dragged narrow, inactive labels fold into sr-only. */}
+        {/* Icon-only tabs (labels stay in sr-only + tooltip so the header stays compact at any width). */}
         {visibleTabs.map((each) => {
           const badge =
             each.id === "plan" && todos.length > 0
@@ -530,7 +533,7 @@ export function SidePanel({
           return (
             <button type="button" key={each.id} className="tab" aria-pressed={tab === each.id} title={each.title} onClick={() => setTab(each.id)}>
               {each.icon}
-              <span className="tab-word">{each.name}</span>
+              <span className="sr-only">{each.name}</span>
               {badge && (
                 <>
                   <span className="sr-only"> </span>

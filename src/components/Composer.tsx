@@ -148,6 +148,8 @@ export interface ComposerProps {
   placeholder?: string;
   /** Whether files dragged onto the window attach to this box (defaults to true). */
   acceptDrops?: boolean;
+  /** Side-chat (旁聊) composer: hides slash-command button, mode picker, and context stones. */
+  aside?: boolean;
 }
 
 /** The order the "/" menu lists the commands in; any not named here (a skill's) come after, as given. */
@@ -199,7 +201,7 @@ export function Composer(props: ComposerProps) {
   const { entries: modelUsage, nowMs, clearCooldown } = useModelUsage(`${status}:${usage.spent.input}:${usage.spent.output}:${providerId}:${model}`);
   const activeModelStat = findModelUsage(modelUsage, providerId, model);
   const activeCooldownMs = cooldownRemainingMs(activeModelStat, nowMs);
-  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given, placeholder, acceptDrops = true } = props;
+  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given, placeholder, acceptDrops = true, aside = false } = props;
   const provider = providers.find((known) => known.id === providerId);
   const cli = cliOf(provider);
   const providerName = provider?.name ?? providerId;
@@ -720,7 +722,7 @@ export function Composer(props: ComposerProps) {
                 submit();
               }
               // Shift+Tab cycles the 禁制 instead of moving focus back.
-              if (event.key === "Tab" && event.shiftKey) {
+              if (!aside && event.key === "Tab" && event.shiftKey) {
                 event.preventDefault();
                 onMode(nextMode(mode));
               }
@@ -741,34 +743,36 @@ export function Composer(props: ComposerProps) {
               <span className="sr-only">附件</span>
             </button>
             {/* The "/" commands, for a hand on the pointer: the same menu typing "/" brings up, with every command in it. */}
-            <div className="mode-picker">
-              <button
-                type="button"
-                className="select-button"
-                aria-haspopup="listbox"
-                aria-expanded={menu.length > 0}
-                aria-controls={menu.length > 0 ? "slash-menu" : undefined}
-                title="命令：也可以在输入框行首打 / 唤出"
-                // The box keeps the keyboard, so the arrows, Enter and Escape work in the menu as when it is typed up.
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  input.current?.focus();
-                  if (menu.length > 0) {
-                    setBrowsing(false);
-                    setDismissed(text);
-                  } else {
-                    setDismissed(null);
-                    setChosen(0);
-                    setBrowsing(true);
-                  }
-                }}
-              >
-                <span className="slash-glyph" aria-hidden="true">
-                  /
-                </span>
-                <span className="label sr-only">命令</span>
-              </button>
-            </div>
+            {!aside && (
+              <div className="mode-picker">
+                <button
+                  type="button"
+                  className="select-button"
+                  aria-haspopup="listbox"
+                  aria-expanded={menu.length > 0}
+                  aria-controls={menu.length > 0 ? "slash-menu" : undefined}
+                  title="命令：也可以在输入框行首打 / 唤出"
+                  // The box keeps the keyboard, so the arrows, Enter and Escape work in the menu as when it is typed up.
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    input.current?.focus();
+                    if (menu.length > 0) {
+                      setBrowsing(false);
+                      setDismissed(text);
+                    } else {
+                      setDismissed(null);
+                      setChosen(0);
+                      setBrowsing(true);
+                    }
+                  }}
+                >
+                  <span className="slash-glyph" aria-hidden="true">
+                    /
+                  </span>
+                  <span className="label sr-only">命令</span>
+                </button>
+              </div>
+            )}
             <Popup
               name="心法"
               summon={modelSummon}
@@ -853,9 +857,10 @@ export function Composer(props: ComposerProps) {
                 </>
               )}
             </Popup>
-            <ModePicker mode={mode} onMode={onMode} trustable={trustable} />
-            <Popup
-              name="灵石"
+            {!aside && <ModePicker mode={mode} onMode={onMode} trustable={trustable} />}
+            {!aside && (
+              <Popup
+                name="灵石"
               title={`灵石：前情占了 ${shortCount(usage.context)}，到 ${shortCount(contextLimit)} 就凝成摘要。点开看累计用量、改上限`}
               label={
                 <>
@@ -963,7 +968,8 @@ export function Composer(props: ComposerProps) {
                   <p className="menu-note">每次请求都要把整段前情发给心法，上限越高，长对话越费灵石。对所有分身生效；别的数可以到设置里填。</p>
                 </>
               )}
-            </Popup>
+              </Popup>
+            )}
             <span className="spacer" />
             {/* A 令牌, the tablet an order is sent with: 令 on jade for an order, 音 on gold for a word to a 分身 at work.
                 While the 分身 works the token is away with the order, and shows only when there is a word to send after it. */}

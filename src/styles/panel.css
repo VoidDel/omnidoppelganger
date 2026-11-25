@@ -742,11 +742,14 @@
 }
 
 .strip-tabs .tab {
-  min-width: 44px;
-  min-height: 42px;
-  padding: 4px 2px;
-  flex-direction: column;
-  gap: 2px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: var(--r-control);
+  justify-content: center;
+  align-items: center;
 }
 
 .strip-word {

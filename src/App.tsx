@@ -706,15 +706,15 @@ export default function App() {
   }, [showWorkbench, wbTabs, activeTabId]);
 
   const canAside = !!active && !active.parent && !replay;
-  const panelHidden = compactLayout ? !drawerOpen : panel.hidden;
-  const showPanel = inChat && !!active && !panelHidden;
-  // With nothing in it, the panel stands as a strip, until a tab there is pressed; in drawer mode it always opens full-width.
+  // On desktop, collapsing the side panel keeps it as a slim icon-only rail rather than hiding it completely.
   const [peek, setPeek] = useState(false);
   useEffect(() => {
     setPeek(false);
     setDrawerOpen(false);
   }, [state.activeId]);
-  const strip = !compactLayout && files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek;
+  const strip = !compactLayout && (panel.hidden || (files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek));
+  const panelHidden = compactLayout ? !drawerOpen : strip;
+  const showPanel = inChat && !!active && (!compactLayout || drawerOpen);
 
   /** Words or files for the side conversation's box: what is quoted from the code while the code is in the middle. */
   const [asideSeed, setAsideSeed] = useState<{ id: number; text?: string; append?: boolean; attachPaths?: string[] } | null>(null);
@@ -1256,8 +1256,11 @@ export default function App() {
                     if (!open) setPeek(true);
                     return !open;
                   });
+                } else if (strip) {
+                  setPeek(true);
+                  setPanel({ ...panel, hidden: false });
                 } else {
-                  setPanel({ ...panel, hidden: !panel.hidden });
+                  setPanel({ ...panel, hidden: true });
                 }
               }}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
@@ -1434,7 +1437,10 @@ export default function App() {
             sidebarWidth={sidebar.hidden ? 0 : sidebar.width}
             onResize={(width) => setPanel({ ...panel, width })}
             narrow={strip}
-            onWiden={() => setPeek(true)}
+            onWiden={() => {
+              setPeek(true);
+              setPanel((cur) => (cur.hidden ? { ...cur, hidden: false } : cur));
+            }}
             working={state.status === "running"}
             frozen={!!replay}
             renderAside={
@@ -1498,6 +1504,7 @@ export default function App() {
                           trustable={false}
                           seed={asideSeed}
                           commands={[]}
+                          aside
                           acceptDrops={visible && showWorkbench}
                           placeholder={
                             state.status !== "idle"

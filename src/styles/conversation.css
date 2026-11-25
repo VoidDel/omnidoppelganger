@@ -195,6 +195,11 @@
   max-height: 18vh;
 }
 
+.turn-queued .turn-said {
+  position: static;
+  padding-top: 8px;
+}
+
 .said-foot {
   display: flex;
   flex-wrap: wrap;

@@ -88,6 +88,23 @@
   transform: rotate(-8deg) scale(1.08);
 }
 
+.brand-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-version {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ink-2);
+  letter-spacing: 0;
+}
+
 .sidebar-scroll {
   flex: 1;
   min-height: 0;

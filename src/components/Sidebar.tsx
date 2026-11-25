@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import pkg from "../../package.json";
 import type { SessionItem } from "../lib/types";
 import { ago } from "../lib/when";
 import { Logo } from "./Backdrop";
@@ -222,9 +223,10 @@ export function Sidebar({
         />
       )}
       {/* The name over the door is the way back to the home screen. */}
-      <button type="button" className="brand" title="回到首页" aria-current={page === "chat" && !activeId ? "page" : undefined} onClick={onHome}>
+      <button type="button" className="brand" title={`回到首页 · OmniDoppelganger v${pkg.version}`} aria-current={page === "chat" && !activeId ? "page" : undefined} onClick={onHome}>
         <Logo />
-        <span>OmniDoppelganger</span>
+        <span className="brand-name">OmniDoppelganger</span>
+        <span className="brand-version">v{pkg.version}</span>
       </button>
       {showSwitcher && (
         <div className="sidebar-modes" role="tablist" aria-label="左栏视图">

@@ -539,8 +539,6 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                       {fileNote.text}
                     </p>
                   )}
-                  {/* Words sent after the order while the 分身 works wait here, under what it is working on, until it hears them. */}
-                  {last && queued.map((text, at) => <Queued key={at} text={text} onDeliverNow={frozen ? undefined : onDeliverNow} />)}
                 </div>
                 <div className={`turn-did ${last && status === "running" ? "live" : ""}`}>
                   {parts(row.items).map((part) =>
@@ -563,9 +561,9 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
               </section>
             );
           })}
-          {/* With no turn on the page yet to wait under, they stand by themselves. */}
-          {rows.length === 0 && queued.length > 0 && (
-            <section className="turn">
+          {/* Steering words sent while the 分身 works land at the bottom, right below the active step and above the composer. */}
+          {queued.length > 0 && (
+            <section className="turn turn-queued">
               <div className="turn-said">
                 {queued.map((text, at) => (
                   <Queued key={at} text={text} onDeliverNow={frozen ? undefined : onDeliverNow} />
