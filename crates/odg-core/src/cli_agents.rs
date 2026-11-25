@@ -2431,14 +2431,22 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
     }
 }
 
-/// Safe command-line prompt byte budget before spilling to `stdin` (Codex / Claude Code)
-/// or a temporary UTF-8 file (Antigravity / Cursor / Grok).
+/// Safe command-line prompt byte budget before spilling to `stdin` (Codex / Claude Code / Cursor)
+/// or a temporary UTF-8 file (Antigravity / Grok / OpenCode).
 /// Windows `.cmd` wrappers cap command lines at ~8,191 chars (`CreateProcessW` at 32,767 chars,
-/// returning `os error 206`); Linux caps each argv entry (`MAX_ARG_STRLEN`) at 128 KB.
+/// returning `os error 206`) and Rust's `std::process::Command` rejects any `.cmd`/`.bat` argument
+/// containing `\r` or `\n` (`batch file arguments are invalid`, CVE-2024-24576); Linux caps each
+/// argv entry (`MAX_ARG_STRLEN`) at 128 KB.
 #[cfg(windows)]
 const MAX_CLI_PROMPT_BYTES: usize = 6_000;
 #[cfg(not(windows))]
 const MAX_CLI_PROMPT_BYTES: usize = 64_000;
+
+fn is_windows_batch_script(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+}
 
 struct TempPromptGuard(Option<PathBuf>);
 
@@ -2457,19 +2465,27 @@ struct PreparedPrompt {
     _guard: TempPromptGuard,
 }
 
-fn prepare_prompt_delivery(kind: CliKind, prompt: &str, turn: u64, limit: usize) -> Result<PreparedPrompt, String> {
-    if prompt.len() <= limit {
+fn prepare_prompt_delivery(
+    kind: CliKind,
+    prompt: &str,
+    turn: u64,
+    limit: usize,
+    batch_script: bool,
+) -> Result<PreparedPrompt, String> {
+    let supports_stdin = matches!(kind, CliKind::Codex | CliKind::ClaudeCode | CliKind::Cursor);
+    if supports_stdin && (batch_script || prompt.len() > limit) {
         return Ok(PreparedPrompt {
-            cli_prompt: prompt.to_string(),
-            stdin_bytes: None,
+            cli_prompt: String::new(),
+            stdin_bytes: Some(prompt.as_bytes().to_vec()),
             extra_dir: None,
             _guard: TempPromptGuard(None),
         });
     }
-    if matches!(kind, CliKind::Codex | CliKind::ClaudeCode) {
+    let needs_temp_file = prompt.len() > limit || (batch_script && prompt.contains(['\r', '\n']));
+    if !needs_temp_file {
         return Ok(PreparedPrompt {
-            cli_prompt: String::new(),
-            stdin_bytes: Some(prompt.as_bytes().to_vec()),
+            cli_prompt: prompt.to_string(),
+            stdin_bytes: None,
             extra_dir: None,
             _guard: TempPromptGuard(None),
         });
@@ -2481,8 +2497,9 @@ fn prepare_prompt_delivery(kind: CliKind, prompt: &str, turn: u64, limit: usize)
         .map_or(0, |d| d.as_nanos());
     let path = dir.join(format!("prompt-{}-{turn}-{stamp}.txt", std::process::id()));
     std::fs::write(&path, prompt.as_bytes()).map_err(|error| format!("无法写入临时提示词文件：{error}"))?;
+    // Keep this single-line (no `\r`/`\n`) so Windows `.cmd`/`.bat` wrappers never reject it.
     let cli_prompt = format!(
-        "本轮用户的完整输入内容较长，已保存到文件：{}\n请先完整读取该文件的内容，再直接按其中的要求回答或处理。",
+        "本轮用户的完整输入内容已保存到文件：{}。请先完整读取该文件的内容，再直接按其中的要求回答或处理。",
         path.display()
     );
     Ok(PreparedPrompt {
@@ -2496,7 +2513,7 @@ fn prepare_prompt_delivery(kind: CliKind, prompt: &str, turn: u64, limit: usize)
 /// Adjust `build_args` output when the prompt is delivered via `stdin` or accompanied by an extra readable directory.
 fn apply_prompt_delivery_args(kind: CliKind, args: &mut Vec<String>, prepared: &PreparedPrompt) {
     if prepared.stdin_bytes.is_some() {
-        // Both `Codex` and `ClaudeCode` append `["--", prompt]` at the tail of `build_args`.
+        // `Codex`, `ClaudeCode`, and `Cursor` append `["--", prompt]` at the tail of `build_args`.
         if args.len() >= 2 && args[args.len() - 2] == "--" {
             args.truncate(args.len() - 2);
         }
@@ -2753,7 +2770,13 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
     {
         let _ = list_cursor_models(&bin).await;
     }
-    let prepared = prepare_prompt_delivery(params.kind, &params.prompt, params.turn, MAX_CLI_PROMPT_BYTES)?;
+    let prepared = prepare_prompt_delivery(
+        params.kind,
+        &params.prompt,
+        params.turn,
+        MAX_CLI_PROMPT_BYTES,
+        is_windows_batch_script(&bin),
+    )?;
     let mut args = build_args(
         params.kind,
         &prepared.cli_prompt,
@@ -3470,7 +3493,7 @@ mod tests {
         let huge = "x".repeat(256);
 
         // Codex switches to `exec ... -` + stdin.
-        let codex_prep = prepare_prompt_delivery(CliKind::Codex, &huge, 2, 64).unwrap();
+        let codex_prep = prepare_prompt_delivery(CliKind::Codex, &huge, 2, 64, false).unwrap();
         assert_eq!(codex_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
         let mut codex_args = build_args(CliKind::Codex, &codex_prep.cli_prompt, None, None, "gpt-5.4", "high", Mode::Auto, false, false);
         apply_prompt_delivery_args(CliKind::Codex, &mut codex_args, &codex_prep);
@@ -3478,15 +3501,30 @@ mod tests {
         assert!(!codex_args.iter().any(|a| a == "--"));
 
         // Claude Code omits positional prompt and pipes via stdin.
-        let claude_prep = prepare_prompt_delivery(CliKind::ClaudeCode, &huge, 2, 64).unwrap();
+        let claude_prep = prepare_prompt_delivery(CliKind::ClaudeCode, &huge, 2, 64, false).unwrap();
         assert_eq!(claude_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
         let mut claude_args = build_args(CliKind::ClaudeCode, &claude_prep.cli_prompt, None, None, "opus", "high", Mode::Auto, false, false);
         apply_prompt_delivery_args(CliKind::ClaudeCode, &mut claude_args, &claude_prep);
         assert!(!claude_args.iter().any(|a| a == "--"));
 
-        // Antigravity spills to a temporary UTF-8 file, adds `--add-dir`, and cleans up on drop.
-        let agy_prep = prepare_prompt_delivery(CliKind::Antigravity, &huge, 2, 64).unwrap();
+        // Cursor omits positional prompt and pipes via stdin (both for huge prompts and Windows .cmd/.bat shims).
+        let cursor_prep = prepare_prompt_delivery(CliKind::Cursor, &huge, 2, 64, false).unwrap();
+        assert_eq!(cursor_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
+        let mut cursor_args = build_args(CliKind::Cursor, &cursor_prep.cli_prompt, None, None, "auto", "high", Mode::Auto, false, false);
+        apply_prompt_delivery_args(CliKind::Cursor, &mut cursor_args, &cursor_prep);
+        assert!(!cursor_args.iter().any(|a| a == "--"));
+
+        let cursor_batch = prepare_prompt_delivery(CliKind::Cursor, "第一行\n你好", 1, 6_000, true).unwrap();
+        assert_eq!(cursor_batch.stdin_bytes.as_deref(), Some("第一行\n你好".as_bytes()));
+        let mut cursor_batch_args = build_args(CliKind::Cursor, &cursor_batch.cli_prompt, None, None, "auto", "high", Mode::Auto, false, false);
+        apply_prompt_delivery_args(CliKind::Cursor, &mut cursor_batch_args, &cursor_batch);
+        assert!(!cursor_batch_args.iter().any(|a| a == "--" || a.contains('\n') || a.contains('\r')));
+
+        // Antigravity spills to a temporary UTF-8 file (single-line CLI prompt for Windows .cmd safety),
+        // adds `--add-dir`, and cleans up on drop.
+        let agy_prep = prepare_prompt_delivery(CliKind::Antigravity, &huge, 2, 64, false).unwrap();
         assert!(agy_prep.stdin_bytes.is_none());
+        assert!(!agy_prep.cli_prompt.contains('\n') && !agy_prep.cli_prompt.contains('\r'));
         let spilled_path = agy_prep._guard.0.clone().expect("temp prompt file");
         assert_eq!(std::fs::read_to_string(&spilled_path).unwrap(), huge);
         let mut agy_args = build_args(CliKind::Antigravity, &agy_prep.cli_prompt, None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
@@ -3494,6 +3532,20 @@ mod tests {
         assert!(agy_args.windows(2).any(|w| w[0] == "--add-dir" && w[1].contains("odg-prompts")));
         drop(agy_prep);
         assert!(!spilled_path.exists());
+
+        // Non-stdin CLIs on Windows .cmd/.bat with newlines also spill to a single-line temp file prompt.
+        let grok_batch = prepare_prompt_delivery(CliKind::Grok, "line1\nline2", 1, 6_000, true).unwrap();
+        assert!(grok_batch.stdin_bytes.is_none());
+        assert!(!grok_batch.cli_prompt.contains('\n') && !grok_batch.cli_prompt.contains('\r'));
+        let grok_path = grok_batch._guard.0.clone().expect("temp prompt file");
+        assert_eq!(std::fs::read_to_string(&grok_path).unwrap(), "line1\nline2");
+        drop(grok_batch);
+        assert!(!grok_path.exists());
+
+        assert!(is_windows_batch_script(Path::new("C:\\Users\\a\\cursor-agent.cmd")));
+        assert!(is_windows_batch_script(Path::new("C:\\Users\\a\\AGENT.BAT")));
+        assert!(!is_windows_batch_script(Path::new("C:\\Users\\a\\cursor-agent.exe")));
+        assert!(!is_windows_batch_script(Path::new("/usr/local/bin/cursor-agent")));
     }
 
     #[test]
