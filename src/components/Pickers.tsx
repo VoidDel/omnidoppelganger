@@ -4,14 +4,14 @@ import { cooldownRemainingMs, findModelUsage, formatCooldown, todayTokens } from
 import { BYPASS, MODES, modeOf } from "../lib/modes";
 import type { Mode, ModelUsageEntry, Provider } from "../lib/types";
 import { Info } from "./Hint";
+import { Icon } from "./Icon";
 
-const MODE_ICONS: Record<Mode, string> = {
-  manual: "M5.5 8.5V4a1 1 0 0 1 2 0v3.5M7.5 7V2.8a1 1 0 0 1 2 0V7M9.5 7V3.8a1 1 0 0 1 2 0V8.5M11.5 7.5a1 1 0 0 1 2 0V10a4.5 4.5 0 0 1-4.5 4.5h-.6a4 4 0 0 1-3.2-1.6L3.3 10.3a1 1 0 0 1 1.5-1.3l.7.8",
-  edit: "M6 4 2 8l4 4M10 4l4 4-4 4",
-  plan: "M4 2.5h8v11H4zM6 5.5h4M6 8h4M6 10.5h2.5",
-  auto: "M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z",
-  // An open lock: nothing is kept shut.
-  bypass: "M4 7.5h8v6H4zM6 7.5V5a2 2 0 0 1 3.9-.6M8 10v1.2",
+const MODE_BI: Record<Mode, string> = {
+  manual: "shield-check",
+  edit: "pencil-square",
+  plan: "journal-check",
+  auto: "lightning-charge",
+  bypass: "fire",
 };
 
 /** Said before 全权托付 is switched on, and only switched on when 本尊 stamps it. */
@@ -52,11 +52,7 @@ function BypassDialog({ onConfirm, onClose }: { onConfirm: () => void; onClose: 
 }
 
 function ModeIcon({ mode }: { mode: Mode }) {
-  return (
-    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-      <path d={MODE_ICONS[mode]} />
-    </svg>
-  );
+  return <Icon name={MODE_BI[mode]} size={15} />;
 }
 
 export interface PopupProps {
@@ -127,11 +123,7 @@ export function Popup({ label, title, disabled, name, children, summon = 0 }: Po
   );
 }
 
-export const CHECK = (
-  <svg className="check" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m3 8.5 3.2 3L13 4.5" />
-  </svg>
-);
+export const CHECK = <Icon name="check-lg" size={14} className="check" />;
 
 export interface ModelListProps {
   /** Every provider this build knows. */
@@ -325,10 +317,7 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
             aria-label={asked.state === "asking" ? "正在拉取模型列表…" : "刷新模型列表"}
             onClick={triggerRefresh}
           >
-            <svg aria-hidden="true" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M13.5 8a5.5 5.5 0 1 1-1.45-3.72" />
-              <path d="M13.5 2.75v2.75h-2.75" />
-            </svg>
+            <Icon name="arrow-clockwise" size={13} />
           </button>
         </span>
       </div>
@@ -443,9 +432,7 @@ export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (m
                 <span className="name">{option.name}</span>
                 <span className="hint">{option.hint}</span>
               </span>
-              <svg className="check" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                {option.value === mode && <path d="m3 8.5 3.2 3L13 4.5" />}
-              </svg>
+              {option.value === mode ? CHECK : <span className="check" aria-hidden="true" />}
             </button>
           ))}
           {/* Apart from the four, in cinnabar, and only where a worktree keeps its work off the folder's own files. */}
@@ -466,9 +453,7 @@ export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (m
               <span className="name">{BYPASS.name}</span>
               <span className="hint">{trustable ? BYPASS.hint : "只有独立工作树的分身才能托付"}</span>
             </span>
-            <svg className="check" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              {mode === "bypass" && <path d="m3 8.5 3.2 3L13 4.5" />}
-            </svg>
+            {mode === "bypass" ? CHECK : <span className="check" aria-hidden="true" />}
           </button>
         </div>
       )}

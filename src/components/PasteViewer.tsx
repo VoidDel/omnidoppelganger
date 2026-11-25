@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fileSize } from "../lib/fold";
 import type { PasteKind } from "../lib/paste";
 import { ModelText } from "./Markdown";
+import { Icon } from "./Icon";
 
 export interface PastedPreviewItem {
   name: string;
@@ -110,9 +111,7 @@ export function PasteViewer({ item, onClose, onExpandToInput }: PasteViewerProps
               </button>
             )}
             <button type="button" className="icon-button" aria-label="关上" title="关上（Esc）" onClick={() => dialog.current?.close()}>
-              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                <path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
-              </svg>
+              <Icon name="x-lg" size={14} />
             </button>
           </div>
         </div>

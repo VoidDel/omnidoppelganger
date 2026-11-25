@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type ChangedFile, type Product, type ProductVersion, type ToolItem, fileSize } from "../lib/fold";
 import type { RestoredArtifact, Todo } from "../lib/types";
 import { Light } from "./Light";
+import { Icon } from "./Icon";
 import { Diff } from "./Markdown";
 
 /** The seal on a step of the plan: nothing yet for one to come, 办 for the one in hand, 毕 for one done. */
@@ -10,65 +11,62 @@ const TODO_SEALS: Record<Todo["status"], string> = { pending: "", in_progress: "
 /** The panel's width while there is nothing in it: a strip that holds its tabs. */
 export const PANEL_STRIP = 56;
 
-export type PanelTab = "chat" | "files" | "terminal" | "plan" | "products";
+export type PanelTab = "products" | "jobs" | "terminal" | "files" | "plan" | "chat";
 
-const CHAT_TAB: { id: PanelTab; name: string; title: string; icon: ReactNode } = {
-  id: "chat",
-  name: "旁聊",
-  title: "旁聊：不打断主分身，在侧栏另开只读对话问进展、查代码",
-  icon: (
-    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M2.3 3.2h11.4v7.6H7.4l-3.1 2.4v-2.4H2.3z" />
-    </svg>
-  ),
-};
+interface TabDef {
+  id: PanelTab;
+  name: string;
+  desc: string;
+  title: string;
+  icon: ReactNode;
+}
 
-const TABS: { id: PanelTab; name: string; title: string; icon: ReactNode }[] = [
-  {
+const TAB_DEFS: Record<PanelTab, TabDef> = {
+  products: {
+    id: "products",
+    name: "交付物",
+    desc: "分身做出来的文档、图片等文件",
+    title: "交付物：分身做出来的文档、图片等文件，交付的和这一轮留在洞府里的",
+    icon: <Icon name="box-seam" size={15} />,
+  },
+  jobs: {
+    id: "jobs",
+    name: "分身任务",
+    desc: "后台进程实时日志、停止与命令记录",
+    title: "分身任务与后台：实时查看与管理后台进程，回看分身跑过的命令",
+    icon: <Icon name="activity" size={15} />,
+  },
+  terminal: {
+    id: "terminal",
+    name: "用户终端",
+    desc: "本机交互式终端 (Ctrl/Cmd+J)",
+    title: "用户终端：打开本机交互式终端 (Ctrl/Cmd+J)",
+    icon: <Icon name="terminal" size={15} />,
+  },
+  files: {
     id: "files",
     name: "改动",
+    desc: "本会话累计修改过的文件",
     title: "改动：当前分身在本会话中累计修改过的文件（仓库未提交变更见左栏 Git）",
-    icon: (
-      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M4 1.8h5.2L12 4.6v9.6H4z" />
-        <path d="M9.2 1.8v2.8H12M6.2 8h3.6M8 6.2v3.6M6.2 11.8h3.6" />
-      </svg>
-    ),
+    icon: <Icon name="file-earmark-diff" size={15} />,
   },
-  {
-    id: "terminal",
-    name: "终端",
-    title: "终端：随时打开本机交互式终端，或回看分身跑过的命令 (Ctrl/Cmd+J)",
-    icon: (
-      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" />
-        <path d="M4.6 6.2 6.8 8l-2.2 1.8M8.4 10h3" />
-      </svg>
-    ),
-  },
-  {
+  plan: {
     id: "plan",
     name: "计划",
+    desc: "分身列的步骤与完成进度",
     title: "计划：分身列的步骤，做完一步勾一步",
-    icon: (
-      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M2.2 4.2l1.3 1.3 2.2-2.4M2.2 9.2l1.3 1.3 2.2-2.4M8.2 4.4h5.6M8.2 9.4h5.6M2.6 13.4h2.6M8.2 13.4h5.6" />
-      </svg>
-    ),
+    icon: <Icon name="list-check" size={15} />,
   },
-  {
-    id: "products",
-    name: "产物",
-    title: "产物：分身做出来的文档、图片等文件，交付的和这一轮留在洞府里的",
-    icon: (
-      // A parcel, tied: what is handed over.
-      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M2.5 4.9 8 2.2l5.5 2.7v6.2L8 13.8l-5.5-2.7z" />
-        <path d="M2.5 4.9 8 7.6l5.5-2.7M8 7.6v6.2M5.2 3.5l5.5 2.8" />
-      </svg>
-    ),
+  chat: {
+    id: "chat",
+    name: "旁聊",
+    desc: "不打断主分身的侧栏只读对话",
+    title: "旁聊：不打断主分身，在侧栏另开只读对话问进展、查代码",
+    icon: <Icon name="chat-left-text" size={15} />,
   },
-];
+};
+
+const ADDABLE_ORDER: PanelTab[] = ["jobs", "terminal", "files", "plan", "chat"];
 
 const VERSION_HOW: Record<ProductVersion["how"], string> = {
   painted: "作画",
@@ -183,15 +181,11 @@ function ProductRow({
         {onOpenFile && (
           <span className="file-acts">
             <button type="button" className="icon-button" title="用系统默认的程序打开（最新版）" onClick={() => openIt(false)}>
-              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
-              </svg>
+              <Icon name="box-arrow-up-right" size={14} />
               <span className="sr-only">打开 {name}</span>
             </button>
             <button type="button" className="icon-button" title="在文件夹中显示" onClick={() => openIt(true)}>
-              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
-              </svg>
+              <Icon name="folder2-open" size={14} />
               <span className="sr-only">在文件夹中显示 {name}</span>
             </button>
           </span>
@@ -307,24 +301,18 @@ function FileRow({
           <span className="file-acts">
             {!file.gone && onInspectFile && !/^(?:\/|[A-Za-z]:[\\/])/.test(file.path) && (
               <button type="button" className="icon-button" title="在中间工作台查看源码" onClick={() => onInspectFile(file.path.replace(/\\/g, "/"))}>
-                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5.5 5 2.5 8l3 3M10.5 5l3 3-3 3M9 3.5 7 12.5" />
-                </svg>
+                <Icon name="code-slash" size={14} />
                 <span className="sr-only">在工作台查看 {file.path.slice(cut)}</span>
               </button>
             )}
             {where && onOpenFile && (
               <>
                 <button type="button" className="icon-button" title="用系统默认的程序打开" onClick={() => openIt(false)}>
-                  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
-                  </svg>
+                  <Icon name="box-arrow-up-right" size={14} />
                   <span className="sr-only">打开 {file.path.slice(cut)}</span>
                 </button>
                 <button type="button" className="icon-button" title="在文件夹中显示" onClick={() => openIt(true)}>
-                  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
-                  </svg>
+                  <Icon name="folder2-open" size={14} />
                   <span className="sr-only">在文件夹中显示 {file.path.slice(cut)}</span>
                 </button>
               </>
@@ -376,7 +364,9 @@ export interface SidePanelProps {
   frozen?: boolean;
   /** Independent read-only side conversation (旁聊) bound to the main session; `visible` tells it when the tab is open. */
   renderAside?: (visible: boolean) => ReactNode;
-  /** Optional interactive PTY terminal pane to render inside the `terminal` tab. */
+  /** Dedicated pane for live background jobs and historical agent commands (`jobs` tab). */
+  jobsPane?: ReactNode;
+  /** Optional interactive PTY user terminal pane to render inside the `terminal` tab. */
   terminalPane?: ReactNode;
   /** Programmatic request to focus a specific tab (e.g. quoting lines into side chat or shortcut to terminal). */
   summonTab?: { id: number; tab: PanelTab } | null;
@@ -406,6 +396,7 @@ export function SidePanel({
   working,
   frozen,
   renderAside,
+  jobsPane,
   terminalPane,
   summonTab,
   onInspectFile,
@@ -415,33 +406,87 @@ export function SidePanel({
   onCloseDrawer,
 }: SidePanelProps) {
   const hasAside = !!renderAside;
-  const [tab, setTab] = useState<PanelTab>("files");
+  const [openTabs, setOpenTabs] = useState<PanelTab[]>(() => (todos.length > 0 ? ["products", "plan"] : ["products"]));
+  const [tab, setTab] = useState<PanelTab>("products");
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addBtnRef = useRef<HTMLButtonElement>(null);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+  const prevTodosLen = useRef(todos.length);
+
+  // When the model creates a plan (todos transitions from empty to non-empty), auto-add the "plan" tab.
   useEffect(() => {
-    if (!hasAside && tab === "chat") setTab("files");
+    const before = prevTodosLen.current;
+    prevTodosLen.current = todos.length;
+    if (before === 0 && todos.length > 0) {
+      setOpenTabs((prev) => (prev.includes("plan") ? prev : [...prev, "plan"]));
+      setTab((cur) => (cur === "products" && products.length === 0 ? "plan" : cur));
+    }
+  }, [todos.length, products.length]);
+
+  const openAndSelect = (id: PanelTab) => {
+    if (id === "chat" && !hasAside) return;
+    setOpenTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    setTab(id);
+    setAddMenuOpen(false);
+    if (narrow) onWiden();
+  };
+
+  const closeTab = (id: PanelTab) => {
+    if (id === "products") return;
+    setOpenTabs((prev) => {
+      const next = prev.filter((item) => item !== id);
+      if (tab === id) {
+        const idx = prev.indexOf(id);
+        setTab(next[Math.max(0, idx - 1)] ?? "products");
+      }
+      return next.length > 0 ? next : ["products"];
+    });
+  };
+
+  useEffect(() => {
+    if (!hasAside) {
+      setOpenTabs((prev) => prev.filter((item) => item !== "chat"));
+      if (tab === "chat") setTab("products");
+    }
   }, [hasAside, tab]);
+
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (addMenuRef.current?.contains(target) || addBtnRef.current?.contains(target)) return;
+      setAddMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAddMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [addMenuOpen]);
 
   const lastSummon = useRef<number | null>(null);
   useEffect(() => {
     if (!summonTab || lastSummon.current === summonTab.id) return;
     lastSummon.current = summonTab.id;
     if (summonTab.tab === "chat" && !hasAside) return;
+    setOpenTabs((prev) => (prev.includes(summonTab.tab) ? prev : [...prev, summonTab.tab]));
     setTab(summonTab.tab);
+    setAddMenuOpen(false);
     if (narrow) onWiden();
   }, [summonTab, hasAside, narrow, onWiden]);
 
-  const counts: Record<Exclude<PanelTab, "chat">, number> = { files: files.length, terminal: runs.length, plan: todos.length, products: products.length };
-  // When the first thing comes into a panel that held nothing (and 旁聊 is not open), it opens on that.
-  const had = useRef(counts);
-  useEffect(() => {
-    const before = had.current;
-    had.current = counts;
-    if (tab === "chat") return;
-    // Something made for 本尊 is what the work was for: the panel turns to it when the first of it comes.
-    if (before.products === 0 && counts.products > 0) return setTab("products");
-    if (before.files + before.terminal + before.plan + before.products > 0) return;
-    const first = TABS.find((each) => each.id !== "chat" && before[each.id] === 0 && counts[each.id] > 0);
-    if (first) setTab(first.id);
-  }, [tab, files.length, runs.length, todos.length, products.length]);
+  const counts: Record<PanelTab, number> = {
+    products: products.length,
+    jobs: runs.length,
+    terminal: 0,
+    files: files.length,
+    plan: todos.length,
+    chat: 0,
+  };
   // The steps done while the page was watched, for a moment: their ink is drawn through them as it happens.
   const [struck, setStruck] = useState<Set<string>>(new Set());
   const steps = useRef(new Map(todos.map((todo) => [todo.text, todo.status])));
@@ -467,14 +512,24 @@ export function SidePanel({
     setDragging(down);
   };
   const done = todos.filter((todo) => todo.status === "done").length;
-  const visibleTabs = hasAside ? [CHAT_TAB, ...TABS] : TABS;
+  const visibleTabs = openTabs.filter((id) => id !== "chat" || hasAside).map((id) => TAB_DEFS[id]);
+  const addableTabs = ADDABLE_ORDER.filter((id) => (id !== "chat" || hasAside) && !openTabs.includes(id)).map((id) => TAB_DEFS[id]);
+
+  const badgeFor = (id: PanelTab): string | null => {
+    if (id === "plan" && todos.length > 0) return `${done}/${todos.length}`;
+    if (id === "products" && products.length > 0) return `${products.length}`;
+    if (id === "files" && files.length > 0) return `${files.length}`;
+    if (id === "jobs" && runs.length > 0) return `${runs.length}`;
+    return null;
+  };
+
   // After every hook: the strip and the panel must call the same ones, in the same order.
   if (narrow) {
     return (
-      <aside className="panel strip" aria-label="旁聊、改动与终端">
+      <aside className="panel strip" aria-label="交付物与扩展面板">
         <div className="strip-tabs" data-tauri-drag-region>
           {visibleTabs.map((each) => {
-            const count = each.id === "chat" ? 0 : counts[each.id];
+            const count = counts[each.id];
             const tip = each.id === "chat" || each.id === "terminal" ? each.title : `${each.name}${count > 0 ? ` (${count})` : ""} · ${each.title}`;
             return (
               <button
@@ -493,12 +548,26 @@ export function SidePanel({
               </button>
             );
           })}
+          {addableTabs.length > 0 && (
+            <button
+              type="button"
+              className="tab strip-tab panel-add-strip"
+              title="添加更多面板（分身任务、用户终端、改动、计划等）"
+              aria-label="添加面板"
+              onClick={() => {
+                onWiden();
+                setAddMenuOpen(true);
+              }}
+            >
+              <Icon name="plus-lg" size={14} />
+            </button>
+          )}
         </div>
       </aside>
     );
   }
   return (
-    <aside className={`panel ${tab === "chat" && hasAside ? "with-chat" : ""}`} aria-label="旁聊、改动与终端">
+    <aside className={`panel ${tab === "chat" && hasAside ? "with-chat" : ""}`} aria-label="交付物与扩展面板">
       {/* The edge to drag: the panel is as wide as the pointer is far from the window's right side. */}
       <div
         className={`panel-edge ${dragging ? "dragging" : ""}`}
@@ -522,44 +591,100 @@ export function SidePanel({
         }}
       />
       <div className="tabs" data-tauri-drag-region>
-        {/* Icon-only tabs (labels stay in sr-only + tooltip so the header stays compact at any width). */}
         {visibleTabs.map((each) => {
-          const badge =
-            each.id === "plan" && todos.length > 0
-              ? `${done}/${todos.length}`
-              : each.id === "products" && products.length > 0
-                ? `${products.length}`
-                : null;
+          const badge = badgeFor(each.id);
+          const activeTab = tab === each.id;
+          const closable = each.id !== "products";
           return (
-            <button type="button" key={each.id} className="tab" aria-pressed={tab === each.id} title={each.title} onClick={() => setTab(each.id)}>
-              {each.icon}
-              <span className="sr-only">{each.name}</span>
-              {badge && (
-                <>
-                  <span className="sr-only"> </span>
-                  <span className="count">{badge}</span>
-                </>
+            <div key={each.id} className={`tab-item ${activeTab ? "active" : ""}`}>
+              <button type="button" className="tab" aria-pressed={activeTab} title={each.title} onClick={() => setTab(each.id)}>
+                {each.icon}
+                <span className="tab-word">{each.name}</span>
+                {badge && (
+                  <>
+                    <span className="sr-only"> </span>
+                    <span className="count">{badge}</span>
+                  </>
+                )}
+              </button>
+              {closable && (
+                <button
+                  type="button"
+                  className="tab-close"
+                  title={`关闭「${each.name}」标签`}
+                  aria-label={`关闭 ${each.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeTab(each.id);
+                  }}
+                >
+                  ×
+                </button>
               )}
-            </button>
+            </div>
           );
         })}
+        {addableTabs.length > 0 && (
+          <div className="panel-add-wrap">
+            <button
+              ref={addBtnRef}
+              type="button"
+              className={`panel-add-btn ${addMenuOpen ? "open" : ""}`}
+              title="添加面板页面"
+              aria-label="添加面板页面"
+              aria-expanded={addMenuOpen}
+              aria-haspopup="menu"
+              onClick={() => setAddMenuOpen((open) => !open)}
+            >
+              <Icon name="plus-lg" size={13} />
+            </button>
+          </div>
+        )}
         {onCloseDrawer && (
           <>
             <span className="spacer" />
             <button type="button" className="icon-button small" title="收起右侧抽屉 (Esc)" aria-label="收起右侧抽屉" onClick={onCloseDrawer}>
-              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                <path d="M4 4l8 8M12 4l-8 8" />
-              </svg>
+              <Icon name="x-lg" size={13} />
             </button>
           </>
         )}
       </div>
-      {hasAside && (
+      {addMenuOpen && addableTabs.length > 0 && (
+        <div className="panel-add-menu" ref={addMenuRef} role="menu" aria-label="可添加的面板">
+          {addableTabs.map((each) => {
+            const badge = badgeFor(each.id);
+            return (
+              <button
+                type="button"
+                key={each.id}
+                role="menuitem"
+                className="panel-add-item"
+                onClick={() => openAndSelect(each.id)}
+              >
+                <span className="panel-add-icon">{each.icon}</span>
+                <span className="panel-add-text">
+                  <span className="panel-add-name">
+                    {each.name}
+                    {badge && <span className="panel-add-badge">{badge}</span>}
+                  </span>
+                  <span className="panel-add-desc">{each.desc}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {hasAside && openTabs.includes("chat") && (
         <div className="side-chat-pane" style={{ display: tab === "chat" ? "flex" : "none" }}>
           {renderAside(tab === "chat")}
         </div>
       )}
-      {tab === "chat" && hasAside ? null : tab === "plan" ? (
+      {terminalPane && openTabs.includes("terminal") && (
+        <div className="side-terminal-host" style={{ display: tab === "terminal" ? "flex" : "none" }}>
+          {terminalPane}
+        </div>
+      )}
+      {(tab === "chat" && hasAside) || (tab === "terminal" && terminalPane) ? null : tab === "plan" ? (
         <div className="panel-body">
           <div className="panel-head">
             <h2>分身的计划</h2>
@@ -595,7 +720,7 @@ export function SidePanel({
       ) : tab === "products" ? (
         <div className="panel-body">
           <div className="panel-head">
-            <h2>分身的产物</h2>
+            <h2>分身的交付物</h2>
             {products.length > 0 && <span className="panel-meta">{products.length} 个</span>}
           </div>
           {products.length === 0 && <p className="muted">分身还没有做出文件。它交付的文档、图片，和每一轮结束时在洞府里找到的新文件，都会列在这里。</p>}
@@ -635,25 +760,34 @@ export function SidePanel({
             ))}
           </div>
         </div>
-      ) : terminalPane ? (
-        <div className="side-terminal-host">{terminalPane}</div>
+      ) : tab === "jobs" && jobsPane ? (
+        jobsPane
       ) : (
         <div className="panel-body">
-          {runs.length === 0 && <p className="muted">分身还没有运行过命令。</p>}
-          {runs.map((run) => {
-            const meta = run.result!.meta!;
-            return (
-              <pre className="terminal" key={run.id}>
-                <span className="prompt">$</span> {meta.cwd ? `[${meta.cwd}] ` : ""}{meta.command}
-                {run.name === "run_command" && meta.background ? <span className="muted">{`\n[后台运行，编号 ${meta.job}]`}</span> : null}
-                {run.name !== "run_command" ? <span className="muted">{`  （${meta.job}${run.name === "stop_command" ? "，停止" : ""}）`}</span> : null}
-                {"\n"}
-                {meta.output}
-                {meta.stopped ? <span className="failed">{`\n[${meta.stopped === "timed out" ? "超时停止" : "已停止"}]`}</span> : null}
-                {!meta.stopped && !meta.background && !meta.running && meta.exit_code !== 0 ? <span className="failed">{`\n[退出码 ${meta.exit_code ?? "未知"}]`}</span> : null}
-              </pre>
-            );
-          })}
+          <div className="panel-head">
+            <h2>{tab === "terminal" ? "用户终端" : "分身命令记录"}</h2>
+          </div>
+          {tab === "terminal" ? (
+            <p className="muted">当前模式不可打开交互式终端。</p>
+          ) : (
+            <>
+              {runs.length === 0 && <p className="muted">分身还没有运行过命令。</p>}
+              {runs.map((run) => {
+                const meta = run.result!.meta!;
+                return (
+                  <pre className="terminal" key={run.id}>
+                    <span className="prompt">$</span> {meta.cwd ? `[${meta.cwd}] ` : ""}{meta.command}
+                    {run.name === "run_command" && meta.background ? <span className="muted">{`\n[后台运行，编号 ${meta.job}]`}</span> : null}
+                    {run.name !== "run_command" ? <span className="muted">{`  （${meta.job}${run.name === "stop_command" ? "，停止" : ""}）`}</span> : null}
+                    {"\n"}
+                    {meta.output}
+                    {meta.stopped ? <span className="failed">{`\n[${meta.stopped === "timed out" ? "超时停止" : "已停止"}]`}</span> : null}
+                    {!meta.stopped && !meta.background && !meta.running && meta.exit_code !== 0 ? <span className="failed">{`\n[退出码 ${meta.exit_code ?? "未知"}]`}</span> : null}
+                  </pre>
+                );
+              })}
+            </>
+          )}
         </div>
       )}
     </aside>

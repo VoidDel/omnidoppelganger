@@ -1022,6 +1022,7 @@
   white-space: nowrap;
 }
 
-.main-header .kin-link svg {
+.main-header .kin-link svg,
+.main-header .kin-link .bi {
   flex: none;
 }

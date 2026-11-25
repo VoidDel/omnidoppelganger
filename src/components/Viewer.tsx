@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Image } from "../lib/types";
+import { Icon } from "./Icon";
 
 /** A picture as a page can show it. */
 export const imageSource = (image: Image) => `data:${image.media_type};base64,${image.data}`;
@@ -47,21 +48,15 @@ export function Viewer({ images, at, whose, onClose }: ViewerProps) {
     >
       <img src={imageSource(image)} alt={`${whose}第 ${shown + 1} 张图`} />
       <button type="button" className="viewer-close" aria-label="关上" title="关上（Esc）" onClick={() => dialog.current?.close()}>
-        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-          <path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
-        </svg>
+        <Icon name="x-lg" size={16} />
       </button>
       {many && (
         <>
           <button type="button" className="viewer-step back" aria-label="上一张" title="上一张（←）" onClick={() => go(-1)}>
-            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m10 3.5-4.5 4.5 4.5 4.5" />
-            </svg>
+            <Icon name="chevron-left" size={18} />
           </button>
           <button type="button" className="viewer-step next" aria-label="下一张" title="下一张（→）" onClick={() => go(1)}>
-            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m6 3.5 4.5 4.5L6 12.5" />
-            </svg>
+            <Icon name="chevron-right" size={18} />
           </button>
           <span className="viewer-count" aria-live="polite">
             {shown + 1} / {images.length}

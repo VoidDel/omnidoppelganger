@@ -162,53 +162,206 @@
 }
 
 .tabs {
+  position: relative;
   height: var(--bar);
-  padding: 0 12px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+}
+
+.tab-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--r-control);
+  min-width: 0;
+}
+
+.tab-item.active {
+  background: var(--jade-tint);
 }
 
 .tab {
-  min-height: 36px;
-  min-width: 44px;
-  padding: 0 12px;
+  min-height: 30px;
+  padding: 0 8px;
   border: 0;
   border-radius: var(--r-control);
   background: transparent;
   color: var(--ink-2);
+  font-size: var(--t-small);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
+  white-space: nowrap;
 }
 
 .tab:hover {
   color: var(--ink);
 }
 
-/* The side panel's tabs are pictures the size of the header's beside them, and as far apart. */
-.tabs {
-  gap: 12px;
+.tab-item.active .tab {
+  background: transparent;
+  color: var(--jade-tint-ink);
+  font-weight: 700;
 }
 
-.tabs .tab {
-  min-width: 32px;
-  min-height: 32px;
-  padding: 0 7px;
+.tab-close {
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  width: 20px;
+  height: 20px;
+  margin-right: 4px;
+  margin-left: -4px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.55;
+  transition: opacity var(--d-quick) ease, background var(--d-quick) ease, color var(--d-quick) ease;
+}
+
+.tab-item:hover .tab-close,
+.tab-item.active .tab-close,
+.tab-close:focus-visible {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
 }
 
 /* How far the plan has come, beside its picture. */
 .tab .count {
-  font-size: var(--t-small);
+  font-size: var(--t-micro);
   font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 
 .tab[aria-pressed="true"] {
   background: var(--jade-tint);
   color: var(--jade-tint-ink);
   font-weight: 700;
+}
+
+.panel-add-wrap {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.panel-add-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--d-quick) ease, border-color var(--d-quick) ease, background var(--d-quick) ease;
+}
+
+.panel-add-btn:hover,
+.panel-add-btn.open {
+  color: var(--ink);
+  border-color: var(--jade);
+  background: var(--sheet);
+}
+
+.panel-add-menu {
+  position: absolute;
+  top: calc(var(--bar) + 4px);
+  left: 10px;
+  right: 10px;
+  z-index: 40;
+  max-width: 280px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--sheet);
+  box-shadow: 0 10px 28px rgb(16 27 29 / 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: bubble-in var(--d-quick) var(--ease-out);
+}
+
+.panel-add-item {
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  transition: background var(--d-quick) ease;
+}
+
+.panel-add-item:hover {
+  background: var(--jade-tint);
+}
+
+.panel-add-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--ink-2);
+  display: inline-flex;
+}
+
+.panel-add-item:hover .panel-add-icon {
+  color: var(--jade-tint-ink);
+}
+
+.panel-add-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.panel-add-name {
+  font-size: var(--t-small);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-add-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-add-desc {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  line-height: 1.35;
+}
+
+.agent-jobs-pane .panel-head {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.agent-jobs-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .panel-body {

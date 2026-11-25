@@ -578,6 +578,11 @@ impl<L: Llm> Session<L> {
         self.inner.jobs.running()
     }
 
+    /// Access this session's background command manager.
+    pub fn jobs(&self) -> Arc<crate::jobs::Jobs> {
+        self.inner.jobs.clone()
+    }
+
     /// End every background command and any running turn now, this session's
     /// and its subagents'. For when the app exits or the session is deleted.
     pub fn kill_jobs(&self) {

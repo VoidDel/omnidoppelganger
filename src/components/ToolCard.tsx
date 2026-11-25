@@ -533,10 +533,9 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
       : null;
   // What was handed over, made some other way: each opened from under the act as a written file is.
   const handed = tool.name === "deliver_files" && result && !result.isError && Array.isArray(result.meta?.files) ? result.meta.files : [];
-  // A change and a failure are open until closed, even when they come in after the line they belong to; but a
-  // picture's text is not what is looked at, the picture is.
+  // Failures open automatically so errors are immediately visible; file edits/diffs stay collapsed by default until clicked.
   const [chosen, setOpen] = useState<boolean | null>(null);
-  const open = chosen ?? ((hunks.length > 0 && !(written && PICTURE_KINDS.test(written))) || !!failure || (!!output && !!result?.isError));
+  const open = chosen ?? (!!failure || (!!output && !!result?.isError));
   return (
     <div className={`did ${weigh(tool)} ${voided(tool) ? "void" : ""} ${fresh.className}`} style={style}>
       <button type="button" className="did-head" aria-expanded={body ? open : undefined} disabled={!body} onClick={() => setOpen(!open)}>

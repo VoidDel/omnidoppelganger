@@ -869,6 +869,44 @@ async fn git_create_pr(
     odg_core::git::create_pr(&repo_dir, &title, &body, base.as_deref(), draft).await
 }
 
+#[derive(serde::Serialize)]
+struct JobLogView {
+    job: odg_core::jobs::JobSnapshot,
+    output: String,
+}
+
+#[tauri::command]
+async fn list_jobs(app: State<'_, App>, id: String) -> Result<Vec<odg_core::jobs::JobSnapshot>, String> {
+    let session = app.sessions.lock().unwrap().get(&id).cloned();
+    Ok(session.map(|s| s.jobs().list()).unwrap_or_default())
+}
+
+#[tauri::command]
+async fn read_job_output(app: State<'_, App>, id: String, job_id: String, tail_bytes: Option<usize>) -> Result<JobLogView, String> {
+    let session = app.sessions.lock().unwrap().get(&id).cloned().ok_or_else(|| "会话尚未加载。".to_string())?;
+    let cap = tail_bytes.unwrap_or(64_000).clamp(1_024, 400_000);
+    let (job, output) = session.jobs().peek_output(&job_id, cap).ok_or_else(|| format!("未找到后台任务 {job_id}。"))?;
+    Ok(JobLogView { job, output })
+}
+
+#[tauri::command]
+async fn stop_job(app: State<'_, App>, id: String, job_id: String) -> Result<odg_core::jobs::JobSnapshot, String> {
+    let session = app.sessions.lock().unwrap().get(&id).cloned().ok_or_else(|| "会话尚未加载。".to_string())?;
+    session.jobs().stop_from_ui(&job_id).await.ok_or_else(|| format!("未找到后台任务 {job_id}。"))
+}
+
+#[tauri::command]
+async fn write_job_input(app: State<'_, App>, id: String, job_id: String, text: String) -> Result<(), String> {
+    let session = app.sessions.lock().unwrap().get(&id).cloned().ok_or_else(|| "会话尚未加载。".to_string())?;
+    session.jobs().write(&job_id, &text, false).await
+}
+
+#[tauri::command]
+async fn dismiss_job(app: State<'_, App>, id: String, job_id: String) -> Result<bool, String> {
+    let session = app.sessions.lock().unwrap().get(&id).cloned();
+    Ok(session.is_some_and(|s| s.jobs().remove_ended(&job_id)))
+}
+
 #[tauri::command]
 async fn pty_spawn(handle: tauri::AppHandle, app: State<'_, App>, id: String, cols: u16, rows: u16) -> Result<pty::PtyInfo, String> {
     let workspace = session_workspace(&app, &id)?;
@@ -1669,6 +1707,11 @@ pub fn run() {
             git_sync,
             git_pr_defaults,
             git_create_pr,
+            list_jobs,
+            read_job_output,
+            stop_job,
+            write_job_input,
+            dismiss_job,
             pty_spawn,
             pty_list,
             pty_write,

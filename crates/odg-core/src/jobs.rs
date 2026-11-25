@@ -39,10 +39,24 @@ struct Output {
 struct Job {
     command: String,
     pid: Option<u32>,
+    started_at: u64,
     stop: CancellationToken,
     output: Arc<Mutex<Output>>,
     /// Its standard input, while it is open: `None` once closed, or for a job started without one.
     input: Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>,
+}
+
+/// Serializable status snapshot of one background command for the desktop UI.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct JobSnapshot {
+    pub id: String,
+    pub command: String,
+    pub pid: Option<u32>,
+    pub started_at: u64,
+    pub running: bool,
+    pub stopped: bool,
+    pub exit_code: Option<i32>,
+    pub output_bytes: usize,
 }
 
 /// What [`Jobs::read`] and [`Jobs::stop`] report.
@@ -130,8 +144,86 @@ impl Jobs {
             watched.lock().unwrap().ended = Some(ended);
         });
 
-        self.jobs.lock().unwrap().insert(id.clone(), Job { command: line.to_string(), pid, stop, output, input });
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.jobs.lock().unwrap().insert(id.clone(), Job { command: line.to_string(), pid, started_at, stop, output, input });
         Ok(id)
+    }
+
+    fn snapshot_of(id: &str, job: &Job) -> JobSnapshot {
+        let output = job.output.lock().unwrap();
+        let (running, stopped, exit_code) = match output.ended {
+            None => (true, false, None),
+            Some(Ended::Stopped) => (false, true, None),
+            Some(Ended::Exited(code)) => (false, false, code),
+        };
+        JobSnapshot {
+            id: id.to_string(),
+            command: job.command.clone(),
+            pid: job.pid,
+            started_at: job.started_at,
+            running,
+            stopped,
+            exit_code,
+            output_bytes: output.text.len(),
+        }
+    }
+
+    /// List all background commands in this session (running first, then newest first).
+    pub fn list(&self) -> Vec<JobSnapshot> {
+        let jobs = self.jobs.lock().unwrap();
+        let mut items: Vec<JobSnapshot> = jobs.iter().map(|(id, job)| Self::snapshot_of(id, job)).collect();
+        items.sort_by(|a, b| {
+            b.running
+                .cmp(&a.running)
+                .then_with(|| b.started_at.cmp(&a.started_at))
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        items
+    }
+
+    /// Read the latest `tail_bytes` of a job's output without advancing the agent's read cursor.
+    pub fn peek_output(&self, id: &str, tail_bytes: usize) -> Option<(JobSnapshot, String)> {
+        let jobs = self.jobs.lock().unwrap();
+        let job = jobs.get(id)?;
+        let snapshot = Self::snapshot_of(id, job);
+        let output = job.output.lock().unwrap();
+        let slice = if output.text.len() <= tail_bytes {
+            output.text.as_str()
+        } else {
+            let mut cut = output.text.len() - tail_bytes;
+            while !output.text.is_char_boundary(cut) {
+                cut += 1;
+            }
+            &output.text[cut..]
+        };
+        Some((snapshot, slice.to_string()))
+    }
+
+    /// Stop a background command from the UI without advancing the agent's read cursor.
+    pub async fn stop_from_ui(&self, id: &str) -> Option<JobSnapshot> {
+        self.jobs.lock().unwrap().get(id)?.stop.cancel();
+        for _ in 0..50 {
+            if self.jobs.lock().unwrap().get(id)?.output.lock().unwrap().ended.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let jobs = self.jobs.lock().unwrap();
+        jobs.get(id).map(|job| Self::snapshot_of(id, job))
+    }
+
+    /// Remove an already-ended job from the panel; refuses if it is still running.
+    pub fn remove_ended(&self, id: &str) -> bool {
+        let mut jobs = self.jobs.lock().unwrap();
+        let ended = jobs.get(id).is_some_and(|job| job.output.lock().unwrap().ended.is_some());
+        if ended {
+            jobs.remove(id);
+            true
+        } else {
+            false
+        }
     }
 
     fn report(job: &Job) -> Report {

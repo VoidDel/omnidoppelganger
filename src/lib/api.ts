@@ -18,6 +18,8 @@ import type {
   GitPrResult,
   GitStatus,
   Image,
+  JobLogView,
+  JobSnapshot,
   LanguageServerView,
   Mode,
   ModelUsageEntry,
@@ -172,6 +174,13 @@ export const api = {
   gitPrDefaults: (id: string, repo?: string) => invoke<GitPrDefaults>("git_pr_defaults", { id, repo: repo ?? null }),
   gitCreatePr: (id: string, title: string, body: string, base: string | null, draft: boolean, repo?: string) =>
     invoke<GitPrResult>("git_create_pr", { id, title, body, base, draft, repo: repo ?? null }),
+  /** Background commands started by the session's agent (`run_command(background: true)`). */
+  listJobs: (id: string) => invoke<JobSnapshot[]>("list_jobs", { id }),
+  readJobOutput: (id: string, jobId: string, tailBytes = 64_000) =>
+    invoke<JobLogView>("read_job_output", { id, jobId, tailBytes }),
+  stopJob: (id: string, jobId: string) => invoke<JobSnapshot>("stop_job", { id, jobId }),
+  writeJobInput: (id: string, jobId: string, text: string) => invoke<void>("write_job_input", { id, jobId, text }),
+  dismissJob: (id: string, jobId: string) => invoke<boolean>("dismiss_job", { id, jobId }),
   /** Interactive side-panel PTY shell commands and event listeners. */
   ptySpawn: (id: string, cols = 80, rows = 24) => invoke<PtyInfo>("pty_spawn", { id, cols, rows }),
   ptyList: (id: string) => invoke<PtyInfo[]>("pty_list", { id }),

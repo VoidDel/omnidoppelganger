@@ -689,3 +689,19 @@ export interface WorkspaceChangedPayload {
   git: boolean;
 }
 
+export interface JobSnapshot {
+  id: string;
+  command: string;
+  pid: number | null;
+  started_at: number;
+  running: boolean;
+  stopped: boolean;
+  exit_code: number | null;
+  output_bytes: number;
+}
+
+export interface JobLogView {
+  job: JobSnapshot;
+  output: string;
+}
+

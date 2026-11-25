@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Icon } from "./Icon";
 
 /** Where the note stands: at the mark's left edge or held inside the window, under the mark or over it. */
 interface Place {
@@ -92,11 +93,7 @@ export function Info({ children, label = "说明" }: { children: ReactNode; labe
           }
         }}
       >
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
-          <circle cx="8" cy="8" r="6.4" />
-          <path d="M8 7.3v3.9" />
-          <circle cx="8" cy="4.9" r="0.55" fill="currentColor" stroke="none" />
-        </svg>
+        <Icon name="info-circle" size={14} />
       </button>
       {open && (
         <span ref={note} id={id} role="tooltip" className="info-note" style={place ?? { left: 0, top: 0, visibility: "hidden" }}>

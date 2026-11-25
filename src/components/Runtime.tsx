@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { RuntimeProgress, RuntimeView } from "../lib/types";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Info } from "./Hint";
+import { Icon } from "./Icon";
 
 /** What a step of setting up is called, and for the download, how far it has got. */
 function stepText(step: RuntimeProgress): string {
@@ -154,9 +155,7 @@ export function RuntimeSection() {
                 title={stale ? "现在补装缺少的库" : outdated ? `重新下载并安装（约 ${view.download_mb} MB）` : `下载并安装（约 ${view.download_mb} MB）`}
                 onClick={install}
               >
-                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M8 2.5v7.6M4.8 7 8 10.2 11.2 7M2.8 11.2v1.4a.9.9 0 0 0 .9.9h8.6a.9.9 0 0 0 .9-.9v-1.4" />
-                </svg>
+                <Icon name="download" size={15} />
                 <span className="sr-only">{stale ? "补装缺少的库" : outdated ? "重新装" : "下载并安装"}</span>
               </button>
             ))}
@@ -170,9 +169,7 @@ export function RuntimeSection() {
                   title={busy === "remove" ? "正在移除……" : "移除文档运行环境"}
                   onClick={() => setRemoving(!removing)}
                 >
-                  <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
-                  </svg>
+                  <Icon name="trash3" size={15} />
                   <span className="sr-only">移除</span>
                 </button>
                 {removing && (
@@ -204,9 +201,7 @@ export function RuntimeSection() {
           <div className="runtime-acts">
             {!view.libreoffice && (
               <button type="button" className="icon-button" title="去 LibreOffice 官网下载" onClick={() => api.openExternal("https://www.libreoffice.org/download/").catch((error) => console.error(error))}>
-                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12.5 9v3.6a.9.9 0 0 1-.9.9H3.4a.9.9 0 0 1-.9-.9V4.4a.9.9 0 0 1 .9-.9H7M9.5 2.5h4v4M13.3 2.7 7.6 8.4" />
-                </svg>
+                <Icon name="box-arrow-up-right" size={15} />
                 <span className="sr-only">去下载</span>
               </button>
             )}

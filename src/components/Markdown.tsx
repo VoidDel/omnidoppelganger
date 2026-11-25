@@ -7,6 +7,7 @@ import remarkMath from "remark-math";
 import { api } from "../lib/api";
 import { normalizeMath } from "../lib/math";
 import type { DiffHunk } from "../lib/types";
+import { Icon } from "./Icon";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
 
@@ -118,23 +119,12 @@ export const ModelText = memo(function ModelText({ text, onForward }: { text: st
             title={forwarded ? "已转给主分身" : "把这段转给主分身：作为传音发过去，不打断它这一步"}
             onClick={handOver}
           >
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9.5 3.5 13.5 7.5 9.5 11.5M13.5 7.5H6a3.5 3.5 0 0 0-3.5 3.5v1.5" />
-            </svg>
+            <Icon name="reply" size={14} />
             {forwarded ? "已转给主分身" : "转给主分身"}
           </button>
         )}
         <button type="button" className={`said-copy ${copied ? "done" : ""}`} title={copied ? "已复制" : "复制这段（Markdown）"} onClick={() => copy(text)}>
-          {copied ? (
-            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m3 8.5 3.2 3L13 4.5" />
-            </svg>
-          ) : (
-            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" />
-              <path d="M10.5 5.5V3.7a1.2 1.2 0 0 0-1.2-1.2H3.7a1.2 1.2 0 0 0-1.2 1.2v5.6a1.2 1.2 0 0 0 1.2 1.2h1.8" />
-            </svg>
-          )}
+          <Icon name={copied ? "check-lg" : "copy"} size={14} />
           <span className="sr-only">{copied ? "已复制" : "复制这段"}</span>
         </button>
       </div>

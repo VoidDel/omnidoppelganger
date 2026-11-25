@@ -168,7 +168,8 @@
   font-size: var(--t-small);
 }
 
-.icon-button.turning svg {
+.icon-button.turning svg,
+.icon-button.turning .bi {
   animation: turn 900ms linear infinite;
 }
 
@@ -183,7 +184,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .icon-button.turning svg {
+  .icon-button.turning svg,
+  .icon-button.turning .bi {
     animation: none;
   }
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FoundFile, SessionItem } from "../lib/types";
 import { ago } from "../lib/when";
 import { Light } from "./Light";
+import { Icon } from "./Icon";
 
 const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 const homeOf = (session: SessionItem) => session.worktree?.origin ?? session.workspace;
@@ -132,10 +133,7 @@ export function Jump({ mode = "all", sessions, acts, onOpen, onSearch, onSearchF
       }}
     >
       <div className="jump-line">
-        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-          <circle cx="7" cy="7" r="4.6" />
-          <path d="M10.4 10.4 14 14" />
-        </svg>
+        <Icon name="search" size={15} />
         <input
           ref={input}
           className="jump-input"

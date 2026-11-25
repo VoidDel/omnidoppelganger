@@ -143,6 +143,26 @@ body {
   font-size: var(--t-body);
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Only conversation transcript, file/diff viewers, terminal, and text inputs allow text selection. */
+input,
+textarea,
+[contenteditable="true"],
+.transcript,
+.viewer-body,
+.paste-viewer-body,
+.xterm {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.transcript button,
+.viewer-body button {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 button,
@@ -172,6 +192,16 @@ pre,
 .mono {
   font-family: var(--mono);
   font-size: var(--t-code);
+}
+
+.bi {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  flex: none;
+  font-style: normal;
+  vertical-align: middle;
 }
 
 /* What scrolls keeps a narrow bar that is out of sight until the thing is pointed at, and is then a soft stroke, no box and no arrows. */

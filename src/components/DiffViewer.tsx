@@ -3,6 +3,8 @@ import { api } from "../lib/api";
 import { escapeHtml, highlightLines } from "../lib/highlight";
 import { sameDiffView } from "../lib/refresh";
 import type { DiffStage, GitDiffView } from "../lib/types";
+import type { ComposerQuoteInput } from "./Composer";
+import { Icon } from "./Icon";
 
 export interface DiffViewerProps {
   sessionId: string;
@@ -11,7 +13,8 @@ export interface DiffViewerProps {
   commit?: string;
   refreshTick?: number;
   onOpenSource: (relPath: string, line?: number) => void;
-  onQuoteDiff: (quoteText: string) => void;
+  onQuoteToMain: (quote: ComposerQuoteInput) => void;
+  onQuoteToAside?: (quote: ComposerQuoteInput) => void;
 }
 
 export function DiffViewer({
@@ -21,7 +24,8 @@ export function DiffViewer({
   commit,
   refreshTick = 0,
   onOpenSource,
-  onQuoteDiff,
+  onQuoteToMain,
+  onQuoteToAside,
 }: DiffViewerProps) {
   const [diff, setDiff] = useState<GitDiffView | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -84,13 +88,18 @@ export function DiffViewer({
   const segments = path.split("/");
   const firstLine = diff?.hunks[0]?.new_start || 1;
 
-  const formatDiffQuote = () => {
-    if (!diff || diff.hunks.length === 0) return "";
+  const formatDiffQuote = (): ComposerQuoteInput | null => {
+    if (!diff || diff.hunks.length === 0) return null;
     const body = diff.hunks
       .map((h) => `${h.header}\n${h.lines.map((l) => `${l.kind}${l.text}`).join("\n")}`)
       .join("\n")
       .slice(0, 6000);
-    return `请看 \`${diff.path}\` 的 ${stageLabel}：\n\`\`\`diff\n${body}\n\`\`\``;
+    const name = segments[segments.length - 1] || diff.path;
+    return {
+      label: `${name} · ${stageLabel}`,
+      meta: `+${diff.added} −${diff.removed}`,
+      content: `请看 \`${diff.path}\` 的 ${stageLabel}：\n\`\`\`diff\n${body}\n\`\`\``,
+    };
   };
 
   return (
@@ -113,17 +122,43 @@ export function DiffViewer({
             </span>
           )}
           {diff && diff.hunks.length > 0 && (
-            <button type="button" className="button text small" onClick={() => onQuoteDiff(formatDiffQuote())}>
-              引用改动到对话
-            </button>
+            <>
+              <button
+                type="button"
+                className="icon-button small"
+                title="引入到分身对话：将此改动引用到主分身输入框"
+                aria-label="引入到分身对话"
+                onClick={() => {
+                  const quote = formatDiffQuote();
+                  if (quote) onQuoteToMain(quote);
+                }}
+              >
+                <Icon name="quote" size={15} />
+              </button>
+              {onQuoteToAside && (
+                <button
+                  type="button"
+                  className="icon-button small"
+                  title="引入到旁聊对话：将此改动引用到侧边栏旁聊输入框"
+                  aria-label="引入到旁聊对话"
+                  onClick={() => {
+                    const quote = formatDiffQuote();
+                    if (quote) onQuoteToAside(quote);
+                  }}
+                >
+                  <Icon name="chat-left-quote" size={14} />
+                </button>
+              )}
+            </>
           )}
           <button
             type="button"
-            className="button outline small"
+            className="icon-button small"
             title="打开当前文件源码"
+            aria-label="打开源文件"
             onClick={() => onOpenSource(path, firstLine)}
           >
-            打开源文件
+            <Icon name="code-slash" size={15} />
           </button>
         </div>
       </div>

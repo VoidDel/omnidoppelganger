@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { LanguageServerView } from "../lib/types";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Info } from "./Hint";
+import { Icon } from "./Icon";
 
 /**
  * The language servers `code_nav` reads code with, in the settings: for each language, whether its server is on this
@@ -73,9 +74,7 @@ export function LanguageServersSection() {
               <div className="runtime-acts">
                 {server.state === "missing" && server.download_mb !== null && (
                   <button type="button" className="icon-button go" disabled={!!busy} title={`下载 ${server.download} ${server.version}（约 ${server.download_mb} MB）`} onClick={() => act(server.key, api.installLanguageServer)}>
-                    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M8 2.5v7.6M4.8 7 8 10.2 11.2 7M2.8 11.2v1.4a.9.9 0 0 0 .9.9h8.6a.9.9 0 0 0 .9-.9v-1.4" />
-                    </svg>
+                    <Icon name="download" size={15} />
                     <span className="sr-only">下载 {server.download}</span>
                   </button>
                 )}
@@ -89,9 +88,7 @@ export function LanguageServersSection() {
                       title={`移除为本应用下载的 ${server.program}`}
                       onClick={() => setRemoving(removing === server.key ? null : server.key)}
                     >
-                      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
-                      </svg>
+                      <Icon name="trash3" size={15} />
                       <span className="sr-only">移除 {server.program}</span>
                     </button>
                     {removing === server.key && (

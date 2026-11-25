@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Info } from "./Hint";
+import { Icon } from "./Icon";
 import { CLI_INFO, cliOf, enabledProviders, setUp } from "../lib/providers";
 import { RuntimeSection } from "./Runtime";
 import { LanguageServersSection } from "./LanguageServers";
@@ -267,9 +268,7 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
         </h2>
         <span className="spacer" />
         <button type="button" className="button primary compact" title="添一个宗门（模型供应商），填上它的密钥；同一种可以加好几个" onClick={() => setEditing("new")}>
-          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-            <path d="M8 3v10M3 8h10" />
-          </svg>
+          <Icon name="plus-lg" size={13} />
           新增宗门
         </button>
       </div>
@@ -330,10 +329,7 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
                     </span>
                   </label>
                   <button type="button" className="icon-button" title={`改 ${provider.name} 的密钥或地址`} onClick={() => setEditing(provider.id)}>
-                    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M10.6 2.9 13.1 5.4 5.6 12.9 2.6 13.4 3.1 10.4Z" />
-                      <path d="m9.2 4.3 2.5 2.5" />
-                    </svg>
+                    <Icon name="pencil" size={15} />
                     <span className="sr-only">改 {provider.name}</span>
                   </button>
                   <span className="bubble-anchor">
@@ -345,9 +341,7 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
                       title={removable ? `删掉 ${provider.name}：存着的密钥、地址和名字` : status.source === "env" ? "密钥来自环境变量，这里删不了" : "没有可删的"}
                       onClick={() => setRemoving(removing === provider.id ? null : provider.id)}
                     >
-                      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
-                      </svg>
+                      <Icon name="trash3" size={15} />
                       <span className="sr-only">删除 {provider.name}</span>
                     </button>
                     {removing === provider.id && (
@@ -394,25 +388,20 @@ const WINDOW_SOURCES: Record<SettingsView["context_window"]["source"], string> =
 /** The pages the settings are sorted into: what a 分身 runs on, what it may do, what it can reach, and how the app looks. */
 export type SettingsTab = "model" | "rules" | "tools" | "look";
 
-const TABS: { id: SettingsTab; name: string; hint: string; icon: ReactNode }[] = [
+const TABS: { id: SettingsTab; name: string; hint: string; icon: string }[] = [
   {
     id: "model",
     name: "心法",
     hint: "各个宗门和它们的密钥，默认分身修哪门心法、推演多深，前情留多长",
-    icon: <path d="M4.5 13.5A1.5 1.5 0 0 1 3 12V4a1.5 1.5 0 0 1 1.5-1.5H13v8.5H4.5A1.5 1.5 0 0 0 3 12.5M13 11v2.5H4.5M6 5.5h4" />,
+    icon: "journal-text",
   },
-  { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）", icon: <path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z" /> },
-  { id: "tools", name: "神通", hint: "天机阁（联网搜索）、丹青（生成图片）、文房（文档运行环境）、语言服务（代码导航）。秘籍和身外法器（MCP 服务）在侧栏的「秘籍」「法器」里", icon: <path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11v3" /> },
+  { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）", icon: "shield-check" },
+  { id: "tools", name: "神通", hint: "天机阁（联网搜索）、丹青（生成图片）、文房（文档运行环境）、语言服务（代码导航）。秘籍和身外法器（MCP 服务）在侧栏的「秘籍」「法器」里", icon: "plug" },
   {
     id: "look",
     name: "外观",
     hint: "白昼还是玄夜",
-    icon: (
-      <>
-        <circle cx="8" cy="8" r="5.5" />
-        <path d="M8 2.5v11a5.5 5.5 0 0 0 0-11z" fill="currentColor" />
-      </>
-    ),
+    icon: "circle-half",
   },
 ];
 
@@ -535,9 +524,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
         <div className="settings-tabs-inner" data-tauri-drag-region>
         {TABS.map((item) => (
           <button type="button" className="tab" key={item.id} aria-pressed={tab === item.id} title={item.hint} onClick={() => setTab(item.id)}>
-            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              {item.icon}
-            </svg>
+            <Icon name={item.icon} size={15} />
             {item.name}
           </button>
         ))}
@@ -590,10 +577,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 title={keyed === "none" ? "先给这个宗门填上密钥，才问得到它的心法" : asking ? "正在问……" : `再向 ${chosen?.name ?? settings.provider} 问一遍它有哪些心法`}
                 onClick={() => setAsked((times) => times + 1)}
               >
-                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M13.2 8a5.2 5.2 0 0 1-9.3 3.2M2.8 8a5.2 5.2 0 0 1 9.3-3.2" />
-                  <path d="M12.6 2.2v2.9H9.7M3.4 13.8v-2.9h2.9" />
-                </svg>
+                <Icon name="arrow-repeat" size={16} />
                 <span className="sr-only">刷新心法列表</span>
               </button>
             </div>

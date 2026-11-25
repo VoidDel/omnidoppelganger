@@ -21,6 +21,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
+    "bootstrap-icons": "^1.13.2",
     "highlight.js": "11.11.2",
     "katex": "^0.19.1",
     "lxgw-wenkai-lite-webfont": "^1.7.0",

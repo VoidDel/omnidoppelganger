@@ -8,8 +8,9 @@ import { MODES, nextMode } from "../lib/modes";
 import { type PasteKind, detectPasteKind, nextPastedFilename, shouldCollapsePaste } from "../lib/paste";
 import { CLI_INFO, cliOf } from "../lib/providers";
 import { type Offer, type SlashChoice, type SlashCommand, completion, offers, parse } from "../lib/slash";
-import type { Image, Mode, Picked, Provider, Status } from "../lib/types";
+import type { FoundFile, Image, Mode, Picked, Provider, Status } from "../lib/types";
 import { Mark } from "./Backdrop";
+import { Icon } from "./Icon";
 import { Light } from "./Light";
 import { PasteViewer } from "./PasteViewer";
 import { CHECK, LIMITS, ModePicker, ModelList, Popup } from "./Pickers";
@@ -31,10 +32,28 @@ export type Pending = Extract<Picked, { kind: "file" }> & {
   };
 };
 
+export interface ComposerQuote {
+  id: string;
+  label: string;
+  meta?: string;
+  content: string;
+}
+
+export type ComposerQuoteInput = Omit<ComposerQuote, "id">;
+
+export interface ComposerSeed {
+  id: number;
+  text?: string;
+  append?: boolean;
+  attachPaths?: string[];
+  quote?: ComposerQuoteInput;
+}
+
 export interface ComposerDraft {
   text: string;
   images: Image[];
   files: Pending[];
+  quotes?: ComposerQuote[];
 }
 
 /** Why a path could not be attached, in the user's words. */
@@ -51,44 +70,15 @@ const REFUSALS: Record<Extract<Picked, { kind: "refused" }>["why"], (name: strin
 };
 
 /** A sheet of paper with its corner turned: a file. */
-const FILE_ICON = (
-  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
-  </svg>
-);
+const FILE_ICON = <Icon name="file-earmark-text" size={14} />;
 
 /** A folder icon for attached directories. */
-const FOLDER_ICON = (
-  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
-  </svg>
-);
+const FOLDER_ICON = <Icon name="folder2" size={14} />;
 
 function pasteIcon(kind: PasteKind) {
-  if (kind === "svg") {
-    return (
-      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
-        <circle cx="5.7" cy="6.2" r="1.1" />
-        <path d="m2.5 11.5 3.3-3.2 2.4 2.2 2.3-2.5 3 3.5" />
-      </svg>
-    );
-  }
-  if (kind === "markdown") {
-    return (
-      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="1.8" y="3" width="12.4" height="10" rx="1.5" />
-        <path d="M4.2 10.5V5.5l2.2 2.4 2.2-2.4v5M11.6 5.5v4.6M10 8.6l1.6 1.6 1.6-1.6" />
-      </svg>
-    );
-  }
-  if (kind === "html" || kind === "xml" || kind === "json") {
-    return (
-      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M5.5 4.5 2 8l3.5 3.5M10.5 4.5 14 8l-3.5 3.5M9 3.5 7 12.5" />
-      </svg>
-    );
-  }
+  if (kind === "svg") return <Icon name="image" size={14} />;
+  if (kind === "markdown") return <Icon name="filetype-md" size={14} />;
+  if (kind === "html" || kind === "xml" || kind === "json") return <Icon name="code-slash" size={14} />;
   return FILE_ICON;
 }
 // 5 MB of base64 is 3.75 MB of file.
@@ -146,9 +136,11 @@ export interface ComposerProps {
   trustable: boolean;
   /** Session id + shared draft map so moving between center chat and side chat keeps typed words and attachments intact. */
   sessionKey?: string;
+  /** Session workspace directory for `@` file mention autocomplete and attachment resolution. */
+  workspace?: string;
   drafts?: Map<string, ComposerDraft>;
-  /** Words or file paths to put in the box (from fork, file tree attach, or code viewer quote); a new `id` applies it. */
-  seed: { id: number; text?: string; append?: boolean; attachPaths?: string[] } | null;
+  /** Words, quote chips, or file paths to put in the box (from fork, file tree attach, or code/chat quote); a new `id` applies it. */
+  seed: ComposerSeed | null;
   /** The "/" commands the window gives, beside the box's own (心法, 境界, 禁制, 凝练); skills among them. */
   commands: SlashCommand[];
   /** What the empty box says, in place of the main conversation's own words. */
@@ -157,6 +149,15 @@ export interface ComposerProps {
   acceptDrops?: boolean;
   /** Side-chat (旁聊) composer: hides slash-command button, mode picker, and context stones. */
   aside?: boolean;
+}
+
+/** Detect an active `@file` mention token immediately before `caret` in `text`. */
+function findAtMention(text: string, caret: number): { start: number; query: string } | null {
+  const before = text.slice(0, caret);
+  const match = before.match(/(?:^|[\s([{"'（【，。、；：！？])@([^\s@]*)$/);
+  if (!match) return null;
+  const query = match[1];
+  return { start: caret - query.length - 1, query };
 }
 
 /** The order the "/" menu lists the commands in; any not named here (a skill's) come after, as given. */
@@ -220,13 +221,18 @@ export function Composer(props: ComposerProps) {
         : null;
   const agyQuota = useProviderQuota(quotaSource);
   const activeQuotaGroup = quotaSource ? quotaGroupForModel(agyQuota.quota, model) : undefined;
-  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given, placeholder, acceptDrops = true, aside = false } = props;
+  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, workspace, drafts, commands: given, placeholder, acceptDrops = true, aside = false } = props;
   const provider = providers.find((known) => known.id === providerId);
   const cli = cliOf(provider);
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
   const savedDraft = sessionKey ? drafts?.get(sessionKey) : undefined;
   const [text, setText] = useState(() => savedDraft?.text ?? "");
+  const [caret, setCaret] = useState(0);
+  const [atItems, setAtItems] = useState<FoundFile[]>([]);
+  const [atChosen, setAtChosen] = useState(0);
+  const [atDismissed, setAtDismissed] = useState<string | null>(null);
+  const atMenuList = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const [height, setHeight] = useBoxHeight();
   const [dragging, setDragging] = useState(false);
@@ -246,30 +252,35 @@ export function Composer(props: ComposerProps) {
   const [viewingPaste, setViewingPaste] = useState<string | null>(null);
   /** Files to go with the message, each by its path. */
   const [files, setFiles] = useState<Pending[]>(() => savedDraft?.files ?? []);
+  /** Quoted snippets (from conversation, code viewer, diff, or terminal) shown as compact blockquote chips. */
+  const [quotes, setQuotes] = useState<ComposerQuote[]>(() => savedDraft?.quotes ?? []);
   useEffect(() => {
     if (!sessionKey || !drafts) return;
-    if (!text && images.length === 0 && files.length === 0) drafts.delete(sessionKey);
-    else drafts.set(sessionKey, { text, images, files });
-  }, [sessionKey, drafts, text, images, files]);
+    if (!text && images.length === 0 && files.length === 0 && quotes.length === 0) drafts.delete(sessionKey);
+    else drafts.set(sessionKey, { text, images, files, quotes });
+  }, [sessionKey, drafts, text, images, files, quotes]);
   /** Why something was not taken, until the next attempt. */
   const [refused, setRefused] = useState<string | null>(null);
   /** Files are being dragged over the window: the box shows it will take them. */
   const [dropping, setDropping] = useState(false);
   const busy = status !== "idle";
-  const empty = !text.trim() && images.length === 0 && files.length === 0;
+  const empty = !text.trim() && images.length === 0 && files.length === 0 && quotes.length === 0;
   const sender = useRef<HTMLButtonElement>(null);
   const submit = () => {
     if (empty) return;
     // The token on the button flies to the message's place in the conversation.
     launchFrom(sender.current);
+    const quoteBlock = quotes.map((q) => q.content.trim()).filter(Boolean).join("\n\n");
+    const combinedText = quoteBlock ? (text.trim() ? `${quoteBlock}\n\n${text}` : quoteBlock) : text;
     onSend(
-      text,
+      combinedText,
       images,
       files.map((file) => file.path),
     );
     setText("");
     setImages([]);
     setFiles([]);
+    setQuotes([]);
     setViewingPaste(null);
     setRefused(null);
   };
@@ -469,6 +480,10 @@ export function Composer(props: ComposerProps) {
     if (seed.attachPaths && seed.attachPaths.length > 0) {
       taking.current(seed.attachPaths);
     }
+    if (seed.quote) {
+      const incoming = seed.quote;
+      setQuotes((prev) => (prev.some((q) => q.content === incoming.content) ? prev : [...prev, { id: String(seed.id), ...incoming }]));
+    }
     if (seed.text !== undefined) {
       const incoming = seed.text;
       setText((prev) => (seed.append && prev.trim() ? `${prev.trimEnd()}\n\n${incoming}` : incoming));
@@ -489,6 +504,68 @@ export function Composer(props: ComposerProps) {
       stop.then((unlisten) => unlisten()).catch(() => undefined);
     };
   }, [acceptDrops]);
+  const atMention = sessionKey && workspace && menu.length === 0 ? findAtMention(text, caret) : null;
+  const atKey = atMention ? `${atMention.start}:${atMention.query}` : null;
+  const atActive = !!atMention && atDismissed !== atKey;
+
+  useEffect(() => {
+    if (!atActive || !atMention || !sessionKey) {
+      setAtItems([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(
+      () => {
+        api.searchWorkspaceFiles(sessionKey, atMention.query, 24).then(
+          (list) => {
+            if (cancelled) return;
+            setAtItems(list);
+            setAtChosen(0);
+          },
+          () => {
+            if (!cancelled) setAtItems([]);
+          },
+        );
+      },
+      atMention.query ? 80 : 0,
+    );
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [atActive, atMention?.query, sessionKey]);
+
+  useEffect(() => {
+    if (!atActive || atItems.length === 0) return;
+    const active = atMenuList.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+    active?.scrollIntoView({ block: "nearest" });
+  }, [atChosen, atActive, atItems.length]);
+
+  const acceptAt = (file: FoundFile) => {
+    if (!atMention) return;
+    const replacement = `@${file.path} `;
+    const nextText = `${text.slice(0, atMention.start)}${replacement}${text.slice(caret)}`;
+    const nextCaret = atMention.start + replacement.length;
+    setText(nextText);
+    setCaret(nextCaret);
+    setAtItems([]);
+    setAtDismissed(null);
+    if (workspace) {
+      const sep = workspace.includes("\\") ? "\\" : "/";
+      const abs = `${workspace.replace(/[\\/]+$/, "")}${sep}${file.path.replace(/\//g, sep)}`;
+      if (!files.some((item) => item.path === abs)) {
+        taking.current([abs]);
+      }
+    }
+    requestAnimationFrame(() => {
+      const el = input.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(nextCaret, nextCaret);
+      }
+    });
+  };
+
   return (
     <div className="composer">
       <div className="composer-status" role="status">
@@ -584,6 +661,25 @@ export function Composer(props: ComposerProps) {
                 requestAnimationFrame(() => input.current?.focus());
               }}
             />
+          )}
+          {quotes.length > 0 && (
+            <div className="composer-quotes" aria-label="已引用的内容">
+              {quotes.map((quote) => (
+                <span className="quote-chip" key={quote.id} title={quote.content.trim()}>
+                  <Icon name="quote" size={13} />
+                  <span className="quote-chip-label mono">{quote.label}</span>
+                  {quote.meta && <span className="quote-chip-meta">{quote.meta}</span>}
+                  <button
+                    type="button"
+                    className="quote-chip-remove"
+                    aria-label={`移除引用 ${quote.label}`}
+                    onClick={() => setQuotes((prev) => prev.filter((item) => item.id !== quote.id))}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
           )}
           {(images.length > 0 || files.length > 0 || refused) && (
             <div className="attachments">
@@ -714,6 +810,41 @@ export function Composer(props: ComposerProps) {
               <p className="slash-foot">↑↓ 选择 · Tab 补全 · 回车执行 · Esc 收起</p>
             </div>
           )}
+          {/* The "@" menu: fuzzy-search workspace files to mention and attach. */}
+          {atActive && menu.length === 0 && (
+            <div className="slash-menu at-menu" id="at-menu" role="listbox" aria-label="引用文件" ref={atMenuList}>
+              <div className="mode-menu-head">{atMention?.query ? `@${atMention.query} · 洞府文件` : "@ 引用洞府文件"}</div>
+              <div className="slash-list">
+                {atItems.length === 0 ? (
+                  <div className="slash-hint" style={{ padding: "8px 12px" }}>
+                    没有匹配的文件
+                  </div>
+                ) : (
+                  atItems.map((file, at) => (
+                    <div
+                      key={file.path}
+                      id={`at-${at}`}
+                      role="option"
+                      aria-selected={at === Math.min(atChosen, atItems.length - 1)}
+                      className="slash-option"
+                      title={file.path}
+                      onMouseEnter={() => setAtChosen(at)}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        acceptAt(file);
+                      }}
+                    >
+                      <div className="slash-option-head">
+                        <span className="slash-name mono">{file.name}</span>
+                        {file.dir && <span className="slash-arg mono">{file.dir}</span>}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              <p className="slash-foot">↑↓ 选择 · Tab / 回车引用并附入 · Esc 收起</p>
+            </div>
+          )}
           <label htmlFor="composer-input" className="sr-only">
             给分身的法旨
           </label>
@@ -722,12 +853,27 @@ export function Composer(props: ComposerProps) {
             ref={input}
             rows={2}
             value={text}
-            placeholder={placeholder ?? (busy ? "给分身传一句音" : "吩咐一件事，回车传令；打 / 唤出命令")}
-            aria-controls={menu.length > 0 ? "slash-menu" : undefined}
-            aria-activedescendant={menu.length > 0 ? `slash-${Math.min(chosen, menu.length - 1)}` : undefined}
-            onChange={(event) => setText(event.target.value)}
+            placeholder={placeholder ?? (busy ? "给分身传一句音" : "吩咐一件事，回车传令；打 / 唤出命令，打 @ 引用文件")}
+            aria-controls={menu.length > 0 ? "slash-menu" : atActive ? "at-menu" : undefined}
+            aria-activedescendant={
+              menu.length > 0
+                ? `slash-${Math.min(chosen, menu.length - 1)}`
+                : atActive && atItems.length > 0
+                  ? `at-${Math.min(atChosen, atItems.length - 1)}`
+                  : undefined
+            }
+            onChange={(event) => {
+              setText(event.target.value);
+              setCaret(event.target.selectionStart ?? event.target.value.length);
+              setAtDismissed(null);
+            }}
+            onClick={(event) => setCaret(event.currentTarget.selectionStart ?? text.length)}
+            onKeyUp={(event) => setCaret(event.currentTarget.selectionStart ?? text.length)}
             // The button's menu belongs to the box while the box has the keyboard: pressed elsewhere, it is put away.
-            onBlur={() => setBrowsing(false)}
+            onBlur={() => {
+              setBrowsing(false);
+              if (atKey) setAtDismissed(atKey);
+            }}
             onPaste={(event) => {
               // A pasted screenshot is attached; oversized text or SVG/HTML snippets collapse into clickable chips.
               const pastedImages = [...event.clipboardData.items]
@@ -770,6 +916,24 @@ export function Composer(props: ComposerProps) {
                   return;
                 }
               }
+              // While the "@" file menu is up, arrows navigate, Tab / Enter accepts, Escape dismisses.
+              if (atActive && menu.length === 0 && !event.nativeEvent.isComposing) {
+                if (atItems.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                  event.preventDefault();
+                  setAtChosen((at) => (at + (event.key === "ArrowDown" ? 1 : atItems.length - 1)) % atItems.length);
+                  return;
+                }
+                if (atItems.length > 0 && ((event.key === "Tab" && !event.shiftKey) || (event.key === "Enter" && !event.shiftKey))) {
+                  event.preventDefault();
+                  acceptAt(atItems[Math.min(atChosen, atItems.length - 1)]);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  if (atKey) setAtDismissed(atKey);
+                  return;
+                }
+              }
               // Enter sends; Shift+Enter breaks the line. Enter that confirms an input-method candidate does neither.
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
@@ -784,18 +948,17 @@ export function Composer(props: ComposerProps) {
           />
           <div className="composer-row">
             {/* First, where the hand goes to add something to the message; then how the 分身 stands. */}
-            <button
-              type="button"
-              className="select-button attach"
-              title="附文件或图给分身：文本文件和 PDF、Word、Excel、PPT 取出文字一起发，太大的由分身自己分段读；附上的文件，分身读它不用请示。也可以把文件拖进窗口，或把截图粘贴进输入框"
-              onClick={() => api.pickFiles().then(take, (error) => setRefused(`没附上：${String(error)}`))}
-            >
-              {/* A paperclip. */}
-              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M13 7.4 8 12.4a3 3 0 0 1-4.3-4.2l5.4-5.4a2 2 0 0 1 2.9 2.8L6.7 10.9a1 1 0 0 1-1.5-1.4l4.6-4.6" />
-              </svg>
-              <span className="sr-only">附件</span>
-            </button>
+            {!aside && (
+              <button
+                type="button"
+                className="select-button attach"
+                title="附文件或图给分身：文本文件和 PDF、Word、Excel、PPT 取出文字一起发，太大的由分身自己分段读；附上的文件，分身读它不用请示。也可以把文件拖进窗口，或把截图粘贴进输入框"
+                onClick={() => api.pickFiles().then(take, (error) => setRefused(`没附上：${String(error)}`))}
+              >
+                <Icon name="paperclip" size={16} />
+                <span className="sr-only">附件</span>
+              </button>
+            )}
             {/* The "/" commands, for a hand on the pointer: the same menu typing "/" brings up, with every command in it. */}
             {!aside && (
               <div className="mode-picker">
@@ -827,6 +990,38 @@ export function Composer(props: ComposerProps) {
                 </button>
               </div>
             )}
+            {!aside && sessionKey && workspace && (
+              <button
+                type="button"
+                className="select-button"
+                title="引用洞府文件：也可以在输入框里打 @ 唤出"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  const el = input.current;
+                  const pos = el?.selectionStart ?? text.length;
+                  const before = text.slice(0, pos);
+                  const needSpace = before.length > 0 && !/[\s([{"'（【，。、；：！？]$/.test(before);
+                  const insert = needSpace ? " @" : "@";
+                  const nextText = `${before}${insert}${text.slice(pos)}`;
+                  const nextCaret = pos + insert.length;
+                  setText(nextText);
+                  setCaret(nextCaret);
+                  setAtDismissed(null);
+                  setBrowsing(false);
+                  requestAnimationFrame(() => {
+                    if (el) {
+                      el.focus();
+                      el.setSelectionRange(nextCaret, nextCaret);
+                    }
+                  });
+                }}
+              >
+                <span className="slash-glyph" aria-hidden="true">
+                  @
+                </span>
+                <span className="label sr-only">引用文件</span>
+              </button>
+            )}
             <Popup
               name="心法"
               summon={modelSummon}
@@ -834,9 +1029,7 @@ export function Composer(props: ComposerProps) {
               title={busy ? `心法：${providerName} · ${model}。分身运功时不能换，等它收功` : `心法：${providerName} · ${model}。点开换一门`}
               label={
                 <>
-                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3.5 2.5h8a1 1 0 0 1 1 1v10h-8a1 1 0 0 1-1-1zM3.5 11.5a1 1 0 0 1 1-1h8M6 5.5h4" />
-                  </svg>
+                  <Icon name="journal-text" size={15} />
                   <span className="label sr-only">心法</span>
                   <span className="value">{model}</span>
                   {activeCooldownMs > 0 && (
@@ -872,10 +1065,7 @@ export function Composer(props: ComposerProps) {
               title={`境界：${EFFORT_NAMES[effort] ?? effort}，${effortSet ? "这个分身单独定的" : "跟着设置里的默认"}。点开换一档`}
               label={
                 <>
-                  {/* Three steps, each higher than the last. */}
-                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
-                    <path d="M2.5 13.5h3v-3h-3zM6.5 13.5h3v-6h-3zM10.5 13.5h3v-9h-3z" />
-                  </svg>
+                  <Icon name="bar-chart-fill" size={14} />
                   <span className="label sr-only">境界</span>
                   <span className="value">{EFFORT_NAMES[effort] ?? effort}</span>
                 </>
@@ -1050,10 +1240,7 @@ export function Composer(props: ComposerProps) {
                           aria-label={agyQuota.loading ? "查询中…" : "刷新订阅额度"}
                           onClick={() => agyQuota.refresh(true)}
                         >
-                          <svg aria-hidden="true" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M13.5 8a5.5 5.5 0 1 1-1.45-3.72" />
-                            <path d="M13.5 2.75v2.75h-2.75" />
-                          </svg>
+                          <Icon name="arrow-clockwise" size={13} />
                         </button>
                       </div>
                       {activeQuotaGroup ? (
@@ -1102,11 +1289,7 @@ export function Composer(props: ComposerProps) {
                               <span className="limit-head-label">
                                 前情上限
                                 <span className="limit-help" tabIndex={0} role="note" aria-label={limitTip} data-tip={limitTip}>
-                                  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                                    <circle cx="8" cy="8" r="6.25" />
-                                    <path d="M8 4.6v4" />
-                                    <circle cx="8" cy="11.2" r="0.65" fill="currentColor" stroke="none" />
-                                  </svg>
+                                  <Icon name="info-circle" size={12} />
                                 </span>
                               </span>
                               <span>到了就凝成摘要</span>

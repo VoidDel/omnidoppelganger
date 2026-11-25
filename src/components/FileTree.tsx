@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { sameEntries } from "../lib/refresh";
 import type { FoundFile, TreeEntry } from "../lib/types";
+import { Icon } from "./Icon";
 
 export interface GitBadge {
   label: string;
@@ -80,8 +81,55 @@ export function FileTree({
   const [creating, setCreating] = useState<{ parentDir: string; isDir: boolean; name: string } | null>(null);
   const [renaming, setRenaming] = useState<{ entry: TreeEntry; name: string } | null>(null);
   const [deleting, setDeleting] = useState<TreeEntry | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    target: { kind: "entry"; entry: TreeEntry } | { kind: "found"; item: FoundFile } | { kind: "root" };
+  } | null>(null);
   const createInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      setContextMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    const onBlur = () => setContextMenu(null);
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [contextMenu]);
+
+  const openContextMenu = (
+    event: React.MouseEvent,
+    target: { kind: "entry"; entry: TreeEntry } | { kind: "found"; item: FoundFile } | { kind: "root" },
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 196;
+    const menuHeight = target.kind === "root" ? 160 : 280;
+    const x = Math.min(event.clientX, Math.max(8, window.innerWidth - menuWidth - 8));
+    const y = Math.min(event.clientY, Math.max(8, window.innerHeight - menuHeight - 8));
+    if (target.kind === "entry") {
+      setSelectedPath(target.entry.path);
+      setSelectedIsDir(target.entry.expandable);
+    }
+    setContextMenu({ x, y, target });
+  };
+
+  const copyText = (value: string) => {
+    navigator.clipboard.writeText(value).catch((err) => onError(`复制失败：${String(err)}`));
+  };
 
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
@@ -365,17 +413,11 @@ export function FileTree({
         />
         <div className="explorer-tools" role="toolbar" aria-label="文件操作">
           <button type="button" className="icon-button small" title="新建文件" onClick={() => startCreate(false)}>
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3.5 2h5.5L12.5 5.5V14h-9z" />
-              <path d="M8 7.5v4M6 9.5h4" />
-            </svg>
+            <Icon name="file-earmark-plus" size={14} />
             <span className="sr-only">新建文件</span>
           </button>
           <button type="button" className="icon-button small" title="新建文件夹" onClick={() => startCreate(true)}>
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M1.8 4.2V13h12.4V5.8H7.6L6.2 4.2z" />
-              <path d="M8 7.4v3.6M6.2 9.2h3.6" />
-            </svg>
+            <Icon name="folder-plus" size={14} />
             <span className="sr-only">新建文件夹</span>
           </button>
           <button
@@ -385,35 +427,39 @@ export function FileTree({
             title={showIgnored ? "当前显示被 Git 忽略的文件，点此隐藏" : "当前已隐藏 Git 忽略文件，点此显示"}
             onClick={() => setShowIgnored((v) => !v)}
           >
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M1.8 8s2.3-4.2 6.2-4.2S14.2 8 14.2 8s-2.3 4.2-6.2 4.2S1.8 8 1.8 8z" />
-              <circle cx="8" cy="8" r="1.8" />
-              {!showIgnored && <path d="M2.5 13.5 13.5 2.5" />}
-            </svg>
+            <Icon name={showIgnored ? "eye" : "eye-slash"} size={14} />
             <span className="sr-only">{showIgnored ? "隐藏忽略项" : "显示忽略项"}</span>
           </button>
           <button type="button" className="icon-button small" title="收起全部目录" onClick={() => setExpanded(new Set())}>
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m4.5 6.5 3.5-3 3.5 3M4.5 9.5l3.5 3 3.5-3" />
-            </svg>
+            <Icon name="arrows-collapse" size={14} />
             <span className="sr-only">收起全部</span>
           </button>
           <button type="button" className="icon-button small" title="刷新文件列表" onClick={() => void reloadAll()}>
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M13.2 8A5.2 5.2 0 1 1 11.8 4.4M13.2 2.6v2.8h-2.8" />
-            </svg>
+            <Icon name="arrow-clockwise" size={14} />
             <span className="sr-only">刷新</span>
           </button>
         </div>
       </div>
 
-      <div className="explorer-scroll" role="tree" aria-label="洞府文件树">
+      <div
+        className="explorer-scroll"
+        role="tree"
+        aria-label="洞府文件树"
+        onScroll={() => {
+          if (contextMenu) setContextMenu(null);
+        }}
+        onContextMenu={(e) => openContextMenu(e, { kind: "root" })}
+      >
         {found !== null ? (
           found.length === 0 ? (
             <p className="muted explorer-empty">{searching ? "正在搜寻…" : "没找到匹配的文件。"}</p>
           ) : (
             found.map((item) => (
-              <div key={item.path} className={`tree-row search-hit ${activePath === item.path ? "current" : ""}`}>
+              <div
+                key={item.path}
+                className={`tree-row search-hit ${activePath === item.path ? "current" : ""}`}
+                onContextMenu={(e) => openContextMenu(e, { kind: "found", item })}
+              >
                 <button
                   type="button"
                   className="tree-main"
@@ -487,6 +533,7 @@ export function FileTree({
                         .filter(Boolean)
                         .join(" ")}
                       style={{ paddingLeft: `${depth * 14 + 6}px` }}
+                      onContextMenu={(e) => openContextMenu(e, { kind: "entry", entry })}
                     >
                       <button
                         type="button"
@@ -509,20 +556,7 @@ export function FileTree({
                         }}
                       >
                         {entry.expandable ? (
-                          <svg
-                            className={`tree-caret ${isOpen ? "open" : ""}`}
-                            aria-hidden="true"
-                            width="10"
-                            height="10"
-                            viewBox="0 0 10 10"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          >
-                            <path d="M3 2l3.5 3L3 8" />
-                          </svg>
+                          <Icon name="chevron-right" size={10} className={`tree-caret ${isOpen ? "open" : ""}`} />
                         ) : (
                           <span className="tree-dot" aria-hidden="true" />
                         )}
@@ -616,6 +650,189 @@ export function FileTree({
           </>
         )}
       </div>
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="tree-context-menu"
+          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          role="menu"
+          aria-label="文件操作菜单"
+        >
+          {contextMenu.target.kind === "root" ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                className="tree-context-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  startCreate(false, "");
+                }}
+              >
+                新建文件
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="tree-context-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  startCreate(true, "");
+                }}
+              >
+                新建文件夹
+              </button>
+              <div className="tree-context-sep" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                className="tree-context-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  copyText(workspace);
+                }}
+              >
+                复制洞府绝对路径
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="tree-context-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  void reloadAll();
+                }}
+              >
+                刷新文件列表
+              </button>
+            </>
+          ) : (() => {
+            const target = contextMenu.target;
+            const relPath = target.kind === "entry" ? target.entry.path : target.item.path;
+            const isDir = target.kind === "entry" ? target.entry.expandable : false;
+            const absPath = joinWorkspacePath(workspace, relPath);
+            const entry = target.kind === "entry" ? target.entry : null;
+            return (
+              <>
+                {isDir ? (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="tree-context-item"
+                      onClick={() => {
+                        setContextMenu(null);
+                        startCreate(false, relPath);
+                      }}
+                    >
+                      新建文件
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="tree-context-item"
+                      onClick={() => {
+                        setContextMenu(null);
+                        startCreate(true, relPath);
+                      }}
+                    >
+                      新建文件夹
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onOpenFile(relPath, true);
+                    }}
+                  >
+                    打开文件
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="tree-context-item"
+                  onClick={() => {
+                    setContextMenu(null);
+                    onAttachFile(absPath, relPath);
+                  }}
+                >
+                  附入对话
+                </button>
+                <div className="tree-context-sep" role="separator" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="tree-context-item"
+                  onClick={() => {
+                    setContextMenu(null);
+                    copyText(relPath);
+                  }}
+                >
+                  复制相对路径
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="tree-context-item"
+                  onClick={() => {
+                    setContextMenu(null);
+                    copyText(absPath);
+                  }}
+                >
+                  复制绝对路径
+                </button>
+                <div className="tree-context-sep" role="separator" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="tree-context-item"
+                  onClick={() => {
+                    setContextMenu(null);
+                    api.openWorkspaceEntry(sessionId, relPath, true).catch((err) => onError(String(err)));
+                  }}
+                >
+                  在文件夹中显示
+                </button>
+                {entry && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="tree-context-item"
+                      onClick={() => {
+                        setContextMenu(null);
+                        setCreating(null);
+                        setDeleting(null);
+                        setRenaming({ entry, name: entry.name });
+                      }}
+                    >
+                      重命名
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="tree-context-item danger"
+                      onClick={() => {
+                        setContextMenu(null);
+                        setCreating(null);
+                        setRenaming(null);
+                        setDeleting(entry);
+                      }}
+                    >
+                      删除
+                    </button>
+                  </>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
     </div>
   );
 }

@@ -4,6 +4,8 @@ import { inFlight, land } from "../lib/flight";
 import { type Item, type Row, type StreamBlock, type ToolItem, documentLabel, fileSize, shortCount, undoableTurns } from "../lib/fold";
 import type { Decision, Image, Mode, Reply, SessionItem, Status } from "../lib/types";
 import { ConfirmBubble } from "./ConfirmBubble";
+import type { ComposerQuoteInput } from "./Composer";
+import { Icon } from "./Icon";
 import { Light } from "./Light";
 import { Diff, ModelText, markdownParts, markdownPlugins, markdownSyntax } from "./Markdown";
 import { normalizeMath } from "../lib/math";
@@ -286,6 +288,18 @@ interface Props {
   onForward?: (text: string) => void;
   /** Interrupt the step in flight so queued steering messages are heard immediately. */
   onDeliverNow?: () => void;
+  /** Quote selected conversation text into the main 分身 composer. */
+  onQuoteToMain?: (quote: ComposerQuoteInput) => void;
+  /** Quote selected conversation text into the right-side 旁聊 composer and open 旁聊. */
+  onQuoteToAside?: (quote: ComposerQuoteInput) => void;
+}
+
+function formatSelectionQuote(raw: string): ComposerQuoteInput {
+  const trimmed = raw.trim();
+  const lines = trimmed.split(/\r?\n/);
+  const content = lines.map((line) => `> ${line}`).join("\n");
+  const meta = lines.length > 1 ? `${lines.length} 行 · ${trimmed.length} 字` : `${trimmed.length} 字`;
+  return { label: "引用对话", meta, content };
 }
 
 /** Undoing cannot itself be undone, so the icon asks once more, in a bubble, before it acts. */
@@ -294,9 +308,7 @@ function UndoButton({ turn, onUndo }: { turn: number; onUndo: (turn: number) => 
   return (
     <span className="bubble-anchor">
       <button type="button" className="icon-button danger" aria-expanded={asking} title="撤回这一轮起的改动：分身从这一轮起改的文件恢复原样" onClick={() => setAsking(!asking)}>
-        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M5.5 6.5H10a3 3 0 0 1 0 6H6.5M7.6 4 5 6.5 7.6 9" />
-        </svg>
+        <Icon name="arrow-counterclockwise" size={14} />
         <span className="sr-only">撤回这一轮起的改动</span>
       </button>
       {asking && (
@@ -355,9 +367,7 @@ function Queued({ text, onDeliverNow }: { text: string; onDeliverNow?: () => voi
               onDeliverNow();
             }}
           >
-            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M2.2 3.2 13.8 8 2.2 12.8l2.2-4.8-2.2-4.8zM4.4 8h4.2" />
-            </svg>
+            <Icon name="send" size={14} />
             <span className="sr-only">立即传音</span>
           </button>
         )}
@@ -369,7 +379,7 @@ function Queued({ text, onDeliverNow }: { text: string; onDeliverNow?: () => voi
   );
 }
 
-export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture, versionOf, onForward, onDeliverNow }: Props) {
+export function Transcript({ rows, stream, queued, status, mode, origin, sessions, copied, frozen, onOpen, onDecide, onAnswer, onUndo, onFork, onOpenFile, onPicture, versionOf, onForward, onDeliverNow, onQuoteToMain, onQuoteToAside }: Props) {
   const family = { sessions, onOpen };
   const undoable = undoableTurns(rows, copied);
   /** Where a fork's own conversation begins: said once, between what it copied and what it did itself. */
@@ -444,15 +454,90 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
   });
   // One for the life of the page's callbacks, so the cards under it are not drawn again for nothing.
   const files = useMemo<Files | null>(() => (onOpenFile && onPicture ? { open: onOpenFile, picture: onPicture, versionOf } : null), [onOpenFile, onPicture, versionOf]);
+
+  // Floating quote toolbar when the user selects text inside the transcript.
+  const canQuote = !frozen && (!!onQuoteToMain || !!onQuoteToAside);
+  const [selectionQuote, setSelectionQuote] = useState<{ text: string; top: number; left: number; below: boolean } | null>(null);
+  const quoteBarRef = useRef<HTMLDivElement>(null);
+
+  const syncSelectionQuote = () => {
+    if (!canQuote) {
+      setSelectionQuote(null);
+      return;
+    }
+    const root = scroller.current;
+    const sel = window.getSelection();
+    if (!root || !sel || sel.isCollapsed || sel.rangeCount === 0) {
+      setSelectionQuote(null);
+      return;
+    }
+    const text = sel.toString().trim();
+    if (!text) {
+      setSelectionQuote(null);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) {
+      setSelectionQuote(null);
+      return;
+    }
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      setSelectionQuote(null);
+      return;
+    }
+    const below = rect.top < 76;
+    const top = below ? rect.bottom + 8 : rect.top - 8;
+    const left = Math.min(Math.max(rect.left + rect.width / 2, 128), window.innerWidth - 128);
+    setSelectionQuote({ text, top, left, below });
+  };
+
+  useEffect(() => {
+    if (!selectionQuote) return;
+    const onSelectionChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+        setSelectionQuote(null);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectionQuote(null);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (quoteBarRef.current?.contains(event.target as Node)) return;
+      setSelectionQuote(null);
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [selectionQuote]);
+
+  const sendSelectionQuote = (target: "main" | "aside") => {
+    if (!selectionQuote) return;
+    const formatted = formatSelectionQuote(selectionQuote.text);
+    window.getSelection()?.removeAllRanges();
+    setSelectionQuote(null);
+    if (target === "main") onQuoteToMain?.(formatted);
+    else onQuoteToAside?.(formatted);
+  };
+
   return (
     <FilesContext.Provider value={files}>
       <Live.Provider value={live}>
         <div
           className="transcript"
           ref={scroller}
+          onMouseUp={() => requestAnimationFrame(syncSelectionQuote)}
+          onKeyUp={() => requestAnimationFrame(syncSelectionQuote)}
           onScroll={(event) => {
             const element = event.currentTarget;
             pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+            if (selectionQuote) setSelectionQuote(null);
           }}
         >
           {rows.map((row, index) => {
@@ -487,9 +572,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                         title="从这里分叉：另起一个分身，带着这句话之前的对话，这句话放回输入框，改了再传。只分对话，洞府里的文件还是现在的样子"
                         onClick={() => onFork?.(row.turn, row.prompt.text)}
                       >
-                        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M8 14V9.5M8 9.5C8 6.5 4 7 4 3.5M8 9.5c0-3 4-2.5 4-6M2.5 5 4 3.5 5.5 5M10.5 5 12 3.5 13.5 5" />
-                        </svg>
+                        <Icon name="signpost-split" size={14} />
                         <span className="sr-only">从这里分叉</span>
                       </button>
                     )}
@@ -521,13 +604,9 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                           <span key={file.path} className="file-chip openable">
                             <button type="button" className="file-chip-open" disabled={!onOpenFile} title={`${file.path}\n${how}\n点开：用系统默认的程序打开`} onClick={() => openFile(file.path, false)}>
                               {file.is_dir ? (
-                                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
-                                </svg>
+                                <Icon name="folder2" size={14} />
                               ) : (
-                                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
-                                </svg>
+                                <Icon name="file-earmark-text" size={14} />
                               )}
                               <span className="file-chip-name">{file.path.replace(/^.*[\\/]/, "")}</span>
                               <span className="file-chip-size">
@@ -542,9 +621,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                               </span>
                             </button>
                             <button type="button" className="file-chip-reveal" disabled={!onOpenFile} title="在文件夹中显示" onClick={() => openFile(file.path, true)}>
-                              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
-                              </svg>
+                              <Icon name="folder2-open" size={14} />
                               <span className="sr-only">在文件夹中显示 {file.path.replace(/^.*[\\/]/, "")}</span>
                             </button>
                           </span>
@@ -590,6 +667,40 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
             </section>
           )}
           {viewing && <Viewer images={viewing.images} at={viewing.at} whose="本尊附的" onClose={() => setViewing(null)} />}
+          {selectionQuote && (
+            <div
+              ref={quoteBarRef}
+              className={`selection-quote-bar ${selectionQuote.below ? "below" : "above"}`}
+              style={{ top: `${selectionQuote.top}px`, left: `${selectionQuote.left}px` }}
+              role="toolbar"
+              aria-label="引用选中内容"
+              onMouseDown={(event) => event.preventDefault()}
+            >
+              {onQuoteToMain && (
+                <button
+                  type="button"
+                  className="selection-quote-btn"
+                  title="将选中内容作为引用填入当前分身输入框"
+                  onClick={() => sendSelectionQuote("main")}
+                >
+                  <Icon name="quote" size={13} />
+                  <span>引用到分身</span>
+                </button>
+              )}
+              {onQuoteToMain && onQuoteToAside && <span className="selection-quote-sep" aria-hidden="true" />}
+              {onQuoteToAside && (
+                <button
+                  type="button"
+                  className="selection-quote-btn"
+                  title="打开侧边栏旁聊并引用选中内容提问（不打断主分身）"
+                  onClick={() => sendSelectionQuote("aside")}
+                >
+                  <Icon name="chat-left-quote" size={13} />
+                  <span>旁聊提问</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </Live.Provider>
     </FilesContext.Provider>

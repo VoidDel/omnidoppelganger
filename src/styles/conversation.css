@@ -921,3 +921,81 @@ button.did-head:not(:disabled):hover {
   overflow-y: hidden;
   padding: 2px 0;
 }
+
+/* Floating quote toolbar when selecting text in the transcript. */
+.selection-quote-bar {
+  position: fixed;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgb(16 27 29 / 0.22);
+  user-select: none;
+}
+
+.selection-quote-bar.above {
+  transform: translate(-50%, -100%);
+  animation: selection-bar-above 130ms var(--ease-out);
+}
+
+.selection-quote-bar.below {
+  transform: translate(-50%, 0);
+  animation: selection-bar-below 130ms var(--ease-out);
+}
+
+@keyframes selection-bar-above {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% + 4px));
+  }
+}
+
+@keyframes selection-bar-below {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -4px);
+  }
+}
+
+.selection-quote-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--t-small);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--d-quick) ease, color var(--d-quick) ease;
+}
+
+.selection-quote-btn:hover {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.selection-quote-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line-strong);
+  margin: 0 2px;
+}
+
+.selection-quote-loc {
+  padding: 0 8px 0 10px;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

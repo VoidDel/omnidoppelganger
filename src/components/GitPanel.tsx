@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { layoutGitGraph, type GraphRow } from "../lib/gitGraph";
 import type { DiffStage, GitBranch, GitCommitItem, GitFile, GitStatus, SessionItem } from "../lib/types";
+import { Icon } from "./Icon";
 
 const GRAPH_COL_STEP = 13;
 const GRAPH_PAD_X = 7;
@@ -79,6 +80,7 @@ function CommitGraphSvg({ row, width }: { row: GraphRow; width: number }) {
 
 export interface GitPanelProps {
   sessionId: string;
+  workspace?: string;
   isWorktree: boolean;
   status: GitStatus | null;
   onSelectRepo?: (repo: string) => void;
@@ -107,8 +109,16 @@ function shortDate(unixSecs: number): string {
   return d.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
 }
 
+function joinWorkspacePath(workspace: string, relPath: string): string {
+  const sep = workspace.includes("\\") ? "\\" : "/";
+  const base = workspace.replace(/[\\/]+$/, "");
+  const sub = relPath.replace(/\//g, sep);
+  return sub ? `${base}${sep}${sub}` : base;
+}
+
 export function GitPanel({
   sessionId,
+  workspace,
   isWorktree,
   status,
   onSelectRepo,
@@ -142,6 +152,58 @@ export function GitPanel({
 
   // Discard confirmation target (`"*"` = all unstaged, else single relative path)
   const [discardTarget, setDiscardTarget] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    target:
+      | { kind: "file"; file: GitFile; group: "staged" | "unstaged" | "untracked" | "conflict" }
+      | { kind: "commit"; commit: GitCommitItem }
+      | { kind: "commitFile"; path: string; commit: GitCommitItem };
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      setContextMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    const onBlur = () => setContextMenu(null);
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [contextMenu]);
+
+  const openContextMenu = (
+    event: React.MouseEvent,
+    target:
+      | { kind: "file"; file: GitFile; group: "staged" | "unstaged" | "untracked" | "conflict" }
+      | { kind: "commit"; commit: GitCommitItem }
+      | { kind: "commitFile"; path: string; commit: GitCommitItem },
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 196;
+    const menuHeight = target.kind === "commit" ? 180 : 280;
+    const x = Math.min(event.clientX, Math.max(8, window.innerWidth - menuWidth - 8));
+    const y = Math.min(event.clientY, Math.max(8, window.innerHeight - menuHeight - 8));
+    setContextMenu({ x, y, target });
+  };
+
+  const copyText = (value: string, label: string) => {
+    navigator.clipboard.writeText(value).then(
+      () => onNote(`已复制${label}`),
+      (err) => onError(`复制失败：${String(err)}`),
+    );
+  };
 
   // Section folding
   const [folded, setFolded] = useState<Record<string, boolean>>({ history: false });
@@ -349,7 +411,10 @@ export function GitPanel({
 
     return (
       <div key={`${group}:${file.path}`} className="git-item-wrap">
-        <div className="tree-row git-file-row">
+        <div
+          className="tree-row git-file-row"
+          onContextMenu={(e) => openContextMenu(e, { kind: "file", file, group })}
+        >
           <button
             type="button"
             className="tree-main"
@@ -475,12 +540,7 @@ export function GitPanel({
           title={isWorktree ? "独立工作树分身固定在其专属分支上" : "点击切换或新建 Git 分支"}
           onClick={openBranches}
         >
-          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <circle cx="4.5" cy="3.5" r="1.7" />
-            <circle cx="4.5" cy="12.5" r="1.7" />
-            <circle cx="11.5" cy="5.5" r="1.7" />
-            <path d="M4.5 5.2v5.6M11.5 7.2c0 2.6-7 1.6-7 3.6" />
-          </svg>
+          <Icon name="diagram-2" size={13} />
           <span className="git-branch-name mono">
             {status.branch ?? "尚无提交"}
             {status.detached ? " (游离)" : ""}
@@ -495,9 +555,7 @@ export function GitPanel({
             aria-label="抓取远端 (git fetch)"
             onClick={() => void runSync("fetch")}
           >
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M13.2 8A5.2 5.2 0 1 1 11.8 4.4M13.2 2.6v2.8h-2.8" />
-            </svg>
+            <Icon name="arrow-clockwise" size={14} />
           </button>
           <button
             type="button"
@@ -891,6 +949,7 @@ export function GitPanel({
                       className={`git-commit-head ${expanded ? "open" : ""}`}
                       title={`${c.subject}\n${c.author} · ${c.short_hash}${c.refs ? `\n${c.refs}` : ""}`}
                       onClick={() => toggleCommit(c.hash)}
+                      onContextMenu={(e) => openContextMenu(e, { kind: "commit", commit: c })}
                     >
                       <CommitGraphSvg row={row} width={graphWidth} />
                       <span className="git-commit-info">
@@ -918,7 +977,7 @@ export function GitPanel({
                     </button>
                     {expanded && (
                       <div className="git-commit-files-wrap">
-                        <svg className="git-graph-cont" width={graphWidth} aria-hidden="true">
+                        <svg className="git-graph-cont" width={graphWidth} height="1" aria-hidden="true">
                           {row.afterCols.map((p) => {
                             const x = graphColX(p.col);
                             return (
@@ -948,8 +1007,13 @@ export function GitPanel({
                                   title={f.path}
                                   onClick={() => onOpenDiff(wsPath(f.path), "commit", false, c.short_hash)}
                                   onDoubleClick={() => onOpenDiff(wsPath(f.path), "commit", true, c.short_hash)}
+                                  onContextMenu={(e) => openContextMenu(e, { kind: "commitFile", path: f.path, commit: c })}
                                 >
-                                  <span className="tree-git modified">{f.status}</span>
+                                  <span
+                                    className={`tree-git ${f.status === "A" ? "added" : f.status === "D" ? "deleted" : "modified"}`}
+                                  >
+                                    {f.status}
+                                  </span>
                                   <span className="tree-label">{name}</span>
                                   {dir && <span className="tree-sub">{dir}</span>}
                                 </button>
@@ -965,6 +1029,248 @@ export function GitPanel({
           </div>
         )}
       </div>
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="tree-context-menu"
+          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          role="menu"
+          aria-label="Git 操作菜单"
+        >
+          {(() => {
+            const target = contextMenu.target;
+            if (target.kind === "commit") {
+              const c = target.commit;
+              const isOpen = openCommit === c.hash;
+              return (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      toggleCommit(c.hash);
+                    }}
+                  >
+                    {isOpen ? "收起改动文件" : "查看改动文件"}
+                  </button>
+                  <div className="tree-context-sep" role="separator" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      copyText(c.short_hash, "短哈希");
+                    }}
+                  >
+                    复制短哈希 ({c.short_hash})
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      copyText(c.hash, "完整哈希");
+                    }}
+                  >
+                    复制完整哈希
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      copyText(c.subject, "提交说明");
+                    }}
+                  >
+                    复制提交说明
+                  </button>
+                </>
+              );
+            }
+            if (target.kind === "commitFile") {
+              const rel = wsPath(target.path);
+              return (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onOpenDiff(rel, "commit", true, target.commit.short_hash);
+                    }}
+                  >
+                    查看此提交对比
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onOpenFile(rel, true);
+                    }}
+                  >
+                    打开当前源文件
+                  </button>
+                  <div className="tree-context-sep" role="separator" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      copyText(rel, "相对路径");
+                    }}
+                  >
+                    复制相对路径
+                  </button>
+                  {workspace && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="tree-context-item"
+                      onClick={() => {
+                        setContextMenu(null);
+                        copyText(joinWorkspacePath(workspace, rel), "绝对路径");
+                      }}
+                    >
+                      复制绝对路径
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      api.openWorkspaceEntry(sessionId, rel, true).catch((err) => onError(String(err)));
+                    }}
+                  >
+                    在文件夹中显示
+                  </button>
+                </>
+              );
+            }
+            const { file, group } = target;
+            const rel = wsPath(file.path);
+            const diffStage: DiffStage = group === "staged" ? "staged" : "unstaged";
+            return (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="tree-context-item"
+                  onClick={() => {
+                    setContextMenu(null);
+                    onOpenDiff(rel, diffStage, true);
+                  }}
+                >
+                  查看改动对比
+                </button>
+                {file.status !== "D" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onOpenFile(rel, true);
+                    }}
+                  >
+                    打开源文件
+                  </button>
+                )}
+                <div className="tree-context-sep" role="separator" />
+                {group === "staged" ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    disabled={!!busy}
+                    onClick={() => {
+                      setContextMenu(null);
+                      api.gitUnstage(sessionId, [file.path], activeRepo).then(onStatusChanged, (err) => onError(String(err)));
+                    }}
+                  >
+                    取消暂存
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    disabled={!!busy}
+                    onClick={() => {
+                      setContextMenu(null);
+                      api.gitStage(sessionId, [file.path], activeRepo).then(onStatusChanged, (err) => onError(String(err)));
+                    }}
+                  >
+                    暂存此文件
+                  </button>
+                )}
+                {group !== "staged" && group !== "conflict" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item danger"
+                    disabled={!!busy}
+                    onClick={() => {
+                      setContextMenu(null);
+                      setDiscardTarget(file.path);
+                    }}
+                  >
+                    {group === "untracked" ? "删除未跟踪文件" : "放弃工作区改动"}
+                  </button>
+                )}
+                <div className="tree-context-sep" role="separator" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="tree-context-item"
+                  onClick={() => {
+                    setContextMenu(null);
+                    copyText(rel, "相对路径");
+                  }}
+                >
+                  复制相对路径
+                </button>
+                {workspace && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      copyText(joinWorkspacePath(workspace, rel), "绝对路径");
+                    }}
+                  >
+                    复制绝对路径
+                  </button>
+                )}
+                {file.status !== "D" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      api.openWorkspaceEntry(sessionId, rel, true).catch((err) => onError(String(err)));
+                    }}
+                  >
+                    在文件夹中显示
+                  </button>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
     </div>
   );
 }

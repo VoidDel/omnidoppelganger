@@ -5,6 +5,8 @@ import { documentLabel, fileSize } from "../lib/fold";
 import { findInLines, highlightLines } from "../lib/highlight";
 import { sameFileView } from "../lib/refresh";
 import type { FileView } from "../lib/types";
+import type { ComposerQuoteInput } from "./Composer";
+import { Icon } from "./Icon";
 import { markdownParts, markdownPlugins, markdownSyntax } from "./Markdown";
 import { normalizeMath } from "../lib/math";
 
@@ -14,9 +16,22 @@ export interface CodeViewerProps {
   targetLine?: number;
   jumpSeq?: number;
   refreshTick?: number;
-  onQuoteLines: (quoteText: string) => void;
+  onQuoteToMain: (quote: ComposerQuoteInput) => void;
+  onQuoteToAside?: (quote: ComposerQuoteInput) => void;
   onAttachPath: (relPath: string) => void;
   onError: (message: string) => void;
+}
+
+function lineNumberOf(node: Node | null): number | null {
+  let cur: Node | null = node;
+  while (cur) {
+    if (cur instanceof HTMLElement && cur.dataset.line) {
+      const n = Number.parseInt(cur.dataset.line, 10);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    cur = cur.parentNode;
+  }
+  return null;
 }
 
 export function CodeViewer({
@@ -25,7 +40,8 @@ export function CodeViewer({
   targetLine,
   jumpSeq = 0,
   refreshTick = 0,
-  onQuoteLines,
+  onQuoteToMain,
+  onQuoteToAside,
   onAttachPath,
   onError,
 }: CodeViewerProps) {
@@ -38,6 +54,16 @@ export function CodeViewer({
 
   // Line selection (1-based inclusive)
   const [selection, setSelection] = useState<{ anchor: number; end: number } | null>(null);
+  // Drag-selection floating quote popover
+  const [dragQuote, setDragQuote] = useState<{
+    text: string;
+    startLine: number | null;
+    endLine: number | null;
+    top: number;
+    left: number;
+    below: boolean;
+  } | null>(null);
+  const quoteBarRef = useRef<HTMLDivElement>(null);
 
   // In-file search bar
   const [findOpen, setFindOpen] = useState<boolean>(false);
@@ -140,12 +166,119 @@ export function CodeViewer({
     ? { start: Math.min(selection.anchor, selection.end), end: Math.max(selection.anchor, selection.end) }
     : null;
 
-  const selectedSnippet = () => {
-    if (!selectedRange || view?.kind !== "text") return "";
-    const slice = rawLines.slice(selectedRange.start - 1, selectedRange.end).join("\n");
+  const formatRangeQuote = (start: number, end: number): ComposerQuoteInput | null => {
+    if (view?.kind !== "text") return null;
+    const slice = rawLines.slice(start - 1, end).join("\n");
     const lang = view.language ?? "";
-    const rangeLabel = selectedRange.start === selectedRange.end ? `第 ${selectedRange.start} 行` : `第 ${selectedRange.start}-${selectedRange.end} 行`;
-    return `请看 \`${view.path}\`（${rangeLabel}）：\n\`\`\`${lang}\n${slice}\n\`\`\``;
+    const rangeLabel = start === end ? `第 ${start} 行` : `第 ${start}-${end} 行`;
+    const shortRange = start === end ? `L${start}` : `L${start}-${end}`;
+    return {
+      label: `${view.name}:${shortRange}`,
+      meta: `${end - start + 1} 行`,
+      content: `请看 \`${view.path}\`（${rangeLabel}）：\n\`\`\`${lang}\n${slice}\n\`\`\``,
+    };
+  };
+
+  const selectedQuote = (): ComposerQuoteInput | null => {
+    if (!selectedRange) return null;
+    return formatRangeQuote(selectedRange.start, selectedRange.end);
+  };
+
+  const formatDragQuote = (): ComposerQuoteInput | null => {
+    if (!dragQuote || !view) return null;
+    if (view.kind === "text" && dragQuote.startLine !== null && dragQuote.endLine !== null) {
+      return formatRangeQuote(dragQuote.startLine, dragQuote.endLine);
+    }
+    const trimmed = dragQuote.text.trim();
+    const lines = trimmed.split(/\r?\n/);
+    const quoted = lines.map((line) => `> ${line}`).join("\n");
+    return {
+      label: view.name,
+      meta: lines.length > 1 ? `${lines.length} 行` : `${trimmed.length} 字`,
+      content: `请看 \`${view.path}\`：\n${quoted}`,
+    };
+  };
+
+  const syncDragQuote = () => {
+    const container = scrollRef.current;
+    const sel = window.getSelection();
+    if (!container || !sel || sel.isCollapsed || sel.rangeCount === 0 || !view || view.kind === "image" || view.kind === "binary") {
+      setDragQuote(null);
+      return;
+    }
+    const text = sel.toString().trim();
+    if (!text) {
+      setDragQuote(null);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (!container.contains(range.commonAncestorContainer)) {
+      setDragQuote(null);
+      return;
+    }
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      setDragQuote(null);
+      return;
+    }
+    let startLine = lineNumberOf(range.startContainer);
+    let endLine = lineNumberOf(range.endContainer);
+    if (startLine !== null && endLine !== null) {
+      if (startLine > endLine) [startLine, endLine] = [endLine, startLine];
+      // If selection ends at offset 0 of the next line's cell, don't include that trailing untouched line.
+      if (endLine > startLine && range.endOffset === 0) {
+        const endRow = range.endContainer instanceof HTMLElement ? range.endContainer.closest("[data-line]") : range.endContainer.parentElement?.closest("[data-line]");
+        if (endRow && range.endContainer === endRow.querySelector(".line-code")?.firstChild) {
+          endLine -= 1;
+        }
+      }
+    } else if (startLine !== null || endLine !== null) {
+      const only = startLine ?? endLine;
+      startLine = only;
+      endLine = only;
+    }
+    const below = rect.top < 76;
+    const top = below ? rect.bottom + 8 : rect.top - 8;
+    const left = Math.min(Math.max(rect.left + rect.width / 2, 160), window.innerWidth - 160);
+    setDragQuote({ text, startLine, endLine, top, left, below });
+  };
+
+  useEffect(() => {
+    if (!dragQuote) return;
+    const onSelectionChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+        setDragQuote(null);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDragQuote(null);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (quoteBarRef.current?.contains(event.target as Node)) return;
+      setDragQuote(null);
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [dragQuote]);
+
+  useEffect(() => {
+    setDragQuote(null);
+  }, [path, mode]);
+
+  const sendDragQuote = (target: "main" | "aside") => {
+    const quote = formatDragQuote();
+    if (!quote) return;
+    window.getSelection()?.removeAllRanges();
+    setDragQuote(null);
+    if (target === "main") onQuoteToMain(quote);
+    else onQuoteToAside?.(quote);
   };
 
   const segments = path.split("/");
@@ -218,10 +351,7 @@ export function CodeViewer({
                 if (!findOpen) requestAnimationFrame(() => findInputRef.current?.focus());
               }}
             >
-              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="7" cy="7" r="4.3" />
-                <path d="m10.2 10.2 3.3 3.3" />
-              </svg>
+              <Icon name="search" size={14} />
               <span className="sr-only">查找</span>
             </button>
           )}
@@ -231,9 +361,7 @@ export function CodeViewer({
             title="把此文件附入右侧旁聊"
             onClick={() => onAttachPath(path)}
           >
-            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M13 7.4 8 12.4a3 3 0 0 1-4.3-4.2l5.4-5.4a2 2 0 0 1 2.9 2.8L6.7 10.9a1 1 0 0 1-1.5-1.4l4.6-4.6" />
-            </svg>
+            <Icon name="paperclip" size={15} />
             <span className="sr-only">附入对话</span>
           </button>
           <button
@@ -244,15 +372,7 @@ export function CodeViewer({
               navigator.clipboard.writeText(path).then(() => flashCopied("path"), () => undefined);
             }}
           >
-            {copied === "path" ? (
-              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="m3 8.5 3.2 3L13 4.5" />
-              </svg>
-            ) : (
-              <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M6.5 9.5 9.5 6.5M5.2 7.3 3.7 8.8a2.1 2.1 0 0 0 3 3l1.5-1.5M10.8 8.7l1.5-1.5a2.1 2.1 0 0 0-3-3L7.8 5.7" />
-              </svg>
-            )}
+            <Icon name={copied === "path" ? "check-lg" : "link-45deg"} size={15} />
             <span className="sr-only">{copied === "path" ? "已复制路径" : "复制路径"}</span>
           </button>
           {view?.kind === "text" && (
@@ -264,16 +384,7 @@ export function CodeViewer({
                 navigator.clipboard.writeText(view.content).then(() => flashCopied("content"), () => undefined);
               }}
             >
-              {copied === "content" ? (
-                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="m3 8.5 3.2 3L13 4.5" />
-                </svg>
-              ) : (
-                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" />
-                  <path d="M10.5 5.5V3.7a1.2 1.2 0 0 0-1.2-1.2H3.7a1.2 1.2 0 0 0-1.2 1.2v5.6a1.2 1.2 0 0 0 1.2 1.2h1.8" />
-                </svg>
-              )}
+              <Icon name={copied === "content" ? "check-lg" : "copy"} size={14} />
               <span className="sr-only">{copied === "content" ? "已复制全文" : "复制全文"}</span>
             </button>
           )}
@@ -283,9 +394,7 @@ export function CodeViewer({
             title="用系统默认程序打开"
             onClick={() => api.openWorkspaceEntry(sessionId, path, false).catch((err) => onError(String(err)))}
           >
-            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4H2.5V4H6.5" />
-            </svg>
+            <Icon name="box-arrow-up-right" size={14} />
             <span className="sr-only">外部打开</span>
           </button>
           <button
@@ -294,9 +403,7 @@ export function CodeViewer({
             title="在文件夹中显示"
             onClick={() => api.openWorkspaceEntry(sessionId, path, true).catch((err) => onError(String(err)))}
           >
-            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
-            </svg>
+            <Icon name="folder2-open" size={14} />
             <span className="sr-only">在文件夹中显示</span>
           </button>
         </div>
@@ -335,9 +442,7 @@ export function CodeViewer({
               title="上一处 (Shift+Enter)"
               onClick={() => setFindIndex((cur) => (cur - 1 + matches.length) % matches.length)}
             >
-              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M8 12.5v-9M4.2 7.3 8 3.5l3.8 3.8" />
-              </svg>
+              <Icon name="arrow-up" size={13} />
               <span className="sr-only">上一处</span>
             </button>
             <button
@@ -347,15 +452,11 @@ export function CodeViewer({
               title="下一处 (Enter)"
               onClick={() => setFindIndex((cur) => (cur + 1) % matches.length)}
             >
-              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M8 3.5v9M4.2 8.7 8 12.5l3.8-3.8" />
-              </svg>
+              <Icon name="arrow-down" size={13} />
               <span className="sr-only">下一处</span>
             </button>
             <button type="button" className="viewer-find-btn" title="关闭查找 (Esc)" onClick={() => setFindOpen(false)}>
-              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
-              </svg>
+              <Icon name="x-lg" size={12} />
               <span className="sr-only">关闭查找</span>
             </button>
           </div>
@@ -372,10 +473,25 @@ export function CodeViewer({
             <button
               type="button"
               className="button primary small"
-              onClick={() => onQuoteLines(selectedSnippet())}
+              onClick={() => {
+                const quote = selectedQuote();
+                if (quote) onQuoteToMain(quote);
+              }}
             >
-              引用到对话
+              引用到分身
             </button>
+            {onQuoteToAside && (
+              <button
+                type="button"
+                className="button outline small"
+                onClick={() => {
+                  const quote = selectedQuote();
+                  if (quote) onQuoteToAside(quote);
+                }}
+              >
+                旁聊提问
+              </button>
+            )}
             <button
               type="button"
               className="button outline small"
@@ -393,7 +509,15 @@ export function CodeViewer({
         </div>
       )}
 
-      <div ref={scrollRef} className="viewer-body">
+      <div
+        ref={scrollRef}
+        className="viewer-body"
+        onMouseUp={() => requestAnimationFrame(syncDragQuote)}
+        onKeyUp={() => requestAnimationFrame(syncDragQuote)}
+        onScroll={() => {
+          if (dragQuote) setDragQuote(null);
+        }}
+      >
         {loading ? (
           <div className="viewer-placeholder muted">正在读取文件…</div>
         ) : loadError ? (
@@ -509,6 +633,49 @@ export function CodeViewer({
           </div>
         )}
       </div>
+      {dragQuote && view && (
+        <div
+          ref={quoteBarRef}
+          className={`selection-quote-bar ${dragQuote.below ? "below" : "above"}`}
+          style={{ top: `${dragQuote.top}px`, left: `${dragQuote.left}px` }}
+          role="toolbar"
+          aria-label="引用选中代码"
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <span className="selection-quote-loc mono" title={view.path}>
+            {view.name}
+            {dragQuote.startLine !== null && dragQuote.endLine !== null
+              ? dragQuote.startLine === dragQuote.endLine
+                ? `:L${dragQuote.startLine}`
+                : `:L${dragQuote.startLine}-${dragQuote.endLine}`
+              : ""}
+          </span>
+          <span className="selection-quote-sep" aria-hidden="true" />
+          <button
+            type="button"
+            className="selection-quote-btn"
+            title="将文件路径与选中行填入分身输入框"
+            onClick={() => sendDragQuote("main")}
+          >
+            <Icon name="quote" size={13} />
+            <span>引用到分身</span>
+          </button>
+          {onQuoteToAside && (
+            <>
+              <span className="selection-quote-sep" aria-hidden="true" />
+              <button
+                type="button"
+                className="selection-quote-btn"
+                title="打开侧边栏旁聊并引用选中行提问"
+                onClick={() => sendDragQuote("aside")}
+              >
+                <Icon name="chat-left-quote" size={13} />
+                <span>旁聊提问</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

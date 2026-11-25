@@ -4,12 +4,10 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import type { ToolItem } from "../lib/fold";
 import type { PtyInfo } from "../lib/types";
 
 export interface TerminalPaneProps {
   sessionId: string;
-  runs: ToolItem[];
   onSendToChat: (quote: string) => void;
   onError: (message: string) => void;
 }
@@ -89,8 +87,7 @@ interface MountedTerm {
   host: HTMLDivElement;
 }
 
-export default function TerminalPane({ sessionId, runs, onSendToChat, onError }: TerminalPaneProps) {
-  const [viewMode, setViewMode] = useState<"pty" | "agent">("pty");
+export default function TerminalPane({ sessionId, onSendToChat, onError }: TerminalPaneProps) {
   const [ptys, setPtys] = useState<PtyInfo[]>([]);
   const [activePtyId, setActivePtyId] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState<string>("");
@@ -195,7 +192,6 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
       if (mounted) attachTerminal(info, mounted, earlier);
       setPtys((prev) => [...prev, info]);
       setActivePtyId(info.id);
-      setViewMode("pty");
       if (mounted) mounted.term.focus();
       else requestAnimationFrame(() => ensureTerminalInstance(info)?.term.focus());
     } catch (err) {
@@ -291,10 +287,10 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
     };
   }, [sessionId]);
 
-  // Sync visibility and fit active terminal whenever activePtyId or viewMode changes.
+  // Sync visibility and fit active terminal whenever activePtyId changes.
   useEffect(() => {
     for (const [id, inst] of mountedRef.current) {
-      const visible = viewMode === "pty" && id === activePtyId;
+      const visible = id === activePtyId;
       inst.host.style.display = visible ? "block" : "none";
       if (visible) {
         setSelectedText(inst.term.getSelection().trim());
@@ -311,7 +307,7 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
         });
       }
     }
-  }, [activePtyId, viewMode, ptys.length]);
+  }, [activePtyId, ptys.length]);
 
   // ResizeObserver on stage container so dragging SidePanel width updates PTY cols/rows.
   useEffect(() => {
@@ -386,7 +382,7 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
       <div className="term-bar">
         <div className="term-tabs" role="tablist" aria-label="终端实例">
           {ptys.map((p) => {
-            const active = viewMode === "pty" && p.id === activePtyId;
+            const active = p.id === activePtyId;
             return (
               <div key={p.id} className={`term-tab ${active ? "active" : ""} ${p.exited !== null ? "exited" : ""}`}>
                 <button
@@ -395,10 +391,7 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
                   aria-selected={active}
                   className="term-tab-btn"
                   title={p.cwd}
-                  onClick={() => {
-                    setViewMode("pty");
-                    setActivePtyId(p.id);
-                  }}
+                  onClick={() => setActivePtyId(p.id)}
                 >
                   <span>{p.title}</span>
                 </button>
@@ -429,7 +422,7 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
         </div>
 
         <div className="term-acts">
-          {viewMode === "pty" && selectedText && (
+          {selectedText && (
             <button
               type="button"
               className="button primary small"
@@ -439,28 +432,15 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
               发给分身
             </button>
           )}
-          {viewMode === "pty" && activePtyId && (
+          {activePtyId && (
             <button type="button" className="button text small" title="清屏" onClick={clearActive}>
               清屏
             </button>
           )}
-          <button
-            type="button"
-            className={`term-log-switch ${viewMode === "agent" ? "active" : ""}`}
-            aria-pressed={viewMode === "agent"}
-            title="查看分身执行过的命令记录"
-            onClick={() => setViewMode((m) => (m === "agent" ? "pty" : "agent"))}
-          >
-            分身命令{runs.length > 0 ? ` (${runs.length})` : ""}
-          </button>
         </div>
       </div>
 
-      <div
-        ref={stageRef}
-        className="term-stage"
-        style={{ display: viewMode === "pty" ? "flex" : "none" }}
-      >
+      <div ref={stageRef} className="term-stage" style={{ display: "flex" }}>
         {ptys.length === 0 && !spawning && (
           <div className="viewer-placeholder term-empty">
             <p className="muted">当前没有打开的终端。</p>
@@ -470,54 +450,6 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
           </div>
         )}
       </div>
-
-      {viewMode === "agent" && (
-        <div className="panel-body term-runs">
-          {runs.length === 0 && <p className="muted">分身还没有运行过命令。</p>}
-          {runs.map((run) => {
-            const meta = run.result!.meta!;
-            const cmdLine = `${meta.cwd ? `[${meta.cwd}] ` : ""}${meta.command ?? ""}`.replace(/\s+/g, " ").trim();
-            const failed = Boolean(meta.stopped) || (!meta.background && !meta.running && meta.exit_code !== 0);
-            const outputLines = meta.output ? meta.output.replace(/\n$/, "").split("\n").length : 0;
-            const badge = meta.stopped
-              ? meta.stopped === "timed out"
-                ? "超时"
-                : "已停止"
-              : run.name === "run_command" && meta.background
-                ? `后台 #${meta.job}`
-                : meta.running
-                  ? "运行中"
-                  : meta.exit_code !== 0
-                    ? `退出 ${meta.exit_code ?? "?"}`
-                    : outputLines > 0
-                      ? `${outputLines} 行`
-                      : "成功";
-            return (
-              <details className="term-run" key={run.id}>
-                <summary className="term-run-head" title={cmdLine}>
-                  <span className="term-run-chevron" aria-hidden="true">
-                    ▸
-                  </span>
-                  <span className="prompt">$</span>
-                  <span className="term-run-cmd">{cmdLine}</span>
-                  <span className={`term-run-status ${failed ? "failed" : "muted"}`}>{badge}</span>
-                </summary>
-                <pre className="terminal term-run-body">
-                  <span className="prompt">$</span> {meta.cwd ? `[${meta.cwd}] ` : ""}
-                  {meta.command}
-                  {run.name === "run_command" && meta.background ? <span className="muted">{`\n[后台运行，编号 ${meta.job}]`}</span> : null}
-                  {run.name !== "run_command" ? <span className="muted">{`  （${meta.job}${run.name === "stop_command" ? "，停止" : ""}）`}</span> : null}
-                  {meta.output ? `\n${meta.output}` : ""}
-                  {meta.stopped ? <span className="failed">{`\n[${meta.stopped === "timed out" ? "超时停止" : "已停止"}]`}</span> : null}
-                  {!meta.stopped && !meta.background && !meta.running && meta.exit_code !== 0 ? (
-                    <span className="failed">{`\n[退出码 ${meta.exit_code ?? "未知"}]`}</span>
-                  ) : null}
-                </pre>
-              </details>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

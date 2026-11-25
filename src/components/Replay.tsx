@@ -1,4 +1,5 @@
 import { stepped } from "../lib/replay";
+import { Icon } from "./Icon";
 
 /** How fast a replay can go: steps a second, roughly. */
 export const SPEEDS = [1, 2, 4];
@@ -19,12 +20,6 @@ interface Props {
   onSpeed: (speed: number) => void;
   onExit: () => void;
 }
-
-const icon = (path: string, filled = false) => (
-  <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-    <path d={path} />
-  </svg>
-);
 
 /**
  * The bar that stands where the message box does while a session is replayed:
@@ -62,11 +57,11 @@ export function ReplayBar({ at, count, playing, speed, turn, time, onSeek, onPla
         />
         <div className="replay-row">
           <button type="button" className="icon-button" title="回到开头" disabled={at === 0} onClick={() => step(-count)}>
-            {icon("M4 3.5v9M12.5 3.5 6.5 8l6 4.5z")}
+            <Icon name="skip-start-fill" size={16} />
             <span className="sr-only">回到开头</span>
           </button>
           <button type="button" className="icon-button" title="上一步" disabled={at === 0} onClick={() => step(-1)}>
-            {icon("M10.5 3.5 5 8l5.5 4.5")}
+            <Icon name="chevron-left" size={15} />
             <span className="sr-only">上一步</span>
           </button>
           <button
@@ -79,11 +74,11 @@ export function ReplayBar({ at, count, playing, speed, turn, time, onSeek, onPla
               onPlaying(!playing);
             }}
           >
-            {playing ? icon("M5.5 3.5v9M10.5 3.5v9") : icon("M5 3.2 12.5 8 5 12.8z", true)}
+            <Icon name={playing ? "pause-fill" : "play-fill"} size={16} />
             <span className="sr-only">{playing ? "暂停" : "播放"}</span>
           </button>
           <button type="button" className="icon-button" title="下一步" disabled={atEnd} onClick={() => step(1)}>
-            {icon("M5.5 3.5 11 8l-5.5 4.5")}
+            <Icon name="chevron-right" size={15} />
             <span className="sr-only">下一步</span>
           </button>
           <span className="replay-where">
@@ -95,7 +90,7 @@ export function ReplayBar({ at, count, playing, speed, turn, time, onSeek, onPla
             <span className="sr-only">快慢 {speed} 倍</span>
           </button>
           <button type="button" className="icon-button" title="退出回溯，回到现在" onClick={onExit}>
-            {icon("M4.6 4.6h6.8v6.8H4.6z", true)}
+            <Icon name="stop-fill" size={15} />
             <span className="sr-only">退出回溯</span>
           </button>
         </div>

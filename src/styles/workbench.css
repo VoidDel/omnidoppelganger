@@ -164,10 +164,12 @@
   min-height: 0;
   overflow-y: auto;
   margin: 0 -6px;
-  padding: 0 6px;
+  padding: 0 6px 18px;
   display: flex;
   flex-direction: column;
   gap: 1px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
 }
 
 .explorer-empty {
@@ -1169,7 +1171,8 @@
   gap: 2px;
 }
 
-.git-file-row .tree-git {
+.git-file-row .tree-git,
+.git-commit-file .tree-git {
   margin-left: 0;
   min-width: 14px;
   text-align: center;
@@ -1343,6 +1346,9 @@
 }
 
 .git-commit-file {
+  flex: none;
+  min-height: 24px;
+  padding: 2px 6px;
   border-radius: var(--r-control);
 }
 
@@ -1605,4 +1611,192 @@ button.diff-no.new:hover:not(:disabled) {
    lines: what is left at the bottom showed as a black strip. It takes the terminal's background instead. */
 .xterm-instance .xterm .xterm-viewport {
   background-color: var(--term-bg);
+}
+
+/* Background jobs live viewer & manager inside TerminalPane */
+.job-live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--jade);
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+.term-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.term-job-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  overflow: hidden;
+}
+
+.term-job-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+
+.term-job-toggle {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.job-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.job-dot.running {
+  background: var(--jade);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--jade) 22%, transparent);
+}
+
+.job-dot.failed {
+  background: var(--cinnabar);
+}
+
+.job-dot.ended {
+  background: var(--ink-2);
+  opacity: 0.55;
+}
+
+.term-job-id {
+  flex: none;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+}
+
+.term-job-cmd {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-job-meta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-micro);
+}
+
+.term-run-status.running {
+  color: var(--jade);
+  font-weight: 600;
+}
+
+.term-job-body {
+  border-top: 1px solid var(--line);
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.term-job-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--t-micro);
+}
+
+.term-job-toolbar-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.term-job-log {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.term-job-stdin {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.term-job-stdin .input {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-micro);
+  padding: 4px 8px;
+}
+
+/* File explorer context menu (right-click) */
+.tree-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 184px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--sheet);
+  box-shadow: 0 10px 28px rgb(16 27 29 / 0.24);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: bubble-in var(--d-quick) var(--ease-out);
+}
+
+.tree-context-item {
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--t-small);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--d-quick) ease, color var(--d-quick) ease;
+}
+
+.tree-context-item:hover {
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+}
+
+.tree-context-item.danger {
+  color: var(--cinnabar-ink);
+}
+
+.tree-context-item.danger:hover {
+  background: color-mix(in srgb, var(--cinnabar) 14%, transparent);
+  color: var(--cinnabar-ink);
+}
+
+.tree-context-sep {
+  height: 1px;
+  margin: 3px 6px;
+  background: var(--line);
 }

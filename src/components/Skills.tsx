@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { ListedSkill, SkillsView } from "../lib/types";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { FormDialog, Row } from "./FormDialog";
+import { Icon } from "./Icon";
 import { Info } from "./Hint";
 
 /** How each 秘籍 that comes with the app is called and sealed. */
@@ -81,9 +82,7 @@ function Card({ skill, held, onChange }: CardProps) {
           </label>
         ) : (
           <button type="button" className="icon-button danger" aria-expanded={confirming} title="删掉这部秘籍" disabled={held} onClick={() => setConfirming(!confirming)}>
-            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M2.8 4.3h10.4M6.2 4.3V2.8h3.6v1.5M4.1 4.3l.6 8.9h6.6l.6-8.9M6.6 6.8v4M9.4 6.8v4" />
-            </svg>
+            <Icon name="trash3" size={14} />
             <span className="sr-only">删掉 {skill.name}</span>
           </button>
         )}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Icon } from "./Icon";
 
 interface ComboProps {
   id: string;
@@ -81,9 +82,7 @@ export function Combo({ id, value, options, editable, mono, placeholder, onSave 
           }
         }}
       />
-      <svg className="combo-mark" aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-        <path d="m4 6 4 4 4-4" />
-      </svg>
+      <Icon name="chevron-down" size={12} className="combo-mark" />
       {open && (
         <ul id={`${id}-list`} className="combo-list" role="listbox">
           {shown.map((option, index) => (

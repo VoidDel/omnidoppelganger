@@ -3,6 +3,7 @@ import pkg from "../../package.json";
 import type { SessionItem } from "../lib/types";
 import { ago } from "../lib/when";
 import { Logo } from "./Backdrop";
+import { Icon } from "./Icon";
 import { Light } from "./Light";
 
 const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
@@ -80,11 +81,7 @@ function useFolded() {
 }
 
 /** A word said, in a bubble: a conversation. */
-export const CHAT_ICON = (
-  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
-    <path d="M2.5 3.5h11v7.5H7.5l-3 2.5V11h-2z" />
-  </svg>
-);
+export const CHAT_ICON = <Icon name="chat-left-text" size={15} />;
 
 export function Sidebar({
   sessions,
@@ -272,9 +269,7 @@ export function Sidebar({
           {/* Work in a folder, or just talk: a 分身 for a project, or one in the folder kept for conversations. */}
           <div className="sidebar-new">
         <button type="button" className="button primary" onClick={onNew}>
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-            <path d="M8 3v10M3 8h10" />
-          </svg>
+          <Icon name="plus-lg" size={14} />
           开辟洞府
         </button>
         <button type="button" className="button outline" title="闲谈：不选文件夹，直接和分身说话" onClick={onChat}>
@@ -315,9 +310,7 @@ export function Sidebar({
             <div className={`group ${closed ? "closed" : ""}`} key={workspace}>
               <div className="group-head">
                 <button type="button" className="group-name" title={`${workspace}\n点一下${closed ? "展开" : "收起"}这处洞府的分身`} aria-expanded={!closed} disabled={!!found} onClick={() => toggleFolded(workspace)}>
-                  <svg className="group-caret" aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 2l3.5 3L3 8" />
-                  </svg>
+                  <Icon name="chevron-right" size={10} className="group-caret" />
                   <span className="group-label">{baseName(workspace)}</span>
                   {/* Put away, the 洞府 still says how many are in it, and whether any is at work or waiting. */}
                   {closed && (
@@ -337,18 +330,11 @@ export function Sidebar({
                     aria-label={`在 ${baseName(workspace)} 化一个用独立工作树的分身`}
                     onClick={() => (closed && toggleFolded(workspace), onNewIn(workspace, true))}
                   >
-                    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                      <circle cx="4.5" cy="3.5" r="1.7" />
-                      <circle cx="4.5" cy="12.5" r="1.7" />
-                      <circle cx="11.5" cy="5.5" r="1.7" />
-                      <path d="M4.5 5.2v5.6M11.5 7.2c0 2.6-7 1.6-7 3.6" />
-                    </svg>
+                    <Icon name="diagram-2" size={14} />
                   </button>
                 )}
                 <button type="button" className="group-add" title={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} aria-label={`在 ${baseName(workspace)} 这处洞府里再化一个分身`} onClick={() => (closed && toggleFolded(workspace), onNewIn(workspace, false))}>
-                  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                    <path d="M8 3v10M3 8h10" />
-                  </svg>
+                  <Icon name="plus-lg" size={13} />
                 </button>
               </div>
               {!closed &&
@@ -434,11 +420,7 @@ export function Sidebar({
                             openMenu(session.id, rect.right, rect.bottom + 4);
                           }}
                         >
-                          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                            <circle cx="3.5" cy="8" r="1.25" />
-                            <circle cx="8" cy="8" r="1.25" />
-                            <circle cx="12.5" cy="8" r="1.25" />
-                          </svg>
+                          <Icon name="three-dots" size={14} />
                         </button>
                       )}
                     </div>
@@ -453,31 +435,19 @@ export function Sidebar({
       {/* The pages at the foot, close together: one group, apart from the 分身 above. */}
       <div className="sidebar-foot">
         <button type="button" className="row-button" aria-current={page === "skills" ? "page" : undefined} title="秘籍：分身遇到对得上的事才研读的做事说明" onClick={onSkills}>
-          {/* A bound book, open at its spine: a 秘籍. */}
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 4c-1.6-1.2-3.6-1.5-5.5-1.2v9.8c1.9-.3 3.9 0 5.5 1.2 1.6-1.2 3.6-1.5 5.5-1.2V2.8C11.6 2.5 9.6 2.8 8 4zM8 4v9.6" />
-          </svg>
+          <Icon name="book" size={15} />
           秘籍
         </button>
         <button type="button" className="row-button" aria-current={page === "mcp" ? "page" : undefined} title="法器：给分身添上本事的 MCP 服务" onClick={onMcp}>
-          {/* A bell of bronze hung from its loop: a 法器. */}
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 1.8v1.4M4.6 11.5V7.4a3.4 3.4 0 0 1 6.8 0v4.1M3 11.5h10M6.6 13.6a1.5 1.5 0 0 0 2.8 0" />
-          </svg>
+          <Icon name="bell" size={15} />
           法器
         </button>
         <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title="功课：到了时辰，自行化出分身去办" onClick={onSchedules}>
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="8" r="6" />
-            <path d="M8 4.5V8l2.5 1.5" />
-          </svg>
+          <Icon name="clock" size={15} />
           功课
         </button>
         <button type="button" className="row-button" aria-current={page === "settings" ? "page" : undefined} onClick={onSettings}>
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <circle cx="8" cy="8" r="2.2" />
-            <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
-          </svg>
+          <Icon name="gear" size={15} />
           设置
         </button>
       </div>

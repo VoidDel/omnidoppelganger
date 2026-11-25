@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { MODES, modeOf } from "../lib/modes";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
+import { Icon } from "./Icon";
 import { WEEKDAYS, blank, clock, describeWhen, draftOf, scheduleOf, type Draft } from "../lib/schedule";
 import type { Mode, Schedule, SessionItem } from "../lib/types";
 import { ahead } from "../lib/when";
@@ -243,9 +244,7 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
                   <>
                       {/* Pictures, each named in its title and for a screen reader. */}
                       <button type="button" className="icon-button" title="现在就办：不等时辰，现在就化一个分身去办；下次的时辰照旧" onClick={() => act(onRun(schedule.id))}>
-                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
-                          <path d="M5 3.2v9.6L12.6 8z" />
-                        </svg>
+                        <Icon name="play-fill" size={15} />
                         <span className="sr-only">现在就办</span>
                       </button>
                       <button
@@ -254,21 +253,11 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
                         title={schedule.enabled ? "停课：先停下，留着不删" : "复课：接着按时辰办"}
                         onClick={() => act(onSave({ ...schedule, enabled: !schedule.enabled }))}
                       >
-                        {schedule.enabled ? (
-                          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                            <path d="M5.5 3.5v9M10.5 3.5v9" />
-                          </svg>
-                        ) : (
-                          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.4h-2.4" />
-                          </svg>
-                        )}
+                        <Icon name={schedule.enabled ? "pause-fill" : "arrow-clockwise"} size={15} />
                         <span className="sr-only">{schedule.enabled ? "停课" : "复课"}</span>
                       </button>
                       <button type="button" className="icon-button" title="改这门功课" onClick={() => setDraft(draftOf(schedule, new Date()))}>
-                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M10.8 2.6l2.6 2.6-7.6 7.6-3.3.7.7-3.3zM9.4 4l2.6 2.6" />
-                        </svg>
+                        <Icon name="pencil" size={14} />
                         <span className="sr-only">改</span>
                       </button>
                       <span className="bubble-anchor">
@@ -279,9 +268,7 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
                           title="删除这门功课"
                           onClick={() => setDeleting(deleting === schedule.id ? null : schedule.id)}
                         >
-                          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M2.8 4.2h10.4M6.2 4.2V2.8h3.6v1.4M4.2 4.2l.7 9h6.2l.7-9M6.7 6.7v4.2M9.3 6.7v4.2" />
-                          </svg>
+                          <Icon name="trash3" size={14} />
                           <span className="sr-only">删除</span>
                         </button>
                         {deleting === schedule.id && (

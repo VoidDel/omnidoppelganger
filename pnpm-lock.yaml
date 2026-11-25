@@ -32,6 +32,9 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
+      bootstrap-icons:
+        specifier: ^1.13.2
+        version: 1.13.2
       highlight.js:
         specifier: 11.11.2
         version: 11.11.2
@@ -403,6 +406,9 @@ packages:
 
   bail@2.0.2:
     resolution: {integrity: sha512-0xO6mYd7JB2YesxDKplafRpsiOzPt9V02ddPCLbY1xYGPOX24NTyN50qnUxgCPcSoYMhKpAuBTjQoRZCAkUDRw==}
+
+  bootstrap-icons@1.13.2:
+    resolution: {integrity: sha512-fAU1Ly3dH7hwRg+CB8EZ0Vl0fF80zgXHeUVJyfUOKzoURr+TbwISbCW5tKUoQLERaWYG2emTCybcPbD96hdD1A==}
 
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
@@ -1253,6 +1259,8 @@ snapshots:
   assertion-error@2.0.1: {}
 
   bail@2.0.2: {}
+
+  bootstrap-icons@1.13.2: {}
 
   ccount@2.0.1: {}
 

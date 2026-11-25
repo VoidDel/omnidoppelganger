@@ -1,6 +1,8 @@
 import { type ReactNode, useState } from "react";
 import type { Status } from "../lib/types";
 import { CodeViewer } from "./CodeViewer";
+import { Icon } from "./Icon";
+import type { ComposerQuoteInput } from "./Composer";
 
 export type WorkbenchTab =
   | {
@@ -56,9 +58,7 @@ export function WorkbenchTabsBar({
       <div className="workbench-tabs" role="tablist" aria-label="对话与已打开的文件标签">
         <div role="tab" aria-selected={!inWorkbench} className={`wb-tab wb-tab-chat ${!inWorkbench ? "active" : ""}`}>
           <button type="button" className="wb-tab-label" title="主分身对话（固定在首位，不可移动或关闭）" onClick={onSelectChat}>
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M2.3 3.2h11.4v7.6H7.4l-3.1 2.4v-2.4H2.3z" />
-            </svg>
+            <Icon name="chat-left-text" size={13} />
             <span className="wb-tab-name">对话</span>
             {inWorkbench && chatStatus === "waiting_approval" && <span className="seal small">候</span>}
             {inWorkbench && chatStatus === "running" && <span className="dot busy" title="分身运功中" />}
@@ -169,7 +169,8 @@ export interface WorkbenchProps {
   tabs: WorkbenchTab[];
   activeTabId: string | null;
   refreshTick?: number;
-  onQuoteLines: (quoteText: string) => void;
+  onQuoteToMain: (quote: ComposerQuoteInput) => void;
+  onQuoteToAside?: (quote: ComposerQuoteInput) => void;
   onAttachPath: (relPath: string) => void;
   onError: (message: string) => void;
   renderDiff?: (tab: Extract<WorkbenchTab, { kind: "diff" }>) => ReactNode;
@@ -180,7 +181,8 @@ export function Workbench({
   tabs,
   activeTabId,
   refreshTick = 0,
-  onQuoteLines,
+  onQuoteToMain,
+  onQuoteToAside,
   onAttachPath,
   onError,
   renderDiff,
@@ -200,7 +202,8 @@ export function Workbench({
             targetLine={active.line}
             jumpSeq={active.jumpSeq}
             refreshTick={refreshTick}
-            onQuoteLines={onQuoteLines}
+            onQuoteToMain={onQuoteToMain}
+            onQuoteToAside={onQuoteToAside}
             onAttachPath={onAttachPath}
             onError={onError}
           />

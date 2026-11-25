@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ClipboardEvent, type ReactNode } from "react";
+import { Icon } from "./Icon";
 
 interface FormDialogProps<Mode extends string> {
   /** The character on the seal at the head. */
@@ -124,9 +125,7 @@ export function Pairs({
           <input className="input mono" aria-label={`${what}名`} placeholder={keyHolder} value={key} onChange={(event) => set(index, 0, event.target.value)} />
           <input className="input mono" aria-label={`${what}值`} placeholder={valueHolder} value={value} onChange={(event) => set(index, 1, event.target.value)} />
           <button type="button" className="icon-button" title={`去掉这个${what}`} onClick={() => onChange(rows.filter((_, i) => i !== index))}>
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-              <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
-            </svg>
+            <Icon name="x-lg" size={12} />
             <span className="sr-only">去掉</span>
           </button>
         </div>

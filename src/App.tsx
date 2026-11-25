@@ -5,8 +5,9 @@ import { Jump } from "./components/Jump";
 import { McpPage } from "./components/Mcp";
 import { SkillsPage } from "./components/Skills";
 import { AsidePane } from "./components/AsidePane";
+import { AgentJobsPane } from "./components/AgentJobsPane";
 import { Logo, Mountains } from "./components/Backdrop";
-import { Composer, type ComposerDraft } from "./components/Composer";
+import { Composer, type ComposerDraft, type ComposerQuoteInput, type ComposerSeed } from "./components/Composer";
 import { DiffViewer } from "./components/DiffViewer";
 import { FileTree, type GitBadge } from "./components/FileTree";
 import { GitPanel } from "./components/GitPanel";
@@ -346,7 +347,7 @@ export default function App() {
   /** What the page shows: the whole log, or in a replay the log as far as the stop it is at. */
   const shown = useMemo(() => (replay ? state.events.slice(0, (stops[replay.at] ?? -1) + 1) : state.events), [replay?.at, !replay, state.events, stops]);
   /** Words or file attachments to inject into the message box. */
-  const [seed, setSeed] = useState<{ id: number; text?: string; append?: boolean; attachPaths?: string[] } | null>(null);
+  const [seed, setSeed] = useState<ComposerSeed | null>(null);
   /** Shared composer drafts by session id so toggling center/side chat keeps typed words and attachments intact. */
   const draftsRef = useRef<Map<string, ComposerDraft>>(new Map());
 
@@ -738,27 +739,57 @@ export default function App() {
     setPeek(false);
     setDrawerOpen(false);
   }, [state.activeId]);
-  const strip = !compactLayout && (panel.hidden || (files.length === 0 && runs.length === 0 && plan.length === 0 && made.length === 0 && !peek));
+  const strip = !compactLayout && (panel.hidden || (made.length === 0 && plan.length === 0 && !peek));
   const panelHidden = compactLayout ? !drawerOpen : strip;
   const showPanel = inChat && !!active && (!compactLayout || drawerOpen);
 
   /** Words or files for the side conversation's box: what is quoted from the code while the code is in the middle. */
-  const [asideSeed, setAsideSeed] = useState<{ id: number; text?: string; append?: boolean; attachPaths?: string[] } | null>(null);
+  const [asideSeed, setAsideSeed] = useState<ComposerSeed | null>(null);
+
+  const normalizeQuote = useCallback((input: string | ComposerQuoteInput): ComposerQuoteInput => {
+    if (typeof input !== "string") return input;
+    const trimmed = input.trim();
+    const lines = trimmed.split(/\r?\n/);
+    const label = trimmed.startsWith("后台任务")
+      ? "后台任务日志"
+      : trimmed.includes("终端")
+        ? "终端输出"
+        : trimmed.startsWith("请看 `")
+          ? trimmed.slice(4, trimmed.indexOf("`", 4) > 4 ? trimmed.indexOf("`", 4) : 24)
+          : "引用内容";
+    return { label, meta: lines.length > 1 ? `${lines.length} 行` : `${trimmed.length} 字`, content: trimmed };
+  }, []);
+
+  const quoteIntoMain = useCallback(
+    (input: string | ComposerQuoteInput) => {
+      if (showWorkbench) setInWorkbench(false);
+      setSeed({ id: Date.now(), quote: normalizeQuote(input) });
+    },
+    [showWorkbench, normalizeQuote],
+  );
+
+  const quoteIntoAside = useCallback(
+    (input: string | ComposerQuoteInput) => {
+      if (!canAside) return;
+      setAsideSeed({ id: Date.now(), quote: normalizeQuote(input) });
+      setPanel((cur) => ({ ...cur, hidden: false }));
+      setDrawerOpen(true);
+      setPeek(true);
+      setSummonPanelTab({ id: Date.now(), tab: "chat" });
+    },
+    [canAside, setPanel, normalizeQuote],
+  );
+
   /** What is quoted or attached goes to the box on screen: the side conversation's while the code is in the middle. */
   const quoteIntoChat = useCallback(
-    (quoteText: string) => {
+    (input: string | ComposerQuoteInput) => {
       if (showWorkbench && canAside) {
-        setAsideSeed({ id: Date.now(), text: quoteText, append: true });
-        setPanel((cur) => ({ ...cur, hidden: false }));
-        setDrawerOpen(true);
-        setPeek(true);
-        setSummonPanelTab({ id: Date.now(), tab: "chat" });
+        quoteIntoAside(input);
       } else {
-        if (showWorkbench) setInWorkbench(false);
-        setSeed({ id: Date.now(), text: quoteText, append: true });
+        quoteIntoMain(input);
       }
     },
-    [showWorkbench, canAside, setPanel],
+    [showWorkbench, canAside, quoteIntoAside, quoteIntoMain],
   );
 
   const attachIntoChat = useCallback(
@@ -1021,6 +1052,8 @@ export default function App() {
             onPicture={pictureOf}
             versionOf={versionOf}
             onDeliverNow={replay ? undefined : () => api.deliverQueued(active.id).catch(fail)}
+            onQuoteToMain={replay ? undefined : quoteIntoMain}
+            onQuoteToAside={canAside ? quoteIntoAside : undefined}
           />
         </Guard>
       )}
@@ -1044,6 +1077,7 @@ export default function App() {
           <Composer
             key={active.id}
             sessionKey={active.id}
+            workspace={active.workspace}
             drafts={draftsRef.current}
             status={state.status}
             providers={providers}
@@ -1133,6 +1167,7 @@ export default function App() {
               isProjectSession && active ? (
                 <GitPanel
                   sessionId={active.id}
+                  workspace={active.workspace}
                   isWorktree={!!active.worktree}
                   status={gitState}
                   onSelectRepo={(repo) => setSelectedGitRepo(repo)}
@@ -1322,7 +1357,8 @@ export default function App() {
                   tabs={wbTabs}
                   activeTabId={activeTabId}
                   refreshTick={fsRefreshTick}
-                  onQuoteLines={quoteIntoChat}
+                  onQuoteToMain={quoteIntoMain}
+                  onQuoteToAside={canAside ? quoteIntoAside : undefined}
                   onAttachPath={(relPath) => {
                     const sep = active.workspace.includes("\\") ? "\\" : "/";
                     const abs = `${active.workspace.replace(/[\\/]+$/, "")}${sep}${relPath.replace(/\//g, sep)}`;
@@ -1338,7 +1374,8 @@ export default function App() {
                       commit={tab.commit}
                       refreshTick={gitRefreshTick}
                       onOpenSource={(relPath, line) => openWorkbenchFile(relPath, false, line)}
-                      onQuoteDiff={quoteIntoChat}
+                      onQuoteToMain={quoteIntoMain}
+                      onQuoteToAside={canAside ? quoteIntoAside : undefined}
                     />
                   )}
                 />
@@ -1491,6 +1528,7 @@ export default function App() {
                         <Composer
                           key={aside.id}
                           sessionKey={aside.id}
+                          workspace={aside.workspace}
                           drafts={draftsRef.current}
                           status={asideStatus}
                           providers={providers}
@@ -1544,12 +1582,21 @@ export default function App() {
                   )
                 : undefined
             }
+            jobsPane={
+              active && !replay ? (
+                <AgentJobsPane
+                  sessionId={active.id}
+                  runs={runs}
+                  onSendToChat={quoteIntoChat}
+                  onError={fail}
+                />
+              ) : undefined
+            }
             terminalPane={
               active && !replay ? (
-                <Suspense fallback={<div className="viewer-placeholder muted">正在加载终端…</div>}>
+                <Suspense fallback={<div className="viewer-placeholder muted">正在加载用户终端…</div>}>
                   <TerminalPane
                     sessionId={active.id}
-                    runs={runs}
                     onSendToChat={quoteIntoChat}
                     onError={fail}
                   />
