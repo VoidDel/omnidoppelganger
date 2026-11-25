@@ -117,7 +117,7 @@ export default function TerminalPane({ sessionId, runs, onSendToChat, onError }:
       cursorBlink: true,
       fontSize: 13,
       lineHeight: 1.35,
-      fontFamily: '"Atkinson Hyperlegible Mono", "PingFang SC", "Microsoft YaHei UI", ui-monospace, monospace',
+      fontFamily: '"JetBrains Mono", "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", ui-monospace, monospace',
       scrollback: 5000,
       allowProposedApi: false,
       theme: currentXtermTheme(),

@@ -650,7 +650,6 @@ export function Composer(props: ComposerProps) {
                         <>
                           {fileSize(file.bytes)}
                           {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
-                          {!file.inline && "，分身自读"}
                         </>
                       )}
                     </span>

@@ -885,7 +885,7 @@
 
 .term-run-status {
   flex: none;
-  font-family: var(--sans);
+  font-family: var(--text);
   font-size: 11px;
   white-space: nowrap;
 }

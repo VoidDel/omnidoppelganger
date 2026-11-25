@@ -1271,7 +1271,7 @@
   border-radius: 999px;
   font-size: 10px;
   line-height: 15px;
-  font-family: var(--font-mono);
+  font-family: var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
