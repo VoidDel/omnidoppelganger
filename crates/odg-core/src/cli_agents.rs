@@ -85,11 +85,200 @@ impl CliKind {
         if self == Self::OpenCode {
             return list_opencode_models(&bin).await;
         }
+        if self == Self::Cursor {
+            return list_cursor_models(&bin).await;
+        }
         Ok(fallback
             .iter()
             .map(|(id, name)| Listed { id: (*id).to_string(), name: (*name).to_string(), context_window: Some(context_window(self)) })
             .collect())
     }
+}
+
+type CursorVariantMap = HashMap<String, Vec<(u8, String)>>;
+
+/// Cached mapping from collapsed Cursor base model id (e.g. `grok-4.7`, `claude-opus-5-5-fast`)
+/// to `(effort_rank, exact_raw_model_id)` pairs reported by `cursor-agent --list-models`.
+static CURSOR_VARIANT_CACHE: std::sync::OnceLock<std::sync::Mutex<CursorVariantMap>> = std::sync::OnceLock::new();
+
+fn cursor_variant_cache() -> &'static std::sync::Mutex<CursorVariantMap> {
+    CURSOR_VARIANT_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+const CURSOR_EFFORT_SUFFIXES: [(&str, u8); 8] = [
+    ("-extra-high", 4),
+    ("-minimal", 0),
+    ("-medium", 2),
+    ("-xhigh", 4),
+    ("-none", 0),
+    ("-high", 3),
+    ("-low", 1),
+    ("-max", 5),
+];
+
+fn cursor_effort_rank(effort: &str) -> u8 {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "none" | "minimal" => 0,
+        "low" => 1,
+        "medium" => 2,
+        "high" => 3,
+        "xhigh" | "extra-high" => 4,
+        "max" => 5,
+        _ => 3,
+    }
+}
+
+/// Split a raw Cursor model id into `(collapsed_base_id, Option<effort_rank>)`.
+/// Keeps `-fast` and `-thinking` as distinct model lines while folding effort suffixes
+/// (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`extra-high`/`max`) into the base model.
+fn split_cursor_effort_variant(id: &str) -> (String, Option<u8>) {
+    let (head, tail) = if let Some(prefix) = id.strip_suffix("-fast") {
+        (prefix, "-fast")
+    } else if let Some(prefix) = id.strip_suffix("-thinking") {
+        (prefix, "-thinking")
+    } else {
+        (id, "")
+    };
+    for &(suffix, rank) in &CURSOR_EFFORT_SUFFIXES {
+        if let Some(base) = head.strip_suffix(suffix)
+            && !base.is_empty()
+        {
+            return (format!("{base}{tail}"), Some(rank));
+        }
+    }
+    (id.to_string(), None)
+}
+
+/// Strip standalone effort words (`Extra High`, `Minimal`, `Medium`, `None`, `High`, `Low`, `Max`)
+/// from a Cursor display label and collapse redundant spaces.
+fn clean_cursor_display_name(raw: &str) -> String {
+    let without_extra = raw.replace("Extra High", " ");
+    let mut words = Vec::new();
+    for word in without_extra.split_whitespace() {
+        if matches!(word, "None" | "Minimal" | "Low" | "Medium" | "High" | "XHigh" | "Max") {
+            continue;
+        }
+        words.push(word);
+    }
+    if words.is_empty() {
+        raw.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        words.join(" ")
+    }
+}
+
+fn pick_cursor_variant(requested_rank: u8, variants: &[(u8, String)]) -> Option<&str> {
+    if variants.is_empty() {
+        return None;
+    }
+    if let Some((_, id)) = variants.iter().find(|(r, _)| *r == requested_rank) {
+        return Some(id.as_str());
+    }
+    if let Some((_, id)) = variants.iter().filter(|(r, _)| *r < requested_rank).max_by_key(|(r, _)| *r) {
+        return Some(id.as_str());
+    }
+    variants.iter().min_by_key(|(r, _)| *r).map(|(_, id)| id.as_str())
+}
+
+/// Resolve a session's `(model, effort)` into the concrete Cursor `--model` id.
+/// Accepts either a collapsed base id (`grok-4.7`, `claude-opus-5-5-fast`) or a concrete variant id.
+pub fn resolve_cursor_model_for_effort(model: &str, effort: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() || trimmed == "auto" {
+        return trimmed.to_string();
+    }
+    let (base_id, original_rank) = split_cursor_effort_variant(trimmed);
+    let target_rank = if effort.trim().is_empty() {
+        original_rank.unwrap_or(3)
+    } else {
+        cursor_effort_rank(effort)
+    };
+    let cache = cursor_variant_cache().lock().unwrap();
+    if let Some(variants) = cache.get(&base_id)
+        && let Some(chosen) = pick_cursor_variant(target_rank, variants)
+    {
+        return chosen.to_string();
+    }
+    trimmed.to_string()
+}
+
+async fn list_cursor_models(bin: &Path) -> Result<Vec<Listed>, String> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("--list-models")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
+        .await
+        .map_err(|_| "查询 cursor-agent --list-models 超时（12s）。".to_string())?
+        .map_err(|e| format!("运行 cursor-agent --list-models 失败：{e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "cursor-agent --list-models 执行失败，请检查登录状态。".to_string()
+        } else {
+            format!("cursor-agent --list-models 失败：{err}")
+        });
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let (parsed, variants) = parse_cursor_models_output(&raw);
+    if parsed.is_empty() {
+        return Err("cursor-agent --list-models 未返回任何可用模型，请先登录 Cursor CLI。".to_string());
+    }
+    *cursor_variant_cache().lock().unwrap() = variants;
+    Ok(parsed)
+}
+
+fn parse_cursor_models_output(raw: &str) -> (Vec<Listed>, CursorVariantMap) {
+    let mut models: Vec<Listed> = Vec::new();
+    let mut index_by_base: HashMap<String, usize> = HashMap::new();
+    let mut variants: HashMap<String, Vec<(u8, String)>> = HashMap::new();
+    for line in raw.lines() {
+        let trimmed = line.trim_matches(|c: char| c.is_whitespace() || c == '\u{200b}');
+        if trimmed.is_empty() || trimmed.starts_with("Available ") || trimmed.starts_with("Tip:") || trimmed.starts_with("Loading ") {
+            continue;
+        }
+        let Some((id_raw, label_raw)) = trimmed.split_once(" - ") else {
+            continue;
+        };
+        let id = id_raw.trim_matches(|c: char| c.is_whitespace() || c == '\u{200b}');
+        let name = label_raw.trim_matches(|c: char| c.is_whitespace() || c == '\u{200b}');
+        if id.is_empty() || id.contains(' ') {
+            continue;
+        }
+        let (base_id, rank_opt) = split_cursor_effort_variant(id);
+        // Unsuffixed models that have effort siblings (e.g. `gpt-5.3-codex` alongside `gpt-5.3-codex-low/-high`)
+        // act as the default medium (rank 2) variant.
+        let rank = rank_opt.unwrap_or(2);
+        let entry = variants.entry(base_id.clone()).or_default();
+        if !entry.iter().any(|(_, existing)| existing == id) {
+            entry.push((rank, id.to_string()));
+        }
+        let display = if rank_opt.is_some() {
+            clean_cursor_display_name(name)
+        } else if name.is_empty() {
+            base_id.clone()
+        } else {
+            name.split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        if let Some(&idx) = index_by_base.get(&base_id) {
+            // Prefer the unsuffixed official display name if it appears later (e.g. `gpt-5.3-codex - Codex 5.3`).
+            if rank_opt.is_none() && !display.is_empty() {
+                models[idx].name = display;
+            }
+        } else {
+            index_by_base.insert(base_id.clone(), models.len());
+            models.push(Listed {
+                id: base_id,
+                name: display,
+                context_window: Some(context_window(CliKind::Cursor)),
+            });
+        }
+    }
+    (models, variants)
 }
 
 async fn run_opencode_subcommand(bin: &Path, args: &[&str]) -> Result<String, String> {
@@ -713,20 +902,27 @@ pub fn build_args(
                 "--output-format".to_string(),
                 "stream-json".to_string(),
                 "--stream-partial-output".to_string(),
+                "--trust".to_string(),
             ];
+            if let Some(ws) = workspace {
+                args.push("--workspace".to_string());
+                args.push(ws.to_string_lossy().into_owned());
+            }
             if let Some(chat_id) = resume {
                 args.push("--resume".to_string());
                 args.push(chat_id.to_string());
             }
-            if !model.is_empty() && model != "auto" {
+            if !model.is_empty() {
+                let resolved = resolve_cursor_model_for_effort(model, effort);
                 args.push("--model".to_string());
-                args.push(model.to_string());
+                args.push(resolved);
             }
             if read_only || mode == Mode::Plan {
                 args.push("--mode".to_string());
                 args.push("plan".to_string());
             } else if matches!(mode, Mode::Edit | Mode::Auto | Mode::Bypass) {
                 args.push("--force".to_string());
+                args.push("--approve-mcps".to_string());
             }
             args.push("--".to_string());
             args.push(prompt.to_string());
@@ -788,8 +984,10 @@ pub fn build_args(
 pub struct StreamParser {
     /// Tracks how many bytes of cumulative text were already emitted for an item id (used by Codex `item.updated`).
     seen_item_bytes: HashMap<String, usize>,
-    /// Tracks whether Claude Code / Cursor already streamed `stream_event` deltas for the current assistant message.
+    /// Tracks whether Claude Code already streamed `stream_event` deltas for the current assistant message.
     saw_partial_delta: bool,
+    /// Accumulates partial `assistant` deltas streamed by Cursor so the trailing full-message repeat is not emitted twice.
+    cursor_streamed: String,
     step_seq: u64,
 }
 
@@ -1039,20 +1237,36 @@ impl StreamParser {
                     .unwrap_or_default();
                 if text.is_empty() {
                     Vec::new()
+                } else if !self.cursor_streamed.is_empty() && text == self.cursor_streamed {
+                    // `--stream-partial-output` emits incremental `assistant` chunks followed by one
+                    // final `assistant` event repeating the entire message; flush without duplicating.
+                    self.cursor_streamed.clear();
+                    vec![CliEvent::AgentText { conversation_id: conv, delta: String::new(), done: true, usage: Value::Null, tokens: None }]
                 } else {
+                    self.cursor_streamed.push_str(&text);
                     vec![CliEvent::AgentText { conversation_id: conv, delta: text, done: false, usage: Value::Null, tokens: None }]
                 }
             }
             "tool_call" => {
+                self.cursor_streamed.clear();
                 let call_key = v["call_id"]
                     .as_str()
                     .or_else(|| v["id"].as_str())
                     .map(str::to_string)
                     .unwrap_or_else(|| self.next_key("cursor"));
                 let subtype = v["subtype"].as_str().unwrap_or("");
-                // Cursor nests `{"readToolCall": {"args": {...}, "result": {"success": {...}}}}` inside `tool_call`,
-                // or emits top-level `{"name": "writeToolCall", "function": {"name": ..., "arguments": ...}}`.
-                let nested = v["tool_call"].as_object().and_then(|map| map.iter().next());
+                // Cursor nests `{"readToolCall": {"args": {...}, "result": {"success": {...}}}}` inside `tool_call`
+                // alongside metadata keys (`hookAdditionalContexts`, `toolCallId`, `startedAtMs`, `completedAtMs`).
+                // Because `serde_json::Map` iterates alphabetically, pick the actual `*ToolCall` object entry
+                // rather than `.next()` (which would otherwise pick `hookAdditionalContexts` before `readToolCall`).
+                let nested = v["tool_call"].as_object().and_then(|map| {
+                    map.iter()
+                        .find(|(k, val)| val.is_object() && (k.ends_with("ToolCall") || val.get("args").is_some() || val.get("result").is_some()))
+                        .or_else(|| {
+                            map.iter()
+                                .find(|(k, val)| val.is_object() && !matches!(k.as_str(), "hookAdditionalContexts" | "toolCallId" | "startedAtMs" | "completedAtMs"))
+                        })
+                });
                 let raw_name = nested
                     .map(|(k, _)| k.as_str())
                     .or_else(|| v["name"].as_str())
@@ -1082,11 +1296,18 @@ impl StreamParser {
                     let output = if is_error {
                         res["error"]["message"]
                             .as_str()
-                            .or_else(|| res["error"].as_str())
-                            .or_else(|| res["rejected"]["reason"].as_str())
-                            .or_else(|| payload["stderr"].as_str())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| res["error"].as_str().filter(|s| !s.is_empty()))
+                            .or_else(|| res["rejected"]["reason"].as_str().filter(|s| !s.is_empty()))
+                            .or_else(|| payload["stderr"].as_str().filter(|s| !s.is_empty()))
                             .map(str::to_string)
-                            .unwrap_or_else(|| res.to_string())
+                            .unwrap_or_else(|| {
+                                if !res["rejected"].is_null() {
+                                    "Command rejected (read-only mode)".to_string()
+                                } else {
+                                    res.to_string()
+                                }
+                            })
                     } else if name == "run_command" && payload["exitCode"].is_i64() {
                         let code = payload["exitCode"].as_i64().unwrap_or(0);
                         let stdout = payload["stdout"].as_str().or_else(|| payload["output"].as_str()).unwrap_or("");
@@ -1109,10 +1330,13 @@ impl StreamParser {
                 }
             }
             "result" => {
+                self.cursor_streamed.clear();
                 let is_error = v["is_error"].as_bool().unwrap_or(false) || v["subtype"].as_str() == Some("error");
                 let response = v["result"].as_str().unwrap_or("").to_string();
                 let error = is_error.then(|| if !response.is_empty() { response.clone() } else { "Cursor Agent turn failed".to_string() });
-                vec![CliEvent::Result { conversation_id: conv, success: !is_error, response, error, usage: Value::Null, tokens: None }]
+                let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+                let tokens = anthropic_like_tokens(&usage);
+                vec![CliEvent::Result { conversation_id: conv, success: !is_error, response, error, usage, tokens }]
             }
             _ => Vec::new(),
         }
@@ -1285,12 +1509,21 @@ fn anthropic_like_tokens(usage: &Value) -> Option<Tokens> {
     let count = |key: &str| usage[key].as_u64().unwrap_or(0);
     let cache_read = count("cache_read_input_tokens")
         .max(count("cache_read_tokens"))
+        .max(count("cacheReadTokens"))
         .max(count("cached_tokens"))
         .max(usage["cache"]["read"].as_u64().unwrap_or(0));
-    let cache_write = count("cache_creation_input_tokens").max(usage["cache"]["write"].as_u64().unwrap_or(0));
-    let base_input = count("input_tokens").max(count("prompt_tokens")).max(count("input"));
+    let cache_write = count("cache_creation_input_tokens")
+        .max(count("cacheWriteTokens"))
+        .max(usage["cache"]["write"].as_u64().unwrap_or(0));
+    let base_input = count("input_tokens")
+        .max(count("inputTokens"))
+        .max(count("prompt_tokens"))
+        .max(count("input"));
     let input = base_input + cache_read + cache_write;
-    let output = count("output_tokens").max(count("completion_tokens")).max(count("output") + count("reasoning"));
+    let output = count("output_tokens")
+        .max(count("completion_tokens"))
+        .max(count("outputTokens") + count("reasoningTokens"))
+        .max(count("output") + count("reasoning"));
     (input > 0 || output > 0).then_some(Tokens { input, cached: cache_read, output })
 }
 
@@ -2320,6 +2553,13 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         .kind
         .find_binary()
         .ok_or_else(|| format!("未找到本机 {}，请先安装并完成登录。", params.kind.display_name()))?;
+    if params.kind == CliKind::Cursor
+        && !params.model.trim().is_empty()
+        && params.model.trim() != "auto"
+        && cursor_variant_cache().lock().unwrap().is_empty()
+    {
+        let _ = list_cursor_models(&bin).await;
+    }
     let prepared = prepare_prompt_delivery(params.kind, &params.prompt, params.turn, MAX_CLI_PROMPT_BYTES)?;
     let mut args = build_args(
         params.kind,
@@ -2446,10 +2686,15 @@ mod tests {
             ["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--resume", "ses-9", "--model", "opus", "--effort", "xhigh", "--permission-mode", "bypassPermissions", "--dangerously-skip-permissions", "--", "review"]
         );
 
-        let cursor = build_args(CliKind::Cursor, "explain", None, Some("chat-2"), "auto", "high", Mode::Plan, false, false);
+        let cursor = build_args(CliKind::Cursor, "explain", Some(Path::new("/tmp/proj")), Some("chat-2"), "auto", "high", Mode::Plan, false, false);
         assert_eq!(
             cursor,
-            ["--print", "--output-format", "stream-json", "--stream-partial-output", "--resume", "chat-2", "--mode", "plan", "--", "explain"]
+            ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--workspace", "/tmp/proj", "--resume", "chat-2", "--model", "auto", "--mode", "plan", "--", "explain"]
+        );
+        let cursor_edit = build_args(CliKind::Cursor, "fix", None, None, "grok-4.7-medium", "high", Mode::Auto, false, false);
+        assert_eq!(
+            cursor_edit,
+            ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--model", "grok-4.7-medium", "--force", "--approve-mcps", "--", "fix"]
         );
 
         let grok = build_args(CliKind::Grok, "hello", None, Some("g-1"), "grok-4.7", "high", Mode::Auto, true, false);
@@ -2651,7 +2896,55 @@ mod tests {
         });
 
         let mut cursor = StreamParser::default();
-        let tc = cursor.parse_line(CliKind::Cursor, r#"{"type":"tool_call","subtype":"started","call_id":"c1","session_id":"ch1","tool_call":{"readToolCall":{"args":{"path":"README.md"}}}}"#);
+        let c1 = cursor.parse_line(CliKind::Cursor, r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"0."}]},"session_id":"ch1","timestamp_ms":1}"#);
+        let c2 = cursor.parse_line(CliKind::Cursor, r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"7.16"}]},"session_id":"ch1","timestamp_ms":2}"#);
+        let c_dup = cursor.parse_line(CliKind::Cursor, r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"0.7.16"}]},"session_id":"ch1"}"#);
+        assert!(matches!(&c1[0], CliEvent::AgentText { delta, done: false, .. } if delta == "0."));
+        assert!(matches!(&c2[0], CliEvent::AgentText { delta, done: false, .. } if delta == "7.16"));
+        assert!(matches!(&c_dup[0], CliEvent::AgentText { delta, done: true, .. } if delta.is_empty()));
+        let c_res = cursor.parse_line(
+            CliKind::Cursor,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"0.7.16","session_id":"ch1","usage":{"inputTokens":885,"outputTokens":33,"cacheReadTokens":13568,"cacheWriteTokens":0,"reasoningTokens":28}}"#,
+        );
+        assert!(matches!(
+            &c_res[0],
+            CliEvent::Result {
+                success: true,
+                tokens: Some(Tokens { input: 14453, cached: 13568, output: 61 }),
+                ..
+            }
+        ));
+        let tc = cursor.parse_line(
+            CliKind::Cursor,
+            r#"{"type":"tool_call","subtype":"started","call_id":"c1","session_id":"ch1","tool_call":{"hookAdditionalContexts":[],"readToolCall":{"args":{"path":"README.md"}},"startedAtMs":"1","toolCallId":"c1"}}"#,
+        );
+        let (parsed_models, variants) = parse_cursor_models_output(
+            "Available models\n\n\
+             auto - Auto (default)\n\
+             grok-4.7-low - Grok 4.7  Low\n\
+             grok-4.7-high - Grok 4.7  High\n\
+             grok-4.7-medium-fast - Grok 4.7  Medium Fast\u{200b}\u{200b}\n\
+             grok-4.7-xhigh-fast - Grok 4.7  Extra High Fast\u{200b}\u{200b}\n\
+             gpt-5.3-codex-low - Codex 5.3 Low\n\
+             gpt-5.3-codex - Codex 5.3\n\
+             gpt-5.3-codex-high - Codex 5.3 High\n\
+             claude-4.6-opus-high-thinking - Claude Opus 4.6 1M Thinking\n\
+             claude-4.6-opus-max-thinking - Claude Opus 4.6 1M Max Thinking\n\n\
+             Tip: use --model <id>",
+        );
+        assert_eq!(parsed_models.len(), 5);
+        assert_eq!(parsed_models[0].id, "auto");
+        assert_eq!(parsed_models[1].id, "grok-4.7");
+        assert_eq!(parsed_models[1].name, "Grok 4.7");
+        assert_eq!(parsed_models[2].id, "grok-4.7-fast");
+        assert_eq!(parsed_models[2].name, "Grok 4.7 Fast");
+        assert_eq!(parsed_models[3].id, "gpt-5.3-codex");
+        assert_eq!(parsed_models[3].name, "Codex 5.3");
+        assert_eq!(parsed_models[4].id, "claude-4.6-opus-thinking");
+        assert_eq!(pick_cursor_variant(cursor_effort_rank("medium"), &variants["gpt-5.3-codex"]), Some("gpt-5.3-codex"));
+        assert_eq!(pick_cursor_variant(cursor_effort_rank("high"), &variants["grok-4.7"]), Some("grok-4.7-high"));
+        assert_eq!(pick_cursor_variant(cursor_effort_rank("max"), &variants["grok-4.7-fast"]), Some("grok-4.7-xhigh-fast"));
+        assert_eq!(pick_cursor_variant(cursor_effort_rank("max"), &variants["claude-4.6-opus-thinking"]), Some("claude-4.6-opus-max-thinking"));
         assert_eq!(tc, vec![CliEvent::ToolStart {
             conversation_id: Some("ch1".into()),
             call_key: "c1".into(),

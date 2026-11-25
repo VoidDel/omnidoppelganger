@@ -180,13 +180,7 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "",
         other_urls: &[],
         key_env: None,
-        models: &[
-            ("auto", "Auto（Cursor 默认）"),
-            ("claude-4.6-sonnet-thinking", "Claude Sonnet Thinking"),
-            ("claude-4.6-opus-thinking", "Claude Opus Thinking"),
-            ("gpt-5.4", "GPT-5.4"),
-            ("gemini-3.1-pro", "Gemini Pro"),
-        ],
+        models: &[],
     },
     Provider {
         id: "grok",
@@ -465,13 +459,13 @@ pub fn effort_for(protocol: Protocol, effort: &str) -> Option<&'static str> {
     };
     match protocol {
         // These accept all five as they are.
-        Protocol::Anthropic | Protocol::Responses | Protocol::Cli(CliKind::Antigravity | CliKind::ClaudeCode) => Some(level(["low", "medium", "high", "xhigh", "max"])),
+        Protocol::Anthropic | Protocol::Responses | Protocol::Cli(CliKind::Antigravity | CliKind::ClaudeCode | CliKind::Cursor) => Some(level(["low", "medium", "high", "xhigh", "max"])),
         Protocol::Cli(CliKind::Codex) => Some(level(["low", "medium", "high", "xhigh", "xhigh"])),
         // DeepSeek takes none/low/high/max and itself maps medium and xhigh to high.
         Protocol::Chat(Flavor::DeepSeek) => Some(level(["low", "high", "high", "high", "max"])),
         // Kimi K3 and GLM-5.3 take low/high/max.
         Protocol::Chat(Flavor::Kimi | Flavor::Glm) => Some(level(["low", "high", "high", "max", "max"])),
-        Protocol::Chat(Flavor::Generic) | Protocol::Cli(CliKind::Cursor | CliKind::Grok | CliKind::OpenCode) => None,
+        Protocol::Chat(Flavor::Generic) | Protocol::Cli(CliKind::Grok | CliKind::OpenCode) => None,
     }
 }
 
@@ -488,7 +482,7 @@ mod tests {
             let custom = provider.id.starts_with("custom");
             let cli = matches!(provider.protocol, Protocol::Cli(_));
             assert_eq!(provider.base_url.is_empty(), custom || cli, "{}", provider.id);
-            assert_eq!(provider.models.is_empty(), custom || matches!(provider.id, "magpie" | "antigravity" | "opencode"), "{}", provider.id);
+            assert_eq!(provider.models.is_empty(), custom || matches!(provider.id, "magpie" | "antigravity" | "cursor" | "opencode"), "{}", provider.id);
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);
         assert_eq!(provider("custom_anthropic").unwrap().protocol, Protocol::Anthropic);

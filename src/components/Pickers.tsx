@@ -151,7 +151,7 @@ export interface ModelListProps {
   nowMs?: number;
 }
 
-const MODEL_CACHE_KEY = "odg.model-list-cache.v2";
+const MODEL_CACHE_KEY = "odg.model-list-cache.v3";
 const OPENCODE_TIER_KEY = "odg.opencode-model-tier.v1";
 
 type OpenCodeTierFilter = "free" | "go" | "all";
