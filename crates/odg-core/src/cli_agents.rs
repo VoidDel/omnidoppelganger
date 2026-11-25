@@ -33,6 +33,7 @@ pub enum CliKind {
     ClaudeCode,
     Cursor,
     Grok,
+    #[serde(rename = "opencode")]
     OpenCode,
 }
 
@@ -2306,6 +2307,7 @@ mod tests {
             opencode,
             ["run", "--format", "json", "--session", "ses_7", "--model", "anthropic/claude-sonnet-4-6", "--agent", "plan", "--", "refactor"]
         );
+        assert_eq!(serde_json::to_value(CliKind::OpenCode).unwrap(), "opencode");
     }
 
     #[test]

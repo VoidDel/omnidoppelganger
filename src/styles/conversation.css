@@ -904,3 +904,15 @@ button.did-head:not(:disabled):hover {
   background: transparent;
   color: var(--jade);
 }
+
+/* KaTeX math formula display & horizontal scroll for wide equations */
+.prose .katex {
+  font-size: 1.04em;
+}
+
+.prose .katex-display {
+  margin: 0.7em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}

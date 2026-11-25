@@ -1182,3 +1182,74 @@
   outline: 2px solid var(--jade);
   outline-offset: 2px;
 }
+
+/* Model usage & cooldown table in Settings */
+.usage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  margin-bottom: var(--s-2);
+}
+
+.usage-head h2 {
+  margin: 0;
+}
+
+.usage-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usage-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper-2, transparent);
+}
+
+.usage-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.usage-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.usage-card-stats {
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.usage-card-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-ok {
+  font-size: 12px;
+  color: var(--jade);
+  font-weight: 600;
+}

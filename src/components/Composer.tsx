@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { launchFrom } from "../lib/flight";
 import { type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
+import { allTokens, cooldownRemainingMs, findModelUsage, formatCooldown, todayTokens, useModelUsage } from "../lib/modelUsage";
 import { MODES, nextMode } from "../lib/modes";
 import { type PasteKind, detectPasteKind, nextPastedFilename, shouldCollapsePaste } from "../lib/paste";
 import { CLI_INFO, cliOf } from "../lib/providers";
@@ -195,6 +196,9 @@ function useBoxHeight() {
 
 export function Composer(props: ComposerProps) {
   const { status, providers, listed, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
+  const { entries: modelUsage, nowMs, clearCooldown } = useModelUsage(`${status}:${usage.spent.input}:${usage.spent.output}:${providerId}:${model}`);
+  const activeModelStat = findModelUsage(modelUsage, providerId, model);
+  const activeCooldownMs = cooldownRemainingMs(activeModelStat, nowMs);
   const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given, placeholder, acceptDrops = true } = props;
   const provider = providers.find((known) => known.id === providerId);
   const cli = cliOf(provider);
@@ -777,6 +781,11 @@ export function Composer(props: ComposerProps) {
                   </svg>
                   <span className="label sr-only">心法</span>
                   <span className="value">{model}</span>
+                  {activeCooldownMs > 0 && (
+                    <span className="model-cooldown-pill" title={activeModelStat?.cooldown_reason ?? "冷却中"}>
+                      冷却 {formatCooldown(activeCooldownMs)}
+                    </span>
+                  )}
                 </>
               }
             >
@@ -788,6 +797,8 @@ export function Composer(props: ComposerProps) {
                   providerId={providerId}
                   model={model}
                   listModels={listModels}
+                  modelUsage={modelUsage}
+                  nowMs={nowMs}
                   onPick={(pickedProvider, picked) => {
                     if (pickedProvider !== providerId || picked !== model) onModel(pickedProvider, picked);
                     close();
@@ -862,6 +873,30 @@ export function Composer(props: ComposerProps) {
                   <p className="menu-note">
                     输入 {shortCount(usage.spent.input)}（其中 {shortCount(usage.spent.cached)} 读自缓存，便宜得多），输出 {shortCount(usage.spent.output)}。眼下的前情占 {shortCount(usage.context)}。
                   </p>
+                  {activeModelStat && (
+                    <>
+                      <div className="mode-menu-head">
+                        <span>{model}</span>
+                        <span>{activeCooldownMs > 0 ? `冷却 ${formatCooldown(activeCooldownMs)}` : "可用"}</span>
+                      </div>
+                      <p className="menu-note">
+                        今日 {activeModelStat.today_requests} 次（共 {shortCount(todayTokens(activeModelStat))}：入 {shortCount(activeModelStat.today_input_tokens)} / 出{" "}
+                        {shortCount(activeModelStat.today_output_tokens)}），累计 {activeModelStat.requests} 次（{shortCount(allTokens(activeModelStat))}）。
+                        {activeCooldownMs > 0 && (
+                          <>
+                            {" "}
+                            <span className="model-cooldown-inline">
+                              {activeModelStat.cooldown_reason ?? "冷却中"}，剩余 {formatCooldown(activeCooldownMs)}
+                            </span>
+                            {" · "}
+                            <button type="button" className="link-inline" onClick={() => clearCooldown(providerId, model)}>
+                              清除冷却
+                            </button>
+                          </>
+                        )}
+                      </p>
+                    </>
+                  )}
                   <button
                     type="button"
                     role="menuitem"

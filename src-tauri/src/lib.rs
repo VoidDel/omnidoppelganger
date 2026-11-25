@@ -1073,6 +1073,25 @@ fn notification_icon_path() -> Option<PathBuf> {
     Some(path)
 }
 
+#[tauri::command]
+fn get_model_usage() -> Vec<odg_core::model_usage::ModelUsageEntry> {
+    odg_core::model_usage::ModelUsageStore::global().list()
+}
+
+#[tauri::command]
+fn clear_model_cooldown(provider: String, model: String) -> Vec<odg_core::model_usage::ModelUsageEntry> {
+    let store = odg_core::model_usage::ModelUsageStore::global();
+    store.clear_cooldown(&provider, &model);
+    store.list()
+}
+
+#[tauri::command]
+fn reset_model_usage() -> Vec<odg_core::model_usage::ModelUsageEntry> {
+    let store = odg_core::model_usage::ModelUsageStore::global();
+    store.reset_all();
+    store.list()
+}
+
 /// Fire a best-effort native desktop notification when the app is unfocused (turn completed or waiting approval).
 #[tauri::command]
 async fn notify_desktop(title: String, body: String) {
@@ -1500,6 +1519,9 @@ pub fn run() {
             attach_files,
             save_pasted_file,
             notify_desktop,
+            get_model_usage,
+            clear_model_cooldown,
+            reset_model_usage,
             fork_session,
             list_schedules,
             save_schedule,

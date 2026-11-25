@@ -6,6 +6,7 @@ import type { Decision, Image, Mode, Reply, SessionItem, Status } from "../lib/t
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Light } from "./Light";
 import { Diff, ModelText, markdownParts, markdownPlugins, markdownSyntax } from "./Markdown";
+import { normalizeMath } from "../lib/math";
 import { QuestionSheet } from "./Questions";
 import { DelegateCard, type Family, type Files, FilesContext, Live, PlanCard, SignSheet, ToolCard, Written, presented, sealOf, useFresh, voided, weigh } from "./ToolCard";
 import { Viewer, imageSource } from "./Viewer";
@@ -159,7 +160,7 @@ function Streaming({ blocks }: { blocks: StreamBlock[] }) {
         block.kind === "text" ? (
           <div key={block.index} className="prose">
             <Markdown components={markdownParts} remarkPlugins={markdownSyntax} rehypePlugins={markdownPlugins}>
-              {block.text}
+              {normalizeMath(block.text)}
             </Markdown>
           </div>
         ) : block.kind === "thinking" ? (

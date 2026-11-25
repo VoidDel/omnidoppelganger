@@ -1210,3 +1210,48 @@ button.select-button svg {
 .who .failed {
   color: var(--cinnabar-ink);
 }
+
+/* Model usage & cooldown badges in Composer and ModelList */
+.model-meta-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.model-cooldown-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--cinnabar-ink);
+  background: color-mix(in srgb, var(--cinnabar) 14%, transparent);
+  white-space: nowrap;
+}
+
+.model-usage-badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.model-cooldown-inline {
+  color: var(--cinnabar-ink);
+  font-weight: 600;
+}
+
+.link-inline {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--jade);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}

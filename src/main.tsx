@@ -4,6 +4,7 @@ import "lxgw-wenkai-lite-webfont/lxgwwenkailite-regular.css";
 import "lxgw-wenkai-lite-webfont/lxgwwenkailite-bold.css";
 import "@fontsource/atkinson-hyperlegible-mono/400.css";
 import "@fontsource/atkinson-hyperlegible-mono/700.css";
+import "katex/dist/katex.min.css";
 import "./styles.css";
 import App from "./App";
 import { Guard } from "./components/Guard";

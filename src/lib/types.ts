@@ -256,6 +256,24 @@ export interface Todo {
   status: "pending" | "in_progress" | "done";
 }
 
+/** Per-model accumulated token usage and active rate-limit / quota cooldown. */
+export interface ModelUsageEntry {
+  provider: string;
+  model: string;
+  requests: number;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  today_key: string;
+  today_requests: number;
+  today_input_tokens: number;
+  today_cached_tokens: number;
+  today_output_tokens: number;
+  last_used_at?: string | null;
+  cooldown_until?: string | null;
+  cooldown_reason?: string | null;
+}
+
 /** The Git worktree made for a session that works apart from the folder's own files. */
 export interface Worktree {
   /** The folder the user chose; the session is listed under it. */

@@ -8,6 +8,7 @@ import { RuntimeSection } from "./Runtime";
 import { LanguageServersSection } from "./LanguageServers";
 import { EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { mcpTool, shortCount } from "../lib/fold";
+import { allTokens, cooldownRemainingMs, formatCooldown, todayTokens, useModelUsage } from "../lib/modelUsage";
 import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
 
 const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
@@ -709,6 +710,8 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             </p>
           )}
         </section>
+
+        <ModelUsageSection providers={view.providers} />
           </>
         )}
         {tab === "rules" && (
@@ -895,5 +898,92 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
         )}
       </div>
     </div>
+  );
+}
+
+/** Per-model token usage and active rate-limit / quota cooldown overview in Settings. */
+function ModelUsageSection({ providers }: { providers: Provider[] }) {
+  const { entries, nowMs, refresh, clearCooldown, resetAll } = useModelUsage("settings");
+  const [confirmReset, setConfirmReset] = useState(false);
+  const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
+
+  return (
+    <section>
+      <div className="usage-head">
+        <h2>
+          模型用量与冷却
+          <Info>记录各宗门与模型今日及累计消耗的灵石（token），触发 429 限流或配额耗尽时自动显示实时冷却倒计时。</Info>
+        </h2>
+        <div className="usage-actions">
+          <button type="button" className="button text small" onClick={refresh}>
+            刷新
+          </button>
+          {entries.length > 0 && !confirmReset && (
+            <button type="button" className="button text small" onClick={() => setConfirmReset(true)}>
+              清空统计
+            </button>
+          )}
+          {confirmReset && (
+            <>
+              <button type="button" className="button text small" onClick={() => setConfirmReset(false)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="button danger small"
+                onClick={() => {
+                  setConfirmReset(false);
+                  resetAll();
+                }}
+              >
+                确认清空
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      {entries.length === 0 ? (
+        <p className="hint">还没有模型用量记录，发送一轮对话后这里会自动统计。</p>
+      ) : (
+        <div className="usage-list">
+          {entries.map((entry) => {
+            const coolMs = cooldownRemainingMs(entry, nowMs);
+            return (
+              <div className="usage-card" key={`${entry.provider}:${entry.model}`}>
+                <div className="usage-card-main">
+                  <div className="usage-card-title">
+                    <span className="chip">{providerName(entry.provider)}</span>
+                    <span className="mono">{entry.model}</span>
+                  </div>
+                  <div className="usage-card-stats">
+                    <span>
+                      今日 {entry.today_requests} 次 · {shortCount(todayTokens(entry))}（入 {shortCount(entry.today_input_tokens)} / 缓 {shortCount(entry.today_cached_tokens)} / 出{" "}
+                      {shortCount(entry.today_output_tokens)}）
+                    </span>
+                    <span>
+                      累计 {entry.requests} 次 · {shortCount(allTokens(entry))}
+                    </span>
+                  </div>
+                </div>
+                <div className="usage-card-state">
+                  {coolMs > 0 ? (
+                    <>
+                      <span className="model-cooldown-pill" title={entry.cooldown_reason ?? "冷却中"}>
+                        {entry.cooldown_reason ?? "冷却"} · {formatCooldown(coolMs)}
+                      </span>
+                      <button type="button" className="button text small" onClick={() => clearCooldown(entry.provider, entry.model)}>
+                        清除冷却
+                      </button>
+                    </>
+                  ) : (
+                    <span className="usage-ok">可用</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }

@@ -21,6 +21,7 @@ pub mod llm;
 pub mod lsp;
 pub mod made;
 pub mod mcp;
+pub mod model_usage;
 pub mod openai_chat;
 mod office;
 pub mod openai_responses;

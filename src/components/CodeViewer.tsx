@@ -6,6 +6,7 @@ import { findInLines, highlightLines } from "../lib/highlight";
 import { sameFileView } from "../lib/refresh";
 import type { FileView } from "../lib/types";
 import { markdownParts, markdownPlugins, markdownSyntax } from "./Markdown";
+import { normalizeMath } from "../lib/math";
 
 export interface CodeViewerProps {
   sessionId: string;
@@ -447,7 +448,7 @@ export function CodeViewer({
         ) : mode === "preview" && isMarkdown ? (
           <div className="viewer-markdown prose">
             <Markdown components={markdownParts} remarkPlugins={markdownSyntax} rehypePlugins={markdownPlugins}>
-              {view.content}
+              {normalizeMath(view.content)}
             </Markdown>
           </div>
         ) : mode === "preview" && isSvg ? (

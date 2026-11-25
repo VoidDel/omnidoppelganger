@@ -1,8 +1,11 @@
 import { type ReactNode, isValidElement, memo, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { api } from "../lib/api";
+import { normalizeMath } from "../lib/math";
 import type { DiffHunk } from "../lib/types";
 
 const EXTERNAL = /^(https?:|mailto:)/i;
@@ -76,10 +79,13 @@ function Table({ children }: { children?: ReactNode }) {
 }
 
 export const markdownParts = { a: Link, pre: CodeBlock, table: Table };
-// Tables, task lists, and struck-out words, as models write them.
-export const markdownSyntax = [remarkGfm];
-// Colors code by its language; a block in a language it does not know stays plain.
-export const markdownPlugins = [rehypeHighlight];
+// Tables, task lists, struck-out words, and inline/display LaTeX math ($...$, $$...$$).
+export const markdownSyntax = [remarkGfm, remarkMath];
+// Colors code by its language and renders LaTeX math via KaTeX without throwing on partial/malformed formulas.
+export const markdownPlugins: Parameters<typeof Markdown>[0]["rehypePlugins"] = [
+  rehypeHighlight,
+  [rehypeKatex, { throwOnError: false, strict: false }],
+];
 
 /**
  * What the 分身 said, once it has said it: the words, and under them a mark that copies them as they were written,
@@ -101,7 +107,7 @@ export const ModelText = memo(function ModelText({ text, onForward }: { text: st
     <div className="model-text">
       <div className="prose">
         <Markdown components={markdownParts} remarkPlugins={markdownSyntax} rehypePlugins={markdownPlugins}>
-          {text}
+          {normalizeMath(text)}
         </Markdown>
       </div>
       <div className="said-tools">

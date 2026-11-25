@@ -675,6 +675,17 @@ impl<L: Llm> Inner<L> {
 
     /// Append to the log and tell the client. A log that cannot be written ends the turn.
     fn append(&self, event: Event) -> Result<(), String> {
+        #[cfg(not(test))]
+        match &event {
+            Event::AssistantMessage { model, tokens: Some(tokens), .. } => {
+                let effective_model = if model.trim().is_empty() { self.model() } else { model.clone() };
+                crate::model_usage::ModelUsageStore::global().record_usage(&self.provider(), &effective_model, tokens);
+            }
+            Event::TurnEnd { error: Some(err), .. } => {
+                crate::model_usage::ModelUsageStore::global().record_error_if_rate_limited(&self.provider(), &self.model(), err);
+            }
+            _ => {}
+        }
         let envelope = self.log.lock().unwrap().append(event).map_err(|error| format!("cannot write the session log: {error}"))?;
         self.emit(UiEvent::Log { session_id: self.id.clone(), envelope });
         Ok(())

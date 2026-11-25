@@ -19,6 +19,7 @@ import type {
   Image,
   LanguageServerView,
   Mode,
+  ModelUsageEntry,
   Picked,
   PtyExitPayload,
   PtyInfo,
@@ -198,6 +199,10 @@ export const api = {
   openExternal: (url: string) => openUrl(url),
   /** Best-effort native OS desktop notification when the app is in the background. */
   notifyDesktop: (title: string, body: string) => invoke<void>("notify_desktop", { title, body }),
+  /** Per-model token usage statistics and active cooldown timers. */
+  getModelUsage: () => invoke<ModelUsageEntry[]>("get_model_usage"),
+  clearModelCooldown: (provider: string, model: string) => invoke<ModelUsageEntry[]>("clear_model_cooldown", { provider, model }),
+  resetModelUsage: () => invoke<ModelUsageEntry[]>("reset_model_usage"),
   onSessionEvent: (handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),
   /** The document runtime: how it stands, setting it up (how far it has got comes as events), and taking it away. */
   /** The language servers `code_nav` uses: where each is, downloading one the app can, and taking a download away. */

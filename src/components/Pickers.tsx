@@ -1,6 +1,8 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { shortCount } from "../lib/fold";
+import { cooldownRemainingMs, findModelUsage, formatCooldown, todayTokens } from "../lib/modelUsage";
 import { BYPASS, MODES, modeOf } from "../lib/modes";
-import type { Mode, Provider } from "../lib/types";
+import type { Mode, ModelUsageEntry, Provider } from "../lib/types";
 import { Info } from "./Hint";
 
 const MODE_ICONS: Record<Mode, string> = {
@@ -115,13 +117,15 @@ export interface ModelListProps {
   model: string;
   onPick: (provider: string, model: string) => void;
   listModels: (provider: string) => Promise<[string, string][]>;
+  modelUsage?: ModelUsageEntry[];
+  nowMs?: number;
 }
 
 /**
  * The models to choose from, a provider at a time: the session's own first, then the others the user added, under
  * the names given them. Each lists what it says it serves, or its built-in suggestions while that is unknown.
  */
-export function ModelList({ providers, listed, keyed, providerId, model, onPick, listModels }: ModelListProps) {
+export function ModelList({ providers, listed, keyed, providerId, model, onPick, listModels, modelUsage = [], nowMs = Date.now() }: ModelListProps) {
   /** The provider whose models are listed. */
   const [showing, setShowing] = useState(providerId);
   const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: [string, string][]; why?: string }>({ state: "asking", models: [] });
@@ -183,15 +187,30 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
       {asked.state === "failed" && <p className="menu-note">{asked.why}</p>}
       {models.length > 8 && <input className="input menu-filter" type="search" placeholder="筛一筛" aria-label="筛选心法" autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} />}
       <div className="menu-scroll">
-        {shown.map(([id, display]) => (
-          <button type="button" role="menuitemradio" aria-checked={home && id === model} key={id} className="mode-option plain" onClick={() => onPick(showing, id)}>
-            <span className="mode-text">
-              <span className="name mono">{id}</span>
-              {display !== id && <span className="hint">{display}</span>}
-            </span>
-            {home && id === model ? CHECK : <span />}
-          </button>
-        ))}
+        {shown.map(([id, display]) => {
+          const stat = findModelUsage(modelUsage, showing, id);
+          const coolMs = cooldownRemainingMs(stat, nowMs);
+          const todayTok = stat ? todayTokens(stat) : 0;
+          return (
+            <button type="button" role="menuitemradio" aria-checked={home && id === model} key={id} className="mode-option plain" onClick={() => onPick(showing, id)}>
+              <span className="mode-text">
+                <span className="name mono">{id}</span>
+                {display !== id && <span className="hint">{display}</span>}
+                {(coolMs > 0 || todayTok > 0) && (
+                  <span className="model-meta-badges">
+                    {coolMs > 0 && (
+                      <span className="model-cooldown-pill" title={stat?.cooldown_reason ?? "冷却中"}>
+                        冷却 {formatCooldown(coolMs)}
+                      </span>
+                    )}
+                    {todayTok > 0 && <span className="model-usage-badge">今日 {shortCount(todayTok)}</span>}
+                  </span>
+                )}
+              </span>
+              {home && id === model ? CHECK : <span />}
+            </button>
+          );
+        })}
         {shown.length === 0 && <p className="menu-note">{asked.state === "asking" ? "正在问…" : "没有对得上的。"}</p>}
       </div>
       {/* Moving to another provider leaves something behind: that is said in the open. Within one, nothing is lost. */}
