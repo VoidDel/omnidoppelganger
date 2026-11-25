@@ -189,11 +189,7 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "",
         other_urls: &[],
         key_env: None,
-        models: &[
-            ("grok-4.7", "Grok 4.7"),
-            ("grok-4-fast", "Grok 4 Fast"),
-            ("grok-code-fast-1", "Grok Code Fast"),
-        ],
+        models: &[],
     },
     Provider {
         id: "opencode",
@@ -461,11 +457,13 @@ pub fn effort_for(protocol: Protocol, effort: &str) -> Option<&'static str> {
         // These accept all five as they are.
         Protocol::Anthropic | Protocol::Responses | Protocol::Cli(CliKind::Antigravity | CliKind::ClaudeCode | CliKind::Cursor) => Some(level(["low", "medium", "high", "xhigh", "max"])),
         Protocol::Cli(CliKind::Codex) => Some(level(["low", "medium", "high", "xhigh", "xhigh"])),
+        // Grok 1.0.92 accepts low/high/xhigh/max (no `medium`).
+        Protocol::Cli(CliKind::Grok) => Some(level(["low", "high", "high", "xhigh", "max"])),
         // DeepSeek takes none/low/high/max and itself maps medium and xhigh to high.
         Protocol::Chat(Flavor::DeepSeek) => Some(level(["low", "high", "high", "high", "max"])),
         // Kimi K3 and GLM-5.3 take low/high/max.
         Protocol::Chat(Flavor::Kimi | Flavor::Glm) => Some(level(["low", "high", "high", "max", "max"])),
-        Protocol::Chat(Flavor::Generic) | Protocol::Cli(CliKind::Grok | CliKind::OpenCode) => None,
+        Protocol::Chat(Flavor::Generic) | Protocol::Cli(CliKind::OpenCode) => None,
     }
 }
 
@@ -482,7 +480,7 @@ mod tests {
             let custom = provider.id.starts_with("custom");
             let cli = matches!(provider.protocol, Protocol::Cli(_));
             assert_eq!(provider.base_url.is_empty(), custom || cli, "{}", provider.id);
-            assert_eq!(provider.models.is_empty(), custom || matches!(provider.id, "magpie" | "antigravity" | "cursor" | "opencode"), "{}", provider.id);
+            assert_eq!(provider.models.is_empty(), custom || matches!(provider.id, "magpie" | "antigravity" | "cursor" | "grok" | "opencode"), "{}", provider.id);
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);
         assert_eq!(provider("custom_anthropic").unwrap().protocol, Protocol::Anthropic);

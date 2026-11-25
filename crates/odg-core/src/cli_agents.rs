@@ -88,6 +88,9 @@ impl CliKind {
         if self == Self::Cursor {
             return list_cursor_models(&bin).await;
         }
+        if self == Self::Grok {
+            return list_grok_models(&bin).await;
+        }
         Ok(fallback
             .iter()
             .map(|(id, name)| Listed { id: (*id).to_string(), name: (*name).to_string(), context_window: Some(context_window(self)) })
@@ -230,6 +233,75 @@ async fn list_cursor_models(bin: &Path) -> Result<Vec<Listed>, String> {
     }
     *cursor_variant_cache().lock().unwrap() = variants;
     Ok(parsed)
+}
+
+async fn list_grok_models(bin: &Path) -> Result<Vec<Listed>, String> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("models")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
+        .await
+        .map_err(|_| "查询 grok models 超时（12s）。".to_string())?
+        .map_err(|e| format!("运行 grok models 失败：{e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "grok models 执行失败，请检查登录状态。".to_string()
+        } else {
+            format!("grok models 失败：{err}")
+        });
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let parsed = parse_grok_models_output(&raw);
+    if parsed.is_empty() {
+        return Err("grok models 未返回任何可用模型，请先运行 grok login。".to_string());
+    }
+    Ok(parsed)
+}
+
+fn parse_grok_models_output(raw: &str) -> Vec<Listed> {
+    let mut seen = std::collections::HashSet::new();
+    let mut default_item: Option<Listed> = None;
+    let mut models = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        let (is_default, rest) = if let Some(r) = trimmed.strip_prefix("* ") {
+            (true, r.trim())
+        } else if let Some(r) = trimmed.strip_prefix("- ") {
+            (false, r.trim())
+        } else {
+            continue;
+        };
+        let id = rest.strip_suffix("(default)").map(str::trim).unwrap_or(rest);
+        if id.is_empty() || id.contains(char::is_whitespace) || !seen.insert(id.to_string()) {
+            continue;
+        }
+        let label = id.rsplit('/').next().unwrap_or(id);
+        let name = if is_default {
+            format!("{label}（默认）")
+        } else {
+            label.to_string()
+        };
+        let listed = Listed {
+            id: id.to_string(),
+            name,
+            context_window: Some(context_window(CliKind::Grok)),
+        };
+        if is_default && default_item.is_none() {
+            default_item = Some(listed);
+        } else {
+            models.push(listed);
+        }
+    }
+    if let Some(def) = default_item {
+        models.insert(0, def);
+    }
+    models
 }
 
 fn parse_cursor_models_output(raw: &str) -> (Vec<Listed>, CursorVariantMap) {
@@ -533,6 +605,7 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
         | "edittoolcall"
         | "strreplace"
         | "str_replace"
+        | "search_replace"
         | "strreplacetoolcall"
         | "str_replace_editor"
         | "str_replace_based_edit_tool"
@@ -541,7 +614,7 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
         | "applypatchtoolcall"
         | "file_change" => "edit_file",
         "delete_file" | "remove_file" | "delete" | "deletetoolcall" | "deletefiletoolcall" => "delete_file",
-        "run_command" | "bash" | "shell" | "command_execution" | "shelltoolcall" | "bashtoolcall" | "runterminalcommand" => "run_command",
+        "run_command" | "bash" | "shell" | "command_execution" | "shelltoolcall" | "bashtoolcall" | "runterminalcommand" | "run_terminal_command" => "run_command",
         "grep_search" | "search" | "grep" | "greptoolcall" => "search",
         "find_by_name" | "list_dir" | "find_files" | "glob" | "ls" | "globtoolcall" | "lstoolcall" => "find_files",
         "search_web" | "web_search" | "websearch" => "web_search",
@@ -929,11 +1002,11 @@ pub fn build_args(
             args
         }
         CliKind::Grok => {
-            let mut args = vec![
-                "--no-auto-update".to_string(),
-                "--output-format".to_string(),
-                "streaming-json".to_string(),
-            ];
+            let mut args = vec!["--output-format".to_string(), "streaming-json".to_string()];
+            if let Some(ws) = workspace {
+                args.push("--cwd".to_string());
+                args.push(ws.to_string_lossy().into_owned());
+            }
             if let Some(session_id) = resume {
                 args.push("--resume".to_string());
                 args.push(session_id.to_string());
@@ -942,9 +1015,17 @@ pub fn build_args(
                 args.push("--model".to_string());
                 args.push(model.to_string());
             }
+            if !effort.is_empty() {
+                let mapped = match effort {
+                    "low" | "high" | "xhigh" | "max" => effort,
+                    _ => "high",
+                };
+                args.push("--reasoning-effort".to_string());
+                args.push(mapped.to_string());
+            }
             if read_only || mode == Mode::Plan {
-                args.push("--sandbox".to_string());
-                args.push("read-only".to_string());
+                args.push("--permission-mode".to_string());
+                args.push("plan".to_string());
             } else if matches!(mode, Mode::Edit | Mode::Auto | Mode::Bypass) {
                 if sandboxed {
                     args.push("--sandbox".to_string());
@@ -1352,6 +1433,7 @@ impl StreamParser {
         let conv = v["session_id"]
             .as_str()
             .or_else(|| v["sessionID"].as_str())
+            .or_else(|| v["sessionId"].as_str())
             .or_else(|| v["conversation_id"].as_str())
             .or_else(|| v["part"]["sessionID"].as_str())
             .map(str::to_string);
@@ -1366,6 +1448,7 @@ impl StreamParser {
             "text" | "text_delta" | "assistant" => {
                 let delta = v["part"]["text"]
                     .as_str()
+                    .or_else(|| v["data"].as_str())
                     .or_else(|| v["text"].as_str())
                     .or_else(|| v["delta"].as_str())
                     .or_else(|| v["content"].as_str())
@@ -1379,27 +1462,33 @@ impl StreamParser {
             }
             "tool_use" | "tool_call" => {
                 let node = if v["part"].is_object() { &v["part"] } else { &v };
-                let call_key = node["call_id"]
+                let call_key = node["toolCallId"]
                     .as_str()
+                    .or_else(|| node["call_id"].as_str())
                     .or_else(|| node["callID"].as_str())
                     .or_else(|| node["id"].as_str())
                     .or_else(|| node["tool_use_id"].as_str())
+                    .or_else(|| v["toolCallId"].as_str())
                     .or_else(|| v["call_id"].as_str())
                     .or_else(|| v["callID"].as_str())
                     .or_else(|| v["id"].as_str())
                     .or_else(|| v["tool_use_id"].as_str())
                     .map(str::to_string)
                     .unwrap_or_else(|| self.next_key("grok"));
-                let raw_name = node["name"]
+                let raw_name = node["toolName"]
                     .as_str()
+                    .or_else(|| node["name"].as_str())
                     .or_else(|| node["tool"].as_str())
+                    .or_else(|| node["title"].as_str())
                     .or_else(|| node["function"]["name"].as_str())
                     .unwrap_or("tool");
                 let parsed_fn_args: Option<Value> = node["arguments"]
                     .as_str()
                     .or_else(|| node["function"]["arguments"].as_str())
                     .and_then(|s| serde_json::from_str::<Value>(s).ok());
-                let args = if !node["state"]["input"].is_null() {
+                let args = if !node["rawInput"].is_null() {
+                    &node["rawInput"]
+                } else if !node["state"]["input"].is_null() {
                     &node["state"]["input"]
                 } else if !node["input"].is_null() {
                     &node["input"]
@@ -1439,6 +1528,31 @@ impl StreamParser {
                     vec![CliEvent::ToolStart { conversation_id: conv, call_key, name, input }]
                 }
             }
+            "tool_call_update" => {
+                let status = v["status"].as_str().unwrap_or("");
+                if !matches!(status, "completed" | "failed" | "error") {
+                    return Vec::new();
+                }
+                let call_key = v["toolCallId"]
+                    .as_str()
+                    .or_else(|| v["call_id"].as_str())
+                    .or_else(|| v["id"].as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let mut output = extract_content_text(&v["content"]);
+                if output.is_empty() {
+                    output = v["rawOutput"]["FileContent"]["raw_output"]
+                        .as_str()
+                        .or_else(|| v["rawOutput"]["FileContent"]["content"].as_str())
+                        .or_else(|| v["rawOutput"]["output"].as_str())
+                        .or_else(|| v["rawOutput"]["stdout"].as_str())
+                        .or_else(|| v["rawOutput"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                }
+                let is_error = matches!(status, "failed" | "error") || v["is_error"].as_bool().unwrap_or(false);
+                vec![CliEvent::ToolDone { conversation_id: conv, call_key, name: None, input: Value::Null, output, is_error }]
+            }
             "tool_result" => {
                 let node = if v["part"].is_object() { &v["part"] } else { &v };
                 let call_key = node["tool_use_id"]
@@ -1467,6 +1581,11 @@ impl StreamParser {
                 let usage = if !v["part"]["tokens"].is_null() { v["part"]["tokens"].clone() } else { v["usage"].clone() };
                 let tokens = anthropic_like_tokens(&usage);
                 vec![CliEvent::AgentText { conversation_id: conv, delta: String::new(), done: true, usage, tokens }]
+            }
+            "end" => {
+                let usage = v["usage"].clone();
+                let tokens = anthropic_like_tokens(&usage);
+                vec![CliEvent::Result { conversation_id: conv, success: true, response: String::new(), error: None, usage, tokens }]
             }
             "result" => {
                 let is_error = v["is_error"].as_bool().unwrap_or(false) || v["status"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("error"));
@@ -1498,7 +1617,12 @@ fn extract_content_text(content: &Value) -> String {
     if let Some(arr) = content.as_array() {
         return arr
             .iter()
-            .filter_map(|item| item["text"].as_str().or_else(|| item.as_str()))
+            .filter_map(|item| {
+                item["text"]
+                    .as_str()
+                    .or_else(|| item["content"]["text"].as_str())
+                    .or_else(|| item.as_str())
+            })
             .collect::<Vec<_>>()
             .join("\n");
     }
@@ -2768,10 +2892,10 @@ mod tests {
             ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--approve-mcps", "--model", "grok-4.7-medium", "--force", "--", "fix"]
         );
 
-        let grok = build_args(CliKind::Grok, "hello", None, Some("g-1"), "grok-4.7", "high", Mode::Auto, true, false);
+        let grok = build_args(CliKind::Grok, "hello", Some(Path::new("/tmp/proj")), Some("g-1"), "grok-4.7", "high", Mode::Auto, true, false);
         assert_eq!(
             grok,
-            ["--no-auto-update", "--output-format", "streaming-json", "--resume", "g-1", "--model", "grok-4.7", "--sandbox", "workspace-write", "--always-approve", "-p", "hello"]
+            ["--output-format", "streaming-json", "--cwd", "/tmp/proj", "--resume", "g-1", "--model", "grok-4.7", "--reasoning-effort", "high", "--sandbox", "workspace-write", "--always-approve", "-p", "hello"]
         );
 
         let opencode = build_args(CliKind::OpenCode, "refactor", None, Some("ses_7"), "anthropic/claude-sonnet-4-6", "high", Mode::Plan, false, false);
