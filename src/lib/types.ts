@@ -78,6 +78,8 @@ export interface Attached {
   document?: DocumentKind;
   /** For a document, how many pages, sheets, or slides it has; none for Word. */
   parts?: number;
+  /** True when the attached path is a folder rather than a regular file. */
+  is_dir?: boolean;
 }
 
 /** The kinds of document whose text is taken out to be read: see `crates/odg-core/src/documents.rs`. */
@@ -89,7 +91,7 @@ export type DocumentKind = "pdf" | "word" | "excel" | "powerpoint";
  * one, or neither, with why.
  */
 export type Picked =
-  | { kind: "file"; path: string; name: string; bytes: number; inline: boolean; document?: DocumentKind; parts?: number }
+  | { kind: "file"; path: string; name: string; bytes: number; inline: boolean; document?: DocumentKind; parts?: number; is_dir?: boolean }
   | { kind: "image"; name: string; image: Image }
   | {
       kind: "refused";

@@ -54,7 +54,7 @@ export interface Row {
     ts: string;
     steering: boolean;
     images: Image[];
-    files: { path: string; bytes: number; inline: boolean; document?: DocumentKind; parts?: number }[];
+    files: { path: string; bytes: number; inline: boolean; document?: DocumentKind; parts?: number; is_dir?: boolean }[];
   };
   items: Item[];
 }
@@ -109,6 +109,7 @@ export function fold(events: Envelope[]): Row[] {
               inline: file.content !== undefined,
               document: file.document,
               parts: file.parts,
+              is_dir: file.is_dir,
             })),
           },
           items: [],

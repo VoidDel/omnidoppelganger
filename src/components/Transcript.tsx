@@ -510,17 +510,35 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
                   {row.prompt.files.length > 0 && (
                     <div className="said-files">
                       {row.prompt.files.map((file) => {
-                        const how = file.inline ? (file.document ? "取出的文字随这句话一起给了分身，图和排版不在其中" : "它的内容随这句话一起给了分身") : "它太大，没有随这句话发出，分身按路径自己去读";
+                        const how = file.is_dir
+                          ? "文件夹路径随这句话给了分身，由分身自行读取处理"
+                          : file.inline
+                            ? file.document
+                              ? "取出的文字与文件路径随这句话一起给了分身，分身也可调用工具处理原文件"
+                              : "它的内容随这句话一起给了分身"
+                            : "文件路径随这句话给了分身，由分身自行调用工具读取处理";
                         return (
                           <span key={file.path} className="file-chip openable">
                             <button type="button" className="file-chip-open" disabled={!onOpenFile} title={`${file.path}\n${how}\n点开：用系统默认的程序打开`} onClick={() => openFile(file.path, false)}>
-                              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
-                              </svg>
+                              {file.is_dir ? (
+                                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
+                                </svg>
+                              ) : (
+                                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M4 1.8h5.2L12 4.6v9.6H4zM9.2 1.8v2.8H12M6 8h4M6 10.6h4" />
+                                </svg>
+                              )}
                               <span className="file-chip-name">{file.path.replace(/^.*[\\/]/, "")}</span>
                               <span className="file-chip-size">
-                                {fileSize(file.bytes)}
-                                {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
+                                {file.is_dir ? (
+                                  "文件夹"
+                                ) : (
+                                  <>
+                                    {fileSize(file.bytes)}
+                                    {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
+                                  </>
+                                )}
                               </span>
                             </button>
                             <button type="button" className="file-chip-reveal" disabled={!onOpenFile} title="在文件夹中显示" onClick={() => openFile(file.path, true)}>

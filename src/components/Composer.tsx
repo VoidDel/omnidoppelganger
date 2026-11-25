@@ -57,6 +57,13 @@ const FILE_ICON = (
   </svg>
 );
 
+/** A folder icon for attached directories. */
+const FOLDER_ICON = (
+  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1.8 4.2V12.6h12.4V5.8H7.6L6.2 4.2z" />
+  </svg>
+);
+
 function pasteIcon(kind: PasteKind) {
   if (kind === "svg") {
     return (
@@ -622,16 +629,30 @@ export function Composer(props: ComposerProps) {
                   </span>
                 ) : (
                   <span
-                    className="attachment file"
+                    className={`attachment file${file.is_dir ? " folder" : ""}`}
                     key={file.path}
-                    title={`${file.path}\n${file.inline ? (file.document ? "取出的文字会随这句话一起发给分身，图和排版不在其中" : "它的内容会随这句话一起发给分身") : "它太大，不随消息发送：分身会自己分段去读，不用请示"}`}
+                    title={`${file.path}\n${
+                      file.is_dir
+                        ? "文件夹路径会随这句话发给分身，由分身自行读取处理"
+                        : file.inline
+                          ? file.document
+                            ? "取出的文字与文件路径会随这句话一起发给分身，分身也可自行调用工具读取原文件"
+                            : "它的内容会随这句话一起发给分身"
+                          : "文件路径会随这句话发给分身，由分身自行调用工具读取或处理"
+                    }`}
                   >
-                    {FILE_ICON}
+                    {file.is_dir ? FOLDER_ICON : FILE_ICON}
                     <span className="file-chip-name">{file.name}</span>
                     <span className="file-chip-size">
-                      {fileSize(file.bytes)}
-                      {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
-                      {!file.inline && "，分身自读"}
+                      {file.is_dir ? (
+                        "文件夹"
+                      ) : (
+                        <>
+                          {fileSize(file.bytes)}
+                          {file.document ? `，${documentLabel(file.document, file.parts)}` : ""}
+                          {!file.inline && "，分身自读"}
+                        </>
+                      )}
                     </span>
                     <button type="button" aria-label={`去掉 ${file.name}`} onClick={() => setFiles(files.filter((had) => had.path !== file.path))}>
                       ×

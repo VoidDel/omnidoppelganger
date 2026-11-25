@@ -78,6 +78,9 @@ pub struct Attached {
     /// For a document, how many pages, sheets, or slides it has; none for Word. Since format 14.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<u32>,
+    /// True when the user attached a folder rather than a regular file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_dir: bool,
 }
 
 /// The most files one message may carry.
@@ -108,6 +111,8 @@ pub enum Picked {
         document: Option<crate::documents::Kind>,
         #[serde(skip_serializing_if = "Option::is_none")]
         parts: Option<u32>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        is_dir: bool,
     },
     Image { name: String, image: Image },
     Refused { name: String, why: &'static str },
@@ -139,88 +144,119 @@ pub fn base64(bytes: &[u8]) -> String {
 }
 
 /// A file to attach, read now: its size, and its text when that is short
-/// enough to go with the message. Fails with the word [`Picked::Refused`] carries.
+/// enough to go with the message. Unsupported, binary, oversized, or
+/// non-extractable files still attach by path (`content: None`) so the model
+/// can inspect or process them directly with its tools.
 pub fn attach(path: &Path) -> Result<Attached, &'static str> {
     if !path.is_absolute() {
         return Err("missing");
     }
     let metadata = std::fs::metadata(path).map_err(|_| "missing")?;
+    let path_str = path.to_string_lossy().into_owned();
     if metadata.is_dir() {
-        return Err("directory");
+        return Ok(Attached { path: path_str, bytes: 0, content: None, document: None, parts: None, is_dir: true });
     }
-    // A document goes as its words, when they are few enough, and is otherwise read in parts by `read_file`, which takes them out the same way.
+    let bytes_len = metadata.len();
+    // A document goes as its words when extractable and short enough; otherwise attach by path so the model can inspect it directly.
     if let Some(found) = crate::documents::kind_of_file(path) {
-        let kind = found.map_err(crate::documents::DocError::word)?;
-        if metadata.len() > crate::documents::DOCUMENT_BYTES {
-            return Err("too_large");
+        let Ok(kind) = found else {
+            return Ok(Attached { path: path_str, bytes: bytes_len, content: None, document: None, parts: None, is_dir: false });
+        };
+        if bytes_len <= crate::documents::DOCUMENT_BYTES
+            && let Ok(read) = crate::documents::file_text(path, kind).map_err(|_| "missing")?
+        {
+            let inline = read.text.len() as u64 <= ATTACHED_INLINE_BYTES;
+            return Ok(Attached {
+                path: path_str,
+                bytes: bytes_len,
+                content: inline.then(|| read.text.clone()),
+                document: Some(kind),
+                parts: read.parts.map(|parts| u32::try_from(parts).unwrap_or(u32::MAX)),
+                is_dir: false,
+            });
         }
-        let read = crate::documents::file_text(path, kind).map_err(|_| "missing")?.map_err(crate::documents::DocError::word)?;
-        let inline = read.text.len() as u64 <= ATTACHED_INLINE_BYTES;
-        return Ok(Attached {
-            path: path.to_string_lossy().into_owned(),
-            bytes: metadata.len(),
-            content: inline.then(|| read.text.clone()),
-            document: Some(kind),
-            parts: read.parts.map(|parts| u32::try_from(parts).unwrap_or(u32::MAX)),
-        });
+        return Ok(Attached { path: path_str, bytes: bytes_len, content: None, document: Some(kind), parts: None, is_dir: false });
     }
-    if metadata.len() > ATTACHED_BYTES {
-        return Err("too_large");
-    }
-    let inline = metadata.len() <= ATTACHED_INLINE_BYTES;
-    // The whole of a small file, or the start of a large one: enough to tell text from anything else, as `read_file` does.
-    let bytes = if inline {
-        std::fs::read(path).map_err(|_| "missing")?
+    let content = if bytes_len <= ATTACHED_INLINE_BYTES {
+        let bytes = std::fs::read(path).map_err(|_| "missing")?;
+        (!bytes.iter().take(8192).any(|byte| *byte == 0)).then(|| String::from_utf8_lossy(&bytes).into_owned())
     } else {
-        use std::io::Read;
-        let mut start = vec![0; 8192];
-        let read = std::fs::File::open(path).and_then(|mut file| file.read(&mut start)).map_err(|_| "missing")?;
-        start.truncate(read);
-        start
+        None
     };
-    if bytes.iter().take(8192).any(|byte| *byte == 0) {
-        return Err("binary");
-    }
-    Ok(Attached { path: path.to_string_lossy().into_owned(), bytes: metadata.len(), content: inline.then(|| String::from_utf8_lossy(&bytes).into_owned()), document: None, parts: None })
+    Ok(Attached { path: path_str, bytes: bytes_len, content, document: None, parts: None, is_dir: false })
 }
 
 /// What a path the user picked is, for the client to show before the message is sent.
 pub fn pick(path: &Path) -> Picked {
     let name = path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned());
     if let Some(media_type) = image_type(path) {
-        return match std::fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() && metadata.len() > IMAGE_FILE_BYTES => Picked::Refused { name, why: "image_too_large" },
-            Ok(metadata) if metadata.is_file() => match std::fs::read(path) {
-                Ok(bytes) => Picked::Image { name, image: Image { media_type: media_type.to_string(), data: base64(&bytes) } },
-                Err(_) => Picked::Refused { name, why: "missing" },
-            },
-            Ok(_) => Picked::Refused { name, why: "directory" },
-            Err(_) => Picked::Refused { name, why: "missing" },
-        };
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() && metadata.len() <= IMAGE_FILE_BYTES => {
+                return match std::fs::read(path) {
+                    Ok(bytes) => Picked::Image { name, image: Image { media_type: media_type.to_string(), data: base64(&bytes) } },
+                    Err(_) => Picked::Refused { name, why: "missing" },
+                };
+            }
+            Ok(_) => {
+                // Oversized image or folder falls through to path-only attachment.
+            }
+            Err(_) => return Picked::Refused { name, why: "missing" },
+        }
     }
     match attach(path) {
-        Ok(file) => Picked::File { path: file.path, name, bytes: file.bytes, inline: file.content.is_some(), document: file.document, parts: file.parts },
+        Ok(file) => Picked::File {
+            path: file.path,
+            name,
+            bytes: file.bytes,
+            inline: file.content.is_some(),
+            document: file.document,
+            parts: file.parts,
+            is_dir: file.is_dir,
+        },
         Err(why) => Picked::Refused { name, why },
     }
 }
 
-/// How an attached file is put to the model, ahead of the words sent with it:
-/// its text between tags that name it, or for a large one the way to read it.
+/// How an attached file or folder is put to the model, ahead of the words sent with it:
+/// its text between tags that name it, or for a large/unsupported file or folder its path so the model can read it directly.
 pub fn attached_text(file: &Attached) -> String {
+    if file.is_dir {
+        return format!(
+            "<attached_folder path=\"{}\">\n[Folder path: {}]\nThe user attached this folder. Inspect or work with files inside this directory directly using your tools without asking.\n</attached_folder>",
+            file.path, file.path
+        );
+    }
     let parts = file.parts.map(|parts| parts as usize);
     match (&file.content, file.document) {
-        (Some(content), None) => format!("<attached_file path=\"{}\">\n{}\n</attached_file>", file.path, content.trim_end_matches('\n')),
-        (None, None) => format!(
-            "<attached_file path=\"{}\" bytes=\"{}\">\nThe user attached this file. It is too large to include here: read the parts you need with read_file, which may read this path without asking.\n</attached_file>",
-            file.path, file.bytes
+        (Some(content), None) => format!(
+            "<attached_file path=\"{}\">\n[File path: {}]\n{}\n</attached_file>",
+            file.path,
+            file.path,
+            content.trim_end_matches('\n')
         ),
-        (Some(content), Some(kind)) => {
-            format!("<attached_file path=\"{}\">\n[It is {}]\n{}\n</attached_file>", file.path, crate::documents::describe(kind, parts), content.trim_end_matches('\n'))
-        }
-        (None, Some(kind)) => format!(
-            "<attached_file path=\"{}\" bytes=\"{}\">\nThe user attached this file, {}. Its text is too long to include here: read the parts you need with read_file, which gives a document's text and may read this path without asking.\n</attached_file>",
+        (None, None) => format!(
+            "<attached_file path=\"{}\" bytes=\"{}\">\n[File path: {}]\nThe user attached this file. Its contents are not inlined (it may be large, binary, or an unsupported format): read or inspect it directly from this path with read_file or other tools without asking.\n</attached_file>",
+            file.path, file.bytes, file.path
+        ),
+        (Some(content), Some(kind)) => format!(
+            "<attached_file path=\"{}\">\n[It is {} File path: {} — you may also inspect or process the original file directly from this path with your tools without asking.]\n{}\n</attached_file>",
+            file.path,
+            crate::documents::describe(kind, parts),
+            file.path,
+            content.trim_end_matches('\n')
+        ),
+        (None, Some(kind)) if parts.is_none() => format!(
+            "<attached_file path=\"{}\" bytes=\"{}\">\n[File path: {}]\nThe user attached this file, {}. Plain text could not be extracted automatically or the file is large: inspect it directly from this path using your tools without asking.\n</attached_file>",
             file.path,
             file.bytes,
+            file.path,
+            crate::documents::name(kind, None)
+        ),
+        (None, Some(kind)) => format!(
+            "<attached_file path=\"{}\" bytes=\"{}\">\n[File path: {}]\nThe user attached this file, {}. Its text is too long to include here: read the parts you need with read_file, which gives a document's text and may read this path without asking.\n</attached_file>",
+            file.path,
+            file.bytes,
+            file.path,
             crate::documents::name(kind, parts)
         ),
     }
@@ -602,14 +638,20 @@ mod tests {
         // A small text file goes with the message, text and all.
         let small = attach(&at("notes.md")).unwrap();
         assert_eq!((small.bytes, small.content.as_deref()), (18, Some("# 笔记\nline two\n")));
-        assert_eq!(pick(&at("notes.md")), Picked::File { path: small.path.clone(), name: "notes.md".into(), bytes: 18, inline: true, document: None, parts: None });
+        assert_eq!(pick(&at("notes.md")), Picked::File { path: small.path.clone(), name: "notes.md".into(), bytes: 18, inline: true, document: None, parts: None, is_dir: false });
         // A large one is attached by its path alone.
         let large = attach(&at("big.log")).unwrap();
         assert_eq!((large.bytes, large.content), (ATTACHED_INLINE_BYTES + 1, None));
-        assert!(matches!(pick(&at("big.log")), Picked::File { inline: false, .. }));
-        // What is not text, is a folder, is not there, or is not a whole path, is refused.
-        assert_eq!(attach(&at("data.bin")), Err("binary"));
-        assert_eq!(attach(&at("folder")), Err("directory"));
+        assert!(matches!(pick(&at("big.log")), Picked::File { inline: false, is_dir: false, .. }));
+        // A binary or unsupported file is attached by its path alone so the model can inspect it directly.
+        let bin = attach(&at("data.bin")).unwrap();
+        assert_eq!((bin.bytes, bin.content, bin.document, bin.is_dir), (4, None, None, false));
+        assert!(matches!(pick(&at("data.bin")), Picked::File { inline: false, document: None, is_dir: false, .. }));
+        // A folder is attached by its path alone with `is_dir: true`.
+        let folder = attach(&at("folder")).unwrap();
+        assert_eq!((folder.bytes, folder.content, folder.is_dir), (0, None, true));
+        assert!(matches!(pick(&at("folder")), Picked::File { inline: false, is_dir: true, .. }));
+        // A missing path or relative path is still refused.
         assert_eq!(attach(&at("gone.txt")), Err("missing"));
         assert_eq!(attach(Path::new("notes.md")), Err("missing"));
         assert_eq!(pick(&at("gone.txt")), Picked::Refused { name: "gone.txt".into(), why: "missing" });
@@ -628,19 +670,22 @@ mod tests {
 
     #[test]
     fn an_attached_file_is_put_to_the_model_by_name() {
-        let small = Attached { path: "/x/notes.md".into(), bytes: 9, content: Some("one\ntwo\n".into()), document: None, parts: None };
-        assert_eq!(attached_text(&small), "<attached_file path=\"/x/notes.md\">\none\ntwo\n</attached_file>");
-        let large = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None, document: None, parts: None };
+        let small = Attached { path: "/x/notes.md".into(), bytes: 9, content: Some("one\ntwo\n".into()), document: None, parts: None, is_dir: false };
+        assert_eq!(attached_text(&small), "<attached_file path=\"/x/notes.md\">\n[File path: /x/notes.md]\none\ntwo\n</attached_file>");
+        let large = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None, document: None, parts: None, is_dir: false };
         let told = attached_text(&large);
-        assert!(told.starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">") && told.contains("read_file") && told.contains("without asking"), "{told}");
-        // A document is said to be one, and what goes with it to be its text.
+        assert!(told.starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">\n[File path: /x/big.log]\n") && told.contains("read_file") && told.contains("without asking"), "{told}");
+        let dir = Attached { path: "/x/docs".into(), bytes: 0, content: None, document: None, parts: None, is_dir: true };
+        let told = attached_text(&dir);
+        assert!(told.starts_with("<attached_folder path=\"/x/docs\">\n[Folder path: /x/docs]\n") && told.contains("without asking"), "{told}");
+        // A document is said to be one, carries its explicit file path, and what goes with it is its text.
         use crate::documents::Kind;
-        let sheet = Attached { path: "/x/sheet.pdf".into(), bytes: 52_000, content: Some("[page 1 of 1]\nVIN\n".into()), document: Some(Kind::Pdf), parts: Some(1) };
+        let sheet = Attached { path: "/x/sheet.pdf".into(), bytes: 52_000, content: Some("[page 1 of 1]\nVIN\n".into()), document: Some(Kind::Pdf), parts: Some(1), is_dir: false };
         let told = attached_text(&sheet);
-        assert!(told.starts_with("<attached_file path=\"/x/sheet.pdf\">\n[It is a PDF of 1 page. This is its text") && told.ends_with("[page 1 of 1]\nVIN\n</attached_file>"), "{told}");
-        let deck = Attached { path: "/x/deck.pptx".into(), bytes: 9_000_000, content: None, document: Some(Kind::PowerPoint), parts: Some(30) };
+        assert!(told.starts_with("<attached_file path=\"/x/sheet.pdf\">\n[It is a PDF of 1 page. This is its text") && told.contains("File path: /x/sheet.pdf") && told.ends_with("[page 1 of 1]\nVIN\n</attached_file>"), "{told}");
+        let deck = Attached { path: "/x/deck.pptx".into(), bytes: 9_000_000, content: None, document: Some(Kind::PowerPoint), parts: Some(30), is_dir: false };
         let told = attached_text(&deck);
-        assert!(told.starts_with("<attached_file path=\"/x/deck.pptx\" bytes=\"9000000\">\nThe user attached this file, a presentation of 30 slides.") && told.contains("read_file"), "{told}");
+        assert!(told.starts_with("<attached_file path=\"/x/deck.pptx\" bytes=\"9000000\">\n[File path: /x/deck.pptx]\nThe user attached this file, a presentation of 30 slides.") && told.contains("read_file"), "{told}");
     }
 
     #[test]
@@ -666,9 +711,13 @@ mod tests {
         assert_eq!((manual.parts, manual.content), (Some(60), None));
         let word = attach(&at("说明.docx")).unwrap();
         assert_eq!((word.document, word.parts, word.content.as_deref()), (Some(Kind::Word), None, Some("先装驱动。")));
-        assert_eq!(attach(&at("scan.pdf")), Err("doc_no_text"));
-        assert_eq!(attach(&at("broken.pdf")), Err("doc_unreadable"));
-        assert_eq!(attach(&at("old.ppt")), Err("doc_old_format"));
-        assert_eq!(pick(&at("scan.pdf")), Picked::Refused { name: "scan.pdf".into(), why: "doc_no_text" });
+        let scan = attach(&at("scan.pdf")).unwrap();
+        assert_eq!((scan.document, scan.parts, scan.content.as_deref()), (Some(Kind::Pdf), None, None));
+        assert!(attached_text(&scan).contains("Plain text could not be extracted automatically"));
+        let broken = attach(&at("broken.pdf")).unwrap();
+        assert_eq!((broken.document, broken.parts, broken.content.as_deref()), (Some(Kind::Pdf), None, None));
+        let old_ppt = attach(&at("old.ppt")).unwrap();
+        assert_eq!((old_ppt.document, old_ppt.parts, old_ppt.content.as_deref()), (None, None, None));
+        assert!(matches!(pick(&at("scan.pdf")), Picked::File { inline: false, document: Some(Kind::Pdf), parts: None, .. }));
     }
 }
