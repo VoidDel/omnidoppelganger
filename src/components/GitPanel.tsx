@@ -539,17 +539,52 @@ export function GitPanel({
                   : "提交"}
           </button>
           {totalDirty > 0 && (
-            <button
-              type="button"
-              className="button outline small"
-              disabled={working}
-              title={working ? "分身正在运功" : "让分身审查当前尚未提交的改动"}
-              onClick={onAskReview}
-            >
-              请分身审查
-            </button>
+            <>
+              <button
+                type="button"
+                className="button outline small"
+                disabled={working}
+                title={working ? "分身正在运功" : "让分身审查当前尚未提交的改动"}
+                onClick={onAskReview}
+              >
+                请分身审查
+              </button>
+              <button
+                type="button"
+                className="icon-button tiny danger"
+                disabled={!!busy}
+                title="放弃并还原全部未提交的更改（含已暂存、未暂存与未跟踪文件）"
+                onClick={() => setDiscardTarget(discardTarget === "**" ? null : "**")}
+              >
+                ↺
+              </button>
+            </>
           )}
         </div>
+        {discardTarget === "**" && totalDirty > 0 && (
+          <div className="tree-confirm" role="alertdialog">
+            <span>放弃并还原全部 {totalDirty} 项未提交更改（含已暂存、未暂存与未跟踪文件）？不可撤销。</span>
+            <span className="tree-confirm-acts">
+              <button type="button" className="button text small" onClick={() => setDiscardTarget(null)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="button danger small"
+                onClick={() => {
+                  setDiscardTarget(null);
+                  setBusy("discard");
+                  api
+                    .gitDiscardAll(sessionId)
+                    .then(afterDiscard, (err) => onError(String(err)))
+                    .finally(() => setBusy(null));
+                }}
+              >
+                全部还原
+              </button>
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Scrollable Change Groups & History */}
@@ -652,22 +687,53 @@ export function GitPanel({
                   {status.untracked_truncated ? "+" : ""})
                 </span>
               </button>
-              <button
-                type="button"
-                className="icon-button tiny"
-                title="暂存全部新文件"
-                onClick={() =>
-                  api
-                    .gitStage(
-                      sessionId,
-                      status.untracked.map((f) => f.path),
-                    )
-                    .then(onStatusChanged, (err) => onError(String(err)))
-                }
-              >
-                +
-              </button>
+              <span className="git-group-acts">
+                <button
+                  type="button"
+                  className="icon-button tiny"
+                  title="暂存全部新文件"
+                  onClick={() =>
+                    api
+                      .gitStage(
+                        sessionId,
+                        status.untracked.map((f) => f.path),
+                      )
+                      .then(onStatusChanged, (err) => onError(String(err)))
+                  }
+                >
+                  +
+                </button>
+                <button
+                  type="button"
+                  className="icon-button tiny danger"
+                  title="删除全部未跟踪文件"
+                  onClick={() => setDiscardTarget(discardTarget === "*untracked" ? null : "*untracked")}
+                >
+                  ↺
+                </button>
+              </span>
             </div>
+            {discardTarget === "*untracked" && (
+              <div className="tree-confirm" role="alertdialog">
+                <span>删除全部 {status.untracked.length} 个未跟踪文件？不可撤销。</span>
+                <span className="tree-confirm-acts">
+                  <button type="button" className="button text small" onClick={() => setDiscardTarget(null)}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="button danger small"
+                    onClick={() => {
+                      const paths = status.untracked.map((f) => f.path);
+                      setDiscardTarget(null);
+                      api.gitDiscard(sessionId, paths).then(afterDiscard, (err) => onError(String(err)));
+                    }}
+                  >
+                    全部删除
+                  </button>
+                </span>
+              </div>
+            )}
             {!folded.untracked && status.untracked.map((f) => renderFileRow(f, "untracked"))}
           </div>
         )}

@@ -602,6 +602,25 @@ pub fn discard(workspace: &Path, paths: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Discard and revert ALL uncommitted changes inside `workspace`:
+/// unstages staged edits/additions, restores tracked files to HEAD, and removes untracked files/directories.
+pub fn discard_all(workspace: &Path) -> Result<(), String> {
+    let (top, ws_prefix) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
+    let scope = if ws_prefix.is_empty() { "." } else { ws_prefix.as_str() };
+    let has_head = git_bytes(&top, &[], &["rev-parse", "--verify", "HEAD"]).is_ok();
+    if has_head {
+        git_bytes(&top, &[], &["reset", "HEAD", "--", scope])?;
+        // Only run checkout if any tracked files exist under `scope`.
+        if !git_bytes(&top, &[], &["ls-files", "--", scope]).unwrap_or_default().is_empty() {
+            git_bytes(&top, &[], &["checkout", "--", scope])?;
+        }
+    } else {
+        let _ = git_bytes(&top, &[], &["rm", "-rf", "--cached", "--ignore-unmatch", "--", scope]);
+    }
+    git_bytes(&top, &[], &["clean", "-fd", "--", scope])?;
+    Ok(())
+}
+
 /// Commit staged changes (optionally staging all tracked/untracked changes first when `stage_all` is true).
 pub fn commit(workspace: &Path, message: &str, stage_all: bool) -> Result<GitCommitResult, String> {
     let (top, _) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
@@ -1019,5 +1038,18 @@ mod tests {
         discard(&root, &["src/hello.rs".to_string(), "temp.txt".to_string()]).unwrap();
         let clean = status(&root).unwrap();
         assert!(clean.unstaged.is_empty() && clean.untracked.is_empty());
+
+        // Discard ALL uncommitted changes at once (staged edit, staged new file, unstaged edit, untracked dir).
+        fs::write(root.join("src/hello.rs"), "staged-change\n").unwrap();
+        fs::write(root.join("staged-new.txt"), "new\n").unwrap();
+        stage(&root, &["src/hello.rs".to_string(), "staged-new.txt".to_string()]).unwrap();
+        fs::write(root.join("说明文档.md"), "unstaged-change\n").unwrap();
+        fs::create_dir_all(root.join("doc/screenshots")).unwrap();
+        fs::write(root.join("doc/screenshots/01.png"), "png").unwrap();
+        discard_all(&root).unwrap();
+        let wiped = status(&root).unwrap();
+        assert!(wiped.staged.is_empty() && wiped.unstaged.is_empty() && wiped.untracked.is_empty());
+        assert!(!root.join("staged-new.txt").exists());
+        assert!(!root.join("doc/screenshots").exists());
     }
 }

@@ -730,6 +730,17 @@ async fn git_discard(app: State<'_, App>, id: String, paths: Vec<String>) -> Res
 }
 
 #[tauri::command]
+async fn git_discard_all(app: State<'_, App>, id: String) -> Result<odg_core::git::GitStatus, String> {
+    let workspace = session_workspace(&app, &id)?;
+    tokio::task::spawn_blocking(move || {
+        odg_core::git::discard_all(&workspace)?;
+        odg_core::git::status(&workspace)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn git_commit(app: State<'_, App>, id: String, message: String, stage_all: bool) -> Result<odg_core::git::GitCommitResult, String> {
     let workspace = session_workspace(&app, &id)?;
     tokio::task::spawn_blocking(move || odg_core::git::commit(&workspace, &message, stage_all))
@@ -1527,6 +1538,7 @@ pub fn run() {
             git_stage,
             git_unstage,
             git_discard,
+            git_discard_all,
             git_commit,
             git_branches,
             git_checkout,

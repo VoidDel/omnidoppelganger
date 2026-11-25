@@ -158,6 +158,7 @@ export const api = {
   gitStage: (id: string, paths: string[] = []) => invoke<GitStatus>("git_stage", { id, paths }),
   gitUnstage: (id: string, paths: string[] = []) => invoke<GitStatus>("git_unstage", { id, paths }),
   gitDiscard: (id: string, paths: string[]) => invoke<GitStatus>("git_discard", { id, paths }),
+  gitDiscardAll: (id: string) => invoke<GitStatus>("git_discard_all", { id }),
   gitCommit: (id: string, message: string, stageAll = false) =>
     invoke<GitCommitResult>("git_commit", { id, message, stageAll }),
   gitBranches: (id: string) => invoke<GitBranch[]>("git_branches", { id }),
