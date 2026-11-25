@@ -1,6 +1,81 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { layoutGitGraph, type GraphRow } from "../lib/gitGraph";
 import type { DiffStage, GitBranch, GitCommitItem, GitFile, GitStatus, SessionItem } from "../lib/types";
+
+const GRAPH_COL_STEP = 13;
+const GRAPH_PAD_X = 7;
+const GRAPH_ROW_H = 40;
+const GRAPH_MID_Y = 20;
+
+function graphColX(col: number): number {
+  return GRAPH_PAD_X + col * GRAPH_COL_STEP;
+}
+
+function CommitGraphSvg({ row, width }: { row: GraphRow; width: number }) {
+  const cx = graphColX(row.col);
+  return (
+    <svg
+      className="git-graph-svg"
+      width={width}
+      height={GRAPH_ROW_H}
+      viewBox={`0 0 ${width} ${GRAPH_ROW_H}`}
+      aria-hidden="true"
+    >
+      {row.passCols.map((p) => {
+        const x = graphColX(p.col);
+        return <line key={`p-${p.col}`} x1={x} y1={0} x2={x} y2={GRAPH_ROW_H} stroke={p.color} strokeWidth={1.75} />;
+      })}
+      {row.inEdges.map((e, idx) => {
+        const x1 = graphColX(e.fromCol);
+        const x2 = graphColX(e.toCol);
+        if (x1 === x2) {
+          return <line key={`in-${idx}`} x1={x1} y1={0} x2={x2} y2={GRAPH_MID_Y} stroke={e.color} strokeWidth={1.75} />;
+        }
+        return (
+          <path
+            key={`in-${idx}`}
+            d={`M ${x1} 0 C ${x1} ${GRAPH_MID_Y * 0.65}, ${x2} ${GRAPH_MID_Y * 0.35}, ${x2} ${GRAPH_MID_Y}`}
+            fill="none"
+            stroke={e.color}
+            strokeWidth={1.75}
+            strokeLinecap="round"
+          />
+        );
+      })}
+      {row.outEdges.map((e, idx) => {
+        const x1 = graphColX(e.fromCol);
+        const x2 = graphColX(e.toCol);
+        if (x1 === x2) {
+          return (
+            <line key={`out-${idx}`} x1={x1} y1={GRAPH_MID_Y} x2={x2} y2={GRAPH_ROW_H} stroke={e.color} strokeWidth={1.75} />
+          );
+        }
+        const dy = GRAPH_ROW_H - GRAPH_MID_Y;
+        return (
+          <path
+            key={`out-${idx}`}
+            d={`M ${x1} ${GRAPH_MID_Y} C ${x1} ${GRAPH_MID_Y + dy * 0.65}, ${x2} ${GRAPH_MID_Y + dy * 0.35}, ${x2} ${GRAPH_ROW_H}`}
+            fill="none"
+            stroke={e.color}
+            strokeWidth={1.75}
+            strokeLinecap="round"
+          />
+        );
+      })}
+      {row.isHead ? (
+        <>
+          <circle cx={cx} cy={GRAPH_MID_Y} r={4.8} fill="var(--sheet)" stroke={row.color} strokeWidth={1.75} />
+          <circle cx={cx} cy={GRAPH_MID_Y} r={2.2} fill={row.color} />
+        </>
+      ) : row.isMerge ? (
+        <circle cx={cx} cy={GRAPH_MID_Y} r={3.6} fill="var(--sheet)" stroke={row.color} strokeWidth={1.75} />
+      ) : (
+        <circle cx={cx} cy={GRAPH_MID_Y} r={3.2} fill={row.color} stroke="var(--sheet)" strokeWidth={1} />
+      )}
+    </svg>
+  );
+}
 
 export interface GitPanelProps {
   sessionId: string;
@@ -74,6 +149,7 @@ export function GitPanel({
 
   // Recent commit log & expanded commit files
   const [commits, setCommits] = useState<GitCommitItem[]>([]);
+  const [allBranches, setAllBranches] = useState(true);
   const [openCommit, setOpenCommit] = useState<string | null>(null);
   const [commitFiles, setCommitFiles] = useState<Record<string, GitFile[]>>({});
 
@@ -91,21 +167,35 @@ export function GitPanel({
   const loadLog = useCallback(() => {
     if (!status?.is_repo) return;
     // The same history keeps the list as it is, with what is expanded in it.
-    api.gitLog(sessionId, 25, activeRepo).then(
-      (next) => setCommits((shown) => (shown.length === next.length && shown.every((c, at) => c.hash === next[at].hash && c.refs === next[at].refs) ? shown : next)),
+    api.gitLog(sessionId, 40, activeRepo, allBranches).then(
+      (next) =>
+        setCommits((shown) =>
+          shown.length === next.length &&
+          shown.every(
+            (c, at) =>
+              c.hash === next[at].hash &&
+              c.refs === next[at].refs &&
+              (c.parents?.length ?? 0) === (next[at].parents?.length ?? 0),
+          )
+            ? shown
+            : next,
+        ),
       () => undefined,
     );
-  }, [sessionId, status?.is_repo, activeRepo]);
+  }, [sessionId, status?.is_repo, activeRepo, allBranches]);
+
+  const graph = useMemo(() => layoutGitGraph(commits), [commits]);
+  const graphWidth = Math.max(1, graph.maxCols) * GRAPH_COL_STEP + 4;
 
   // At once for another repository or branch; after a change on disk, once the burst of changes is over.
   const logKey = useRef<string | null>(null);
   useEffect(() => {
-    const key = `${sessionId}\u0000${activeRepo ?? ""}\u0000${status?.branch ?? ""}`;
+    const key = `${sessionId}\u0000${activeRepo ?? ""}\u0000${status?.branch ?? ""}\u0000${allBranches ? "1" : "0"}`;
     const fresh = logKey.current !== key;
     logKey.current = key;
     const timer = setTimeout(loadLog, fresh ? 0 : 600);
     return () => clearTimeout(timer);
-  }, [loadLog, refreshTick, sessionId, activeRepo, status?.branch]);
+  }, [loadLog, refreshTick, sessionId, activeRepo, status?.branch, allBranches]);
 
   /** After discarding, the files themselves changed too: the tree and what is open are read again. */
   const afterDiscard = (next: GitStatus) => {
@@ -776,49 +866,97 @@ export function GitPanel({
           <div className="git-group git-history">
             <div className="git-group-head">
               <button type="button" className="git-group-title" onClick={() => toggleSection("history")}>
-                <span>最近提交 ({commits.length})</span>
+                <span>提交图谱 ({commits.length})</span>
+              </button>
+              <button
+                type="button"
+                className={`git-history-scope ${allBranches ? "active" : ""}`}
+                title={allBranches ? "当前显示全部分支提交图谱，点击切换为仅当前分支" : "当前仅显示当前分支，点击显示全部分支图谱"}
+                onClick={() => setAllBranches((v) => !v)}
+              >
+                {allBranches ? "全部分支" : "当前分支"}
               </button>
             </div>
             {!folded.history &&
-              commits.map((c) => {
+              graph.rows.map((row) => {
+                const c = row.commit;
                 const expanded = openCommit === c.hash;
                 const touched = commitFiles[c.hash] ?? [];
+                const visibleRefs = row.refs.slice(0, 2);
+                const extraRefs = row.refs.length - visibleRefs.length;
                 return (
                   <div key={c.hash} className="git-commit-row">
                     <button
                       type="button"
                       className={`git-commit-head ${expanded ? "open" : ""}`}
-                      title={`${c.subject}\n${c.author} · ${c.short_hash}`}
+                      title={`${c.subject}\n${c.author} · ${c.short_hash}${c.refs ? `\n${c.refs}` : ""}`}
                       onClick={() => toggleCommit(c.hash)}
                     >
-                      <span className="git-commit-subject">{c.subject}</span>
-                      <span className="git-commit-meta mono">
-                        {c.short_hash} · {shortDate(c.timestamp)}
+                      <CommitGraphSvg row={row} width={graphWidth} />
+                      <span className="git-commit-info">
+                        <span className="git-commit-top">
+                          <span className="git-commit-subject">{c.subject}</span>
+                          {visibleRefs.length > 0 && (
+                            <span className="git-ref-chips">
+                              {visibleRefs.map((ref) => (
+                                <span
+                                  key={`${ref.kind}:${ref.label}`}
+                                  className={`git-ref-chip ${ref.kind}`}
+                                  title={ref.label}
+                                >
+                                  {ref.label}
+                                </span>
+                              ))}
+                              {extraRefs > 0 && <span className="git-ref-chip more">+{extraRefs}</span>}
+                            </span>
+                          )}
+                        </span>
+                        <span className="git-commit-meta mono">
+                          {c.short_hash} · {c.author} · {shortDate(c.timestamp)}
+                        </span>
                       </span>
                     </button>
                     {expanded && (
-                      <div className="git-commit-files">
-                        {touched.length === 0 ? (
-                          <span className="muted git-commit-loading">读取文件列表…</span>
-                        ) : (
-                          touched.map((f) => {
-                            const { name, dir } = splitPath(f.path);
+                      <div className="git-commit-files-wrap">
+                        <svg className="git-graph-cont" width={graphWidth} aria-hidden="true">
+                          {row.afterCols.map((p) => {
+                            const x = graphColX(p.col);
                             return (
-                              <button
-                                key={f.path}
-                                type="button"
-                                className="tree-main git-commit-file"
-                                title={f.path}
-                                onClick={() => onOpenDiff(wsPath(f.path), "commit", false, c.short_hash)}
-                                onDoubleClick={() => onOpenDiff(wsPath(f.path), "commit", true, c.short_hash)}
-                              >
-                                <span className="tree-git modified">{f.status}</span>
-                                <span className="tree-label">{name}</span>
-                                {dir && <span className="tree-sub">{dir}</span>}
-                              </button>
+                              <line
+                                key={`c-${p.col}`}
+                                x1={x}
+                                y1="0"
+                                x2={x}
+                                y2="100%"
+                                stroke={p.color}
+                                strokeWidth={1.75}
+                              />
                             );
-                          })
-                        )}
+                          })}
+                        </svg>
+                        <div className="git-commit-files">
+                          {touched.length === 0 ? (
+                            <span className="muted git-commit-loading">读取文件列表…</span>
+                          ) : (
+                            touched.map((f) => {
+                              const { name, dir } = splitPath(f.path);
+                              return (
+                                <button
+                                  key={f.path}
+                                  type="button"
+                                  className="tree-main git-commit-file"
+                                  title={f.path}
+                                  onClick={() => onOpenDiff(wsPath(f.path), "commit", false, c.short_hash)}
+                                  onDoubleClick={() => onOpenDiff(wsPath(f.path), "commit", true, c.short_hash)}
+                                >
+                                  <span className="tree-git modified">{f.status}</span>
+                                  <span className="tree-label">{name}</span>
+                                  {dir && <span className="tree-sub">{dir}</span>}
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>

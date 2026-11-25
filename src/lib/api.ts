@@ -166,7 +166,7 @@ export const api = {
   gitBranches: (id: string, repo?: string) => invoke<GitBranch[]>("git_branches", { id, repo: repo ?? null }),
   gitCheckout: (id: string, branch: string, create = false, repo?: string) =>
     invoke<SessionItem>("git_checkout", { id, branch, create, repo: repo ?? null }),
-  gitLog: (id: string, limit = 30, repo?: string) => invoke<GitCommitItem[]>("git_log", { id, limit, repo: repo ?? null }),
+  gitLog: (id: string, limit = 30, repo?: string, all = false) => invoke<GitCommitItem[]>("git_log", { id, limit, repo: repo ?? null, all }),
   gitCommitFiles: (id: string, commit: string, repo?: string) => invoke<GitFile[]>("git_commit_files", { id, commit, repo: repo ?? null }),
   gitSync: (id: string, action: "fetch" | "pull" | "push", repo?: string) => invoke<string>("git_sync", { id, action, repo: repo ?? null }),
   gitPrDefaults: (id: string, repo?: string) => invoke<GitPrDefaults>("git_pr_defaults", { id, repo: repo ?? null }),

@@ -128,6 +128,7 @@ pub struct GitBranch {
 pub struct GitCommitItem {
     pub hash: String,
     pub short_hash: String,
+    pub parents: Vec<String>,
     pub author: String,
     pub timestamp: i64,
     pub refs: String,
@@ -865,6 +866,11 @@ pub fn checkout(workspace: &Path, branch: &str, create: bool) -> Result<String, 
 
 /// Recent commits on the current HEAD. Returns empty list when the repository has no commits yet.
 pub fn log(workspace: &Path, limit: usize) -> Result<Vec<GitCommitItem>, String> {
+    log_with_options(workspace, limit, false)
+}
+
+/// Read commit history in topological order, optionally across all local & remote refs for a branch graph.
+pub fn log_with_options(workspace: &Path, limit: usize, all_branches: bool) -> Result<Vec<GitCommitItem>, String> {
     let Some((top, _)) = repo_context(workspace) else {
         return Ok(Vec::new());
     };
@@ -872,20 +878,26 @@ pub fn log(workspace: &Path, limit: usize) -> Result<Vec<GitCommitItem>, String>
         return Ok(Vec::new());
     }
     let cap = limit.clamp(1, 200).to_string();
-    let text = git_text(&top, &[], &["log", "-n", &cap, "--format=%H%x09%h%x09%an%x09%at%x09%D%x09%s"])?;
+    let mut args = vec!["log", "--topo-order", "-n", &cap, "--format=%H%x09%h%x09%P%x09%an%x09%at%x09%D%x09%s"];
+    if all_branches {
+        args.insert(1, "--all");
+    }
+    let text = git_text(&top, &[], &args)?;
     let mut items = Vec::new();
     for line in text.lines() {
-        let cols: Vec<&str> = line.splitn(6, '\t').collect();
-        if cols.len() < 6 {
+        let cols: Vec<&str> = line.splitn(7, '\t').collect();
+        if cols.len() < 7 {
             continue;
         }
+        let parents = cols[2].split_whitespace().map(str::to_string).collect();
         items.push(GitCommitItem {
             hash: cols[0].to_string(),
             short_hash: cols[1].to_string(),
-            author: cols[2].to_string(),
-            timestamp: cols[3].parse().unwrap_or(0),
-            refs: cols[4].to_string(),
-            subject: cols[5].to_string(),
+            parents,
+            author: cols[3].to_string(),
+            timestamp: cols[4].parse().unwrap_or(0),
+            refs: cols[5].to_string(),
+            subject: cols[6].to_string(),
         });
     }
     Ok(items)

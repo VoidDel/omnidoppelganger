@@ -824,10 +824,13 @@ async fn git_checkout(app: State<'_, App>, id: String, branch: String, create: b
 }
 
 #[tauri::command]
-async fn git_log(app: State<'_, App>, id: String, limit: Option<usize>, repo: Option<String>) -> Result<Vec<odg_core::git::GitCommitItem>, String> {
+async fn git_log(app: State<'_, App>, id: String, limit: Option<usize>, repo: Option<String>, all: Option<bool>) -> Result<Vec<odg_core::git::GitCommitItem>, String> {
     let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
     let cap = limit.unwrap_or(30);
-    tokio::task::spawn_blocking(move || odg_core::git::log(&repo_dir, cap)).await.map_err(|e| e.to_string())?
+    let all_branches = all.unwrap_or(false);
+    tokio::task::spawn_blocking(move || odg_core::git::log_with_options(&repo_dir, cap, all_branches))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1329,15 +1332,32 @@ async fn delete_session(app: State<'_, App>, id: String) -> Result<(), String> {
     let made = summary_of(&id).filter(|summary| summary.parent.is_none()).and_then(|summary| summary.worktree).filter(|made| {
         !app.store.ids().iter().filter(|other| **other != id).filter_map(|other| summary_of(other)).any(|other| other.parent.is_none() && other.worktree.as_ref() == Some(made))
     });
-    let subagents: Vec<String> = app
-        .store
-        .ids()
-        .into_iter()
-        .filter(|other| match live.get(other) {
-            Some(session) => session.parent() == Some(id.as_str()) || session.aside() == Some(id.as_str()),
-            None => app.store.peek(other).is_ok_and(|summary| summary.parent.as_deref() == Some(id.as_str()) || summary.aside.as_deref() == Some(id.as_str())),
-        })
-        .collect();
+    let all_ids = app.store.ids();
+    let mut removed = std::collections::HashSet::from([id.clone()]);
+    let mut subagents: Vec<String> = Vec::new();
+    loop {
+        let mut added = false;
+        for other in &all_ids {
+            if removed.contains(other) {
+                continue;
+            }
+            let belongs = match live.get(other) {
+                Some(session) => session.parent().is_some_and(|p| removed.contains(p)) || session.aside().is_some_and(|a| removed.contains(a)),
+                None => app.store.peek(other).is_ok_and(|summary| {
+                    summary.parent.as_deref().is_some_and(|p| removed.contains(p))
+                        || summary.aside.as_deref().is_some_and(|a| removed.contains(a))
+                }),
+            };
+            if belongs {
+                removed.insert(other.clone());
+                subagents.push(other.clone());
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
     drop(live);
     // The map stays locked so the session cannot be opened again halfway through.
     let mut sessions = app.sessions.lock().unwrap();

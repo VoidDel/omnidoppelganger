@@ -635,6 +635,7 @@ export interface GitBranch {
 export interface GitCommitItem {
   hash: string;
   short_hash: string;
+  parents?: string[];
   author: string;
   timestamp: number;
   refs: string;

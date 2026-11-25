@@ -137,8 +137,21 @@ function reduce(state: State, action: Action): State {
       // No 分身 on screen: the home screen, with what stands on its desk.
       return { ...state, activeId: null, openingId: null, buffer: [], bufferedStatus: null, events: [], stream: [], queued: [], status: "idle", page: "chat" };
     case "deleted": {
-      const sessions = state.sessions.filter((session) => session.id !== action.id);
-      return state.activeId === action.id ? { ...state, sessions, activeId: null, events: [], stream: [], queued: [], status: "idle" } : { ...state, sessions };
+      const removed = new Set<string>([action.id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const session of state.sessions) {
+          if (!removed.has(session.id) && session.parent && removed.has(session.parent)) {
+            removed.add(session.id);
+            grew = true;
+          }
+        }
+      }
+      const sessions = state.sessions.filter((session) => !removed.has(session.id));
+      return state.activeId && removed.has(state.activeId)
+        ? { ...state, sessions, activeId: null, events: [], stream: [], queued: [], status: "idle" }
+        : { ...state, sessions };
     }
     case "session":
       return { ...state, sessions: state.sessions.map((session) => (session.id === action.item.id ? { ...action.item, status: session.status } : session)) };
