@@ -153,25 +153,25 @@ export const api = {
   deleteWorkspaceEntry: (id: string, path: string) => invoke<void>("delete_workspace_entry", { id, path }),
   openWorkspaceEntry: (id: string, path: string, reveal: boolean) =>
     invoke<string>("open_workspace_entry", { id, path, reveal }),
-  /** Git management commands for the session's workspace repository. */
-  gitStatus: (id: string) => invoke<GitStatus>("git_status", { id }),
-  gitDiff: (id: string, path: string, stage: DiffStage, commit?: string) =>
-    invoke<GitDiffView>("git_diff", { id, path, stage, commit: commit ?? null }),
-  gitStage: (id: string, paths: string[] = []) => invoke<GitStatus>("git_stage", { id, paths }),
-  gitUnstage: (id: string, paths: string[] = []) => invoke<GitStatus>("git_unstage", { id, paths }),
-  gitDiscard: (id: string, paths: string[]) => invoke<GitStatus>("git_discard", { id, paths }),
-  gitDiscardAll: (id: string) => invoke<GitStatus>("git_discard_all", { id }),
-  gitCommit: (id: string, message: string, stageAll = false) =>
-    invoke<GitCommitResult>("git_commit", { id, message, stageAll }),
-  gitBranches: (id: string) => invoke<GitBranch[]>("git_branches", { id }),
-  gitCheckout: (id: string, branch: string, create = false) =>
-    invoke<SessionItem>("git_checkout", { id, branch, create }),
-  gitLog: (id: string, limit = 30) => invoke<GitCommitItem[]>("git_log", { id, limit }),
-  gitCommitFiles: (id: string, commit: string) => invoke<GitFile[]>("git_commit_files", { id, commit }),
-  gitSync: (id: string, action: "fetch" | "pull" | "push") => invoke<string>("git_sync", { id, action }),
-  gitPrDefaults: (id: string) => invoke<GitPrDefaults>("git_pr_defaults", { id }),
-  gitCreatePr: (id: string, title: string, body: string, base: string | null, draft: boolean) =>
-    invoke<GitPrResult>("git_create_pr", { id, title, body, base, draft }),
+  /** Git management commands for the session's workspace repository (or a sub-repository in a multi-repo folder). */
+  gitStatus: (id: string, repo?: string) => invoke<GitStatus>("git_status", { id, repo: repo ?? null }),
+  gitDiff: (id: string, path: string, stage: DiffStage, commit?: string, repo?: string) =>
+    invoke<GitDiffView>("git_diff", { id, path, stage, commit: commit ?? null, repo: repo ?? null }),
+  gitStage: (id: string, paths: string[] = [], repo?: string) => invoke<GitStatus>("git_stage", { id, paths, repo: repo ?? null }),
+  gitUnstage: (id: string, paths: string[] = [], repo?: string) => invoke<GitStatus>("git_unstage", { id, paths, repo: repo ?? null }),
+  gitDiscard: (id: string, paths: string[], repo?: string) => invoke<GitStatus>("git_discard", { id, paths, repo: repo ?? null }),
+  gitDiscardAll: (id: string, repo?: string) => invoke<GitStatus>("git_discard_all", { id, repo: repo ?? null }),
+  gitCommit: (id: string, message: string, stageAll = false, repo?: string) =>
+    invoke<GitCommitResult>("git_commit", { id, message, stageAll, repo: repo ?? null }),
+  gitBranches: (id: string, repo?: string) => invoke<GitBranch[]>("git_branches", { id, repo: repo ?? null }),
+  gitCheckout: (id: string, branch: string, create = false, repo?: string) =>
+    invoke<SessionItem>("git_checkout", { id, branch, create, repo: repo ?? null }),
+  gitLog: (id: string, limit = 30, repo?: string) => invoke<GitCommitItem[]>("git_log", { id, limit, repo: repo ?? null }),
+  gitCommitFiles: (id: string, commit: string, repo?: string) => invoke<GitFile[]>("git_commit_files", { id, commit, repo: repo ?? null }),
+  gitSync: (id: string, action: "fetch" | "pull" | "push", repo?: string) => invoke<string>("git_sync", { id, action, repo: repo ?? null }),
+  gitPrDefaults: (id: string, repo?: string) => invoke<GitPrDefaults>("git_pr_defaults", { id, repo: repo ?? null }),
+  gitCreatePr: (id: string, title: string, body: string, base: string | null, draft: boolean, repo?: string) =>
+    invoke<GitPrResult>("git_create_pr", { id, title, body, base, draft, repo: repo ?? null }),
   /** Interactive side-panel PTY shell commands and event listeners. */
   ptySpawn: (id: string, cols = 80, rows = 24) => invoke<PtyInfo>("pty_spawn", { id, cols, rows }),
   ptyList: (id: string) => invoke<PtyInfo[]>("pty_list", { id }),

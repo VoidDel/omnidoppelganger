@@ -6,6 +6,7 @@ export interface GitPanelProps {
   sessionId: string;
   isWorktree: boolean;
   status: GitStatus | null;
+  onSelectRepo?: (repo: string) => void;
   refreshTick?: number;
   working: boolean;
   /** With the status an action handed back, or without one to have it read again. */
@@ -35,6 +36,7 @@ export function GitPanel({
   sessionId,
   isWorktree,
   status,
+  onSelectRepo,
   refreshTick = 0,
   working,
   onStatusChanged,
@@ -75,24 +77,35 @@ export function GitPanel({
   const [openCommit, setOpenCommit] = useState<string | null>(null);
   const [commitFiles, setCommitFiles] = useState<Record<string, GitFile[]>>({});
 
+  const activeRepo = status?.active_repo ?? undefined;
+  const wsPath = (rel: string) => (activeRepo ? `${activeRepo}/${rel}` : rel);
+
+  useEffect(() => {
+    setBranchMenuOpen(false);
+    setPrOpen(false);
+    setDiscardTarget(null);
+    setOpenCommit(null);
+    setCommitFiles({});
+  }, [activeRepo]);
+
   const loadLog = useCallback(() => {
     if (!status?.is_repo) return;
     // The same history keeps the list as it is, with what is expanded in it.
-    api.gitLog(sessionId, 25).then(
+    api.gitLog(sessionId, 25, activeRepo).then(
       (next) => setCommits((shown) => (shown.length === next.length && shown.every((c, at) => c.hash === next[at].hash && c.refs === next[at].refs) ? shown : next)),
       () => undefined,
     );
-  }, [sessionId, status?.is_repo]);
+  }, [sessionId, status?.is_repo, activeRepo]);
 
   // At once for another repository or branch; after a change on disk, once the burst of changes is over.
   const logKey = useRef<string | null>(null);
   useEffect(() => {
-    const key = `${sessionId}\u0000${status?.branch ?? ""}`;
+    const key = `${sessionId}\u0000${activeRepo ?? ""}\u0000${status?.branch ?? ""}`;
     const fresh = logKey.current !== key;
     logKey.current = key;
     const timer = setTimeout(loadLog, fresh ? 0 : 600);
     return () => clearTimeout(timer);
-  }, [loadLog, refreshTick, sessionId, status?.branch]);
+  }, [loadLog, refreshTick, sessionId, activeRepo, status?.branch]);
 
   /** After discarding, the files themselves changed too: the tree and what is open are read again. */
   const afterDiscard = (next: GitStatus) => {
@@ -106,7 +119,7 @@ export function GitPanel({
     setCreatingBranch(false);
     setNewBranchName("");
     if (next) {
-      api.gitBranches(sessionId).then(setBranches, (err) => onError(String(err)));
+      api.gitBranches(sessionId, activeRepo).then(setBranches, (err) => onError(String(err)));
     }
   };
 
@@ -114,7 +127,7 @@ export function GitPanel({
     if (!name.trim() || busy) return;
     setBusy("checkout");
     try {
-      const updated = await api.gitCheckout(sessionId, name.trim(), create);
+      const updated = await api.gitCheckout(sessionId, name.trim(), create, activeRepo);
       setBranchMenuOpen(false);
       setCreatingBranch(false);
       setNewBranchName("");
@@ -132,7 +145,7 @@ export function GitPanel({
     if (busy) return;
     setBusy(action);
     try {
-      const msg = await api.gitSync(sessionId, action);
+      const msg = await api.gitSync(sessionId, action, activeRepo);
       onStatusChanged();
       loadLog();
       const label = action === "fetch" ? "已抓取远端更新" : action === "pull" ? "已拉取远端提交" : "已推送到远端";
@@ -149,7 +162,7 @@ export function GitPanel({
     setPrOpen(next);
     if (next) {
       setBranchMenuOpen(false);
-      api.gitPrDefaults(sessionId).then(
+      api.gitPrDefaults(sessionId, activeRepo).then(
         (d) => {
           setPrTitle(d.title);
           setPrBody(d.body);
@@ -169,7 +182,7 @@ export function GitPanel({
     if (!title || busy) return;
     setBusy("pr");
     try {
-      const res = await api.gitCreatePr(sessionId, title, prBody, prBase.trim() || null, prDraft);
+      const res = await api.gitCreatePr(sessionId, title, prBody, prBase.trim() || null, prDraft, activeRepo);
       setPrOpen(false);
       onStatusChanged();
       loadLog();
@@ -189,7 +202,7 @@ export function GitPanel({
     if (!msg || busy) return;
     setBusy("commit");
     try {
-      const res = await api.gitCommit(sessionId, msg, stageAll);
+      const res = await api.gitCommit(sessionId, msg, stageAll, activeRepo);
       setCommitMsg("");
       onStatusChanged();
       loadLog();
@@ -225,7 +238,7 @@ export function GitPanel({
     }
     setOpenCommit(hash);
     if (!commitFiles[hash]) {
-      api.gitCommitFiles(sessionId, hash).then(
+      api.gitCommitFiles(sessionId, hash, activeRepo).then(
         (list) => setCommitFiles((prev) => ({ ...prev, [hash]: list })),
         (err) => onError(String(err)),
       );
@@ -251,8 +264,8 @@ export function GitPanel({
             type="button"
             className="tree-main"
             title={`${file.path}${file.orig_path ? ` ← ${file.orig_path}` : ""}`}
-            onClick={() => onOpenDiff(file.path, diffStage, false)}
-            onDoubleClick={() => onOpenDiff(file.path, diffStage, true)}
+            onClick={() => onOpenDiff(wsPath(file.path), diffStage, false)}
+            onDoubleClick={() => onOpenDiff(wsPath(file.path), diffStage, true)}
           >
             <span className={`tree-git ${tone}`}>{file.status === "?" ? "U" : file.status}</span>
             <span className="tree-label">{name}</span>
@@ -266,7 +279,7 @@ export function GitPanel({
                 title="打开源文件"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onOpenFile(file.path, false);
+                  onOpenFile(wsPath(file.path), false);
                 }}
               >
                 ↗
@@ -280,7 +293,7 @@ export function GitPanel({
                 disabled={!!busy}
                 onClick={(e) => {
                   e.stopPropagation();
-                  api.gitUnstage(sessionId, [file.path]).then(onStatusChanged, (err) => onError(String(err)));
+                  api.gitUnstage(sessionId, [file.path], activeRepo).then(onStatusChanged, (err) => onError(String(err)));
                 }}
               >
                 −
@@ -294,7 +307,7 @@ export function GitPanel({
                   disabled={!!busy}
                   onClick={(e) => {
                     e.stopPropagation();
-                    api.gitStage(sessionId, [file.path]).then(onStatusChanged, (err) => onError(String(err)));
+                    api.gitStage(sessionId, [file.path], activeRepo).then(onStatusChanged, (err) => onError(String(err)));
                   }}
                 >
                   +
@@ -330,7 +343,7 @@ export function GitPanel({
                 onClick={() => {
                   const target = file.path;
                   setDiscardTarget(null);
-                  api.gitDiscard(sessionId, [target]).then(afterDiscard, (err) => onError(String(err)));
+                  api.gitDiscard(sessionId, [target], activeRepo).then(afterDiscard, (err) => onError(String(err)));
                 }}
               >
                 确认放弃
@@ -344,6 +357,25 @@ export function GitPanel({
 
   return (
     <div className="git-panel">
+      {status.repos.length > 0 && (
+        <div className="git-repo-bar">
+          <select
+            className="git-repo-select mono"
+            aria-label="选择子仓库"
+            value={activeRepo ?? status.repos[0]?.path ?? ""}
+            onChange={(e) => onSelectRepo?.(e.target.value)}
+          >
+            {status.repos.map((r) => (
+              <option key={r.path} value={r.path}>
+                {r.name}
+                {r.branch ? ` (${r.branch})` : ""}
+                {r.dirty > 0 ? ` · ${r.dirty}` : ""}
+              </option>
+            ))}
+          </select>
+          <span className="git-repo-count">{status.repos.length} 仓库</span>
+        </div>
+      )}
       {/* Branch & Remote Sync Header */}
       <div className="git-head">
         <button
@@ -575,7 +607,7 @@ export function GitPanel({
                   setDiscardTarget(null);
                   setBusy("discard");
                   api
-                    .gitDiscardAll(sessionId)
+                    .gitDiscardAll(sessionId, activeRepo)
                     .then(afterDiscard, (err) => onError(String(err)))
                     .finally(() => setBusy(null));
                 }}
@@ -612,7 +644,7 @@ export function GitPanel({
                 type="button"
                 className="icon-button tiny"
                 title="全部取消暂存"
-                onClick={() => api.gitUnstage(sessionId, []).then(onStatusChanged, (err) => onError(String(err)))}
+                onClick={() => api.gitUnstage(sessionId, [], activeRepo).then(onStatusChanged, (err) => onError(String(err)))}
               >
                 −
               </button>
@@ -637,6 +669,7 @@ export function GitPanel({
                       .gitStage(
                         sessionId,
                         status.unstaged.map((f) => f.path),
+                        activeRepo,
                       )
                       .then(onStatusChanged, (err) => onError(String(err)))
                   }
@@ -666,7 +699,7 @@ export function GitPanel({
                     onClick={() => {
                       const paths = status.unstaged.map((f) => f.path);
                       setDiscardTarget(null);
-                      api.gitDiscard(sessionId, paths).then(afterDiscard, (err) => onError(String(err)));
+                      api.gitDiscard(sessionId, paths, activeRepo).then(afterDiscard, (err) => onError(String(err)));
                     }}
                   >
                     全部放弃
@@ -697,6 +730,7 @@ export function GitPanel({
                       .gitStage(
                         sessionId,
                         status.untracked.map((f) => f.path),
+                        activeRepo,
                       )
                       .then(onStatusChanged, (err) => onError(String(err)))
                   }
@@ -726,7 +760,7 @@ export function GitPanel({
                     onClick={() => {
                       const paths = status.untracked.map((f) => f.path);
                       setDiscardTarget(null);
-                      api.gitDiscard(sessionId, paths).then(afterDiscard, (err) => onError(String(err)));
+                      api.gitDiscard(sessionId, paths, activeRepo).then(afterDiscard, (err) => onError(String(err)));
                     }}
                   >
                     全部删除
@@ -775,8 +809,8 @@ export function GitPanel({
                                 type="button"
                                 className="tree-main git-commit-file"
                                 title={f.path}
-                                onClick={() => onOpenDiff(f.path, "commit", false, c.short_hash)}
-                                onDoubleClick={() => onOpenDiff(f.path, "commit", true, c.short_hash)}
+                                onClick={() => onOpenDiff(wsPath(f.path), "commit", false, c.short_hash)}
+                                onDoubleClick={() => onOpenDiff(wsPath(f.path), "commit", true, c.short_hash)}
                               >
                                 <span className="tree-git modified">{f.status}</span>
                                 <span className="tree-label">{name}</span>

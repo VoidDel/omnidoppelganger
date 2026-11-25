@@ -25,8 +25,24 @@ pub struct GitFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitRepoInfo {
+    /// Workspace-relative slash-separated path to this sub-repository (e.g. `"backend"`).
+    pub path: String,
+    /// Display name (the relative path or folder name).
+    pub name: String,
+    pub branch: Option<String>,
+    /// Total count of conflicted, staged, unstaged, and untracked files.
+    pub dirty: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitStatus {
     pub is_repo: bool,
+    /// When the workspace itself is a container folder with multiple sub-repositories,
+    /// the workspace-relative path of the sub-repository this status belongs to.
+    pub active_repo: Option<String>,
+    /// Discovered sub-repositories in a multi-repo workspace (empty for a normal single-repo workspace).
+    pub repos: Vec<GitRepoInfo>,
     pub branch: Option<String>,
     pub detached: bool,
     pub upstream: Option<String>,
@@ -43,6 +59,8 @@ impl GitStatus {
     pub fn not_a_repo() -> Self {
         Self {
             is_repo: false,
+            active_repo: None,
+            repos: Vec::new(),
             branch: None,
             detached: false,
             upstream: None,
@@ -211,8 +229,124 @@ fn to_repo_rel(workspace: &Path, ws_prefix: &str, rel_path: &str) -> Result<Stri
     }
 }
 
+const SKIP_SCAN_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "out", ".venv", "venv", "__pycache__", "vendor"];
+const MAX_REPO_SCAN_DEPTH: usize = 2;
+const MAX_SUB_REPOS: usize = 32;
+
+/// Discover Git repositories located in subdirectories of `workspace` (up to depth 2).
+/// Does not descend inside a discovered repository.
+pub fn discover_repos(workspace: &Path) -> Vec<String> {
+    fn walk(base: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
+        if depth > MAX_REPO_SCAN_DEPTH || out.len() >= MAX_SUB_REPOS {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        let mut subdirs: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.path())
+            .collect();
+        subdirs.sort();
+        for sub in subdirs {
+            if out.len() >= MAX_SUB_REPOS {
+                break;
+            }
+            let Some(name) = sub.file_name().and_then(|n| n.to_str()) else { continue };
+            if name.starts_with('.') || SKIP_SCAN_DIRS.contains(&name) {
+                continue;
+            }
+            if sub.join(".git").exists() {
+                if let Ok(rel) = sub.strip_prefix(base) {
+                    let slash = rel
+                        .components()
+                        .filter_map(|c| match c {
+                            Component::Normal(p) => Some(p.to_string_lossy().into_owned()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    if !slash.is_empty() {
+                        out.push(slash);
+                    }
+                }
+            } else if depth < MAX_REPO_SCAN_DEPTH {
+                walk(base, &sub, depth + 1, out);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(workspace, workspace, 1, &mut found);
+    found
+}
+
+/// Resolve an optional workspace-relative sub-repository path safely inside `workspace`.
+pub fn resolve_repo_dir(workspace: &Path, repo: Option<&str>) -> Result<PathBuf, String> {
+    let Some(rel) = repo.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(workspace.to_path_buf());
+    };
+    let (disk, _) = explorer::resolve_confined(workspace, rel, false, false)?;
+    if !disk.is_dir() {
+        return Err(format!("子仓库目录不存在：{rel}"));
+    }
+    Ok(disk)
+}
+
 /// Inspect repository branch, ahead/behind counts, conflicts, staged, unstaged, and untracked files.
+/// Automatically discovers subdirectory Git repositories when `workspace` itself is not a Git repository.
 pub fn status(workspace: &Path) -> Result<GitStatus, String> {
+    status_for(workspace, None)
+}
+
+/// Inspect Git status for `workspace` or a specific sub-repository `repo` within `workspace`.
+pub fn status_for(workspace: &Path, repo: Option<&str>) -> Result<GitStatus, String> {
+    let explicit = repo.map(str::trim).filter(|s| !s.is_empty());
+    if explicit.is_none() && repo_context(workspace).is_some() {
+        return status_single(workspace);
+    }
+
+    let discovered = discover_repos(workspace);
+    if discovered.is_empty() {
+        if let Some(rel) = explicit {
+            let dir = resolve_repo_dir(workspace, Some(rel))?;
+            let mut st = status_single(&dir)?;
+            st.active_repo = Some(rel.to_string());
+            return Ok(st);
+        }
+        return Ok(GitStatus::not_a_repo());
+    }
+
+    let mut summaries = Vec::with_capacity(discovered.len());
+    let mut statuses: Vec<(String, GitStatus)> = Vec::with_capacity(discovered.len());
+    for rel in &discovered {
+        let dir = workspace.join(rel);
+        if let Ok(st) = status_single(&dir)
+            && st.is_repo
+        {
+            let dirty = st.conflicts.len() + st.staged.len() + st.unstaged.len() + st.untracked.len();
+            summaries.push(GitRepoInfo {
+                path: rel.clone(),
+                name: rel.clone(),
+                branch: st.branch.clone(),
+                dirty,
+            });
+            statuses.push((rel.clone(), st));
+        }
+    }
+    if statuses.is_empty() {
+        return Ok(GitStatus::not_a_repo());
+    }
+
+    let chosen_idx = explicit
+        .and_then(|want| statuses.iter().position(|(rel, _)| rel == want))
+        .or_else(|| summaries.iter().position(|r| r.dirty > 0))
+        .unwrap_or(0);
+    let (chosen_path, mut chosen_status) = statuses.swap_remove(chosen_idx);
+    chosen_status.active_repo = Some(chosen_path);
+    chosen_status.repos = summaries;
+    Ok(chosen_status)
+}
+
+fn status_single(workspace: &Path) -> Result<GitStatus, String> {
     let Some((top, ws_prefix)) = repo_context(workspace) else {
         return Ok(GitStatus::not_a_repo());
     };
@@ -224,6 +358,8 @@ pub fn status(workspace: &Path) -> Result<GitStatus, String> {
 
     let mut out = GitStatus {
         is_repo: true,
+        active_repo: None,
+        repos: Vec::new(),
         branch: None,
         detached: false,
         upstream: None,
@@ -431,7 +567,17 @@ fn validate_ref(reference: &str) -> Result<&str, String> {
 
 /// Compute structured diff hunks for an unstaged file, staged file, or a file in a historical commit.
 pub fn diff(workspace: &Path, rel_path: &str, stage: DiffStage, commit: Option<&str>) -> Result<GitDiffView, String> {
-    let (top, ws_prefix) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
+    let Some((top, ws_prefix)) = repo_context(workspace) else {
+        let clean = rel_path.replace('\\', "/");
+        for sub in discover_repos(workspace) {
+            if let Some(inner) = clean.strip_prefix(&format!("{sub}/")) {
+                let mut view = diff(&workspace.join(&sub), inner, stage, commit)?;
+                view.path = clean;
+                return Ok(view);
+            }
+        }
+        return Err("当前目录不在 Git 仓库中。".to_string());
+    };
     let (disk_file, clean_rel) = explorer::resolve_confined(workspace, rel_path, false, false)?;
     let repo_rel = to_repo_rel(workspace, &ws_prefix, &clean_rel)?;
     let name = Path::new(&clean_rel)
@@ -1051,5 +1197,46 @@ mod tests {
         assert!(wiped.staged.is_empty() && wiped.unstaged.is_empty() && wiped.untracked.is_empty());
         assert!(!root.join("staged-new.txt").exists());
         assert!(!root.join("doc/screenshots").exists());
+    }
+
+    #[test]
+    fn discovers_and_operates_on_multiple_sub_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path();
+        let repo_a = workspace.join("app-a");
+        let repo_b = workspace.join("services/api-b");
+        fs::create_dir_all(&repo_a).unwrap();
+        fs::create_dir_all(&repo_b).unwrap();
+
+        for (dir, file) in [(&repo_a, "a.txt"), (&repo_b, "b.txt")] {
+            assert!(Command::new("git").current_dir(dir).args(["init", "-b", "main"]).status().unwrap().success());
+            fs::write(dir.join(file), "v1\n").unwrap();
+            stage(dir, &[file.to_string()]).unwrap();
+            commit(dir, "init", false).unwrap();
+        }
+
+        // Dirty only services/api-b so auto-selection prefers the dirty sub-repo.
+        fs::write(repo_b.join("b.txt"), "v1\nv2\n").unwrap();
+
+        let st = status(workspace).unwrap();
+        assert!(st.is_repo);
+        assert_eq!(st.active_repo.as_deref(), Some("services/api-b"));
+        assert_eq!(st.repos.len(), 2);
+        assert_eq!(st.repos[0].path, "app-a");
+        assert_eq!(st.repos[0].dirty, 0);
+        assert_eq!(st.repos[1].path, "services/api-b");
+        assert_eq!(st.repos[1].dirty, 1);
+        assert_eq!(st.unstaged.len(), 1);
+        assert_eq!(st.unstaged[0].path, "b.txt");
+
+        // Workspace-relative diff resolves into the owning sub-repo automatically.
+        let d = diff(workspace, "services/api-b/b.txt", DiffStage::Unstaged, None).unwrap();
+        assert_eq!(d.path, "services/api-b/b.txt");
+        assert_eq!(d.added, 1);
+
+        // Explicit switch to clean sub-repo app-a.
+        let st_a = status_for(workspace, Some("app-a")).unwrap();
+        assert_eq!(st_a.active_repo.as_deref(), Some("app-a"));
+        assert!(st_a.unstaged.is_empty());
     }
 }

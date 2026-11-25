@@ -948,6 +948,42 @@
   gap: 8px;
 }
 
+.git-repo-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.git-repo-select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-micro);
+  cursor: pointer;
+}
+
+.git-repo-select:hover {
+  border-color: var(--jade);
+}
+
+.git-repo-select:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 1px;
+}
+
+.git-repo-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
 .git-empty {
   padding: 12px 4px;
   font-size: var(--t-small);

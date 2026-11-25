@@ -83,27 +83,7 @@ impl CliKind {
             return Err(format!("未找到本机 {}，请先安装并完成登录。", self.display_name()));
         };
         if self == Self::OpenCode {
-            let mut cmd = Command::new(&bin);
-            cmd.arg("models")
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            #[cfg(windows)]
-            cmd.creation_flags(0x0800_0000);
-            let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
-                .await
-                .map_err(|_| "查询 opencode models 超时（12s）。".to_string())?
-                .map_err(|e| format!("运行 opencode models 失败：{e}"))?;
-            if !out.status.success() {
-                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                return Err(if err.is_empty() { "opencode models 执行失败。".to_string() } else { format!("opencode models 失败：{err}") });
-            }
-            let parsed = parse_opencode_models_output(&String::from_utf8_lossy(&out.stdout));
-            if parsed.is_empty() {
-                return Err("opencode models 未返回任何可用模型，请先检查 OpenCode 配置。".to_string());
-            }
-            return Ok(parsed);
+            return list_opencode_models(&bin).await;
         }
         Ok(fallback
             .iter()
@@ -112,23 +92,148 @@ impl CliKind {
     }
 }
 
-fn parse_opencode_models_output(raw: &str) -> Vec<Listed> {
-    let mut out = Vec::new();
+async fn run_opencode_subcommand(bin: &Path, args: &[&str]) -> Result<String, String> {
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
+        .await
+        .map_err(|_| format!("查询 opencode {} 超时（12s）。", args.join(" ")))?
+        .map_err(|e| format!("运行 opencode {} 失败：{e}", args.join(" ")))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            format!("opencode {} 执行失败。", args.join(" "))
+        } else {
+            format!("opencode {} 失败：{err}", args.join(" "))
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+async fn list_opencode_models(bin: &Path) -> Result<Vec<Listed>, String> {
+    // Prefer structured `opencode api model.list` (carries cost, providerID, friendly name, and context window).
+    if let Ok(raw_models) = run_opencode_subcommand(bin, &["api", "model.list"]).await {
+        let free_only = match run_opencode_subcommand(bin, &["api", "provider.list"]).await {
+            Ok(raw_providers) => opencode_providers_is_anonymous(&raw_providers),
+            Err(_) => false,
+        };
+        let parsed = parse_opencode_api_models(&raw_models, free_only);
+        if !parsed.is_empty() {
+            return Ok(parsed);
+        }
+    }
+    // Fallback to plain `opencode models` for older OpenCode releases.
+    let raw = run_opencode_subcommand(bin, &["models"]).await?;
+    let parsed = parse_opencode_models_output(&raw);
+    if parsed.is_empty() {
+        return Err("opencode models 未返回任何可用模型，请先检查 OpenCode 配置。".to_string());
+    }
+    Ok(parsed)
+}
+
+/// Returns true when `opencode api provider.list` reports zero enabled/authenticated providers.
+fn opencode_providers_is_anonymous(raw: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(raw.trim()) else {
+        return false;
+    };
+    let Some(arr) = v["data"].as_array().or_else(|| v.as_array()) else {
+        return false;
+    };
+    !arr.iter().any(|p| p["activation"].as_str() == Some("enabled"))
+}
+
+fn is_opencode_cost_free(cost: &Value) -> Option<bool> {
+    let tier = if let Some(arr) = cost.as_array() { arr.first()? } else if cost.is_object() { cost } else { return None };
+    let input = tier["input"].as_f64()?;
+    let output = tier["output"].as_f64().unwrap_or(0.0);
+    Some(input == 0.0 && output == 0.0)
+}
+
+fn opencode_tier_tag(provider_id: &str, model_id: &str, is_free: bool) -> (u8, Option<&'static str>) {
+    if is_free {
+        return (0, Some("免费"));
+    }
+    if provider_id.eq_ignore_ascii_case("opencode-go") || provider_id.to_lowercase().contains("opencode-go") {
+        return (1, Some("Go"));
+    }
+    let lower_id = model_id.to_lowercase();
+    if lower_id.ends_with("-free") || lower_id == "big-pickle" {
+        return (0, Some("免费"));
+    }
+    (2, None)
+}
+
+fn parse_opencode_api_models(raw: &str, free_only: bool) -> Vec<Listed> {
+    let Ok(v) = serde_json::from_str::<Value>(raw.trim()) else {
+        return Vec::new();
+    };
+    let Some(arr) = v["data"].as_array().or_else(|| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut ranked: Vec<(u8, usize, Listed)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for line in raw.lines() {
+    for (idx, item) in arr.iter().enumerate() {
+        let provider_id = item["providerID"].as_str().unwrap_or("").trim();
+        let model_id = item["id"].as_str().or_else(|| item["modelID"].as_str()).unwrap_or("").trim();
+        if provider_id.is_empty() || model_id.is_empty() {
+            continue;
+        }
+        let full_id = format!("{provider_id}/{model_id}");
+        if !seen.insert(full_id.clone()) {
+            continue;
+        }
+        let is_free = is_opencode_cost_free(&item["cost"]).unwrap_or(false);
+        let (tier, tag) = opencode_tier_tag(provider_id, model_id, is_free);
+        if free_only && tier != 0 {
+            continue;
+        }
+        let base_name = item["name"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(model_id);
+        let display = match tag {
+            Some(t) => format!("{base_name} · {t}"),
+            None => base_name.to_string(),
+        };
+        let ctx = item["limit"]["context"].as_u64().filter(|&n| n > 0).or(Some(context_window(CliKind::OpenCode)));
+        ranked.push((tier, idx, Listed { id: full_id, name: display, context_window: ctx }));
+    }
+    ranked.sort_by_key(|(tier, idx, _)| (*tier, *idx));
+    ranked.into_iter().map(|(_, _, listed)| listed).collect()
+}
+
+fn parse_opencode_models_output(raw: &str) -> Vec<Listed> {
+    let mut ranked: Vec<(u8, usize, Listed)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (idx, line) in raw.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.contains(char::is_whitespace) || !trimmed.contains('/') {
             continue;
         }
-        if seen.insert(trimmed.to_string()) {
-            out.push(Listed {
-                id: trimmed.to_string(),
-                name: trimmed.to_string(),
-                context_window: Some(context_window(CliKind::OpenCode)),
-            });
+        if !seen.insert(trimmed.to_string()) {
+            continue;
         }
+        let (provider_id, model_id) = trimmed.split_once('/').unwrap_or(("", trimmed));
+        let (tier, tag) = opencode_tier_tag(provider_id, model_id, false);
+        let name = match tag {
+            Some(t) => format!("{model_id} · {t}"),
+            None => trimmed.to_string(),
+        };
+        ranked.push((
+            tier,
+            idx,
+            Listed {
+                id: trimmed.to_string(),
+                name,
+                context_window: Some(context_window(CliKind::OpenCode)),
+            },
+        ));
     }
-    out
+    ranked.sort_by_key(|(tier, idx, _)| (*tier, *idx));
+    ranked.into_iter().map(|(_, _, listed)| listed).collect()
 }
 
 pub fn context_window(kind: CliKind) -> u64 {
@@ -2229,20 +2334,16 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
     );
     apply_prompt_delivery_args(params.kind, &mut args, &prepared);
     if params.kind == CliKind::Antigravity {
-        for dir in &params.extra_dirs {
-            if dir.is_dir()
-                && let Some(s) = dir.to_str()
-            {
-                args.push("--add-dir".to_string());
-                args.push(s.to_string());
-            }
-        }
+        // Do NOT pass `~/.odg/skills` via `--add-dir`: `agy` sorts Active Workspaces alphabetically and
+        // picks the first entry as Command Working Directory (`~/.odg/skills` sorts before `~/Projects/...`),
+        // which would hijack the user's project workspace. `agy`'s `read_file` reads SKILL.md by absolute path directly.
         sync_antigravity_mcp(&bin, &params.mcp_servers).await;
     }
     let _mcp_guard = apply_mcp_bridge_args(params.kind, &mut args, &params.mcp_servers, params.turn);
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
         .current_dir(params.workspace)
+        .env("PWD", params.workspace)
         .stdin(if prepared.stdin_bytes.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2399,7 +2500,24 @@ mod tests {
         let listed = parse_opencode_models_output("opencode/big-pickle\nopencode/claude-sonnet-5-5\nopencode/big-pickle\nnot a model\n");
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, "opencode/big-pickle");
+        assert_eq!(listed[0].name, "big-pickle · 免费");
         assert_eq!(listed[1].id, "opencode/claude-sonnet-5-5");
+
+        let api_json = r#"{"data":[
+            {"id":"gemini-4-neon","providerID":"opencode","name":"Gemini 4 Neon","cost":[{"input":3,"output":15}],"limit":{"context":1048576}},
+            {"id":"glm-5.3","providerID":"opencode-go","name":"GLM-5.3","cost":[{"input":0.5,"output":2}],"limit":{"context":200000}},
+            {"id":"big-pickle","providerID":"opencode","name":"Big Pickle","cost":[{"input":0,"output":0}],"limit":{"context":200000}}
+        ]}"#;
+        let all = parse_opencode_api_models(api_json, false);
+        assert_eq!(all.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["opencode/big-pickle", "opencode-go/glm-5.3", "opencode/gemini-4-neon"]);
+        assert_eq!(all[0].name, "Big Pickle · 免费");
+        assert_eq!(all[1].name, "GLM-5.3 · Go");
+        assert_eq!(all[2].name, "Gemini 4 Neon");
+        assert_eq!(all[2].context_window, Some(1_048_576));
+
+        let free_only = parse_opencode_api_models(api_json, true);
+        assert_eq!(free_only.len(), 1);
+        assert_eq!(free_only[0].id, "opencode/big-pickle");
     }
 
     #[test]

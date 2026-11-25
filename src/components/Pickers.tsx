@@ -151,7 +151,27 @@ export interface ModelListProps {
   nowMs?: number;
 }
 
-const MODEL_CACHE_KEY = "odg.model-list-cache.v1";
+const MODEL_CACHE_KEY = "odg.model-list-cache.v2";
+const OPENCODE_TIER_KEY = "odg.opencode-model-tier.v1";
+
+type OpenCodeTierFilter = "free" | "go" | "all";
+
+function openCodeModelTier(id: string, display: string): "free" | "go" | "paid" {
+  const lowerId = id.toLowerCase();
+  if (display.endsWith("· 免费") || lowerId.endsWith("-free") || lowerId.endsWith("/big-pickle")) return "free";
+  if (display.endsWith("· Go") || lowerId.startsWith("opencode-go/")) return "go";
+  return "paid";
+}
+
+function loadOpenCodeTier(): OpenCodeTierFilter {
+  try {
+    const v = localStorage.getItem(OPENCODE_TIER_KEY);
+    if (v === "free" || v === "go" || v === "all") return v;
+  } catch {
+    // ignore
+  }
+  return "free";
+}
 
 /** Persistent cache of live model lists per provider so opening the picker uses cached models until refreshed. */
 const modelListCache: Map<string, [string, string][]> = (() => {
@@ -196,6 +216,15 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
   });
   const [refreshTick, setRefreshTick] = useState(0);
   const [filter, setFilter] = useState("");
+  const [openCodeTier, setOpenCodeTier] = useState<OpenCodeTierFilter>(loadOpenCodeTier);
+  const pickOpenCodeTier = (next: OpenCodeTierFilter) => {
+    setOpenCodeTier(next);
+    try {
+      localStorage.setItem(OPENCODE_TIER_KEY, next);
+    } catch {
+      // ignore
+    }
+  };
   const forceRefresh = useRef(false);
   // Use cached list when available; fetch on cache miss or explicit refresh.
   useEffect(() => {
@@ -241,7 +270,17 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
   const known = asked.models.length > 0 ? asked.models : asked.state === "failed" ? (provider?.models ?? []) : [];
   // The model in use is always there to return to, even when the provider's list leaves it out.
   const models = !home || known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
-  const shown = models.filter(([id, name]) => `${id} ${name}`.toLowerCase().includes(filter.trim().toLowerCase()));
+  const isOpenCodeShowing = showing === "opencode" || showing.startsWith("opencode-");
+  const freeModels = isOpenCodeShowing ? models.filter(([id, d]) => openCodeModelTier(id, d) === "free") : [];
+  const goModels = isOpenCodeShowing ? models.filter(([id, d]) => openCodeModelTier(id, d) === "go") : [];
+  const hasTierChoice = isOpenCodeShowing && freeModels.length > 0 && (freeModels.length < models.length || goModels.length > 0);
+  const activeTier: OpenCodeTierFilter = !hasTierChoice
+    ? "all"
+    : openCodeTier === "go" && goModels.length === 0
+      ? "free"
+      : openCodeTier;
+  const tiered = !hasTierChoice || activeTier === "all" ? models : activeTier === "free" ? freeModels : goModels;
+  const shown = tiered.filter(([id, name]) => `${id} ${name}`.toLowerCase().includes(filter.trim().toLowerCase()));
   const name = (id: string) => providers.find((known) => known.id === id)?.name ?? id;
   // The session's own provider first, even one no longer in the list; then the others in it. Kinds not added are left out.
   const tabs = [providerId, ...providers.map((known) => known.id).filter((id) => id !== providerId && listed(id))];
@@ -277,7 +316,7 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
           <Info>换了之后，这个分身接下来的话由新心法来答，前情照旧带着。列表会缓存，点右侧刷新按钮可重新向宗门拉取。</Info>
         </span>
         <span className="menu-head-right">
-          <span>{asked.state === "asking" ? "查询中…" : asked.state === "told" ? `共 ${asked.models.length} 门` : "内置列表"}</span>
+          <span>{asked.state === "asking" ? "查询中…" : asked.state === "told" ? `共 ${tiered.length} 门` : "内置列表"}</span>
           <button
             type="button"
             className={`quota-refresh-btn ${asked.state === "asking" ? "spinning" : ""}`}
@@ -294,7 +333,22 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
         </span>
       </div>
       {asked.state === "failed" && <p className="menu-note">{asked.why}</p>}
-      {models.length > 8 && (
+      {hasTierChoice && (
+        <div className="model-tier-tabs" role="tablist" aria-label="OpenCode 模型分层">
+          <button type="button" role="tab" className="model-tier-pill" aria-selected={activeTier === "free"} onClick={() => pickOpenCodeTier("free")}>
+            免费 {freeModels.length}
+          </button>
+          {goModels.length > 0 && (
+            <button type="button" role="tab" className="model-tier-pill" aria-selected={activeTier === "go"} onClick={() => pickOpenCodeTier("go")}>
+              Go {goModels.length}
+            </button>
+          )}
+          <button type="button" role="tab" className="model-tier-pill" aria-selected={activeTier === "all"} onClick={() => pickOpenCodeTier("all")}>
+            全部 {models.length}
+          </button>
+        </div>
+      )}
+      {tiered.length > 8 && (
         <div className="menu-filter-row">
           <input className="input menu-filter" type="search" placeholder="筛一筛" aria-label="筛选心法" autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} />
         </div>

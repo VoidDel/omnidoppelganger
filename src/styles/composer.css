@@ -976,6 +976,38 @@ button.select-button svg {
   overflow-wrap: anywhere;
 }
 
+.model-tier-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 6px;
+}
+
+.model-tier-pill {
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--sheet);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.model-tier-pill:hover {
+  border-color: var(--jade);
+  color: var(--ink);
+}
+
+.model-tier-pill[aria-selected="true"] {
+  border-color: var(--jade);
+  background: var(--jade-tint);
+  color: var(--jade-tint-ink);
+  font-weight: 600;
+}
+
 .menu-filter-row {
   padding: 2px 10px 6px;
 }

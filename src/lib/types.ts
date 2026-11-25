@@ -573,8 +573,17 @@ export interface GitFile {
   status: string;
 }
 
+export interface GitRepoInfo {
+  path: string;
+  name: string;
+  branch: string | null;
+  dirty: number;
+}
+
 export interface GitStatus {
   is_repo: boolean;
+  active_repo: string | null;
+  repos: GitRepoInfo[];
   branch: string | null;
   detached: boolean;
   upstream: string | null;

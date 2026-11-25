@@ -478,6 +478,7 @@ export default function App() {
   const [manualTick, setManualTick] = useState(0);
   const [buildTick, setBuildTick] = useState(0);
   const [gitState, setGitState] = useState<GitStatus | null>(null);
+  const [selectedGitRepo, setSelectedGitRepo] = useState<string | null>(null);
 
   const isProjectSession = !!active && !chatting(active);
   const activeWorkspace = active?.workspace ?? "";
@@ -550,25 +551,34 @@ export default function App() {
   // Git status: at once for a newly opened workspace, then once per burst of changes, not once per change.
   // A status that comes back after a newer one was asked for still lands, unless the workspace changed meanwhile.
   const gitKey = useRef<string | null>(null);
+  const gitWorkspaceKey = useRef<string | null>(null);
+  useEffect(() => {
+    const wsKey = `${activeId ?? ""}\u0000${activeWorkspace ?? ""}`;
+    if (gitWorkspaceKey.current !== wsKey) {
+      gitWorkspaceKey.current = wsKey;
+      setSelectedGitRepo(null);
+    }
+  }, [activeId, activeWorkspace]);
   useEffect(() => {
     if (!isProjectSession || !activeId) {
       gitKey.current = null;
       setGitState(null);
       return;
     }
-    const key = `${activeId}\u0000${activeWorkspace}`;
+    const repoArg = selectedGitRepo ?? undefined;
+    const key = `${activeId}\u0000${activeWorkspace}\u0000${repoArg ?? ""}`;
     const fresh = gitKey.current !== key;
     gitKey.current = key;
     const timer = setTimeout(
       () =>
-        api.gitStatus(activeId).then(
+        api.gitStatus(activeId, repoArg).then(
           (st) => gitKey.current === key && setGitState(st),
           () => gitKey.current === key && setGitState(null),
         ),
       fresh ? 0 : 300,
     );
     return () => clearTimeout(timer);
-  }, [isProjectSession, activeId, activeWorkspace, gitRefreshTick]);
+  }, [isProjectSession, activeId, activeWorkspace, selectedGitRepo, gitRefreshTick]);
 
   // A branch switched outside the app (in the terminal, or another tool) shows in the title bar once Git sees it.
   const seenBranch = useRef<string | null>(null);
@@ -580,24 +590,27 @@ export default function App() {
 
   const gitBadges = useMemo<Record<string, GitBadge>>(() => {
     if (!gitState?.is_repo) return {};
+    const prefix = gitState.active_repo ? `${gitState.active_repo}/` : "";
     const map: Record<string, GitBadge> = {};
     for (const f of gitState.staged) {
-      map[f.path] = { label: f.status, tone: f.status === "A" ? "added" : f.status === "D" ? "deleted" : "modified" };
+      map[`${prefix}${f.path}`] = { label: f.status, tone: f.status === "A" ? "added" : f.status === "D" ? "deleted" : "modified" };
     }
     for (const f of gitState.unstaged) {
-      map[f.path] = { label: f.status, tone: f.status === "D" ? "deleted" : "modified" };
+      map[`${prefix}${f.path}`] = { label: f.status, tone: f.status === "D" ? "deleted" : "modified" };
     }
     for (const f of gitState.untracked) {
-      map[f.path] = { label: "U", tone: "added" };
+      map[`${prefix}${f.path}`] = { label: "U", tone: "added" };
     }
     for (const f of gitState.conflicts) {
-      map[f.path] = { label: "!", tone: "conflict" };
+      map[`${prefix}${f.path}`] = { label: "!", tone: "conflict" };
     }
     return map;
   }, [gitState]);
 
   const gitChangeCount = gitState?.is_repo
-    ? gitState.conflicts.length + gitState.staged.length + gitState.unstaged.length + gitState.untracked.length
+    ? gitState.repos.length > 0
+      ? gitState.repos.reduce((sum, r) => sum + r.dirty, 0)
+      : gitState.conflicts.length + gitState.staged.length + gitState.unstaged.length + gitState.untracked.length
     : 0;
 
   const openWorkbenchFile = useCallback(
@@ -1109,6 +1122,7 @@ export default function App() {
                   sessionId={active.id}
                   isWorktree={!!active.worktree}
                   status={gitState}
+                  onSelectRepo={(repo) => setSelectedGitRepo(repo)}
                   refreshTick={gitRefreshTick}
                   working={state.status !== "idle"}
                   onStatusChanged={(next) => {

@@ -722,10 +722,18 @@ async fn open_workspace_entry(app: State<'_, App>, id: String, path: String, rev
     Ok("opened".to_string())
 }
 
+fn session_git_workspace(app: &App, id: &str, repo: Option<&str>) -> Result<(PathBuf, PathBuf), String> {
+    let workspace = session_workspace(app, id)?;
+    let repo_dir = odg_core::git::resolve_repo_dir(&workspace, repo)?;
+    Ok((workspace, repo_dir))
+}
+
 #[tauri::command]
-async fn git_status(app: State<'_, App>, id: String) -> Result<odg_core::git::GitStatus, String> {
+async fn git_status(app: State<'_, App>, id: String, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
     let workspace = session_workspace(&app, &id)?;
-    tokio::task::spawn_blocking(move || odg_core::git::status(&workspace)).await.map_err(|e| e.to_string())?
+    tokio::task::spawn_blocking(move || odg_core::git::status_for(&workspace, repo.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -735,117 +743,127 @@ async fn git_diff(
     path: String,
     stage: odg_core::git::DiffStage,
     commit: Option<String>,
+    repo: Option<String>,
 ) -> Result<odg_core::git::GitDiffView, String> {
-    let workspace = session_workspace(&app, &id)?;
-    tokio::task::spawn_blocking(move || odg_core::git::diff(&workspace, &path, stage, commit.as_deref()))
+    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    tokio::task::spawn_blocking(move || odg_core::git::diff(&repo_dir, &path, stage, commit.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_stage(app: State<'_, App>, id: String, paths: Vec<String>) -> Result<odg_core::git::GitStatus, String> {
-    let workspace = session_workspace(&app, &id)?;
+async fn git_stage(app: State<'_, App>, id: String, paths: Vec<String>, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
+    let (workspace, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        odg_core::git::stage(&workspace, &paths)?;
-        odg_core::git::status(&workspace)
+        odg_core::git::stage(&repo_dir, &paths)?;
+        odg_core::git::status_for(&workspace, repo.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_unstage(app: State<'_, App>, id: String, paths: Vec<String>) -> Result<odg_core::git::GitStatus, String> {
-    let workspace = session_workspace(&app, &id)?;
+async fn git_unstage(app: State<'_, App>, id: String, paths: Vec<String>, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
+    let (workspace, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        odg_core::git::unstage(&workspace, &paths)?;
-        odg_core::git::status(&workspace)
+        odg_core::git::unstage(&repo_dir, &paths)?;
+        odg_core::git::status_for(&workspace, repo.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_discard(app: State<'_, App>, id: String, paths: Vec<String>) -> Result<odg_core::git::GitStatus, String> {
-    let workspace = session_workspace(&app, &id)?;
+async fn git_discard(app: State<'_, App>, id: String, paths: Vec<String>, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
+    let (workspace, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        odg_core::git::discard(&workspace, &paths)?;
-        odg_core::git::status(&workspace)
+        odg_core::git::discard(&repo_dir, &paths)?;
+        odg_core::git::status_for(&workspace, repo.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_discard_all(app: State<'_, App>, id: String) -> Result<odg_core::git::GitStatus, String> {
-    let workspace = session_workspace(&app, &id)?;
+async fn git_discard_all(app: State<'_, App>, id: String, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
+    let (workspace, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        odg_core::git::discard_all(&workspace)?;
-        odg_core::git::status(&workspace)
+        odg_core::git::discard_all(&repo_dir)?;
+        odg_core::git::status_for(&workspace, repo.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_commit(app: State<'_, App>, id: String, message: String, stage_all: bool) -> Result<odg_core::git::GitCommitResult, String> {
-    let workspace = session_workspace(&app, &id)?;
-    tokio::task::spawn_blocking(move || odg_core::git::commit(&workspace, &message, stage_all))
+async fn git_commit(app: State<'_, App>, id: String, message: String, stage_all: bool, repo: Option<String>) -> Result<odg_core::git::GitCommitResult, String> {
+    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    tokio::task::spawn_blocking(move || odg_core::git::commit(&repo_dir, &message, stage_all))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_branches(app: State<'_, App>, id: String) -> Result<Vec<odg_core::git::GitBranch>, String> {
-    let workspace = session_workspace(&app, &id)?;
-    tokio::task::spawn_blocking(move || odg_core::git::branches(&workspace)).await.map_err(|e| e.to_string())?
+async fn git_branches(app: State<'_, App>, id: String, repo: Option<String>) -> Result<Vec<odg_core::git::GitBranch>, String> {
+    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    tokio::task::spawn_blocking(move || odg_core::git::branches(&repo_dir)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_checkout(app: State<'_, App>, id: String, branch: String, create: bool) -> Result<SessionItem, String> {
+async fn git_checkout(app: State<'_, App>, id: String, branch: String, create: bool, repo: Option<String>) -> Result<SessionItem, String> {
     let session = app.live(&id)?;
-    if session.summary().worktree.is_some() {
+    if session.summary().worktree.is_some() && repo.as_deref().is_none_or(|r| r.trim().is_empty()) {
         return Err("独立工作树分身绑定在专属分支上，不能直接切换分支；请在主洞府的分身里切换分支。".to_string());
     }
     let workspace = PathBuf::from(session.summary().workspace);
-    tokio::task::spawn_blocking(move || odg_core::git::checkout(&workspace, &branch, create))
+    let repo_dir = odg_core::git::resolve_repo_dir(&workspace, repo.as_deref())?;
+    tokio::task::spawn_blocking(move || odg_core::git::checkout(&repo_dir, &branch, create))
         .await
         .map_err(|e| e.to_string())??;
     Ok(app.item(session.summary(), session.status()))
 }
 
 #[tauri::command]
-async fn git_log(app: State<'_, App>, id: String, limit: Option<usize>) -> Result<Vec<odg_core::git::GitCommitItem>, String> {
-    let workspace = session_workspace(&app, &id)?;
+async fn git_log(app: State<'_, App>, id: String, limit: Option<usize>, repo: Option<String>) -> Result<Vec<odg_core::git::GitCommitItem>, String> {
+    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
     let cap = limit.unwrap_or(30);
-    tokio::task::spawn_blocking(move || odg_core::git::log(&workspace, cap)).await.map_err(|e| e.to_string())?
+    tokio::task::spawn_blocking(move || odg_core::git::log(&repo_dir, cap)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_commit_files(app: State<'_, App>, id: String, commit: String) -> Result<Vec<odg_core::git::GitFile>, String> {
-    let workspace = session_workspace(&app, &id)?;
-    tokio::task::spawn_blocking(move || odg_core::git::commit_files(&workspace, &commit))
+async fn git_commit_files(app: State<'_, App>, id: String, commit: String, repo: Option<String>) -> Result<Vec<odg_core::git::GitFile>, String> {
+    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    tokio::task::spawn_blocking(move || odg_core::git::commit_files(&repo_dir, &commit))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_sync(app: State<'_, App>, id: String, action: String) -> Result<String, String> {
-    let workspace = session_workspace(&app, &id)?;
-    odg_core::git::sync(&workspace, &action).await
+async fn git_sync(app: State<'_, App>, id: String, action: String, repo: Option<String>) -> Result<String, String> {
+    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    odg_core::git::sync(&repo_dir, &action).await
 }
 
 #[tauri::command]
-async fn git_pr_defaults(app: State<'_, App>, id: String) -> Result<odg_core::git::PrDefaults, String> {
-    let workspace = session_workspace(&app, &id)?;
-    tokio::task::spawn_blocking(move || odg_core::git::pr_defaults(&workspace))
+async fn git_pr_defaults(app: State<'_, App>, id: String, repo: Option<String>) -> Result<odg_core::git::PrDefaults, String> {
+    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    tokio::task::spawn_blocking(move || odg_core::git::pr_defaults(&repo_dir))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn git_create_pr(app: State<'_, App>, id: String, title: String, body: String, base: Option<String>, draft: bool) -> Result<odg_core::git::PullRequestResult, String> {
-    let workspace = session_workspace(&app, &id)?;
-    odg_core::git::create_pr(&workspace, &title, &body, base.as_deref(), draft).await
+async fn git_create_pr(
+    app: State<'_, App>,
+    id: String,
+    title: String,
+    body: String,
+    base: Option<String>,
+    draft: bool,
+    repo: Option<String>,
+) -> Result<odg_core::git::PullRequestResult, String> {
+    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    odg_core::git::create_pr(&repo_dir, &title, &body, base.as_deref(), draft).await
 }
 
 #[tauri::command]
