@@ -103,17 +103,50 @@ export function formatResetIn(resetTime: string | null | undefined, nowMs: numbe
   return `${mins}分钟`;
 }
 
-/** Pick the Antigravity quota group matching `model` (Gemini vs Claude/GPT). */
+/** Pick the quota group matching `model` (supports both Antigravity CLI groups and Magpie gateway provider/pool groups). */
 export function quotaGroupForModel(quota: AntigravityQuota | null, model: string): QuotaGroup | undefined {
   if (!quota || quota.groups.length === 0) return undefined;
   const lower = model.toLowerCase();
-  const isThirdParty = lower.includes("claude") || lower.includes("gpt");
-  return (
-    quota.groups.find((g) => {
-      const name = g.name.toLowerCase();
-      return isThirdParty ? name.includes("claude") || name.includes("gpt") : name.includes("gemini");
-    }) ?? quota.groups[0]
-  );
+  const slash = lower.indexOf("/");
+  const prefix = slash > 0 ? lower.slice(0, slash) : "";
+  const bare = slash > 0 ? lower.slice(slash + 1) : lower;
+
+  const isGemini = bare.includes("gemini");
+  const isClaude = bare.includes("claude");
+  const isGpt = bare.includes("gpt") || bare.includes("o1") || bare.includes("o3") || bare.includes("o4") || bare.includes("codex");
+
+  const haystack = (g: QuotaGroup) => `${g.name} ${g.description ?? ""}`.toLowerCase();
+
+  // 1. If the model carries a Magpie provider prefix (e.g. `agy-cli/...`, `codex/...`, `claude/...`), narrow to matching cards first.
+  const prefixTokens: string[] = [];
+  if (prefix) {
+    prefixTokens.push(prefix);
+    if (prefix === "agy-cli" || prefix === "agy") prefixTokens.push("antigravity");
+    if (prefix === "zhipu" || prefix === "glm") prefixTokens.push("glm", "zhipu");
+  }
+  const scoped =
+    prefixTokens.length > 0
+      ? quota.groups.filter((g) => {
+          const text = haystack(g);
+          return prefixTokens.some((tok) => text.includes(tok));
+        })
+      : [];
+  const candidates = scoped.length > 0 ? scoped : quota.groups;
+
+  // 2. Match model family within the candidate groups (e.g. Gemini vs Claude/GPT pools).
+  if (isClaude || isGpt) {
+    const matched = candidates.find((g) => {
+      const text = haystack(g);
+      return (isClaude && text.includes("claude")) || (isGpt && (text.includes("gpt") || text.includes("codex")));
+    });
+    if (matched) return matched;
+  }
+  if (isGemini) {
+    const matched = candidates.find((g) => haystack(g).includes("gemini"));
+    if (matched) return matched;
+  }
+
+  return candidates[0];
 }
 
 /** Friendly Chinese label for a quota window (`5h` / `weekly`). */
@@ -123,30 +156,46 @@ export function quotaWindowLabel(window: string, fallbackName: string): string {
   return fallbackName || window;
 }
 
-/** Subscribe to live Antigravity subscription quota via `agy -p /usage`. */
-export function useAntigravityQuota(enabled: boolean) {
+export type QuotaSource = { kind: "antigravity" } | { kind: "magpie"; providerId: string } | null;
+
+/** Subscribe to live subscription quota from either local `agy -p /usage` or a Magpie gateway (`GET /v1/magpie/quotas`). */
+export function useProviderQuota(source: QuotaSource) {
   const [quota, setQuota] = useState<AntigravityQuota | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const refresh = useCallback((force = false) => {
-    setLoading(true);
-    setError(null);
-    api
-      .getAntigravityQuota(force)
-      .then((res) => {
-        setQuota(res);
-        setNowMs(Date.now());
-      })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
-  }, []);
+  const kind = source?.kind ?? null;
+  const providerId = source?.kind === "magpie" ? source.providerId : "";
+
+  const refresh = useCallback(
+    (force = false) => {
+      if (!kind) return;
+      setLoading(true);
+      setError(null);
+      const req = kind === "magpie" ? api.getMagpieQuota(providerId, force) : api.getAntigravityQuota(force);
+      req
+        .then((res) => {
+          setQuota(res);
+          setNowMs(Date.now());
+        })
+        .catch((err) => {
+          setQuota(null);
+          setError(String(err));
+        })
+        .finally(() => setLoading(false));
+    },
+    [kind, providerId],
+  );
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!kind) {
+      setQuota(null);
+      setError(null);
+      return;
+    }
     refresh(false);
-  }, [enabled, refresh]);
+  }, [kind, providerId, refresh]);
 
   useEffect(() => {
     if (!quota) return;
@@ -155,4 +204,9 @@ export function useAntigravityQuota(enabled: boolean) {
   }, [quota]);
 
   return { quota, loading, error, nowMs, refresh };
+}
+
+/** Subscribe to live Antigravity subscription quota via `agy -p /usage`. */
+export function useAntigravityQuota(enabled: boolean) {
+  return useProviderQuota(enabled ? { kind: "antigravity" } : null);
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cooldownRemainingMs, findModelUsage, formatCooldown } from "./modelUsage";
-import type { ModelUsageEntry } from "./types";
+import { cooldownRemainingMs, findModelUsage, formatCooldown, quotaGroupForModel } from "./modelUsage";
+import type { AntigravityQuota, ModelUsageEntry } from "./types";
 
 describe("modelUsage helpers", () => {
   it("formats cooldown durations cleanly across seconds, minutes, and hours", () => {
@@ -37,5 +37,19 @@ describe("modelUsage helpers", () => {
     ];
     expect(findModelUsage(entries, "antigravity", "gemini-4-neon")?.requests).toBe(5);
     expect(findModelUsage(entries, "openai", "gemini-4-neon")).toBeUndefined();
+  });
+
+  it("matches Magpie gateway quota groups by provider prefix and model family", () => {
+    const quota: AntigravityQuota = {
+      fetched_at: "2026-11-25T11:45:00Z",
+      groups: [
+        { name: "Antigravity · Gemini Models", description: "agy-cli", buckets: [] },
+        { name: "Antigravity · Claude and GPT models", description: "agy-cli", buckets: [] },
+        { name: "codex (work)", description: "codex", buckets: [] },
+      ],
+    };
+    expect(quotaGroupForModel(quota, "agy-cli/gemini-4-hydrogen")?.name).toBe("Antigravity · Gemini Models");
+    expect(quotaGroupForModel(quota, "agy-cli/claude-sonnet-4-6")?.name).toBe("Antigravity · Claude and GPT models");
+    expect(quotaGroupForModel(quota, "codex/gpt-5.4")?.name).toBe("codex (work)");
   });
 });

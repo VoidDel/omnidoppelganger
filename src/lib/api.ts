@@ -205,6 +205,7 @@ export const api = {
   clearModelCooldown: (provider: string, model: string) => invoke<ModelUsageEntry[]>("clear_model_cooldown", { provider, model }),
   resetModelUsage: () => invoke<ModelUsageEntry[]>("reset_model_usage"),
   getAntigravityQuota: (force = false) => invoke<AntigravityQuota>("get_antigravity_quota", { force }),
+  getMagpieQuota: (provider: string, force = false) => invoke<AntigravityQuota>("get_magpie_quota", { provider, force }),
   onSessionEvent: (handler: (event: UiEvent) => void) => listen<UiEvent>("session-event", (event) => handler(event.payload)),
   /** The document runtime: how it stands, setting it up (how far it has got comes as events), and taking it away. */
   /** The language servers `code_nav` uses: where each is, downloading one the app can, and taking a download away. */

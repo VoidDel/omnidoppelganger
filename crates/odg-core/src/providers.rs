@@ -142,14 +142,7 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "",
         other_urls: &[],
         key_env: None,
-        models: &[
-            ("gemini-4-neon", "Gemini 4 Neon"),
-            ("gemini-4-carbon", "Gemini 4 Carbon"),
-            ("gemini-4-argon", "Gemini 4 Argon"),
-            ("gemini-4-hydrogen", "Gemini 4 Hydrogen"),
-            ("claude-opus-5-5", "Claude Opus 5.5"),
-            ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
-        ],
+        models: &[],
     },
     Provider {
         id: "codex",
@@ -215,12 +208,7 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "",
         other_urls: &[],
         key_env: None,
-        models: &[
-            ("default", "默认（按 opencode 配置）"),
-            ("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6"),
-            ("openai/gpt-5.4", "GPT-5.4"),
-            ("google/gemini-3.1-pro", "Gemini Pro"),
-        ],
+        models: &[],
     },
 ];
 
@@ -495,11 +483,12 @@ mod tests {
     fn every_provider_is_reachable_and_has_a_default_model_or_asks_for_one() {
         for provider in PROVIDERS {
             assert_eq!(super::provider(provider.id).map(|found| found.id), Some(provider.id));
-            // Only custom services and local CLI backends have no HTTP base URL; custom services and local gateways (Magpie) fetch models dynamically.
+            // Only custom services and local CLI backends have no HTTP base URL; custom services, local gateways (Magpie),
+            // and dynamic CLIs (Antigravity, OpenCode) fetch models dynamically instead of keeping a stale static list.
             let custom = provider.id.starts_with("custom");
             let cli = matches!(provider.protocol, Protocol::Cli(_));
             assert_eq!(provider.base_url.is_empty(), custom || cli, "{}", provider.id);
-            assert_eq!(provider.models.is_empty(), custom || provider.id == "magpie", "{}", provider.id);
+            assert_eq!(provider.models.is_empty(), custom || matches!(provider.id, "magpie" | "antigravity" | "opencode"), "{}", provider.id);
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);
         assert_eq!(provider("custom_anthropic").unwrap().protocol, Protocol::Anthropic);

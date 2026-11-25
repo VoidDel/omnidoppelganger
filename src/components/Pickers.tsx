@@ -151,8 +151,37 @@ export interface ModelListProps {
   nowMs?: number;
 }
 
-/** Session-lifetime cache of live model lists per provider so opening the picker doesn't re-query every time. */
-const modelListCache = new Map<string, [string, string][]>();
+const MODEL_CACHE_KEY = "odg.model-list-cache.v1";
+
+/** Persistent cache of live model lists per provider so opening the picker uses cached models until refreshed. */
+const modelListCache: Map<string, [string, string][]> = (() => {
+  const map = new Map<string, [string, string][]>();
+  try {
+    const raw = localStorage.getItem(MODEL_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(parsed)) {
+        if (Array.isArray(v) && v.every((item) => Array.isArray(item) && item.length >= 2 && typeof item[0] === "string" && typeof item[1] === "string")) {
+          map.set(k, v as [string, string][]);
+        }
+      }
+    }
+  } catch {
+    // Ignore storage read errors.
+  }
+  return map;
+})();
+
+function saveModelListCache(providerId: string, models: [string, string][]) {
+  modelListCache.set(providerId, models);
+  try {
+    const obj: Record<string, [string, string][]> = {};
+    for (const [k, v] of modelListCache.entries()) obj[k] = v;
+    localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(obj));
+  } catch {
+    // Ignore storage quota errors.
+  }
+}
 
 /**
  * The models to choose from, a provider at a time: the session's own first, then the others the user added, under
@@ -181,7 +210,7 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
     setAsked((prev) => ({ state: "asking", models: cached ?? prev.models }));
     listModels(showing).then(
       (models) => {
-        modelListCache.set(showing, models);
+        saveModelListCache(showing, models);
         if (current) setAsked({ state: "told", models });
       },
       (error) => {
@@ -209,7 +238,7 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
     fellBack.current = key;
     onAutoFallback(providerId, asked.models[0][0]);
   }, [home, onAutoFallback, asked, providerId, model]);
-  const known = asked.models.length > 0 ? asked.models : (provider?.models ?? []);
+  const known = asked.models.length > 0 ? asked.models : asked.state === "failed" ? (provider?.models ?? []) : [];
   // The model in use is always there to return to, even when the provider's list leaves it out.
   const models = !home || known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
   const shown = models.filter(([id, name]) => `${id} ${name}`.toLowerCase().includes(filter.trim().toLowerCase()));

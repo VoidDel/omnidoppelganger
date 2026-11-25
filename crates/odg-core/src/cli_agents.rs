@@ -79,14 +79,56 @@ impl CliKind {
         if self == Self::Antigravity {
             return crate::antigravity::list_models().await;
         }
-        if self.find_binary().is_none() {
+        let Some(bin) = self.find_binary() else {
             return Err(format!("未找到本机 {}，请先安装并完成登录。", self.display_name()));
+        };
+        if self == Self::OpenCode {
+            let mut cmd = Command::new(&bin);
+            cmd.arg("models")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000);
+            let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
+                .await
+                .map_err(|_| "查询 opencode models 超时（12s）。".to_string())?
+                .map_err(|e| format!("运行 opencode models 失败：{e}"))?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                return Err(if err.is_empty() { "opencode models 执行失败。".to_string() } else { format!("opencode models 失败：{err}") });
+            }
+            let parsed = parse_opencode_models_output(&String::from_utf8_lossy(&out.stdout));
+            if parsed.is_empty() {
+                return Err("opencode models 未返回任何可用模型，请先检查 OpenCode 配置。".to_string());
+            }
+            return Ok(parsed);
         }
         Ok(fallback
             .iter()
             .map(|(id, name)| Listed { id: (*id).to_string(), name: (*name).to_string(), context_window: Some(context_window(self)) })
             .collect())
     }
+}
+
+fn parse_opencode_models_output(raw: &str) -> Vec<Listed> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.contains(char::is_whitespace) || !trimmed.contains('/') {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            out.push(Listed {
+                id: trimmed.to_string(),
+                name: trimmed.to_string(),
+                context_window: Some(context_window(CliKind::OpenCode)),
+            });
+        }
+    }
+    out
 }
 
 pub fn context_window(kind: CliKind) -> u64 {
@@ -626,6 +668,8 @@ pub fn build_args(
             if read_only || mode == Mode::Plan {
                 args.push("--agent".to_string());
                 args.push("plan".to_string());
+            } else if matches!(mode, Mode::Auto | Mode::Bypass) {
+                args.push("--auto".to_string());
             }
             args.push("--".to_string());
             args.push(prompt.to_string());
@@ -1104,7 +1148,13 @@ impl StreamParser {
                 vec![CliEvent::Result { conversation_id: conv, success: !is_error, response, error, usage, tokens }]
             }
             "error" => {
-                let msg = v["message"].as_str().or_else(|| v["error"].as_str()).unwrap_or("Grok CLI error").to_string();
+                let msg = v["error"]["data"]["message"]
+                    .as_str()
+                    .or_else(|| v["error"]["message"].as_str())
+                    .or_else(|| v["message"].as_str())
+                    .or_else(|| v["error"].as_str())
+                    .unwrap_or("CLI error")
+                    .to_string();
                 vec![CliEvent::Result { conversation_id: conv, success: false, response: String::new(), error: Some(msg), usage: Value::Null, tokens: None }]
             }
             _ => Vec::new(),
@@ -1128,10 +1178,15 @@ fn extract_content_text(content: &Value) -> String {
 
 fn anthropic_like_tokens(usage: &Value) -> Option<Tokens> {
     let count = |key: &str| usage[key].as_u64().unwrap_or(0);
-    let cached = count("cache_read_input_tokens").max(count("cache_read_tokens")).max(count("cached_tokens"));
-    let input = count("input_tokens").max(count("prompt_tokens")) + count("cache_read_input_tokens") + count("cache_creation_input_tokens");
-    let output = count("output_tokens").max(count("completion_tokens"));
-    (input > 0 || output > 0).then_some(Tokens { input, cached, output })
+    let cache_read = count("cache_read_input_tokens")
+        .max(count("cache_read_tokens"))
+        .max(count("cached_tokens"))
+        .max(usage["cache"]["read"].as_u64().unwrap_or(0));
+    let cache_write = count("cache_creation_input_tokens").max(usage["cache"]["write"].as_u64().unwrap_or(0));
+    let base_input = count("input_tokens").max(count("prompt_tokens")).max(count("input"));
+    let input = base_input + cache_read + cache_write;
+    let output = count("output_tokens").max(count("completion_tokens")).max(count("output") + count("reasoning"));
+    (input > 0 || output > 0).then_some(Tokens { input, cached: cache_read, output })
 }
 
 fn strip_agy_timestamp_envelope(raw_output: &str) -> String {
@@ -2307,7 +2362,44 @@ mod tests {
             opencode,
             ["run", "--format", "json", "--session", "ses_7", "--model", "anthropic/claude-sonnet-4-6", "--agent", "plan", "--", "refactor"]
         );
+        let opencode_auto = build_args(CliKind::OpenCode, "fix", None, None, "opencode/big-pickle", "high", Mode::Auto, false, false);
+        assert_eq!(
+            opencode_auto,
+            ["run", "--format", "json", "--model", "opencode/big-pickle", "--auto", "--", "fix"]
+        );
         assert_eq!(serde_json::to_value(CliKind::OpenCode).unwrap(), "opencode");
+    }
+
+    #[test]
+    fn parses_opencode_v2_stream_events_and_models() {
+        let mut parser = StreamParser::default();
+        let ev1 = parser.parse_line(
+            CliKind::OpenCode,
+            r#"{"type":"step_start","sessionID":"ses_1","part":{"type":"step-start"}}"#,
+        );
+        assert!(matches!(ev1.as_slice(), [CliEvent::Init { conversation_id: Some(id) }] if id == "ses_1"));
+
+        let ev3 = parser.parse_line(
+            CliKind::OpenCode,
+            r#"{"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","id":"call_1","tool":"read","state":{"status":"completed","input":{"path":"package.json"},"output":"ok"}}}"#,
+        );
+        assert_eq!(ev3.len(), 2);
+        assert!(matches!(&ev3[0], CliEvent::ToolStart { name, .. } if name == "read_file"));
+        assert!(matches!(&ev3[1], CliEvent::ToolDone { output, is_error: false, .. } if output == "ok"));
+
+        let ev4 = parser.parse_line(
+            CliKind::OpenCode,
+            r#"{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","reason":"stop","tokens":{"input":788,"output":10,"reasoning":1,"cache":{"read":17256,"write":0}}}}"#,
+        );
+        assert!(matches!(
+            ev4.as_slice(),
+            [CliEvent::AgentText { done: true, tokens: Some(Tokens { input: 18044, cached: 17256, output: 11 }), .. }]
+        ));
+
+        let listed = parse_opencode_models_output("opencode/big-pickle\nopencode/claude-sonnet-5-5\nopencode/big-pickle\nnot a model\n");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, "opencode/big-pickle");
+        assert_eq!(listed[1].id, "opencode/claude-sonnet-5-5");
     }
 
     #[test]

@@ -1143,6 +1143,12 @@ async fn get_antigravity_quota(force: Option<bool>) -> Result<odg_core::antigrav
     odg_core::antigravity::fetch_quota(force.unwrap_or(false)).await
 }
 
+#[tauri::command]
+async fn get_magpie_quota(app: State<'_, App>, provider: String, force: Option<bool>) -> Result<odg_core::antigravity::AntigravityQuota, String> {
+    let endpoint = app.settings.endpoint(&provider);
+    odg_core::magpie::fetch_quota(&endpoint.base_url, endpoint.key.as_deref(), force.unwrap_or(false)).await
+}
+
 /// Fire a best-effort native desktop notification when the app is unfocused (turn completed or waiting approval).
 #[tauri::command]
 async fn notify_desktop(title: String, body: String) {
@@ -1577,6 +1583,7 @@ pub fn run() {
             clear_model_cooldown,
             reset_model_usage,
             get_antigravity_quota,
+            get_magpie_quota,
             fork_session,
             list_schedules,
             save_schedule,

@@ -20,6 +20,7 @@ pub mod jobs;
 pub mod llm;
 pub mod lsp;
 pub mod made;
+pub mod magpie;
 pub mod mcp;
 pub mod model_usage;
 pub mod openai_chat;

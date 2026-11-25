@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { launchFrom } from "../lib/flight";
 import { type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
-import { allTokens, cooldownRemainingMs, findModelUsage, formatCooldown, formatResetIn, quotaGroupForModel, quotaWindowLabel, todayTokens, useAntigravityQuota, useModelUsage } from "../lib/modelUsage";
+import { allTokens, cooldownRemainingMs, findModelUsage, formatCooldown, formatResetIn, quotaGroupForModel, quotaWindowLabel, todayTokens, useModelUsage, useProviderQuota } from "../lib/modelUsage";
 import { MODES, nextMode } from "../lib/modes";
 import { type PasteKind, detectPasteKind, nextPastedFilename, shouldCollapsePaste } from "../lib/paste";
 import { CLI_INFO, cliOf } from "../lib/providers";
@@ -201,9 +201,18 @@ export function Composer(props: ComposerProps) {
   const { entries: modelUsage, nowMs, refresh: refreshModelUsage, clearCooldown } = useModelUsage(`${status}:${usage.spent.input}:${usage.spent.output}:${providerId}:${model}`);
   const activeModelStat = findModelUsage(modelUsage, providerId, model);
   const activeCooldownMs = cooldownRemainingMs(activeModelStat, nowMs);
-  const isAgyModel = providerId === "antigravity" || model.toLowerCase().startsWith("agy-cli/");
-  const agyQuota = useAntigravityQuota(isAgyModel && !props.aside);
-  const activeQuotaGroup = isAgyModel ? quotaGroupForModel(agyQuota.quota, model) : undefined;
+  const isMagpieProvider =
+    providerId === "magpie" || providerId.startsWith("magpie:") || providerId.startsWith("magpie-") || providerId.startsWith("magpie_");
+  const isAgyProvider = providerId === "antigravity";
+  const quotaSource = props.aside
+    ? null
+    : isMagpieProvider
+      ? ({ kind: "magpie", providerId } as const)
+      : isAgyProvider
+        ? ({ kind: "antigravity" } as const)
+        : null;
+  const agyQuota = useProviderQuota(quotaSource);
+  const activeQuotaGroup = quotaSource ? quotaGroupForModel(agyQuota.quota, model) : undefined;
   const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, drafts, commands: given, placeholder, acceptDrops = true, aside = false } = props;
   const provider = providers.find((known) => known.id === providerId);
   const cli = cliOf(provider);
@@ -310,7 +319,7 @@ export function Composer(props: ComposerProps) {
       hint: "查看灵石用量、模型累计消耗、冷却倒计时与订阅额度",
       run: () => {
         refreshModelUsage();
-        if (isAgyModel) agyQuota.refresh(true);
+        if (quotaSource) agyQuota.refresh(true);
         setUsageSummon((n) => n + 1);
       },
     },
@@ -1009,10 +1018,10 @@ export function Composer(props: ComposerProps) {
                       </p>
                     </>
                   )}
-                  {isAgyModel && (
+                  {quotaSource && (
                     <>
                       <div className="mode-menu-head">
-                        <span>{activeQuotaGroup?.name ?? "Antigravity 订阅额度"}</span>
+                        <span>{activeQuotaGroup?.name ?? (isMagpieProvider ? "Magpie 订阅额度" : "Antigravity 订阅额度")}</span>
                         <button
                           type="button"
                           className={`quota-refresh-btn ${agyQuota.loading ? "spinning" : ""}`}
