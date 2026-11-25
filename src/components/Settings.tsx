@@ -8,7 +8,7 @@ import { RuntimeSection } from "./Runtime";
 import { LanguageServersSection } from "./LanguageServers";
 import { EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { mcpTool, shortCount } from "../lib/fold";
-import { allTokens, cooldownRemainingMs, formatCooldown, formatResetIn, quotaWindowLabel, todayTokens, useAntigravityQuota, useModelUsage } from "../lib/modelUsage";
+import { formatResetIn, quotaWindowLabel, useAntigravityQuota } from "../lib/modelUsage";
 import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
 
 const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
@@ -711,7 +711,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
           )}
         </section>
 
-        <ModelUsageSection providers={view.providers} hasAgy={view.keys.antigravity?.source === "cli"} />
+        {view.keys.antigravity?.source === "cli" && <ModelUsageSection hasAgy />}
           </>
         )}
         {tab === "rules" && (
@@ -901,136 +901,66 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
   );
 }
 
-/** Per-model token usage, Antigravity subscription quota, and active rate-limit cooldown overview in Settings. */
-function ModelUsageSection({ providers, hasAgy }: { providers: Provider[]; hasAgy: boolean }) {
-  const { entries, nowMs, refresh, clearCooldown, resetAll } = useModelUsage("settings");
+/** Antigravity subscription quota overview in Settings. */
+function ModelUsageSection({ hasAgy }: { hasAgy: boolean }) {
   const agyQuota = useAntigravityQuota(hasAgy);
-  const [confirmReset, setConfirmReset] = useState(false);
-  const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
+
+  if (!hasAgy) return null;
 
   return (
     <section>
       <div className="usage-head">
         <h2>
-          模型用量与冷却
-          <Info>记录各宗门与模型今日及累计消耗的灵石（token），触发 429 限流或配额耗尽时自动显示实时冷却倒计时；本机装有 agy 时自动查询 Antigravity 5 小时与周限额。</Info>
+          订阅额度
+          <Info>本机装有 agy 时自动查询 Antigravity 5 小时与周限额。</Info>
         </h2>
         <div className="usage-actions">
           <button
             type="button"
             className="button text small"
             disabled={agyQuota.loading}
-            onClick={() => {
-              refresh();
-              if (hasAgy) agyQuota.refresh(true);
-            }}
+            onClick={() => agyQuota.refresh(true)}
           >
             {agyQuota.loading ? "查询额度中…" : "刷新"}
           </button>
-          {entries.length > 0 && !confirmReset && (
-            <button type="button" className="button text small" onClick={() => setConfirmReset(true)}>
-              清空统计
-            </button>
-          )}
-          {confirmReset && (
-            <>
-              <button type="button" className="button text small" onClick={() => setConfirmReset(false)}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="button danger small"
-                onClick={() => {
-                  setConfirmReset(false);
-                  resetAll();
-                }}
-              >
-                确认清空
-              </button>
-            </>
-          )}
         </div>
       </div>
-      {hasAgy && (
-        <div className="quota-panel">
-          <div className="quota-panel-head">
-            <span className="field-label">Antigravity 订阅额度</span>
-            {agyQuota.error && <span className="file-note failed">{agyQuota.error}</span>}
-            {!agyQuota.quota && agyQuota.loading && <span className="muted">正在通过 agy /usage 查询…</span>}
-          </div>
-          {agyQuota.quota && (
-            <div className="quota-groups">
-              {agyQuota.quota.groups.map((group) => (
-                <div className="quota-group" key={group.name}>
-                  <div className="quota-group-title" title={group.description ?? undefined}>
-                    {group.name}
-                  </div>
-                  <div className="quota-buckets">
-                    {group.buckets.map((bucket) => {
-                      const resetIn = formatResetIn(bucket.reset_time, agyQuota.nowMs);
-                      const tone = bucket.remaining_percent < 20 ? "low" : bucket.remaining_percent < 50 ? "mid" : "high";
-                      return (
-                        <div className="quota-bucket" key={bucket.id || bucket.window}>
-                          <div className="quota-bucket-row">
-                            <span className="quota-bucket-name">{quotaWindowLabel(bucket.window, bucket.name)}</span>
-                            <span className={`quota-bucket-pct ${tone}`}>{bucket.remaining_percent}%</span>
-                          </div>
-                          <div className="quota-bar" aria-hidden="true">
-                            <span className={`quota-fill ${tone}`} style={{ width: `${bucket.remaining_percent}%` }} />
-                          </div>
-                          <div className="quota-bucket-meta">{resetIn ? `${resetIn} 后刷新` : "即将刷新"}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+      <div className="quota-panel">
+        <div className="quota-panel-head">
+          <span className="field-label">Antigravity 订阅额度</span>
+          {agyQuota.error && <span className="file-note failed">{agyQuota.error}</span>}
+          {!agyQuota.quota && agyQuota.loading && <span className="muted">正在通过 agy /usage 查询…</span>}
         </div>
-      )}
-      {entries.length === 0 ? (
-        <p className="hint">还没有模型用量记录，发送一轮对话后这里会自动统计。</p>
-      ) : (
-        <div className="usage-list">
-          {entries.map((entry) => {
-            const coolMs = cooldownRemainingMs(entry, nowMs);
-            return (
-              <div className="usage-card" key={`${entry.provider}:${entry.model}`}>
-                <div className="usage-card-main">
-                  <div className="usage-card-title">
-                    <span className="chip">{providerName(entry.provider)}</span>
-                    <span className="mono">{entry.model}</span>
-                  </div>
-                  <div className="usage-card-stats">
-                    <span>
-                      今日 {entry.today_requests} 次 · {shortCount(todayTokens(entry))}（入 {shortCount(entry.today_input_tokens)} / 缓 {shortCount(entry.today_cached_tokens)} / 出{" "}
-                      {shortCount(entry.today_output_tokens)}）
-                    </span>
-                    <span>
-                      累计 {entry.requests} 次 · {shortCount(allTokens(entry))}
-                    </span>
-                  </div>
+        {agyQuota.quota && (
+          <div className="quota-groups">
+            {agyQuota.quota.groups.map((group) => (
+              <div className="quota-group" key={group.name}>
+                <div className="quota-group-title" title={group.description ?? undefined}>
+                  {group.name}
                 </div>
-                <div className="usage-card-state">
-                  {coolMs > 0 ? (
-                    <>
-                      <span className="model-cooldown-pill" title={entry.cooldown_reason ?? "冷却中"}>
-                        {entry.cooldown_reason ?? "冷却"} · {formatCooldown(coolMs)}
-                      </span>
-                      <button type="button" className="button text small" onClick={() => clearCooldown(entry.provider, entry.model)}>
-                        清除冷却
-                      </button>
-                    </>
-                  ) : (
-                    <span className="usage-ok">可用</span>
-                  )}
+                <div className="quota-buckets">
+                  {group.buckets.map((bucket) => {
+                    const resetIn = formatResetIn(bucket.reset_time, agyQuota.nowMs);
+                    const tone = bucket.remaining_percent < 20 ? "low" : bucket.remaining_percent < 50 ? "mid" : "high";
+                    return (
+                      <div className="quota-bucket" key={bucket.id || bucket.window}>
+                        <div className="quota-bucket-row">
+                          <span className="quota-bucket-name">{quotaWindowLabel(bucket.window, bucket.name)}</span>
+                          <span className={`quota-bucket-pct ${tone}`}>{bucket.remaining_percent}%</span>
+                        </div>
+                        <div className="quota-bar" aria-hidden="true">
+                          <span className={`quota-fill ${tone}`} style={{ width: `${bucket.remaining_percent}%` }} />
+                        </div>
+                        <div className="quota-bucket-meta">{resetIn ? `${resetIn} 后刷新` : "即将刷新"}</div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-            );
-          })}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }

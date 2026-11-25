@@ -903,6 +903,7 @@ pub fn build_args(
                 "stream-json".to_string(),
                 "--stream-partial-output".to_string(),
                 "--trust".to_string(),
+                "--approve-mcps".to_string(),
             ];
             if let Some(ws) = workspace {
                 args.push("--workspace".to_string());
@@ -922,7 +923,6 @@ pub fn build_args(
                 args.push("plan".to_string());
             } else if matches!(mode, Mode::Edit | Mode::Auto | Mode::Bypass) {
                 args.push("--force".to_string());
-                args.push("--approve-mcps".to_string());
             }
             args.push("--".to_string());
             args.push(prompt.to_string());
@@ -2547,6 +2547,75 @@ async fn sync_antigravity_mcp(bin: &Path, servers: &std::collections::BTreeMap<S
     }
 }
 
+/// Merge enabled `odg` MCP servers (`~/.odg/mcp.json`) into an existing Cursor `mcp.json` value,
+/// preserving any non-`odg` entries the user configured directly in Cursor.
+fn merge_cursor_mcp_json(existing: Option<&str>, servers: &std::collections::BTreeMap<String, crate::mcp::ServerConfig>) -> Option<String> {
+    let mut root = existing
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    let mut map = root
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut any = false;
+    for (name, srv) in servers {
+        if srv.disabled {
+            continue;
+        }
+        let mut entry = serde_json::Map::new();
+        if let Some(cmd) = srv.command.as_deref().filter(|c| !c.trim().is_empty()) {
+            entry.insert("command".into(), json!(cmd));
+            if !srv.args.is_empty() {
+                entry.insert("args".into(), json!(srv.args));
+            }
+            if !srv.env.is_empty() {
+                entry.insert("env".into(), json!(srv.env));
+            }
+        } else if let Some(url) = srv.url.as_deref().filter(|u| !u.trim().is_empty()) {
+            entry.insert("url".into(), json!(url));
+            if !srv.headers.is_empty() {
+                entry.insert("headers".into(), json!(srv.headers));
+            }
+        } else {
+            continue;
+        }
+        map.insert(name.clone(), Value::Object(entry));
+        any = true;
+    }
+    if !any {
+        return None;
+    }
+    root.insert("mcpServers".into(), Value::Object(map));
+    serde_json::to_string_pretty(&Value::Object(root)).ok()
+}
+
+/// Sync enabled `odg` MCP servers (`~/.odg/mcp.json`) into `~/.cursor/mcp.json` so `cursor-agent`
+/// loads them natively when `--approve-mcps` is passed. Cached by config signature to avoid redundant writes.
+fn sync_cursor_mcp(servers: &std::collections::BTreeMap<String, crate::mcp::ServerConfig>) {
+    static LAST_SYNCED: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+    let enabled: Vec<(&String, &crate::mcp::ServerConfig)> = servers.iter().filter(|(_, s)| !s.disabled).collect();
+    if enabled.is_empty() {
+        return;
+    }
+    let sig = serde_json::to_string(&enabled).unwrap_or_default();
+    let cache = LAST_SYNCED.get_or_init(|| std::sync::Mutex::new(None));
+    if cache.lock().unwrap().as_deref() == Some(sig.as_str()) {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else { return };
+    let cursor_dir = home.join(".cursor");
+    let mcp_path = cursor_dir.join("mcp.json");
+    let existing = std::fs::read_to_string(&mcp_path).ok();
+    let Some(merged) = merge_cursor_mcp_json(existing.as_deref(), servers) else {
+        return;
+    };
+    if std::fs::create_dir_all(&cursor_dir).is_ok() && std::fs::write(&mcp_path, merged).is_ok() {
+        *cache.lock().unwrap() = Some(sig);
+    }
+}
+
 /// Execute one headless streaming turn on any supported [`CliKind`].
 pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &CancellationToken) -> Result<TurnOutcome, String> {
     let bin = params
@@ -2578,6 +2647,8 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         // picks the first entry as Command Working Directory (`~/.odg/skills` sorts before `~/Projects/...`),
         // which would hijack the user's project workspace. `agy`'s `read_file` reads SKILL.md by absolute path directly.
         sync_antigravity_mcp(&bin, &params.mcp_servers).await;
+    } else if params.kind == CliKind::Cursor {
+        sync_cursor_mcp(&params.mcp_servers);
     }
     let _mcp_guard = apply_mcp_bridge_args(params.kind, &mut args, &params.mcp_servers, params.turn);
     let mut cmd = Command::new(&bin);
@@ -2689,12 +2760,12 @@ mod tests {
         let cursor = build_args(CliKind::Cursor, "explain", Some(Path::new("/tmp/proj")), Some("chat-2"), "auto", "high", Mode::Plan, false, false);
         assert_eq!(
             cursor,
-            ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--workspace", "/tmp/proj", "--resume", "chat-2", "--model", "auto", "--mode", "plan", "--", "explain"]
+            ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--approve-mcps", "--workspace", "/tmp/proj", "--resume", "chat-2", "--model", "auto", "--mode", "plan", "--", "explain"]
         );
         let cursor_edit = build_args(CliKind::Cursor, "fix", None, None, "grok-4.7-medium", "high", Mode::Auto, false, false);
         assert_eq!(
             cursor_edit,
-            ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--model", "grok-4.7-medium", "--force", "--approve-mcps", "--", "fix"]
+            ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--approve-mcps", "--model", "grok-4.7-medium", "--force", "--", "fix"]
         );
 
         let grok = build_args(CliKind::Grok, "hello", None, Some("g-1"), "grok-4.7", "high", Mode::Auto, true, false);
