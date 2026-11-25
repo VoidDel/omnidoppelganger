@@ -1269,7 +1269,7 @@
 }
 
 .git-commit-subject {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   font-size: var(--t-small);
   overflow: hidden;
@@ -1278,15 +1278,14 @@
 }
 
 .git-ref-chips {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  min-width: 0;
-  max-width: 52%;
 }
 
 .git-ref-chip {
+  flex: 0 0 auto;
   padding: 0 5px;
   border-radius: 999px;
   font-size: 10px;
@@ -1295,7 +1294,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 96px;
+  max-width: 120px;
   border: 1px solid var(--line);
   color: var(--ink-2);
   background: color-mix(in srgb, var(--ink) 5%, transparent);

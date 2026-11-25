@@ -57,6 +57,7 @@
 
 .sidebar-foot .row-button {
   min-height: 34px;
+  font-family: var(--brush);
 }
 
 /* The name over the door: pressed, it is the way back to the home screen. */
