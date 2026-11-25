@@ -779,44 +779,33 @@
 }
 
 .code-lines {
+  --code-lh: calc(var(--t-code) * 1.6);
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: start;
   padding: 10px 0 28px;
   font-family: var(--mono);
   font-size: var(--t-code);
-  line-height: 1.6;
+  line-height: var(--code-lh);
   min-width: max-content;
 }
 
-.code-row {
-  display: grid;
-  grid-template-columns: 56px minmax(0, 1fr);
-  align-items: baseline;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 21px;
-}
-
-.code-row:hover {
-  background: color-mix(in srgb, var(--ink) 3.5%, transparent);
-}
-
-.code-row.matched {
-  background: color-mix(in srgb, var(--gold) 18%, transparent);
-}
-
-.code-row.active-match {
-  background: color-mix(in srgb, var(--gold) 36%, transparent);
-}
-
-.code-row.selected {
-  background: color-mix(in srgb, var(--jade) 15%, transparent);
+.code-gutter {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .line-no {
+  height: var(--code-lh);
+  line-height: var(--code-lh);
   padding: 0 12px 0 8px;
   border: 0;
-  border-right: 1px solid var(--line);
   background: transparent;
   color: var(--ink-2);
-  font: inherit;
+  font-family: var(--mono);
   font-size: 12px;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -831,16 +820,44 @@
 }
 
 .line-no:hover,
-.code-row.selected .line-no {
+.line-no.selected {
   opacity: 1;
   color: var(--jade);
   font-weight: 700;
 }
 
-.line-code {
+.line-no.selected {
+  background: color-mix(in srgb, var(--jade) 15%, transparent);
+}
+
+.line-no.matched {
+  background: color-mix(in srgb, var(--gold) 18%, transparent);
+}
+
+.line-no.active-match {
+  background: color-mix(in srgb, var(--gold) 36%, transparent);
+}
+
+.code-content {
+  margin: 0;
   padding: 0 20px 0 14px;
+  font-family: var(--mono);
+  font-size: var(--t-code);
+  line-height: var(--code-lh);
   white-space: pre;
   tab-size: 2;
+}
+
+.code-line.matched {
+  background: color-mix(in srgb, var(--gold) 18%, transparent);
+}
+
+.code-line.active-match {
+  background: color-mix(in srgb, var(--gold) 36%, transparent);
+}
+
+.code-line.selected {
+  background: color-mix(in srgb, var(--jade) 15%, transparent);
 }
 
 /* ---------- independent read-only side conversation (旁聊) in right SidePanel ---------- */

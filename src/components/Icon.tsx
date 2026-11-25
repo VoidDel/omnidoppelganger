@@ -1,7 +1,151 @@
 import type { CSSProperties } from "react";
+import {
+  Activity,
+  ArrowDown,
+  ArrowUp,
+  AtSign,
+  Bell,
+  BookMarked,
+  BookOpen,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsDownUp,
+  ClipboardList,
+  Clock,
+  Code2,
+  Contrast,
+  Copy,
+  CornerUpLeft,
+  CornerUpRight,
+  Download,
+  Ellipsis,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileCode2,
+  FileDiff,
+  FilePenLine,
+  FilePlus,
+  FileText,
+  Flame,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  GitBranch,
+  GitFork,
+  GitMerge,
+  Gauge,
+  History,
+  Image,
+  Info,
+  Link2,
+  ListTodo,
+  MessageSquareQuote,
+  MessageSquareText,
+  Package,
+  PanelLeft,
+  PanelRightClose,
+  PanelRightOpen,
+  Paperclip,
+  Pause,
+  Pencil,
+  Play,
+  Plug,
+  Plus,
+  Quote,
+  RefreshCw,
+  RotateCw,
+  Search,
+  SendHorizontal,
+  Settings,
+  ShieldCheck,
+  SkipBack,
+  Slash,
+  Square,
+  SquareTerminal,
+  Trash2,
+  Undo2,
+  X,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+
+const ICONS: Record<string, LucideIcon> = {
+  activity: Activity,
+  "arrow-90deg-left": CornerUpLeft,
+  "arrow-clockwise": RotateCw,
+  "arrow-counterclockwise": Undo2,
+  "arrow-down": ArrowDown,
+  "arrow-repeat": RefreshCw,
+  "arrow-up": ArrowUp,
+  "arrows-collapse": ChevronsDownUp,
+  "at-sign": AtSign,
+  "bar-chart-fill": Gauge,
+  bell: Bell,
+  book: BookOpen,
+  "box-arrow-up-right": ExternalLink,
+  "box-seam": Package,
+  "chat-left-quote": MessageSquareQuote,
+  "chat-left-text": MessageSquareText,
+  "check-lg": Check,
+  "chevron-down": ChevronDown,
+  "chevron-left": ChevronLeft,
+  "chevron-right": ChevronRight,
+  "circle-half": Contrast,
+  clock: Clock,
+  "clock-history": History,
+  "code-slash": Code2,
+  copy: Copy,
+  "diagram-2": GitBranch,
+  download: Download,
+  eye: Eye,
+  "eye-slash": EyeOff,
+  "file-earmark-diff": FileDiff,
+  "file-earmark-plus": FilePlus,
+  "file-earmark-text": FileText,
+  "filetype-md": FileCode2,
+  fire: Flame,
+  "folder-plus": FolderPlus,
+  folder2: Folder,
+  "folder2-open": FolderOpen,
+  gear: Settings,
+  git: GitMerge,
+  image: Image,
+  "info-circle": Info,
+  "journal-check": ClipboardList,
+  "journal-text": BookMarked,
+  "layout-sidebar": PanelLeft,
+  "layout-sidebar-inset-reverse": PanelRightClose,
+  "layout-sidebar-reverse": PanelRightOpen,
+  "lightning-charge": Zap,
+  "link-45deg": Link2,
+  "list-check": ListTodo,
+  paperclip: Paperclip,
+  "pause-fill": Pause,
+  pencil: Pencil,
+  "pencil-square": FilePenLine,
+  "play-fill": Play,
+  plug: Plug,
+  "plus-lg": Plus,
+  quote: Quote,
+  reply: CornerUpRight,
+  search: Search,
+  send: SendHorizontal,
+  "shield-check": ShieldCheck,
+  "signpost-split": GitFork,
+  "skip-start-fill": SkipBack,
+  slash: Slash,
+  "stop-fill": Square,
+  terminal: SquareTerminal,
+  "three-dots": Ellipsis,
+  trash3: Trash2,
+  "x-lg": X,
+};
 
 export interface IconProps {
-  /** Bootstrap Icons glyph name without the `bi-` prefix (e.g. `"box-seam"`, `"terminal"`). */
+  /** Icon key mapped to a Lucide icon component. */
   name: string;
   /** Icon size in pixels (defaults to 15). */
   size?: number;
@@ -9,13 +153,17 @@ export interface IconProps {
   style?: CSSProperties;
 }
 
-/** Unified Bootstrap Icons wrapper (`bootstrap-icons` MIT). */
+/** Unified Lucide Icons wrapper (`lucide-react`, ISC license). */
 export function Icon({ name, size = 15, className, style }: IconProps) {
+  const Glyph = ICONS[name];
+  if (!Glyph) return null;
   return (
-    <i
+    <Glyph
       aria-hidden="true"
-      className={className ? `bi bi-${name} ${className}` : `bi bi-${name}`}
-      style={{ fontSize: `${size}px`, ...style }}
+      size={size}
+      strokeWidth={1.65}
+      className={className ? `ui-icon ${className}` : "ui-icon"}
+      style={style}
     />
   );
 }

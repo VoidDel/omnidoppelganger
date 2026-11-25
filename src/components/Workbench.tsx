@@ -172,6 +172,7 @@ export interface WorkbenchProps {
   onQuoteToMain: (quote: ComposerQuoteInput) => void;
   onQuoteToAside?: (quote: ComposerQuoteInput) => void;
   onAttachPath: (relPath: string) => void;
+  onAttachToAside?: (relPath: string) => void;
   onError: (message: string) => void;
   renderDiff?: (tab: Extract<WorkbenchTab, { kind: "diff" }>) => ReactNode;
 }
@@ -184,6 +185,7 @@ export function Workbench({
   onQuoteToMain,
   onQuoteToAside,
   onAttachPath,
+  onAttachToAside,
   onError,
   renderDiff,
 }: WorkbenchProps) {
@@ -205,6 +207,7 @@ export function Workbench({
             onQuoteToMain={onQuoteToMain}
             onQuoteToAside={onQuoteToAside}
             onAttachPath={onAttachPath}
+            onAttachToAside={onAttachToAside}
             onError={onError}
           />
         ) : renderDiff ? (

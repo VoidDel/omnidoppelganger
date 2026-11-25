@@ -212,25 +212,29 @@
   border: 0;
   background: transparent;
   color: var(--ink-2);
-  width: 20px;
+  width: 0;
   height: 20px;
-  margin-right: 4px;
-  margin-left: -4px;
+  margin: 0;
   padding: 0;
+  overflow: hidden;
   border-radius: 4px;
   font-size: 13px;
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.55;
-  transition: opacity var(--d-quick) ease, background var(--d-quick) ease, color var(--d-quick) ease;
+  opacity: 0;
+  pointer-events: none;
+  transition: width 120ms ease, margin 120ms ease, opacity var(--d-quick) ease, background var(--d-quick) ease, color var(--d-quick) ease;
 }
 
 .tab-item:hover .tab-close,
-.tab-item.active .tab-close,
 .tab-close:focus-visible {
+  width: 18px;
+  margin-right: 4px;
+  margin-left: -2px;
   opacity: 1;
+  pointer-events: auto;
 }
 
 .tab-close:hover {

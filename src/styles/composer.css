@@ -181,6 +181,8 @@
    The three that say how the 分身 stands (what it runs on, what it may do, how full it is) read as one strip, a hairline between each. */
 .composer-row .mode-picker {
   min-width: 0;
+  display: inline-flex;
+  align-items: center;
 }
 
 .composer-row .mode-picker + .mode-picker {
@@ -235,13 +237,19 @@
 }
 
 .composer-row .select-button {
-  min-height: 32px;
+  height: 30px;
+  min-height: 30px;
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 7px;
   border-color: transparent;
   background: transparent;
-  gap: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-family: var(--brush);
   font-size: var(--t-small);
+  line-height: 1;
   color: var(--ink-2);
 }
 
@@ -253,6 +261,7 @@
 
 .composer-row .select-button .value {
   font-weight: 400;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -965,6 +974,7 @@ button.select-button .bi {
   padding: 6px;
   background: var(--sheet);
   border: 1px solid var(--line-strong);
+  font-family: var(--brush);
   border-radius: var(--r-control);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
   display: flex;

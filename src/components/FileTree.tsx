@@ -17,6 +17,7 @@ export interface FileTreeProps {
   gitBadges?: Record<string, GitBadge>;
   onOpenFile: (relPath: string, pin: boolean) => void;
   onAttachFile: (absPath: string, relPath: string) => void;
+  onAttachToAside?: (absPath: string, relPath: string) => void;
   onDeletedPath?: (relPath: string) => void;
   onRenamedPath?: (fromRel: string, toRel: string) => void;
   onError: (message: string) => void;
@@ -49,6 +50,7 @@ export function FileTree({
   gitBadges,
   onOpenFile,
   onAttachFile,
+  onAttachToAside,
   onDeletedPath,
   onRenamedPath,
   onError,
@@ -763,6 +765,19 @@ export function FileTree({
                 >
                   附入对话
                 </button>
+                {onAttachToAside && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onAttachToAside(absPath, relPath);
+                    }}
+                  >
+                    附入旁聊
+                  </button>
+                )}
                 <div className="tree-context-sep" role="separator" />
                 <button
                   type="button"

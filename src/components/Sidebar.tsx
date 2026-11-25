@@ -310,7 +310,7 @@ export function Sidebar({
             <div className={`group ${closed ? "closed" : ""}`} key={workspace}>
               <div className="group-head">
                 <button type="button" className="group-name" title={`${workspace}\n点一下${closed ? "展开" : "收起"}这处洞府的分身`} aria-expanded={!closed} disabled={!!found} onClick={() => toggleFolded(workspace)}>
-                  <Icon name="chevron-right" size={10} className="group-caret" />
+                  <Icon name="chevron-right" size={12} className="group-caret" />
                   <span className="group-label">{baseName(workspace)}</span>
                   {/* Put away, the 洞府 still says how many are in it, and whether any is at work or waiting. */}
                   {closed && (

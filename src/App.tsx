@@ -792,20 +792,24 @@ export default function App() {
     [showWorkbench, canAside, quoteIntoAside, quoteIntoMain],
   );
 
-  const attachIntoChat = useCallback(
+  const attachIntoMain = useCallback(
     (absPath: string) => {
-      if (showWorkbench && canAside) {
-        setAsideSeed({ id: Date.now(), attachPaths: [absPath] });
-        setPanel((cur) => ({ ...cur, hidden: false }));
-        setDrawerOpen(true);
-        setPeek(true);
-        setSummonPanelTab({ id: Date.now(), tab: "chat" });
-      } else {
-        if (showWorkbench) setInWorkbench(false);
-        setSeed({ id: Date.now(), attachPaths: [absPath] });
-      }
+      if (showWorkbench) setInWorkbench(false);
+      setSeed({ id: Date.now(), attachPaths: [absPath] });
     },
-    [showWorkbench, canAside, setPanel],
+    [showWorkbench],
+  );
+
+  const attachIntoAside = useCallback(
+    (absPath: string) => {
+      if (!canAside) return;
+      setAsideSeed({ id: Date.now(), attachPaths: [absPath] });
+      setPanel((cur) => ({ ...cur, hidden: false }));
+      setDrawerOpen(true);
+      setPeek(true);
+      setSummonPanelTab({ id: Date.now(), tab: "chat" });
+    },
+    [canAside, setPanel],
   );
 
   const summonAside = useCallback(() => {
@@ -1150,7 +1154,8 @@ export default function App() {
                   refreshTick={fsRefreshTick}
                   gitBadges={gitBadges}
                   onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
-                  onAttachFile={(absPath) => attachIntoChat(absPath)}
+                  onAttachFile={(absPath) => attachIntoMain(absPath)}
+                  onAttachToAside={canAside ? (absPath) => attachIntoAside(absPath) : undefined}
                   onDeletedPath={(rel) => {
                     handleDeletedWorkspacePath(rel);
                     bumpRefresh();
@@ -1362,8 +1367,17 @@ export default function App() {
                   onAttachPath={(relPath) => {
                     const sep = active.workspace.includes("\\") ? "\\" : "/";
                     const abs = `${active.workspace.replace(/[\\/]+$/, "")}${sep}${relPath.replace(/\//g, sep)}`;
-                    attachIntoChat(abs);
+                    attachIntoMain(abs);
                   }}
+                  onAttachToAside={
+                    canAside
+                      ? (relPath) => {
+                          const sep = active.workspace.includes("\\") ? "\\" : "/";
+                          const abs = `${active.workspace.replace(/[\\/]+$/, "")}${sep}${relPath.replace(/\//g, sep)}`;
+                          attachIntoAside(abs);
+                        }
+                      : undefined
+                  }
                   onError={fail}
                   renderDiff={(tab) => (
                     <DiffViewer

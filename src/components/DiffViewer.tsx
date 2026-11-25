@@ -126,8 +126,8 @@ export function DiffViewer({
               <button
                 type="button"
                 className="icon-button small"
-                title="引入到分身对话：将此改动引用到主分身输入框"
-                aria-label="引入到分身对话"
+                title="引入到对话：将此改动引用到主分身输入框"
+                aria-label="引入到对话"
                 onClick={() => {
                   const quote = formatDiffQuote();
                   if (quote) onQuoteToMain(quote);

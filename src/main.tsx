@@ -8,7 +8,6 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "@fontsource/jetbrains-mono/700.css";
 import "katex/dist/katex.min.css";
-import "bootstrap-icons/font/bootstrap-icons.css";
 import "./styles.css";
 import App from "./App";
 import { Guard } from "./components/Guard";

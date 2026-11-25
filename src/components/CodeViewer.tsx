@@ -19,6 +19,7 @@ export interface CodeViewerProps {
   onQuoteToMain: (quote: ComposerQuoteInput) => void;
   onQuoteToAside?: (quote: ComposerQuoteInput) => void;
   onAttachPath: (relPath: string) => void;
+  onAttachToAside?: (relPath: string) => void;
   onError: (message: string) => void;
 }
 
@@ -43,6 +44,7 @@ export function CodeViewer({
   onQuoteToMain,
   onQuoteToAside,
   onAttachPath,
+  onAttachToAside,
   onError,
 }: CodeViewerProps) {
   const [view, setView] = useState<FileView | null>(null);
@@ -63,7 +65,14 @@ export function CodeViewer({
     left: number;
     below: boolean;
   } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    selectedText: string;
+    quote: ComposerQuoteInput | null;
+  } | null>(null);
   const quoteBarRef = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
 
   // In-file search bar
   const [findOpen, setFindOpen] = useState<boolean>(false);
@@ -225,10 +234,13 @@ export function CodeViewer({
     let endLine = lineNumberOf(range.endContainer);
     if (startLine !== null && endLine !== null) {
       if (startLine > endLine) [startLine, endLine] = [endLine, startLine];
-      // If selection ends at offset 0 of the next line's cell, don't include that trailing untouched line.
+      // If selection ends at offset 0 of the next line, don't include that trailing untouched line.
       if (endLine > startLine && range.endOffset === 0) {
-        const endRow = range.endContainer instanceof HTMLElement ? range.endContainer.closest("[data-line]") : range.endContainer.parentElement?.closest("[data-line]");
-        if (endRow && range.endContainer === endRow.querySelector(".line-code")?.firstChild) {
+        const endLineEl =
+          range.endContainer instanceof HTMLElement
+            ? range.endContainer.closest("[data-line]")
+            : range.endContainer.parentElement?.closest("[data-line]");
+        if (endLineEl && (range.endContainer === endLineEl || range.endContainer === endLineEl.firstChild)) {
           endLine -= 1;
         }
       }
@@ -270,7 +282,75 @@ export function CodeViewer({
 
   useEffect(() => {
     setDragQuote(null);
+    setContextMenu(null);
   }, [path, mode]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      setContextMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    const onBlur = () => setContextMenu(null);
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [contextMenu]);
+
+  const openCodeContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const container = scrollRef.current;
+    const sel = window.getSelection();
+    let selText = "";
+    let quote: ComposerQuoteInput | null = null;
+    if (container && sel && !sel.isCollapsed && sel.rangeCount > 0 && view && view.kind !== "image" && view.kind !== "binary") {
+      const range = sel.getRangeAt(0);
+      if (container.contains(range.commonAncestorContainer)) {
+        selText = sel.toString();
+        let startLine = lineNumberOf(range.startContainer);
+        let endLine = lineNumberOf(range.endContainer);
+        if (startLine !== null && endLine !== null) {
+          if (startLine > endLine) [startLine, endLine] = [endLine, startLine];
+          if (endLine > startLine && range.endOffset === 0) {
+            const endLineEl =
+              range.endContainer instanceof HTMLElement
+                ? range.endContainer.closest("[data-line]")
+                : range.endContainer.parentElement?.closest("[data-line]");
+            if (endLineEl && (range.endContainer === endLineEl || range.endContainer === endLineEl.firstChild)) {
+              endLine -= 1;
+            }
+          }
+          quote = formatRangeQuote(startLine, endLine);
+        } else if (selText.trim()) {
+          const trimmed = selText.trim();
+          const lines = trimmed.split(/\r?\n/);
+          quote = {
+            label: view.name,
+            meta: lines.length > 1 ? `${lines.length} 行` : `${trimmed.length} 字`,
+            content: `请看 \`${view.path}\`：\n${lines.map((line) => `> ${line}`).join("\n")}`,
+          };
+        }
+      }
+    } else if (selectedRange && view?.kind === "text") {
+      selText = rawLines.slice(selectedRange.start - 1, selectedRange.end).join("\n");
+      quote = formatRangeQuote(selectedRange.start, selectedRange.end);
+    }
+    const menuWidth = 200;
+    const menuHeight = quote ? 310 : 220;
+    const x = Math.min(event.clientX, Math.max(8, window.innerWidth - menuWidth - 8));
+    const y = Math.min(event.clientY, Math.max(8, window.innerHeight - menuHeight - 8));
+    setDragQuote(null);
+    setContextMenu({ x, y, selectedText: selText, quote });
+  };
 
   const sendDragQuote = (target: "main" | "aside") => {
     const quote = formatDragQuote();
@@ -358,7 +438,7 @@ export function CodeViewer({
           <button
             type="button"
             className="icon-button small"
-            title="把此文件附入右侧旁聊"
+            title="附入对话"
             onClick={() => onAttachPath(path)}
           >
             <Icon name="paperclip" size={15} />
@@ -514,8 +594,10 @@ export function CodeViewer({
         className="viewer-body"
         onMouseUp={() => requestAnimationFrame(syncDragQuote)}
         onKeyUp={() => requestAnimationFrame(syncDragQuote)}
+        onContextMenu={openCodeContextMenu}
         onScroll={() => {
           if (dragQuote) setDragQuote(null);
+          if (contextMenu) setContextMenu(null);
         }}
       >
         {loading ? (
@@ -586,29 +668,25 @@ export function CodeViewer({
         ) : view.content.length === 0 ? (
           <div className="viewer-placeholder muted">（空文件）</div>
         ) : (
-          <div className="code-lines" role="table" aria-label={`${view.name} 源码`}>
-            {htmlLines.map((lineHtml, idx) => {
-              const lineNo = idx + 1;
-              const isSelected = !!selectedRange && lineNo >= selectedRange.start && lineNo <= selectedRange.end;
-              const isMatched = matchedLineSet.has(lineNo);
-              const isActiveMatch = activeMatchLine === lineNo;
-              return (
-                <div
-                  key={lineNo}
-                  data-line={lineNo}
-                  role="row"
-                  className={[
-                    "code-row",
-                    isSelected && "selected",
-                    isMatched && "matched",
-                    isActiveMatch && "active-match",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                >
+          <div className="code-lines" aria-label={`${view.name} 源码`}>
+            <div className="code-gutter" aria-hidden="true">
+              {htmlLines.map((_, idx) => {
+                const lineNo = idx + 1;
+                const isSelected = !!selectedRange && lineNo >= selectedRange.start && lineNo <= selectedRange.end;
+                const isMatched = matchedLineSet.has(lineNo);
+                const isActiveMatch = activeMatchLine === lineNo;
+                return (
                   <button
+                    key={lineNo}
                     type="button"
-                    className="line-no"
+                    className={[
+                      "line-no",
+                      isSelected && "selected",
+                      isMatched && "matched",
+                      isActiveMatch && "active-match",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
                     data-line={lineNo}
                     aria-label={`第 ${lineNo} 行`}
                     title="点选此行；按住 Shift 点另一行可选区间"
@@ -622,14 +700,33 @@ export function CodeViewer({
                       }
                     }}
                   />
-                  <div
-                    role="cell"
-                    className="line-code"
-                    dangerouslySetInnerHTML={{ __html: lineHtml || "<br>" }}
+                );
+              })}
+            </div>
+            <pre className="code-content">
+              {htmlLines.map((lineHtml, idx) => {
+                const lineNo = idx + 1;
+                const isSelected = !!selectedRange && lineNo >= selectedRange.start && lineNo <= selectedRange.end;
+                const isMatched = matchedLineSet.has(lineNo);
+                const isActiveMatch = activeMatchLine === lineNo;
+                const suffix = idx < htmlLines.length - 1 ? "\n" : "";
+                return (
+                  <span
+                    key={lineNo}
+                    data-line={lineNo}
+                    className={[
+                      "code-line",
+                      isSelected && "selected",
+                      isMatched && "matched",
+                      isActiveMatch && "active-match",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    dangerouslySetInnerHTML={{ __html: `${lineHtml}${suffix}` }}
                   />
-                </div>
-              );
-            })}
+                );
+              })}
+            </pre>
           </div>
         )}
       </div>
@@ -674,6 +771,151 @@ export function CodeViewer({
               </button>
             </>
           )}
+        </div>
+      )}
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="tree-context-menu"
+          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          role="menu"
+          aria-label="文件查看器菜单"
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          {contextMenu.selectedText.trim() && (
+            <button
+              type="button"
+              role="menuitem"
+              className="tree-context-item"
+              onClick={() => {
+                const text = contextMenu.selectedText;
+                setContextMenu(null);
+                navigator.clipboard.writeText(text).then(() => flashCopied("quote"), () => undefined);
+              }}
+            >
+              复制选中内容
+            </button>
+          )}
+          {contextMenu.quote && (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                className="tree-context-item"
+                onClick={() => {
+                  const quote = contextMenu.quote!;
+                  window.getSelection()?.removeAllRanges();
+                  setContextMenu(null);
+                  onQuoteToMain(quote);
+                }}
+              >
+                引用到分身 ({contextMenu.quote.label})
+              </button>
+              {onQuoteToAside && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="tree-context-item"
+                  onClick={() => {
+                    const quote = contextMenu.quote!;
+                    window.getSelection()?.removeAllRanges();
+                    setContextMenu(null);
+                    onQuoteToAside(quote);
+                  }}
+                >
+                  旁聊提问 ({contextMenu.quote.label})
+                </button>
+              )}
+              <div className="tree-context-sep" role="separator" />
+            </>
+          )}
+          {view?.kind === "text" && (
+            <button
+              type="button"
+              role="menuitem"
+              className="tree-context-item"
+              onClick={() => {
+                setContextMenu(null);
+                setMode("code");
+                setFindOpen(true);
+                requestAnimationFrame(() => findInputRef.current?.focus());
+              }}
+            >
+              在文件内查找
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            className="tree-context-item"
+            onClick={() => {
+              setContextMenu(null);
+              navigator.clipboard.writeText(path).then(() => flashCopied("path"), () => undefined);
+            }}
+          >
+            复制相对路径
+          </button>
+          {view?.kind === "text" && (
+            <button
+              type="button"
+              role="menuitem"
+              className="tree-context-item"
+              onClick={() => {
+                const content = view.content;
+                setContextMenu(null);
+                navigator.clipboard.writeText(content).then(() => flashCopied("content"), () => undefined);
+              }}
+            >
+              复制全文
+            </button>
+          )}
+          <div className="tree-context-sep" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="tree-context-item"
+            onClick={() => {
+              setContextMenu(null);
+              onAttachPath(path);
+            }}
+          >
+            附入对话
+          </button>
+          {onAttachToAside && (
+            <button
+              type="button"
+              role="menuitem"
+              className="tree-context-item"
+              onClick={() => {
+                setContextMenu(null);
+                onAttachToAside(path);
+              }}
+            >
+              附入旁聊
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            className="tree-context-item"
+            onClick={() => {
+              setContextMenu(null);
+              api.openWorkspaceEntry(sessionId, path, false).catch((err) => onError(String(err)));
+            }}
+          >
+            用系统默认程序打开
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="tree-context-item"
+            onClick={() => {
+              setContextMenu(null);
+              api.openWorkspaceEntry(sessionId, path, true).catch((err) => onError(String(err)));
+            }}
+          >
+            在文件夹中显示
+          </button>
         </div>
       )}
     </div>

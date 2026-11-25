@@ -955,7 +955,7 @@ export function Composer(props: ComposerProps) {
                 title="附文件或图给分身：文本文件和 PDF、Word、Excel、PPT 取出文字一起发，太大的由分身自己分段读；附上的文件，分身读它不用请示。也可以把文件拖进窗口，或把截图粘贴进输入框"
                 onClick={() => api.pickFiles().then(take, (error) => setRefused(`没附上：${String(error)}`))}
               >
-                <Icon name="paperclip" size={16} />
+                <Icon name="paperclip" size={15} />
                 <span className="sr-only">附件</span>
               </button>
             )}
@@ -983,9 +983,7 @@ export function Composer(props: ComposerProps) {
                     }
                   }}
                 >
-                  <span className="slash-glyph" aria-hidden="true">
-                    /
-                  </span>
+                  <Icon name="slash" size={15} />
                   <span className="label sr-only">命令</span>
                 </button>
               </div>
@@ -1016,9 +1014,7 @@ export function Composer(props: ComposerProps) {
                   });
                 }}
               >
-                <span className="slash-glyph" aria-hidden="true">
-                  @
-                </span>
+                <Icon name="at-sign" size={15} />
                 <span className="label sr-only">引用文件</span>
               </button>
             )}
@@ -1065,7 +1061,7 @@ export function Composer(props: ComposerProps) {
               title={`境界：${EFFORT_NAMES[effort] ?? effort}，${effortSet ? "这个分身单独定的" : "跟着设置里的默认"}。点开换一档`}
               label={
                 <>
-                  <Icon name="bar-chart-fill" size={14} />
+                  <Icon name="bar-chart-fill" size={15} />
                   <span className="label sr-only">境界</span>
                   <span className="value">{EFFORT_NAMES[effort] ?? effort}</span>
                 </>

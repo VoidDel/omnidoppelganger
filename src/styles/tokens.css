@@ -194,13 +194,9 @@ pre,
   font-size: var(--t-code);
 }
 
-.bi {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
+.ui-icon {
   flex: none;
-  font-style: normal;
+  display: inline-block;
   vertical-align: middle;
 }
 

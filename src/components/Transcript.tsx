@@ -434,6 +434,7 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
   useEffect(() => () => clearTimeout(closes.current), []);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  const lastScrollTop = useRef(0);
   /** How many messages of 本尊's were on the page at the last render. */
   const said = useRef(rows.length + queued.length);
   // Follow new content only while the reader is already at the bottom. Before the page is painted,
@@ -446,7 +447,10 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
     const arriving = count > said.current && inFlight();
     said.current = count;
     if (arriving) pinned.current = true;
-    if (pinned.current) element.scrollTop = element.scrollHeight;
+    if (pinned.current) {
+      element.scrollTop = element.scrollHeight;
+      lastScrollTop.current = element.scrollTop;
+    }
     if (arriving) {
       const messages = element.querySelectorAll<HTMLElement>(".turn-said .original, .turn-said .shots");
       land(messages[messages.length - 1] ?? null);
@@ -517,6 +521,105 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
     };
   }, [selectionQuote]);
 
+  // Custom right-click context menu for the transcript (suppresses native WebView menu).
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    selectionText: string;
+    codeBlockText: string | null;
+    linkHref: string | null;
+    blockText: string | null;
+    blockLabel: string;
+    canScrollTop: boolean;
+    canScrollBottom: boolean;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      setContextMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    const onBlur = () => setContextMenu(null);
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [contextMenu]);
+
+  const openTranscriptContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectionQuote(null);
+
+    const root = scroller.current;
+    const sel = window.getSelection();
+    let selectionText = "";
+    if (root && sel && !sel.isCollapsed && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      if (root.contains(range.commonAncestorContainer)) {
+        selectionText = sel.toString();
+      }
+    }
+
+    const targetEl = event.target instanceof HTMLElement ? event.target : null;
+    const preEl = targetEl?.closest("pre");
+    const codeBlockText = preEl ? (preEl.querySelector("code")?.textContent ?? preEl.textContent ?? "").trim() || null : null;
+    const linkEl = targetEl?.closest<HTMLAnchorElement>("a[href]");
+    const linkHref = linkEl?.href || null;
+
+    const proseEl = targetEl?.closest<HTMLElement>(".prose");
+    const originalEl = targetEl?.closest<HTMLElement>(".original .said-text");
+    let blockText: string | null = null;
+    let blockLabel = "复制整段内容";
+    if (proseEl) {
+      blockText = (proseEl.innerText || proseEl.textContent || "").trim() || null;
+      blockLabel = "复制整段回复";
+    } else if (originalEl) {
+      blockText = (originalEl.innerText || originalEl.textContent || "").trim() || null;
+      blockLabel = "复制这条消息";
+    }
+
+    const canScrollTop = !!root && root.scrollTop > 24;
+    const canScrollBottom = !!root && root.scrollHeight - root.scrollTop - root.clientHeight > 24;
+
+    const hasAnyAction =
+      Boolean(selectionText.trim()) ||
+      Boolean(codeBlockText) ||
+      Boolean(linkHref) ||
+      Boolean(blockText) ||
+      canScrollTop ||
+      canScrollBottom;
+    if (!hasAnyAction) {
+      setContextMenu(null);
+      return;
+    }
+
+    const menuWidth = 188;
+    const menuHeight = 240;
+    const x = Math.min(event.clientX, Math.max(8, window.innerWidth - menuWidth - 8));
+    const y = Math.min(event.clientY, Math.max(8, window.innerHeight - menuHeight - 8));
+    setContextMenu({
+      x,
+      y,
+      selectionText,
+      codeBlockText,
+      linkHref,
+      blockText,
+      blockLabel,
+      canScrollTop,
+      canScrollBottom,
+    });
+  };
+
   const sendSelectionQuote = (target: "main" | "aside") => {
     if (!selectionQuote) return;
     const formatted = formatSelectionQuote(selectionQuote.text);
@@ -532,12 +635,21 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
         <div
           className="transcript"
           ref={scroller}
-          onMouseUp={() => requestAnimationFrame(syncSelectionQuote)}
+          onContextMenu={openTranscriptContextMenu}
+          onMouseUp={(event) => {
+            if (event.button !== 0) return;
+            const target = event.target as Node | null;
+            if (target && (contextMenuRef.current?.contains(target) || quoteBarRef.current?.contains(target))) return;
+            requestAnimationFrame(syncSelectionQuote);
+          }}
           onKeyUp={() => requestAnimationFrame(syncSelectionQuote)}
           onScroll={(event) => {
             const element = event.currentTarget;
-            pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+            const scrollingUp = element.scrollTop < lastScrollTop.current;
+            lastScrollTop.current = element.scrollTop;
+            pinned.current = !scrollingUp && element.scrollHeight - element.scrollTop - element.clientHeight < 80;
             if (selectionQuote) setSelectionQuote(null);
+            if (contextMenu) setContextMenu(null);
           }}
         >
           {rows.map((row, index) => {
@@ -701,6 +813,162 @@ export function Transcript({ rows, stream, queued, status, mode, origin, session
               )}
             </div>
           )}
+          {contextMenu && (() => {
+            const trimmedSel = contextMenu.selectionText.trim();
+            const hasSelection = trimmedSel.length > 0;
+            const showBlockCopy = Boolean(contextMenu.blockText) && contextMenu.blockText !== trimmedSel;
+            const hasMiddleSection = Boolean(contextMenu.codeBlockText) || Boolean(contextMenu.linkHref) || showBlockCopy;
+            const hasScrollSection = contextMenu.canScrollTop || contextMenu.canScrollBottom;
+            return (
+              <div
+                ref={contextMenuRef}
+                className="tree-context-menu"
+                role="menu"
+                style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+                onMouseDown={(event) => event.preventDefault()}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                {hasSelection && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="tree-context-item"
+                      onClick={() => {
+                        const text = contextMenu.selectionText;
+                        setContextMenu(null);
+                        navigator.clipboard.writeText(text).catch(() => undefined);
+                      }}
+                    >
+                      复制
+                    </button>
+                    {!frozen && onQuoteToMain && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="tree-context-item"
+                        onClick={() => {
+                          const quote = formatSelectionQuote(trimmedSel);
+                          window.getSelection()?.removeAllRanges();
+                          setContextMenu(null);
+                          onQuoteToMain(quote);
+                        }}
+                      >
+                        引用到对话
+                      </button>
+                    )}
+                    {!frozen && onQuoteToAside && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="tree-context-item"
+                        onClick={() => {
+                          const quote = formatSelectionQuote(trimmedSel);
+                          window.getSelection()?.removeAllRanges();
+                          setContextMenu(null);
+                          onQuoteToAside(quote);
+                        }}
+                      >
+                        旁聊提问
+                      </button>
+                    )}
+                    {!frozen && onForward && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="tree-context-item"
+                        onClick={() => {
+                          window.getSelection()?.removeAllRanges();
+                          setContextMenu(null);
+                          onForward(trimmedSel);
+                        }}
+                      >
+                        转给主分身
+                      </button>
+                    )}
+                    {(hasMiddleSection || hasScrollSection) && <div className="tree-context-sep" role="separator" />}
+                  </>
+                )}
+                {contextMenu.codeBlockText && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      const code = contextMenu.codeBlockText!;
+                      setContextMenu(null);
+                      navigator.clipboard.writeText(code).catch(() => undefined);
+                    }}
+                  >
+                    复制代码块
+                  </button>
+                )}
+                {contextMenu.linkHref && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      const href = contextMenu.linkHref!;
+                      setContextMenu(null);
+                      navigator.clipboard.writeText(href).catch(() => undefined);
+                    }}
+                  >
+                    复制链接
+                  </button>
+                )}
+                {showBlockCopy && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      const text = contextMenu.blockText!;
+                      setContextMenu(null);
+                      navigator.clipboard.writeText(text).catch(() => undefined);
+                    }}
+                  >
+                    {contextMenu.blockLabel}
+                  </button>
+                )}
+                {hasMiddleSection && hasScrollSection && <div className="tree-context-sep" role="separator" />}
+                {contextMenu.canScrollTop && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      setSelectionQuote(null);
+                      pinned.current = false;
+                      const el = scroller.current;
+                      if (el) {
+                        lastScrollTop.current = el.scrollTop;
+                        el.scrollTo({ top: 0, behavior: "smooth" });
+                      }
+                    }}
+                  >
+                    回到顶部
+                  </button>
+                )}
+                {contextMenu.canScrollBottom && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tree-context-item"
+                    onClick={() => {
+                      setContextMenu(null);
+                      pinned.current = true;
+                      const el = scroller.current;
+                      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+                    }}
+                  >
+                    回到底部
+                  </button>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </Live.Provider>
     </FilesContext.Provider>
