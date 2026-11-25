@@ -169,6 +169,50 @@ impl App {
         }
     }
 
+    /// Whether `provider` exists in settings, is enabled, and has credentials / local CLI (or is a configured optional-key gateway like Magpie).
+    fn provider_usable(&self, settings: &Settings, provider: &str) -> bool {
+        if !settings.instances().iter().any(|p| p.id == provider) {
+            return false;
+        }
+        if settings.disabled_providers.iter().any(|d| d == provider) {
+            return false;
+        }
+        if self.settings.key_status(provider).source != "none" {
+            return true;
+        }
+        odg_core::providers::kind_id(provider) == "magpie"
+            && (settings.provider == provider
+                || settings.base_urls.contains_key(provider)
+                || settings.provider_names.contains_key(provider)
+                || provider != "magpie")
+    }
+
+    /// If an idle session points at a removed/disabled/unconfigured provider or an empty model,
+    /// automatically switch it to the user's configured default provider & model.
+    fn ensure_valid_model(&self, session: &Session<Router>) {
+        if session.status() != Status::Idle {
+            return;
+        }
+        let settings = self.settings.load();
+        let default_model = settings.model.trim();
+        if default_model.is_empty() || !self.provider_usable(&settings, &settings.provider) {
+            return;
+        }
+        let summary = session.summary();
+        let missing_model = summary.model.trim().is_empty();
+        let missing_provider = !self.provider_usable(&settings, &summary.provider);
+        if (missing_provider || missing_model) && (summary.provider != settings.provider || summary.model != default_model) {
+            let _ = session.set_model(&settings.provider, default_model);
+        }
+    }
+
+    /// Reconcile every open idle session after settings/provider changes.
+    fn reconcile_live_models(&self) {
+        for session in self.all_live().into_values() {
+            self.ensure_valid_model(&session);
+        }
+    }
+
     fn item(&self, summary: SessionSummary, status: Status) -> SessionItem {
         let settings = self.settings.load();
         let window = self.settings.context_window(&settings, &summary.provider, &summary.model).tokens;
@@ -477,7 +521,9 @@ fn preset_workspace() -> Option<String> {
 
 #[tauri::command]
 async fn open_session(app: State<'_, App>, id: String) -> Result<SessionView, String> {
-    Ok(view(&app, &app.live(&id)?))
+    let session = app.live(&id)?;
+    app.ensure_valid_model(&session);
+    Ok(view(&app, &session))
 }
 
 /// Kinds of file that are programs, or that run one when opened: pressed under a message, they are shown in their
@@ -1387,6 +1433,7 @@ fn get_settings(app: State<'_, App>) -> SettingsView {
 #[tauri::command]
 fn save_settings(app: State<'_, App>, settings: Settings) -> Result<SettingsView, String> {
     app.settings.save(settings).map_err(|error| error.to_string())?;
+    app.reconcile_live_models();
     Ok(app.settings_view())
 }
 
@@ -1413,6 +1460,7 @@ fn save_api_key(app: State<'_, App>, provider: String, key: String) -> Result<Se
 #[tauri::command]
 fn delete_api_key(app: State<'_, App>, provider: String) -> Result<SettingsView, String> {
     app.settings.delete_api_key(&provider).map_err(|error| error.to_string())?;
+    app.reconcile_live_models();
     Ok(app.settings_view())
 }
 
@@ -1434,6 +1482,7 @@ fn add_provider(app: State<'_, App>, kind: String, name: String) -> Result<Added
 #[tauri::command]
 fn remove_provider(app: State<'_, App>, id: String) -> Result<SettingsView, String> {
     app.settings.remove_provider(&id).map_err(|error| error.to_string())?;
+    app.reconcile_live_models();
     Ok(app.settings_view())
 }
 

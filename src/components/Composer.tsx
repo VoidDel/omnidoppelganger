@@ -799,6 +799,9 @@ export function Composer(props: ComposerProps) {
                   listModels={listModels}
                   modelUsage={modelUsage}
                   nowMs={nowMs}
+                  onAutoFallback={(fallbackProvider, fallbackModel) => {
+                    if (!busy && (fallbackProvider !== providerId || fallbackModel !== model)) onModel(fallbackProvider, fallbackModel);
+                  }}
                   onPick={(pickedProvider, picked) => {
                     if (pickedProvider !== providerId || picked !== model) onModel(pickedProvider, picked);
                     close();

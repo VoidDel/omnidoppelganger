@@ -116,6 +116,8 @@ export interface ModelListProps {
   providerId: string;
   model: string;
   onPick: (provider: string, model: string) => void;
+  /** Called silently when the current model is missing from the provider's live model list. */
+  onAutoFallback?: (provider: string, model: string) => void;
   listModels: (provider: string) => Promise<[string, string][]>;
   modelUsage?: ModelUsageEntry[];
   nowMs?: number;
@@ -125,7 +127,7 @@ export interface ModelListProps {
  * The models to choose from, a provider at a time: the session's own first, then the others the user added, under
  * the names given them. Each lists what it says it serves, or its built-in suggestions while that is unknown.
  */
-export function ModelList({ providers, listed, keyed, providerId, model, onPick, listModels, modelUsage = [], nowMs = Date.now() }: ModelListProps) {
+export function ModelList({ providers, listed, keyed, providerId, model, onPick, onAutoFallback, listModels, modelUsage = [], nowMs = Date.now() }: ModelListProps) {
   /** The provider whose models are listed. */
   const [showing, setShowing] = useState(providerId);
   const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: [string, string][]; why?: string }>({ state: "asking", models: [] });
@@ -144,6 +146,17 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
   }, [showing, listModels]);
   const provider = providers.find((known) => known.id === showing);
   const home = showing === providerId;
+  // If the provider returned a live list of models and the session's current model is no longer in it,
+  // automatically fall back to the provider's first available model instead of keeping a dead model selected.
+  const fellBack = useRef<string | null>(null);
+  useEffect(() => {
+    if (!home || !onAutoFallback || asked.state !== "told" || asked.models.length === 0) return;
+    if (asked.models.some(([id]) => id === model)) return;
+    const key = `${providerId}:${model}`;
+    if (fellBack.current === key) return;
+    fellBack.current = key;
+    onAutoFallback(providerId, asked.models[0][0]);
+  }, [home, onAutoFallback, asked, providerId, model]);
   const known = asked.state === "told" ? asked.models : (provider?.models ?? []);
   // The model in use is always there to return to, even when the provider's list leaves it out.
   const models = !home || known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
