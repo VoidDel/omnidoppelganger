@@ -2,6 +2,7 @@ import "../styles/workbench.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { layoutGitGraph, type GraphRow } from "../lib/gitGraph";
+import { useMenuFocus } from "../lib/menuFocus";
 import type { DiffStage, GitBranch, GitCommitItem, GitFile, GitStatus, SessionItem } from "../lib/types";
 import { Icon } from "./Icon";
 
@@ -162,6 +163,7 @@ export function GitPanel({
       | { kind: "commitFile"; path: string; commit: GitCommitItem };
   } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  useMenuFocus(!!contextMenu, contextMenuRef, () => setContextMenu(null));
 
   useEffect(() => {
     if (!contextMenu) return;

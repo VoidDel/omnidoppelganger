@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::sync_ext::MutexExt;
+
 /// How much of a job's output is kept; the oldest goes first.
 const KEPT_BYTES: usize = 400_000;
 
@@ -110,7 +112,7 @@ impl Jobs {
                     let text =
                         crate::tools::strip_ansi(&String::from_utf8_lossy(&pending[..whole]).replace("\r\n", "\n"));
                     pending.drain(..whole);
-                    let mut output = output.lock().unwrap();
+                    let mut output = output.lock_unpoisoned();
                     output.text.push_str(&text);
                     if output.text.len() > KEPT_BYTES {
                         let mut cut = output.text.len() - KEPT_BYTES;
@@ -152,13 +154,13 @@ impl Jobs {
             for stream in streams {
                 let _ = tokio::time::timeout(Duration::from_secs(2), stream).await;
             }
-            watched.lock().unwrap().ended = Some(ended);
+            watched.lock_unpoisoned().ended = Some(ended);
         });
 
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        self.jobs.lock().unwrap().insert(
+        self.jobs.lock_unpoisoned().insert(
             id.clone(),
             Job {
                 command: line.to_string(),
@@ -173,7 +175,7 @@ impl Jobs {
     }
 
     fn snapshot_of(id: &str, job: &Job) -> JobSnapshot {
-        let output = job.output.lock().unwrap();
+        let output = job.output.lock_unpoisoned();
         let (running, stopped, exit_code) = match output.ended {
             None => (true, false, None),
             Some(Ended::Stopped) => (false, true, None),
@@ -193,7 +195,7 @@ impl Jobs {
 
     /// List all background commands in this session (running first, then newest first).
     pub fn list(&self) -> Vec<JobSnapshot> {
-        let jobs = self.jobs.lock().unwrap();
+        let jobs = self.jobs.lock_unpoisoned();
         let mut items: Vec<JobSnapshot> = jobs.iter().map(|(id, job)| Self::snapshot_of(id, job)).collect();
         items.sort_by(|a, b| {
             b.running
@@ -206,10 +208,10 @@ impl Jobs {
 
     /// Read the latest `tail_bytes` of a job's output without advancing the agent's read cursor.
     pub fn peek_output(&self, id: &str, tail_bytes: usize) -> Option<(JobSnapshot, String)> {
-        let jobs = self.jobs.lock().unwrap();
+        let jobs = self.jobs.lock_unpoisoned();
         let job = jobs.get(id)?;
         let snapshot = Self::snapshot_of(id, job);
-        let output = job.output.lock().unwrap();
+        let output = job.output.lock_unpoisoned();
         let slice = if output.text.len() <= tail_bytes {
             output.text.as_str()
         } else {
@@ -224,7 +226,7 @@ impl Jobs {
 
     /// Stop a background command from the UI without advancing the agent's read cursor.
     pub async fn stop_from_ui(&self, id: &str) -> Option<JobSnapshot> {
-        self.jobs.lock().unwrap().get(id)?.stop.cancel();
+        self.jobs.lock_unpoisoned().get(id)?.stop.cancel();
         for _ in 0..50 {
             if self
                 .jobs
@@ -241,16 +243,16 @@ impl Jobs {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let jobs = self.jobs.lock().unwrap();
+        let jobs = self.jobs.lock_unpoisoned();
         jobs.get(id).map(|job| Self::snapshot_of(id, job))
     }
 
     /// Remove an already-ended job from the panel; refuses if it is still running.
     pub fn remove_ended(&self, id: &str) -> bool {
-        let mut jobs = self.jobs.lock().unwrap();
+        let mut jobs = self.jobs.lock_unpoisoned();
         let ended = jobs
             .get(id)
-            .is_some_and(|job| job.output.lock().unwrap().ended.is_some());
+            .is_some_and(|job| job.output.lock_unpoisoned().ended.is_some());
         if ended {
             jobs.remove(id);
             true
@@ -260,7 +262,7 @@ impl Jobs {
     }
 
     fn report(job: &Job) -> Report {
-        let mut output = job.output.lock().unwrap();
+        let mut output = job.output.lock_unpoisoned();
         let fresh = output.text[output.read..].to_string();
         output.read = output.text.len();
         Report {
@@ -277,10 +279,10 @@ impl Jobs {
         let deadline = tokio::time::Instant::now() + wait;
         loop {
             {
-                let jobs = self.jobs.lock().unwrap();
+                let jobs = self.jobs.lock_unpoisoned();
                 let job = jobs.get(id)?;
                 let quiet = {
-                    let output = job.output.lock().unwrap();
+                    let output = job.output.lock_unpoisoned();
                     output.read == output.text.len() && output.ended.is_none()
                 };
                 if !quiet || tokio::time::Instant::now() >= deadline || cancel.is_cancelled() {
@@ -293,18 +295,18 @@ impl Jobs {
 
     /// The command line of a job, as the model wrote it; `None` when there is no such job.
     pub fn command(&self, id: &str) -> Option<String> {
-        self.jobs.lock().unwrap().get(id).map(|job| job.command.clone())
+        self.jobs.lock_unpoisoned().get(id).map(|job| job.command.clone())
     }
 
     /// Write `text` to the job's standard input, then with `close` close it, which a program reading to the end of
     /// its input takes as the end. What went wrong is said: no such job, it has ended, or its input is closed.
     pub async fn write(&self, id: &str, text: &str, close: bool) -> Result<(), String> {
         let (input, ended) = {
-            let jobs = self.jobs.lock().unwrap();
+            let jobs = self.jobs.lock_unpoisoned();
             let job = jobs
                 .get(id)
                 .ok_or_else(|| format!("There is no background command `{id}`."))?;
-            let ended = job.output.lock().unwrap().ended.is_some();
+            let ended = job.output.lock_unpoisoned().ended.is_some();
             (job.input.clone(), ended)
         };
         if ended {
@@ -329,7 +331,7 @@ impl Jobs {
 
     /// Stop the job and report what it printed last. `None` when there is no such job.
     pub async fn stop(&self, id: &str) -> Option<Report> {
-        self.jobs.lock().unwrap().get(id)?.stop.cancel();
+        self.jobs.lock_unpoisoned().get(id)?.stop.cancel();
         // Killing a process tree takes a moment; the report waits for it, within reason.
         for _ in 0..50 {
             if self
@@ -347,15 +349,15 @@ impl Jobs {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        self.jobs.lock().unwrap().get(id).map(Self::report)
+        self.jobs.lock_unpoisoned().get(id).map(Self::report)
     }
 
     /// The ids and command lines of the jobs still running.
     pub fn running(&self) -> Vec<(String, String)> {
-        let jobs = self.jobs.lock().unwrap();
+        let jobs = self.jobs.lock_unpoisoned();
         let mut running: Vec<(String, String)> = jobs
             .iter()
-            .filter(|(_, job)| job.output.lock().unwrap().ended.is_none())
+            .filter(|(_, job)| job.output.lock_unpoisoned().ended.is_none())
             .map(|(id, job)| (id.clone(), job.command.clone()))
             .collect();
         running.sort();
@@ -365,9 +367,9 @@ impl Jobs {
     /// End every running job now, without waiting on the async runtime: for
     /// when the app exits and nothing will run the tasks that would do it.
     pub fn kill_all(&self) {
-        for job in self.jobs.lock().unwrap().values() {
+        for job in self.jobs.lock_unpoisoned().values() {
             job.stop.cancel();
-            if job.output.lock().unwrap().ended.is_some() {
+            if job.output.lock_unpoisoned().ended.is_some() {
                 continue;
             }
             let Some(pid) = job.pid else { continue };

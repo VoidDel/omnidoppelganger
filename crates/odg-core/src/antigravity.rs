@@ -178,6 +178,7 @@ pub fn parse_models_output(raw: &str) -> (Vec<Listed>, HashMap<String, Vec<Strin
                 id: base_id.to_string(),
                 name: base_name.to_string(),
                 context_window: Some(1_000_000),
+                free: false,
             });
         }
     }
@@ -631,10 +632,11 @@ pub fn parse_usage_json(raw: &str) -> Result<AntigravityQuota, String> {
 /// Query Antigravity subscription quota via `agy -p /usage --output-format json`.
 /// Results are cached for 60 seconds unless `force` is true.
 pub async fn fetch_quota(force: bool) -> Result<AntigravityQuota, String> {
+    use crate::sync_ext::MutexExt;
     static CACHE: OnceLock<Mutex<Option<(Instant, AntigravityQuota)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     if !force
-        && let Some((at, quota)) = cache.lock().unwrap().as_ref()
+        && let Some((at, quota)) = cache.lock_unpoisoned().as_ref()
         && at.elapsed() < QUOTA_CACHE_TTL
     {
         return Ok(quota.clone());
@@ -668,7 +670,7 @@ pub async fn fetch_quota(force: bool) -> Result<AntigravityQuota, String> {
         }
     })?;
 
-    *cache.lock().unwrap() = Some((Instant::now(), quota.clone()));
+    *cache.lock_unpoisoned() = Some((Instant::now(), quota.clone()));
     Ok(quota)
 }
 
@@ -688,17 +690,20 @@ mod tests {
                 Listed {
                     id: "gemini-4-neon".into(),
                     name: "Gemini 4 Neon".into(),
-                    context_window: Some(1_000_000)
+                    context_window: Some(1_000_000),
+                    free: false,
                 },
                 Listed {
                     id: "claude-opus-5-5".into(),
                     name: "Claude Opus 5.5".into(),
-                    context_window: Some(1_000_000)
+                    context_window: Some(1_000_000),
+                    free: false,
                 },
                 Listed {
                     id: "gemini-pro-orchestrator-neon".into(),
                     name: "Orchestrator (Neon)".into(),
-                    context_window: Some(1_000_000)
+                    context_window: Some(1_000_000),
+                    free: false,
                 },
             ]
         );

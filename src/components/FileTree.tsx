@@ -1,6 +1,7 @@
 import "../styles/workbench.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { useMenuFocus } from "../lib/menuFocus";
 import { sameEntries } from "../lib/refresh";
 import type { FoundFile, TreeEntry } from "../lib/types";
 import { Icon } from "./Icon";
@@ -92,6 +93,8 @@ export function FileTree({
   const createInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const treeRef = useRef<HTMLDivElement>(null);
+  useMenuFocus(!!contextMenu, contextMenuRef, () => setContextMenu(null));
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -360,6 +363,80 @@ export function FileTree({
     return out;
   }, [entriesByDir, expanded]);
 
+  const focusTreePath = (targetPath: string, isDir: boolean) => {
+    setSelectedPath(targetPath);
+    setSelectedIsDir(isDir);
+    const applyFocus = () => {
+      const items = treeRef.current?.querySelectorAll<HTMLButtonElement>('button[role="treeitem"]');
+      if (!items) return false;
+      for (const btn of items) {
+        if (btn.dataset.treePath === targetPath) {
+          btn.focus();
+          btn.scrollIntoView({ block: "nearest" });
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!applyFocus()) {
+      requestAnimationFrame(() => {
+        applyFocus();
+      });
+    }
+  };
+
+  const handleTreeKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (found !== null || flatNodes.length === 0) return;
+    const target = event.target as HTMLElement | null;
+    if (!target || target.getAttribute("role") !== "treeitem") return;
+    const focusedPath = target.dataset.treePath ?? selectedPath;
+    const idx = flatNodes.findIndex((n) => n.entry.path === focusedPath);
+    const curIdx = idx >= 0 ? idx : 0;
+    const cur = flatNodes[curIdx];
+    if (!cur) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      const next = flatNodes[Math.min(curIdx + 1, flatNodes.length - 1)];
+      if (next) focusTreePath(next.entry.path, next.entry.expandable);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const prev = flatNodes[Math.max(curIdx - 1, 0)];
+      if (prev) focusTreePath(prev.entry.path, prev.entry.expandable);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      const first = flatNodes[0];
+      if (first) focusTreePath(first.entry.path, first.entry.expandable);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      const last = flatNodes[flatNodes.length - 1];
+      if (last) focusTreePath(last.entry.path, last.entry.expandable);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      if (cur.entry.expandable) {
+        if (!expanded.has(cur.entry.path)) {
+          toggleDir(cur.entry);
+        } else {
+          const child = flatNodes[curIdx + 1];
+          if (child && child.depth === cur.depth + 1) {
+            focusTreePath(child.entry.path, child.entry.expandable);
+          }
+        }
+      }
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (cur.entry.expandable && expanded.has(cur.entry.path)) {
+        toggleDir(cur.entry);
+      } else {
+        const parent = parentOf(cur.entry.path);
+        if (parent) {
+          const parentNode = flatNodes.find((n) => n.entry.path === parent);
+          if (parentNode) focusTreePath(parentNode.entry.path, true);
+        }
+      }
+    }
+  };
+
   // Propagate child git badges onto collapsed folders so modified files inside closed folders remain visible.
   const dirBadges = useMemo(() => {
     if (!gitBadges) return {};
@@ -445,9 +522,11 @@ export function FileTree({
       </div>
 
       <div
+        ref={treeRef}
         className="explorer-scroll"
         role="tree"
         aria-label="洞府文件树"
+        onKeyDown={handleTreeKeyDown}
         onScroll={() => {
           if (contextMenu) setContextMenu(null);
         }}
@@ -541,6 +620,21 @@ export function FileTree({
                       <button
                         type="button"
                         role="treeitem"
+                        data-tree-path={entry.path}
+                        tabIndex={
+                          selectedPath
+                            ? isSelected
+                              ? 0
+                              : -1
+                            : activePath
+                              ? isCurrent
+                                ? 0
+                                : -1
+                              : flatNodes[0]?.entry.path === entry.path
+                                ? 0
+                                : -1
+                        }
+                        aria-level={depth + 1}
                         aria-expanded={entry.expandable ? isOpen : undefined}
                         aria-selected={isCurrent || isSelected}
                         className="tree-main"

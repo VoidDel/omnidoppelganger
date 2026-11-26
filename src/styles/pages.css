@@ -1221,7 +1221,7 @@
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--paper-2, transparent);
+  background: var(--well);
 }
 
 .usage-card-main {
@@ -1264,7 +1264,7 @@
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--paper-2, transparent);
+  background: var(--well);
 }
 
 .quota-panel-head {
@@ -1288,7 +1288,7 @@
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--paper);
+  background: var(--sheet);
 }
 
 .quota-group-title {
@@ -1330,7 +1330,7 @@
 }
 
 .quota-bucket-pct.mid {
-  color: var(--gold-ink, #a67c00);
+  color: var(--gold);
 }
 
 .quota-bucket-pct.low {

@@ -1,4 +1,5 @@
-import { type CSSProperties, createContext, useContext, useEffect, useRef, useState } from "react";
+import { type CSSProperties, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import { type Item, type ToolItem, editsFiles, fileSize, mcpTool, shortCount, todosOf } from "../lib/fold";
 import type { Decision, DiffHunk, Image, Mode, SessionItem } from "../lib/types";
 import { Light } from "./Light";
@@ -513,6 +514,100 @@ export function DelegateCard({ tool, family }: { tool: ToolItem; family: Family 
   );
 }
 
+const TOOL_CHUNK_SIZE = 400;
+const TOOL_INITIAL_LINES = 800;
+const TOOL_LOAD_STEP = 1000;
+
+function ChunkedPre({ text }: { text: string }) {
+  const { t } = useI18n();
+  const lines = useMemo(() => text.split("\n"), [text]);
+  const [limit, setLimit] = useState(TOOL_INITIAL_LINES);
+
+  useEffect(() => {
+    setLimit(TOOL_INITIAL_LINES);
+  }, [text]);
+
+  if (lines.length <= TOOL_CHUNK_SIZE) {
+    return <pre>{text}</pre>;
+  }
+
+  const shownCount = Math.min(limit, lines.length);
+  const chunks: string[] = [];
+  for (let i = 0; i < shownCount; i += TOOL_CHUNK_SIZE) {
+    chunks.push(lines.slice(i, Math.min(shownCount, i + TOOL_CHUNK_SIZE)).join("\n"));
+  }
+
+  return (
+    <>
+      {chunks.map((chunk, idx) => (
+        <pre key={idx} className="tool-output-chunk">
+          {chunk}
+        </pre>
+      ))}
+      {lines.length > limit && (
+        <div className="tool-more-bar">
+          <button
+            type="button"
+            className="button outline small"
+            onClick={() => setLimit((cur) => Math.min(lines.length, cur + TOOL_LOAD_STEP))}
+          >
+            {t("workbench.loadMoreLines", { shown: shownCount, total: lines.length })}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ChunkedToolDiffs({ hunks }: { hunks: DiffHunk[] }) {
+  const { t } = useI18n();
+  const totalLines = useMemo(() => hunks.reduce((sum, h) => sum + h.lines.length, 0), [hunks]);
+  const [limit, setLimit] = useState(TOOL_INITIAL_LINES);
+
+  if (totalLines <= TOOL_INITIAL_LINES) {
+    return (
+      <>
+        {hunks.map((hunk, at) => (
+          <Diff key={at} hunk={hunk} />
+        ))}
+      </>
+    );
+  }
+
+  const slicedHunks: DiffHunk[] = [];
+  let remaining = limit;
+  for (const hunk of hunks) {
+    if (remaining <= 0) break;
+    if (hunk.lines.length <= remaining) {
+      slicedHunks.push(hunk);
+      remaining -= hunk.lines.length;
+    } else {
+      slicedHunks.push({ ...hunk, lines: hunk.lines.slice(0, remaining) });
+      remaining = 0;
+    }
+  }
+
+  const shownCount = Math.min(limit, totalLines);
+  return (
+    <>
+      {slicedHunks.map((hunk, at) => (
+        <Diff key={at} hunk={hunk} />
+      ))}
+      {totalLines > limit && (
+        <div className="tool-more-bar">
+          <button
+            type="button"
+            className="button outline small"
+            onClick={() => setLimit((cur) => Math.min(totalLines, cur + TOOL_LOAD_STEP))}
+          >
+            {t("workbench.loadMoreLines", { shown: shownCount, total: totalLines })}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 /** One act, on one line: its seal, what was done to what, and how it came out. What it printed or changed opens under it. */
 export function ToolCard({ tool }: { tool: ToolItem }) {
   const fresh = useFresh();
@@ -530,17 +625,13 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
   const failure = result?.isError && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
   const body =
     hunks.length > 0 ? (
-      <>
-        {hunks.map((hunk, at) => (
-          <Diff key={at} hunk={hunk} />
-        ))}
-      </>
+      <ChunkedToolDiffs hunks={hunks} />
     ) : output ? (
-      <pre>{output}</pre>
+      <ChunkedPre text={output} />
     ) : returned ? (
-      <pre>{returned}</pre>
+      <ChunkedPre text={returned} />
     ) : failure ? (
-      <pre>{failure}</pre>
+      <ChunkedPre text={failure} />
     ) : null;
   // The file an edit wrote, by where it is: what can be opened from under the act.
   // A picture it looked at is shown the same way, from where it lies.

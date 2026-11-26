@@ -1,6 +1,7 @@
 import "../styles/panel.css";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type ChangedFile, type Product, type ProductVersion, type ToolItem, fileSize } from "../lib/fold";
+import { useMenuFocus } from "../lib/menuFocus";
 import type { RestoredArtifact, Todo } from "../lib/types";
 import { Light } from "./Light";
 import { Icon } from "./Icon";
@@ -412,6 +413,7 @@ export function SidePanel({
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
+  useMenuFocus(addMenuOpen, addMenuRef, () => setAddMenuOpen(false), addBtnRef);
   const prevTodosLen = useRef(todos.length);
 
   // When the model creates a plan (todos transitions from empty to non-empty), auto-add the "plan" tab.

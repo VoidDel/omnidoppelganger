@@ -59,6 +59,8 @@
   --bg-side: #e3eae5;
   --panel: #f7f9f6;
   --sheet: #fbfcfa;
+  --well: #f2f6f3;
+  --wash: rgba(27, 42, 43, 0.05);
   --ink: #1b2a2b;
   --ink-2: #4f6162;
   --line: #cbd6cf;
@@ -104,6 +106,8 @@
   --bg-side: #0b1416;
   --panel: #0b1416;
   --sheet: #1a2a2c;
+  --well: #132123;
+  --wash: rgba(230, 238, 234, 0.06);
   --ink: #e6eeea;
   --ink-2: #9fb3ae;
   --line: #243638;
@@ -278,4 +282,21 @@ pre,
   height: 18px;
   font-size: 13px;
   line-height: 18px;
+}
+
+[lang="en"] .seal {
+  min-width: 18px;
+  width: auto;
+  padding-inline: 4px;
+  font-family: var(--text);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+[lang="en"] .seal.small,
+[lang="en"] .row-seal {
+  min-width: 18px;
+  width: auto;
+  padding-inline: 4px;
+  font-size: 10px;
 }

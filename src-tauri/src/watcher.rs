@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use odg_core::sync_ext::MutexExt;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -257,7 +258,7 @@ impl WorkspaceWatcher {
     where
         F: Fn(WorkspaceChanged) + Send + Sync + 'static,
     {
-        let mut guard = self.active.lock().unwrap();
+        let mut guard = self.active.lock_unpoisoned();
         let Some(target) = workspace.and_then(|p| p.canonicalize().ok()) else {
             *guard = None;
             return Ok(());
@@ -347,7 +348,7 @@ impl WorkspaceWatcher {
     }
 
     pub fn stop(&self) {
-        *self.active.lock().unwrap() = None;
+        *self.active.lock_unpoisoned() = None;
     }
 }
 

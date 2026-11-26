@@ -99,6 +99,8 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
         settings_ext::remove_provider,
         settings_ext::list_models,
         settings_ext::check_app_update,
+        settings_ext::install_app_update,
+        settings_ext::install_cli_link,
         settings_ext::get_model_usage,
         settings_ext::clear_model_cooldown,
         settings_ext::reset_model_usage,

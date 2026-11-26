@@ -202,4 +202,60 @@ describe("GitPanel & DiffViewer multi-repo / merge / UTF-8 guards (P1-15 & P2-3)
     });
     expect(renamed.activeTabId).toBe("diff:subrepo:unstaged::subrepo/src/new.ts");
   });
+
+  it("progressively mounts 4,000-line diffs in 400-line chunks (initial 800 rows) and emits structured diff quotes (P3-5 & P2-13)", async () => {
+    const lines = Array.from({ length: 4_000 }, (_, i) => ({
+      kind: "+" as const,
+      old_line: null,
+      new_line: i + 1,
+      text: `export const line_${i + 1} = ${i + 1};`,
+    }));
+
+    vi.spyOn(api, "gitDiff").mockResolvedValue({
+      path: "src/massive.ts",
+      name: "massive.ts",
+      language: "typescript",
+      stage: "staged",
+      commit: null,
+      binary: false,
+      added: 4_000,
+      removed: 0,
+      hunks: [{ header: "@@ -0,0 +1,4000 @@", old_start: 0, old_lines: 0, new_start: 1, new_lines: 4_000, lines }],
+    });
+
+    const onQuoteToMain = vi.fn();
+    const { container } = render(
+      <DiffViewer
+        sessionId="sess-big-diff"
+        path="src/massive.ts"
+        stage="staged"
+        onOpenSource={vi.fn()}
+        onQuoteToMain={onQuoteToMain}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".rich-diff-row")).toHaveLength(800);
+    });
+    expect(container.querySelectorAll(".rich-hunk-chunk")).toHaveLength(2);
+
+    const loadMoreBtn = screen.getByRole("button", { name: /继续加载下 1,000 行/ });
+    fireEvent.click(loadMoreBtn);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".rich-diff-row")).toHaveLength(1_800);
+    });
+    expect(container.querySelectorAll(".rich-hunk-chunk")).toHaveLength(5);
+
+    fireEvent.click(screen.getByRole("button", { name: "引入到对话" }));
+    expect(onQuoteToMain).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "diff",
+        path: "src/massive.ts",
+        stage: "staged",
+        added: 4_000,
+        removed: 0,
+      }),
+    );
+  });
 });

@@ -16,9 +16,7 @@ interface ComboProps {
 }
 
 /**
- * A field with a list under it, one look for every such choice on the page. The list opens with every choice in it,
- * whatever the field holds: the browser's own suggestions show only those matching what is already there, which
- * hides most of them. In a field that can be typed in, typing narrows the list.
+ * A field with a list under it, one look for every such choice on the page.
  */
 export function Combo({ id, value, options, editable, mono, placeholder, onSave }: ComboProps) {
   const shownFor = (kept: string) => (editable ? kept : (options.find((option) => option.value === kept)?.text ?? kept));
@@ -29,7 +27,11 @@ export function Combo({ id, value, options, editable, mono, placeholder, onSave 
   const [typed, setTyped] = useState(false);
   const [at, setAt] = useState(-1);
   const wanted = draft.trim().toLowerCase();
-  const shown = typed && wanted ? options.filter((option) => option.value.toLowerCase().includes(wanted) || option.text.toLowerCase().includes(wanted)) : options;
+  const shown =
+    typed && wanted
+      ? options.filter((option) => option.value.toLowerCase().includes(wanted) || option.text.toLowerCase().includes(wanted))
+      : options;
+  const activeOptionId = open && at >= 0 && shown[at] ? `${id}-opt-${at}` : undefined;
   const close = () => {
     setOpen(false);
     setTyped(false);
@@ -48,6 +50,7 @@ export function Combo({ id, value, options, editable, mono, placeholder, onSave 
         role="combobox"
         aria-expanded={open}
         aria-controls={`${id}-list`}
+        aria-activedescendant={activeOptionId}
         aria-autocomplete={editable ? "list" : "none"}
         autoComplete="off"
         readOnly={!editable}
@@ -61,7 +64,6 @@ export function Combo({ id, value, options, editable, mono, placeholder, onSave 
           setOpen(true);
           setAt(-1);
         }}
-        // Leaving the field keeps what was typed; picking from the list does not leave it (see the options).
         onBlur={() => (editable ? commit(draft) : close())}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -74,7 +76,6 @@ export function Combo({ id, value, options, editable, mono, placeholder, onSave 
             else if (editable) commit(draft);
           }
           if (event.key === "Escape" && open) {
-            // The list is what Escape puts away: not the window the field may be in.
             event.preventDefault();
             event.stopPropagation();
             close();
@@ -88,10 +89,10 @@ export function Combo({ id, value, options, editable, mono, placeholder, onSave 
           {shown.map((option, index) => (
             <li
               key={option.value}
+              id={`${id}-opt-${index}`}
               role="option"
               aria-selected={option.value === value}
               className={index === at ? "at" : ""}
-              // Before the field would lose focus, so the pick is not overtaken by what the field holds.
               onMouseDown={(event) => {
                 event.preventDefault();
                 commit(option.value);

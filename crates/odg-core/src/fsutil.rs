@@ -140,27 +140,65 @@ fn validate_single_subdir(subdir: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn ensure_base_home_dir(base_home: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(base_home).is_err() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            fs::DirBuilder::new().recursive(true).mode(0o700).create(base_home)?;
+/// Create `path` (and any missing parents) with `0o700` permissions on Unix, or if `path`
+/// already exists, verify that it is a real directory (not a symlink) and tighten its
+/// permissions to `0o700`.
+pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("refusing to use symlink as private directory: {}", path.display()),
+                ));
+            }
+            if !meta.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("private directory path is not a directory: {}", path.display()),
+                ));
+            }
         }
-        #[cfg(not(unix))]
-        {
-            fs::create_dir_all(base_home)?;
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            let created = {
+                use std::os::unix::fs::DirBuilderExt;
+                fs::DirBuilder::new().recursive(true).mode(0o700).create(path)
+            };
+            #[cfg(not(unix))]
+            let created = fs::create_dir_all(path);
+            match created {
+                Ok(()) => {}
+                Err(race) if race.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(race) => return Err(race),
+            }
         }
+        Err(error) => return Err(error),
+    }
+
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to use symlink as private directory: {}", path.display()),
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("private directory path is not a directory: {}", path.display()),
+        ));
     }
     #[cfg(unix)]
-    if let Ok(meta) = fs::symlink_metadata(base_home)
-        && !meta.file_type().is_symlink()
-        && meta.is_dir()
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(base_home, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
+}
+
+fn ensure_base_home_dir(base_home: &Path) -> io::Result<()> {
+    ensure_private_dir(base_home)
 }
 
 fn ensure_strict_private_dir(dir: &Path) -> io::Result<()> {
@@ -626,6 +664,51 @@ mod tests {
         {
             assert!(outside.path().join("keep.txt").exists());
             assert!(fs::symlink_metadata(&symlink_file).is_ok());
+        }
+    }
+
+    #[test]
+    fn ensure_private_dir_creates_tightens_and_rejects_non_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("a").join("b");
+        ensure_private_dir(&nested).unwrap();
+        assert!(nested.is_dir());
+
+        let file_path = root.path().join("plain.txt");
+        fs::write(&file_path, b"x").unwrap();
+        assert_eq!(
+            ensure_private_dir(&file_path).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::symlink_metadata(&nested).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+
+            // Tighten an existing 0o755 directory to 0o700.
+            let loose = root.path().join("loose");
+            fs::create_dir(&loose).unwrap();
+            fs::set_permissions(&loose, fs::Permissions::from_mode(0o755)).unwrap();
+            ensure_private_dir(&loose).unwrap();
+            assert_eq!(
+                fs::symlink_metadata(&loose).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+
+            // Reject a symlink pointing to a directory without altering target permissions.
+            let target = tempfile::tempdir().unwrap();
+            fs::set_permissions(target.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            let sym = root.path().join("sym-dir");
+            std::os::unix::fs::symlink(target.path(), &sym).unwrap();
+            assert_eq!(
+                ensure_private_dir(&sym).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert_eq!(fs::metadata(target.path()).unwrap().permissions().mode() & 0o777, 0o755);
         }
     }
 }

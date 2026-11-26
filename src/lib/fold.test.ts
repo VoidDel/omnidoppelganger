@@ -610,4 +610,75 @@ describe("foldIncremental & pre-compaction usage fast-path (P2-5)", () => {
     expect(first.spent).toEqual({ input: 44_500, cached: 25_200, output: 4_300 });
     expect(first.breakdown.input + first.breakdown.output + first.breakdown.prompt + first.breakdown.skill + first.breakdown.mcp + first.breakdown.tools).toBe(550);
   });
+
+  it("retains turn >= kept_from_turn category estimates plus summary tokens on tail-preserving compaction (P3-6)", () => {
+    const turn1DroppedText = "old ".repeat(2_000);
+    const turn2KeptPrompt = "Keep this recent user request in context ".repeat(30);
+    const turn2KeptTool = "Recent file contents ".repeat(40);
+    const turn2KeptReply = "Recent assistant explanation ".repeat(25);
+
+    const events = log(
+      {
+        type: "session/created",
+        data: {
+          id: "s-kept",
+          workspace: "/ws",
+          model: "claude-sonnet-4-6",
+          format: 1,
+          worktree: { origin: "/origin", checkout: "/wt", branch: "feat/kept" },
+          aside: "main-1",
+        },
+      },
+      { type: "turn/start", data: { turn: 1 } },
+      user(turn1DroppedText),
+      {
+        type: "assistant/message",
+        data: {
+          content: [{ type: "text", text: turn1DroppedText }],
+          stop_reason: "end_turn",
+          model: "claude-sonnet-4-6",
+          tokens: { input: 6_000, cached: 0, output: 2_000 },
+        },
+      },
+      { type: "turn/end", data: { turn: 1, reason: "completed", error: null } },
+      { type: "turn/start", data: { turn: 2 } },
+      user(turn2KeptPrompt),
+      {
+        type: "assistant/message",
+        data: {
+          content: [call("r2", "read_file", { path: "src/kept.ts" }), { type: "text", text: turn2KeptReply }],
+          stop_reason: "end_turn",
+          model: "claude-sonnet-4-6",
+          tokens: { input: 9_000, cached: 6_000, output: 600 },
+        },
+      },
+      { type: "tool/result", data: { tool_use_id: "r2", tool: "read_file", content: turn2KeptTool, is_error: false, meta: null } },
+      { type: "turn/end", data: { turn: 2, reason: "completed", error: null } },
+      {
+        type: "context/compacted",
+        data: {
+          summary: "Turn 1 summary",
+          tokens_before: 9_600,
+          kept_from_turn: 2,
+          tokens: { input: 6_200, cached: 5_000, output: 180 },
+        },
+      },
+    );
+
+    const calibrated = usage(events);
+    // Must retain summary (180) + Turn 2's kept user/assistant/tool tokens (far above 180, while dropping Turn 1's 8,000 tokens!)
+    expect(calibrated.context).toBeGreaterThan(600);
+    expect(calibrated.context).toBeLessThan(3_000);
+    expect(calibrated.breakdown.input).toBeGreaterThan(180);
+    expect(calibrated.breakdown.output).toBeGreaterThan(0);
+    expect(calibrated.breakdown.tools).toBeGreaterThan(0);
+    const totalBreakdown =
+      calibrated.breakdown.prompt +
+      calibrated.breakdown.input +
+      calibrated.breakdown.output +
+      calibrated.breakdown.skill +
+      calibrated.breakdown.mcp +
+      calibrated.breakdown.tools;
+    expect(totalBreakdown).toBe(calibrated.context);
+  });
 });

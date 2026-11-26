@@ -31,6 +31,8 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
+use crate::sync_ext::MutexExt;
+
 use client::{CONTENT_MODIFIED, ProcessGroupGuard, SERVER_CANCELLED};
 pub use client::{Client, RpcError};
 #[cfg(test)]
@@ -189,7 +191,7 @@ impl LspHub {
     pub async fn client(&self, root: &Path, language: &'static Language) -> Result<Arc<Client>, String> {
         let key = (root.to_path_buf(), language.key);
         let cell = {
-            let mut clients = self.clients.lock().unwrap();
+            let mut clients = self.clients.lock_unpoisoned();
             if clients
                 .get(&key)
                 .and_then(|existing| existing.get())
@@ -208,7 +210,7 @@ impl LspHub {
                 let startup_cancel = CancellationToken::new();
                 let group_guard = Arc::new(Mutex::new(ProcessGroupGuard(None)));
                 let done = Arc::new(tokio::sync::Notify::new());
-                self.inflight.lock().unwrap().insert(
+                self.inflight.lock_unpoisoned().insert(
                     key.clone(),
                     InflightStartup {
                         cancel: startup_cancel.clone(),
@@ -248,15 +250,15 @@ impl LspHub {
                     let mut child = command
                         .spawn()
                         .map_err(|error| format!("Cannot start {name}: {error}"))?;
-                    group_guard.lock().unwrap().0 = child.id();
+                    group_guard.lock_unpoisoned().0 = child.id();
                     if startup_cancel.is_cancelled() {
-                        group_guard.lock().unwrap().kill_now();
+                        group_guard.lock_unpoisoned().kill_now();
                         let _ = child.kill().await;
                         let _ = child.wait().await;
                         return Err("Language server startup cancelled.".to_string());
                     }
                     let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
-                        group_guard.lock().unwrap().kill_now();
+                        group_guard.lock_unpoisoned().kill_now();
                         return Err(format!("Cannot talk to {name}."));
                     };
                     // What it says on its error stream, the last of it kept: why it would not start, if it would not.
@@ -266,7 +268,7 @@ impl LspHub {
                         tokio::spawn(async move {
                             let mut lines = BufReader::new(stderr).lines();
                             while let Ok(Some(line)) = lines.next_line().await {
-                                let mut said = said.lock().unwrap();
+                                let mut said = said.lock_unpoisoned();
                                 said.push_str(&line);
                                 said.push('\n');
                                 let excess = said.len().saturating_sub(2000);
@@ -292,12 +294,12 @@ impl LspHub {
                     {
                         Ok(client) => Ok(client),
                         Err(error) => {
-                            group_guard.lock().unwrap().kill_now();
+                            group_guard.lock_unpoisoned().kill_now();
                             if !startup_cancel.is_cancelled() {
                                 // A moment for the last of what it said to be read.
                                 tokio::time::sleep(Duration::from_millis(200)).await;
                             }
-                            let said = said.lock().unwrap().trim().to_string();
+                            let said = said.lock_unpoisoned().trim().to_string();
                             let said = if said.is_empty() {
                                 String::new()
                             } else {
@@ -309,7 +311,7 @@ impl LspHub {
                 }
                 .await;
 
-                self.inflight.lock().unwrap().remove(&key);
+                self.inflight.lock_unpoisoned().remove(&key);
                 done.notify_waiters();
                 init_outcome
             })
@@ -318,7 +320,7 @@ impl LspHub {
         match result {
             Ok(client) => Ok(client.clone()),
             Err(error) => {
-                let mut clients = self.clients.lock().unwrap();
+                let mut clients = self.clients.lock_unpoisoned();
                 if clients.get(&key).is_some_and(|current| Arc::ptr_eq(current, &cell)) {
                     clients.remove(&key);
                 }
@@ -330,16 +332,16 @@ impl LspHub {
     /// Deterministically terminate every active and starting language server (including process groups).
     pub fn shutdown(&self) {
         let drained_clients: Vec<Arc<tokio::sync::OnceCell<Arc<Client>>>> = {
-            let mut clients = self.clients.lock().unwrap();
+            let mut clients = self.clients.lock_unpoisoned();
             clients.drain().map(|(_, cell)| cell).collect()
         };
         let drained_inflight: Vec<InflightStartup> = {
-            let mut inflight = self.inflight.lock().unwrap();
+            let mut inflight = self.inflight.lock_unpoisoned();
             inflight.drain().map(|(_, entry)| entry).collect()
         };
         for startup in drained_inflight {
             startup.cancel.cancel();
-            startup.guard.lock().unwrap().kill_now();
+            startup.guard.lock_unpoisoned().kill_now();
         }
         for cell in drained_clients {
             if let Some(client) = cell.get() {
@@ -352,7 +354,7 @@ impl LspHub {
     /// (e.g. `"rust"`, `"typescript"`, `"python"`), awaiting child exit so binary files can be removed cleanly.
     pub async fn shutdown_language(&self, key: &str) {
         let matching_cells: Vec<Arc<tokio::sync::OnceCell<Arc<Client>>>> = {
-            let mut clients = self.clients.lock().unwrap();
+            let mut clients = self.clients.lock_unpoisoned();
             let keys: Vec<(PathBuf, &'static str)> = clients
                 .keys()
                 .filter(|(_, lang_key)| *lang_key == key)
@@ -361,7 +363,7 @@ impl LspHub {
             keys.into_iter().filter_map(|k| clients.remove(&k)).collect()
         };
         let matching_inflight: Vec<InflightStartup> = {
-            let mut inflight = self.inflight.lock().unwrap();
+            let mut inflight = self.inflight.lock_unpoisoned();
             let keys: Vec<(PathBuf, &'static str)> = inflight
                 .keys()
                 .filter(|(_, lang_key)| *lang_key == key)
@@ -372,7 +374,7 @@ impl LspHub {
         for startup in &matching_inflight {
             let notified = startup.done.notified();
             startup.cancel.cancel();
-            startup.guard.lock().unwrap().kill_now();
+            startup.guard.lock_unpoisoned().kill_now();
             let _ = tokio::time::timeout(Duration::from_secs(2), notified).await;
         }
         for cell in matching_cells {
@@ -398,22 +400,78 @@ const LATER_SETTLE: Duration = Duration::from_secs(20);
 /// The most places listed in one answer.
 const LISTED: usize = 100;
 
+/// Strongly typed `code_nav` operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavOp {
+    Definition,
+    References,
+    Implementations,
+    Hover,
+    Symbols,
+    FindSymbol,
+    Diagnostics,
+}
+
+impl NavOp {
+    pub const ALL: &'static [Self] = &[
+        Self::Definition,
+        Self::References,
+        Self::Implementations,
+        Self::Hover,
+        Self::Symbols,
+        Self::FindSymbol,
+        Self::Diagnostics,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Definition => "definition",
+            Self::References => "references",
+            Self::Implementations => "implementations",
+            Self::Hover => "hover",
+            Self::Symbols => "symbols",
+            Self::FindSymbol => "find_symbol",
+            Self::Diagnostics => "diagnostics",
+        }
+    }
+
+    pub const fn needs_place(self) -> bool {
+        matches!(
+            self,
+            Self::Definition | Self::References | Self::Implementations | Self::Hover
+        )
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "definition" => Some(Self::Definition),
+            "references" => Some(Self::References),
+            "implementations" => Some(Self::Implementations),
+            "hover" => Some(Self::Hover),
+            "symbols" => Some(Self::Symbols),
+            "find_symbol" => Some(Self::FindSymbol),
+            "diagnostics" => Some(Self::Diagnostics),
+            _ => None,
+        }
+    }
+}
+
 /// What `code_nav` was asked: the operation, the file, and where in it.
-struct Asked<'a> {
-    operation: &'a str,
+struct Asked {
+    operation: NavOp,
     path: PathBuf,
     shown: String,
 }
 
 /// The operations `code_nav` offers, and whether each needs a place in the file.
 pub const OPERATIONS: &[(&str, bool)] = &[
-    ("definition", true),
-    ("references", true),
-    ("implementations", true),
-    ("hover", true),
-    ("symbols", false),
-    ("find_symbol", false),
-    ("diagnostics", false),
+    (NavOp::Definition.as_str(), NavOp::Definition.needs_place()),
+    (NavOp::References.as_str(), NavOp::References.needs_place()),
+    (NavOp::Implementations.as_str(), NavOp::Implementations.needs_place()),
+    (NavOp::Hover.as_str(), NavOp::Hover.needs_place()),
+    (NavOp::Symbols.as_str(), NavOp::Symbols.needs_place()),
+    (NavOp::FindSymbol.as_str(), NavOp::FindSymbol.needs_place()),
+    (NavOp::Diagnostics.as_str(), NavOp::Diagnostics.needs_place()),
 ];
 
 /// The place in a file `code_nav` was pointed at: its line (from 1), and a column found by the symbol named on it,
@@ -604,11 +662,11 @@ pub async fn navigate(
 ) -> Result<crate::tools::ToolOutput, String> {
     // Paths come back from the server as it writes them, which is plainly: the workspace is compared with them so.
     let workspace = &plain(workspace);
-    let operation = input["operation"].as_str().unwrap_or_default();
-    let Some((_, placed)) = OPERATIONS.iter().find(|(name, _)| *name == operation) else {
+    let raw_op = input["operation"].as_str().unwrap_or_default();
+    let Some(operation) = NavOp::parse(raw_op) else {
         return Err(format!(
             "`operation` must be one of {}.",
-            OPERATIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
+            NavOp::ALL.iter().map(|op| op.as_str()).collect::<Vec<_>>().join(", ")
         ));
     };
     let path = crate::tools::resolve(
@@ -650,37 +708,68 @@ pub async fn navigate(
         client.settled.store(true, Ordering::Release);
     }
     let (document, text) = client.sync(&asked.path).await?;
-    let place = if *placed {
-        Some(position(&text, input, &asked.shown)?)
-    } else {
-        None
-    };
     let at = |(line, character): (u64, usize)| json!({ "textDocument": { "uri": document }, "position": { "line": line, "character": character } });
-    let method_params = match asked.operation {
-        "definition" => Some(("textDocument/definition", at(place.unwrap()))),
-        "implementations" => Some(("textDocument/implementation", at(place.unwrap()))),
-        "hover" => Some(("textDocument/hover", at(place.unwrap()))),
-        "references" => {
-            let mut params = at(place.unwrap());
-            params["context"] = json!({ "includeDeclaration": true });
-            Some(("textDocument/references", params))
+    enum RpcShape {
+        Hover,
+        Symbols,
+        FindSymbol,
+        Locations(&'static str),
+    }
+    let (place, rpc_query) = match asked.operation {
+        NavOp::Definition => {
+            let pos = position(&text, input, &asked.shown)?;
+            (
+                Some(pos),
+                Some(("textDocument/definition", at(pos), RpcShape::Locations("Defined at"))),
+            )
         }
-        "symbols" => Some((
-            "textDocument/documentSymbol",
-            json!({ "textDocument": { "uri": document } }),
-        )),
-        "find_symbol" => {
+        NavOp::Implementations => {
+            let pos = position(&text, input, &asked.shown)?;
+            (
+                Some(pos),
+                Some((
+                    "textDocument/implementation",
+                    at(pos),
+                    RpcShape::Locations("Implemented at"),
+                )),
+            )
+        }
+        NavOp::Hover => {
+            let pos = position(&text, input, &asked.shown)?;
+            (Some(pos), Some(("textDocument/hover", at(pos), RpcShape::Hover)))
+        }
+        NavOp::References => {
+            let pos = position(&text, input, &asked.shown)?;
+            let mut params = at(pos);
+            params["context"] = json!({ "includeDeclaration": true });
+            (
+                Some(pos),
+                Some(("textDocument/references", params, RpcShape::Locations("Used at"))),
+            )
+        }
+        NavOp::Symbols => (
+            None,
+            Some((
+                "textDocument/documentSymbol",
+                json!({ "textDocument": { "uri": document } }),
+                RpcShape::Symbols,
+            )),
+        ),
+        NavOp::FindSymbol => {
             let query = input["query"]
                 .as_str()
                 .map(str::trim)
                 .filter(|query| !query.is_empty())
                 .ok_or("`query` is required for `find_symbol`: the name, or part of it, to look for.")?;
-            Some(("workspace/symbol", json!({ "query": query })))
+            (
+                None,
+                Some(("workspace/symbol", json!({ "query": query }), RpcShape::FindSymbol)),
+            )
         }
-        _ => None,
+        NavOp::Diagnostics => (None, None),
     };
     let mut lines = Lines::new(workspace);
-    let mut meta = json!({ "operation": asked.operation, "path": asked.shown, "server": client.program });
+    let mut meta = json!({ "operation": asked.operation.as_str(), "path": asked.shown, "server": client.program });
     if let Some((line, _)) = place {
         meta["line"] = json!(line + 1);
     }
@@ -690,7 +779,7 @@ pub async fn navigate(
         "\n[The language server was still indexing the project: the answer may be incomplete. Asking again in a while may find more.]"
     };
 
-    let Some((method, params)) = method_params else {
+    let Some((method, params, shape)) = rpc_query else {
         // Diagnostics: what the server finds wrong with the file, by its own analysis.
         let found = client.diagnostics(&document, Duration::from_secs(10), cancel).await?;
         let severity = |level: u64| match level {
@@ -772,8 +861,8 @@ pub async fn navigate(
         }
     }
 
-    let content = match asked.operation {
-        "hover" => {
+    let content = match shape {
+        RpcShape::Hover => {
             let text = hover_text(&answer["contents"]);
             meta["results"] = json!(usize::from(!text.trim().is_empty()));
             if text.trim().is_empty() {
@@ -783,7 +872,7 @@ pub async fn navigate(
                 text + still
             }
         }
-        "symbols" => {
+        RpcShape::Symbols => {
             let mut listed = Vec::new();
             outline(answer.as_array().map(Vec::as_slice).unwrap_or_default(), 0, &mut listed);
             meta["results"] = json!(listed.len());
@@ -793,7 +882,7 @@ pub async fn navigate(
                 format!("{}:\n{}{still}", asked.shown, listed.join("\n"))
             }
         }
-        "find_symbol" => {
+        RpcShape::FindSymbol => {
             let mut listed = Vec::new();
             for symbol in answer.as_array().into_iter().flatten() {
                 let document = symbol["location"]["uri"].as_str().unwrap_or_default();
@@ -832,7 +921,7 @@ pub async fn navigate(
                 listed.join("\n") + still
             }
         }
-        _ => {
+        RpcShape::Locations(what) => {
             let found = locations(&answer);
             meta["results"] = json!(found.len());
             let mut listed: Vec<String> = found
@@ -844,11 +933,6 @@ pub async fn navigate(
             if found.len() > LISTED {
                 listed.push(format!("… and {} more", found.len() - LISTED));
             }
-            let what = match asked.operation {
-                "definition" => "Defined at",
-                "implementations" => "Implemented at",
-                _ => "Used at",
-            };
             if listed.is_empty() {
                 format!("{} found none.{still}", client.program)
             } else {

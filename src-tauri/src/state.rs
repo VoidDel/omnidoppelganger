@@ -19,6 +19,7 @@ use odg_core::providers::{Instance, PROVIDERS, Provider, Router, vision};
 use odg_core::schedule::{self, Run, Schedule, ScheduleStore};
 use odg_core::session::{NewSession, SessionLog, SessionStore, SessionSummary};
 use odg_core::settings::{self, EFFORTS, KeyStatus, Settings, SettingsStore};
+use odg_core::sync_ext::MutexExt;
 use odg_core::worktree;
 use serde::Serialize;
 use tokio::sync::OnceCell;
@@ -289,13 +290,13 @@ impl<L: Llm + 'static> AppCore<L> {
     }
 
     pub fn set_active_session(&self, id: Option<&str>) {
-        *self.active_id.lock().unwrap() = id.map(str::to_string);
+        *self.active_id.lock_unpoisoned() = id.map(str::to_string);
     }
 
     fn insert_loaded(&self, session: Session<L>) {
         let id = session.id().to_string();
         let stamp = self.next_access();
-        self.sessions.lock().unwrap().insert(
+        self.sessions.lock_unpoisoned().insert(
             id,
             SessionSlot {
                 cell: Arc::new(OnceCell::new_with(Some(session))),
@@ -308,8 +309,8 @@ impl<L: Llm + 'static> AppCore<L> {
     /// Evict least-recently accessed idle sessions when resident idle sessions exceed [`MAX_IDLE_SESSIONS`].
     /// Never evicts the currently active session, sessions with running turns/subagents, or sessions with running background jobs.
     pub fn evict_idle_lru(&self) {
-        let active = self.active_id.lock().unwrap().clone();
-        let mut sessions = self.sessions.lock().unwrap();
+        let active = self.active_id.lock_unpoisoned().clone();
+        let mut sessions = self.sessions.lock_unpoisoned();
         let mut total_idle = 0usize;
         let mut candidates: Vec<(u64, String)> = Vec::new();
 
@@ -340,15 +341,14 @@ impl<L: Llm + 'static> AppCore<L> {
     #[cfg(test)]
     pub fn loaded_session_ids(&self) -> HashSet<String> {
         self.sessions
-            .lock()
-            .unwrap()
+            .lock_unpoisoned()
             .iter()
             .filter_map(|(id, slot)| slot.cell.get().map(|_| id.clone()))
             .collect()
     }
 
     pub fn get_loaded(&self, id: &str) -> Option<Session<L>> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock_unpoisoned();
         let slot = sessions.get(id)?;
         let session = slot.cell.get()?.clone();
         slot.last_access.store(self.next_access(), Ordering::Relaxed);
@@ -397,8 +397,7 @@ impl<L: Llm + 'static> AppCore<L> {
             let (sessions, store) = (self.sessions.clone(), self.store.clone());
             session.set_brief_source(Arc::new(move || {
                 let live = sessions
-                    .lock()
-                    .unwrap()
+                    .lock_unpoisoned()
                     .get(&main)
                     .and_then(|slot| slot.cell.get().cloned());
                 let (title, status, events) = match live {
@@ -418,7 +417,7 @@ impl<L: Llm + 'static> AppCore<L> {
     /// a multi-megabyte JSONL log never blocks other sessions or Tokio worker threads.
     pub async fn live(self: &Arc<Self>, id: &str) -> Result<Session<L>, String> {
         let cell = {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock_unpoisoned();
             if let Some(slot) = sessions.get(id)
                 && let Some(existing) = slot.cell.get()
             {
@@ -471,7 +470,7 @@ impl<L: Llm + 'static> AppCore<L> {
                 Ok(out)
             }
             Err(error) => {
-                let mut sessions = self.sessions.lock().unwrap();
+                let mut sessions = self.sessions.lock_unpoisoned();
                 if sessions.get(id).is_some_and(|slot| Arc::ptr_eq(&slot.cell, &cell)) {
                     sessions.remove(id);
                 }
@@ -480,12 +479,20 @@ impl<L: Llm + 'static> AppCore<L> {
         }
     }
 
+    /// Clone all currently loaded `Session` handles in a short critical section and immediately release the table lock.
+    pub fn loaded_sessions(&self) -> Vec<Session<L>> {
+        self.sessions
+            .lock_unpoisoned()
+            .values()
+            .filter_map(|slot| slot.cell.get().cloned())
+            .collect()
+    }
+
     /// Every loaded session by id: those opened here, and the subagents their agents have set off.
     pub fn all_live(&self) -> HashMap<String, Session<L>> {
         let mut live: HashMap<String, Session<L>> = self
             .sessions
-            .lock()
-            .unwrap()
+            .lock_unpoisoned()
             .iter()
             .filter_map(|(id, slot)| slot.cell.get().cloned().map(|s| (id.clone(), s)))
             .collect();
@@ -496,14 +503,7 @@ impl<L: Llm + 'static> AppCore<L> {
     }
 
     pub fn kill_all_jobs(&self) {
-        let loaded: Vec<Session<L>> = self
-            .sessions
-            .lock()
-            .unwrap()
-            .values()
-            .filter_map(|slot| slot.cell.get().cloned())
-            .collect();
-        for session in loaded {
+        for session in self.loaded_sessions() {
             session.kill_jobs();
         }
     }
@@ -756,7 +756,7 @@ impl<L: Llm + 'static> AppCore<L> {
         let Some(aside) = self.find_aside(main_id) else {
             return Ok(());
         };
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock_unpoisoned();
         if sessions
             .get(&aside)
             .and_then(|slot| slot.cell.get())
@@ -842,7 +842,7 @@ impl<L: Llm + 'static> AppCore<L> {
         }
         drop(live);
 
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock_unpoisoned();
         let busy = |session: &Session<L>| {
             session.status() != Status::Idle || session.children().iter().any(|child| child.status() != Status::Idle)
         };
@@ -877,7 +877,7 @@ impl<L: Llm + 'static> AppCore<L> {
         drop(sessions);
 
         {
-            let mut active = self.active_id.lock().unwrap();
+            let mut active = self.active_id.lock_unpoisoned();
             if active.as_deref().is_some_and(|cur| removed.contains(cur)) {
                 *active = None;
             }

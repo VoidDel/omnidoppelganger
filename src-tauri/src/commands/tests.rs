@@ -13,16 +13,20 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::git::{git_checkout_core, session_git_workspace};
-use crate::commands::runtime_lsp::{run_inline_shell_with_sandbox, strip_inline_ansi};
+use crate::commands::runtime_lsp::{INLINE_COMMAND_TIMEOUT_SECS, run_inline_shell_with_sandbox, strip_inline_ansi};
 use crate::commands::sessions::{
-    ensure_markdown_extension, export_session_markdown_with_title, sanitize_export_filename, send_message_core,
+    ensure_markdown_extension, export_session_markdown_with_title, land_session_core, sanitize_export_filename,
+    send_message_core,
 };
 use crate::commands::workbench::{
     materialize_snapshot_in, open_attachment_blocking, picture_blocking, prune_stale_pastes_in, remove_pasted_file_in,
     safe_to_open_directly, save_pasted_file_in,
 };
-use crate::forward_session_events;
+use crate::error::{
+    ERR_SKILL_EXISTS, ERR_SKILL_SUBFOLDERS, ERR_WORKTREE_BUSY, IpcError, coded, coded_with_params, parse_coded,
+};
 use crate::state::{AppCore, MAX_IDLE_SESSIONS, safe_session_id};
+use crate::{forward_session_events, should_auto_update_runtime};
 
 enum ScriptedStep {
     Reply(AssistantTurn),
@@ -385,7 +389,7 @@ fn strip_inline_ansi_removes_csi_and_osc_escape_sequences_cleanly() {
 }
 
 #[test]
-fn invoke_handler_registers_all_100_frontend_api_commands() {
+fn invoke_handler_registers_all_102_frontend_api_commands() {
     let api_ts = include_str!("../../../src/lib/api.ts");
     let mod_rs = include_str!("mod.rs");
 
@@ -426,11 +430,13 @@ fn invoke_handler_registers_all_100_frontend_api_commands() {
 
     assert_eq!(
         frontend_cmds.len(),
-        100,
-        "expected 100 invoke commands in api.ts, got: {frontend_cmds:?}"
+        102,
+        "expected 102 invoke commands in api.ts, got: {frontend_cmds:?}"
     );
     assert!(frontend_cmds.contains("get_session_item"));
     assert!(frontend_cmds.contains("remove_pasted_file"));
+    assert!(frontend_cmds.contains("install_app_update"));
+    assert!(frontend_cmds.contains("install_cli_link"));
 
     let mut backend_cmds = HashSet::new();
     for line in mod_rs.lines() {
@@ -1377,4 +1383,152 @@ async fn stream_event_forwarder_preserves_strict_order_across_reset_tool_start_l
             "status:Idle",
         ]
     );
+}
+
+#[test]
+fn structured_ipc_error_codes_align_with_frontend_parser_and_skill_codes() {
+    let plain = coded(ERR_SKILL_EXISTS, "skill already installed");
+    assert_eq!(plain, "[ERR_SKILL_EXISTS] skill already installed");
+    // Must not double-wrap already-prefixed `odg_core::skills` errors.
+    assert_eq!(coded(ERR_SKILL_EXISTS, &plain), plain);
+
+    let parsed_plain = parse_coded(&plain).expect("parse plain coded error");
+    assert_eq!(parsed_plain, IpcError::new(ERR_SKILL_EXISTS, "skill already installed"));
+
+    let parameterized = coded_with_params(
+        ERR_SKILL_SUBFOLDERS,
+        [("choices", "alpha, beta")],
+        "choose a skill subfolder",
+    );
+    assert_eq!(
+        parameterized,
+        "[ERR_SKILL_SUBFOLDERS] choices=alpha, beta | choose a skill subfolder"
+    );
+    let parsed_params = parse_coded(&parameterized).expect("parse parameterized error");
+    assert_eq!(parsed_params.code, ERR_SKILL_SUBFOLDERS);
+    assert_eq!(
+        parsed_params.params.get("choices").map(String::as_str),
+        Some("alpha, beta")
+    );
+    assert_eq!(parsed_params.message, "choose a skill subfolder");
+}
+
+#[tokio::test]
+async fn settings_persist_locale_and_auto_update_runtime_and_listed_models_expose_free_flag() {
+    let (_tmp, _ws, _llm, core, _rx) = setup_core();
+
+    // Default `auto_update_runtime` MUST be false so startup never silently downloads runtime updates.
+    let initial = core.settings_view();
+    assert_eq!(initial.settings.locale, "zh-CN");
+    assert!(!initial.settings.auto_update_runtime);
+    assert_eq!(INLINE_COMMAND_TIMEOUT_SECS, 30);
+
+    let stale = odg_core::runtime::Status::Stale {
+        python: PathBuf::from("/tmp/python"),
+        version: "3.12".to_string(),
+    };
+    let ready = odg_core::runtime::Status::Ready {
+        python: PathBuf::from("/tmp/python"),
+        version: "3.12".to_string(),
+    };
+    assert!(!should_auto_update_runtime(&initial.settings, &stale));
+
+    let mut next = initial.settings.clone();
+    next.locale = "en".to_string();
+    next.auto_update_runtime = true;
+    core.settings.save(next).unwrap();
+
+    let reloaded = core.settings_view();
+    assert_eq!(reloaded.settings.locale, "en");
+    assert!(reloaded.settings.auto_update_runtime);
+    assert!(should_auto_update_runtime(&reloaded.settings, &stale));
+    assert!(!should_auto_update_runtime(&reloaded.settings, &ready));
+
+    // Verify `odg_core::providers::Listed` DTO returned by `list_models` serializes `free: bool` cleanly.
+    let listed = odg_core::providers::Listed {
+        id: "openrouter/free-coder:free".to_string(),
+        name: "Free Coder".to_string(),
+        context_window: Some(128_000),
+        free: true,
+    };
+    let wire = serde_json::to_value(&listed).unwrap();
+    assert_eq!(wire["id"], "openrouter/free-coder:free");
+    assert_eq!(wire["name"], "Free Coder");
+    assert_eq!(wire["context_window"], 128_000);
+    assert_eq!(wire["free"], true);
+}
+
+#[tokio::test]
+async fn land_session_refuses_when_forked_sibling_sharing_worktree_is_busy_and_succeeds_once_idle() {
+    let (_tmp, ws, llm, core, _rx) = setup_core();
+    init_git_repo(&ws);
+
+    let origin = core.start(ws.clone(), true, None).unwrap();
+    let origin_id = origin.id().to_string();
+    origin.rename("feature work").unwrap();
+    let checkout_path = PathBuf::from(&origin.worktree().unwrap().checkout);
+    std::fs::write(checkout_path.join("feature.txt"), "shared worktree edit\n").unwrap();
+
+    // Fork a sibling session that shares the exact same worktree checkout directory.
+    let forked_view = core.fork_from(&origin, None).unwrap();
+    let fork_id = forked_view.item.summary.id;
+    let fork_session = core.live(&fork_id).await.unwrap();
+    assert_eq!(
+        fork_session.worktree().map(|wt| wt.checkout.as_str()),
+        origin.worktree().map(|wt| wt.checkout.as_str())
+    );
+
+    // Hold a running turn on `fork_session` while `origin` itself is completely idle.
+    let gate = CancellationToken::new();
+    llm.push_held_text(gate.clone(), "sibling turn finished");
+    send_message_core(&core, &fork_id, "keep sibling busy".to_string(), Vec::new(), Vec::new())
+        .await
+        .unwrap();
+    assert!(origin.is_idle_tree());
+    assert!(!fork_session.is_idle_tree());
+
+    // Landing `origin` while `fork_session` is running in the shared worktree MUST fail with `[ERR_WORKTREE_BUSY]`!
+    let err = land_session_core(&core, &origin_id)
+        .await
+        .expect_err("must refuse landing while sibling sharing worktree is busy");
+    let parsed = parse_coded(&err).expect("expected structured [ERR_WORKTREE_BUSY] error");
+    assert_eq!(parsed.code, ERR_WORKTREE_BUSY);
+
+    // Once the sibling finishes its turn and returns to Idle, landing `origin` succeeds cleanly.
+    gate.cancel();
+    fork_session.wait_idle().await;
+
+    let landed = land_session_core(&core, &origin_id).await.unwrap();
+    assert_eq!(landed.commits, 1);
+    assert_eq!(landed.into, "main");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("feature.txt")).unwrap(),
+        "shared worktree edit\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn link_cli_binary_into_creates_and_refreshes_symlink_without_clobbering_regular_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app_dir = tmp.path().join("app");
+    let bin_dir = tmp.path().join(".local/bin");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let fake_cli = app_dir.join("odg");
+    std::fs::write(&fake_cli, "#!/bin/sh\necho odg\n").unwrap();
+
+    let linked = crate::commands::settings_ext::link_cli_binary_into(&fake_cli, &bin_dir).unwrap();
+    assert_eq!(linked, bin_dir.join("odg"));
+    assert_eq!(std::fs::read_link(&linked).unwrap(), fake_cli);
+
+    // Refreshing an existing symlink points cleanly to an updated binary location.
+    let updated_cli = app_dir.join("odg-v2");
+    std::fs::write(&updated_cli, "#!/bin/sh\necho odg2\n").unwrap();
+    let relinked = crate::commands::settings_ext::link_cli_binary_into(&updated_cli, &bin_dir).unwrap();
+    assert_eq!(std::fs::read_link(&relinked).unwrap(), updated_cli);
+
+    // Refuses to overwrite a regular standalone file at `~/.local/bin/odg`.
+    std::fs::remove_file(&relinked).unwrap();
+    std::fs::write(&relinked, "standalone binary").unwrap();
+    assert!(crate::commands::settings_ext::link_cli_binary_into(&updated_cli, &bin_dir).is_err());
 }

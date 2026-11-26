@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import type { FoundFile, SessionItem } from "../lib/types";
 import { ago } from "../lib/when";
-import { Light } from "./Light";
 import { Icon } from "./Icon";
+import { Light } from "./Light";
 
 const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 const homeOf = (session: SessionItem) => session.worktree?.origin ?? session.workspace;
-const titleOf = (session: SessionItem) => session.title || (session.parent ? "子分身" : "新分身");
 
-/** Somewhere to go: a 分身, a workspace file, or a page/act of the app's own. */
 type Place =
   | { kind: "session"; session: SessionItem }
   | { kind: "file"; file: FoundFile; line?: number }
@@ -17,30 +16,27 @@ type Place =
 interface JumpProps {
   mode?: "all" | "files";
   sessions: SessionItem[];
-  /** The places that are not 分身: what each is called, and what it does. */
   acts: { id: string; name: string; hint: string; seal: string; run: () => void }[];
   onOpen: (id: string) => void;
-  /** Ids of the sessions that hold the text in what was said in them, as the list's own search finds them. */
   onSearch: (query: string) => Promise<string[]>;
-  /** Optional workspace file search (active when a project 洞府 is open). */
   onSearchFiles?: (query: string) => Promise<FoundFile[]>;
   onOpenFile?: (relPath: string, line?: number) => void;
   onClose: () => void;
 }
 
-/**
- * Ctrl+K (all places) & Ctrl+P (workspace files): a line to type in, and under it every place there is to go,
- * narrowed as one types. Supports `path:line` (e.g. `App.tsx:120`) to jump directly to a line in the code viewer.
- */
 export function Jump({ mode = "all", sessions, acts, onOpen, onSearch, onSearchFiles, onOpenFile, onClose }: JumpProps) {
+  const uid = useId();
+  const listId = `${uid}-list`;
+  const { locale, t } = useI18n();
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [at, setAt] = useState(0);
-  /** The sessions whose conversations hold the words, once the search has answered. */
   const [said, setSaid] = useState<Set<string>>(new Set());
   const [matchedFiles, setMatchedFiles] = useState<FoundFile[]>([]);
   const now = new Date();
+  const titleOf = (session: SessionItem) =>
+    session.title || (session.parent ? t("nav.childDefault") : t("nav.sessionDefault"));
 
   const parsed = /^(.*?)(?::(\d+))?$/.exec(query.trim());
   const fileQuery = (parsed?.[1] ?? query).trim();
@@ -126,7 +122,7 @@ export function Jump({ mode = "all", sessions, acts, onOpen, onSearch, onSearchF
     <dialog
       ref={dialog}
       className="jump"
-      aria-label={filesOnly ? "快速打开文件" : "去往何处"}
+      aria-label={filesOnly ? t("jump.openFileAria") : t("jump.whereAria")}
       onClose={onClose}
       onClick={(event) => {
         if (event.target === dialog.current) dialog.current?.close();
@@ -137,10 +133,10 @@ export function Jump({ mode = "all", sessions, acts, onOpen, onSearch, onSearchF
         <input
           ref={input}
           className="jump-input"
-          placeholder={filesOnly ? "输入文件名快速打开（支持 文件名:行号，如 App.tsx:120）" : "去往哪个分身、搜文件，或做什么"}
+          placeholder={filesOnly ? t("jump.filePlaceholder") : t("jump.allPlaceholder")}
           value={query}
-          aria-controls="jump-list"
-          aria-activedescendant={places.length ? `jump-${at}` : undefined}
+          aria-controls={listId}
+          aria-activedescendant={places.length ? `${uid}-jump-${at}` : undefined}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing) return;
@@ -151,12 +147,12 @@ export function Jump({ mode = "all", sessions, acts, onOpen, onSearch, onSearchF
         />
         <kbd>Esc</kbd>
       </div>
-      <ul id="jump-list" ref={list} className="jump-list" role="listbox">
-        {places.length === 0 && <li className="jump-none">没有找到。换个词试试。</li>}
+      <ul id={listId} ref={list} className="jump-list" role="listbox">
+        {places.length === 0 && <li className="jump-none">{t("jump.empty")}</li>}
         {places.map((place, index) => (
           <li
             key={place.kind === "session" ? place.session.id : place.kind === "file" ? `file:${place.file.path}` : place.id}
-            id={`jump-${index}`}
+            id={`${uid}-jump-${index}`}
             data-at={index}
             role="option"
             aria-selected={index === at}
@@ -168,25 +164,29 @@ export function Jump({ mode = "all", sessions, acts, onOpen, onSearch, onSearchF
               <>
                 <span className={`row-seal ${place.session.status === "waiting_approval" ? "await" : place.session.status === "running" ? "busy" : ""}`} aria-hidden="true">
                   {place.session.status === "running" && <Light />}
-                  {place.session.status === "waiting_approval" ? "候" : place.session.status === "running" ? "运" : ""}
+                  {place.session.status === "waiting_approval"
+                    ? t("nav.sealAwait")
+                    : place.session.status === "running"
+                      ? t("nav.sealRun")
+                      : ""}
                 </span>
                 <span className="jump-name">{titleOf(place.session)}</span>
                 <span className="jump-note">
                   {baseName(homeOf(place.session))}
-                  {said.has(place.session.id) && !holds(titleOf(place.session)) ? "，说过这话" : ""}
+                  {said.has(place.session.id) && !holds(titleOf(place.session)) ? t("jump.saidMatch") : ""}
                 </span>
-                <span className="jump-when">{ago(place.session.updated_at, now)}</span>
+                <span className="jump-when">{ago(place.session.updated_at, now, locale)}</span>
               </>
             ) : place.kind === "file" ? (
               <>
                 <span className="seal small" aria-hidden="true">
-                  码
+                  {locale === "en" ? "FL" : "码"}
                 </span>
                 <span className="jump-name">
                   {place.file.name}
                   {place.line ? `:${place.line}` : ""}
                 </span>
-                <span className="jump-note">{place.file.dir || "洞府根目录"}</span>
+                <span className="jump-note">{place.file.dir || t("jump.rootDir")}</span>
               </>
             ) : (
               <>
@@ -203,10 +203,12 @@ export function Jump({ mode = "all", sessions, acts, onOpen, onSearch, onSearchF
       <p className="jump-keys">
         <span>
           <kbd>↑</kbd>
-          <kbd>↓</kbd> 选，<kbd>Enter</kbd> 打开，<kbd>Esc</kbd> 回
+          <kbd>↓</kbd> {t("jump.keysSelect")}
+          <kbd>Enter</kbd> {t("jump.keysOpen")}
+          <kbd>Esc</kbd> {t("jump.keysClose")}
         </span>
         <span className="jump-keys-more">
-          <kbd>Ctrl/⌘+P</kbd> 搜文件 · <kbd>Ctrl/⌘+B</kbd> 左栏 · <kbd>Ctrl/⌘+J</kbd> 终端 · <kbd>Shift+Tab</kbd> 禁制
+          <kbd>Ctrl/⌘+P</kbd> · <kbd>Ctrl/⌘+B</kbd> · <kbd>Ctrl/⌘+J</kbd> · <kbd>Shift+Tab</kbd>
         </span>
       </p>
     </dialog>

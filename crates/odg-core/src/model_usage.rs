@@ -14,6 +14,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::Tokens;
+use crate::sync_ext::MutexExt;
 
 /// Persisted usage and cooldown snapshot for one `(provider, model)` pair.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +194,7 @@ impl ModelUsageStore {
         let today = today_string();
         let now = Utc::now().to_rfc3339();
         {
-            let mut guard = self.inner.data.lock().unwrap();
+            let mut guard = self.inner.data.lock_unpoisoned();
             let key = entry_key(provider, model);
             let entry = guard.entries.entry(key).or_insert_with(|| ModelUsageEntry {
                 provider: provider.to_string(),
@@ -237,7 +238,7 @@ impl ModelUsageStore {
             return;
         }
         let today = today_string();
-        let mut guard = self.inner.data.lock().unwrap();
+        let mut guard = self.inner.data.lock_unpoisoned();
         let key = entry_key(provider, model);
         let entry = guard.entries.entry(key).or_insert_with(|| ModelUsageEntry {
             provider: provider.to_string(),
@@ -275,7 +276,7 @@ impl ModelUsageStore {
 
     /// Manually clear cooldown for one `(provider, model)`.
     pub fn clear_cooldown(&self, provider: &str, model: &str) {
-        let mut guard = self.inner.data.lock().unwrap();
+        let mut guard = self.inner.data.lock_unpoisoned();
         if let Some(entry) = guard.entries.get_mut(&entry_key(provider.trim(), model.trim())) {
             entry.cooldown_until = None;
             entry.cooldown_reason = None;
@@ -286,7 +287,7 @@ impl ModelUsageStore {
 
     /// Clear all usage statistics and cooldowns.
     pub fn reset_all(&self) {
-        let mut guard = self.inner.data.lock().unwrap();
+        let mut guard = self.inner.data.lock_unpoisoned();
         guard.entries.clear();
         self.inner.dirty.store(false, Ordering::Release);
         save_file(&self.inner.path, &guard);
@@ -297,7 +298,7 @@ impl ModelUsageStore {
     pub fn list(&self) -> Vec<ModelUsageEntry> {
         let today = today_string();
         let now = Utc::now();
-        let mut guard = self.inner.data.lock().unwrap();
+        let mut guard = self.inner.data.lock_unpoisoned();
         let mut changed = false;
         for entry in guard.entries.values_mut() {
             if entry.today_key != today {
@@ -457,11 +458,11 @@ fn load_file(path: &Path) -> UsageFile {
 }
 
 fn save_file(path: &Path, file: &UsageFile) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = crate::fsutil::ensure_private_dir(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(file) {
-        let _ = crate::fsutil::write_atomically(path, json.as_bytes());
+        let _ = crate::fsutil::write_private_atomically(path, json.as_bytes());
     }
 }
 

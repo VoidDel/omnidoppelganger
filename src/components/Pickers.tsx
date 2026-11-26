@@ -1,9 +1,11 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import { shortCount } from "../lib/fold";
+import { useMenuFocus } from "../lib/menuFocus";
 import { cooldownRemainingMs, findModelUsage, formatCooldown, todayTokens } from "../lib/modelUsage";
-import { BYPASS, MODES, modeHintFor, modeOf } from "../lib/modes";
+import { bypassFor, modeHintFor, modeOf, modesFor } from "../lib/modes";
 import { CLI_INFO } from "../lib/providers";
-import type { CliBackend, Mode, ModelUsageEntry, Provider } from "../lib/types";
+import type { CliBackend, ListedModel, Mode, ModelUsageEntry, Provider, RawListedModel } from "../lib/types";
 import { Info } from "./Hint";
 import { Icon } from "./Icon";
 
@@ -15,17 +17,35 @@ const MODE_BI: Record<Mode, string> = {
   bypass: "fire",
 };
 
+export function normalizeListedModel(entry: RawListedModel): ListedModel {
+  if (Array.isArray(entry)) {
+    return { id: entry[0], name: entry[1], ...(entry[2] !== undefined ? { free: entry[2] } : {}) };
+  }
+  return entry;
+}
+
+/**
+ * Determine whether a listed model is free-tier, prioritizing the structured `model.free` boolean
+ * and falling back to safe ID / keyword heuristics only when `model.free === undefined`.
+ */
+export function isModelFree(model: ListedModel): boolean {
+  if (typeof model.free === "boolean") return model.free;
+  const lowerId = model.id.toLowerCase();
+  return lowerId.endsWith("-free") || lowerId.endsWith("/big-pickle") || /(?:\bfree\b|免费)/i.test(model.name);
+}
+
 /** Said before 全权托付 is switched on, and only switched on when 本尊 stamps it. */
 function BypassDialog({ onConfirm, onClose }: { onConfirm: () => void; onClose: () => void }) {
+  const uid = useId();
+  const titleId = `${uid}-bypass-title`;
   const dialog = useRef<HTMLDialogElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
-  // The keyboard starts on 算了: Enter alone must not hand everything over.
   useEffect(() => {
     dialog.current?.showModal();
     cancel.current?.focus();
   }, []);
   return (
-    <dialog ref={dialog} className="dialog danger" aria-labelledby="bypass-title" onClose={onClose}>
+    <dialog ref={dialog} className="dialog danger" aria-labelledby={titleId} onClose={onClose}>
       <form
         method="dialog"
         onSubmit={(event) => {
@@ -33,7 +53,7 @@ function BypassDialog({ onConfirm, onClose }: { onConfirm: () => void; onClose: 
           onConfirm();
         }}
       >
-        <h2 id="bypass-title">全权托付这个分身？</h2>
+        <h2 id={titleId}>全权托付这个分身？</h2>
         <p>托付之后，分身做什么都不再请示：跑任何命令、改洞府之外的文件、改 .git、上网、动用身外法器，一概自行放行。</p>
         <p>
           <strong>Windows 上没有结界保护。</strong>它能删除、改写这台电脑上本尊能动的任何文件，也能把文件内容发到网上。它在独立工作树里改的东西，并回前不会进洞府；但洞府之外的一切不受保护。
@@ -96,11 +116,14 @@ function useKeepInView(open: boolean) {
   return menu;
 }
 
-/** A button in the composer row whose menu opens above it, and closes on Escape or a click elsewhere. */
+/** A button in the composer row whose menu opens above it, supports arrow navigation, and returns focus on close. */
 export function Popup({ label, title, disabled, name, children, summon = 0 }: PopupProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const menu = useKeepInView(open);
+  useMenuFocus(open, menu, () => setOpen(false), triggerRef);
+
   useEffect(() => {
     if (summon > 0 && !disabled) setOpen(true);
   }, [summon, disabled]);
@@ -111,8 +134,27 @@ export function Popup({ label, title, disabled, name, children, summon = 0 }: Po
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
   return (
-    <div className="mode-picker" ref={root} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
-      <button type="button" className="select-button" aria-haspopup="menu" aria-expanded={open} title={title} disabled={disabled} onClick={() => setOpen(!open)}>
+    <div
+      className="mode-picker"
+      ref={root}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+        }
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        className="select-button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={title}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+      >
         {label}
       </button>
       {open && (
@@ -127,32 +169,27 @@ export function Popup({ label, title, disabled, name, children, summon = 0 }: Po
 export const CHECK = <Icon name="check-lg" size={14} className="check" />;
 
 export interface ModelListProps {
-  /** Every provider this build knows. */
   providers: Provider[];
-  /** Whether a provider is in the list the user keeps: only those are offered. */
   listed: (provider: string) => boolean;
-  /** Whether a provider has a key to be asked with: one without cannot be moved to. */
   keyed: (provider: string) => boolean;
-  /** The provider and model the session is on. */
   providerId: string;
   model: string;
   onPick: (provider: string, model: string) => void;
-  /** Called silently when the current model is missing from the provider's live model list. */
   onAutoFallback?: (provider: string, model: string) => void;
-  listModels: (provider: string) => Promise<[string, string][]>;
+  listModels: (provider: string) => Promise<RawListedModel[]>;
   modelUsage?: ModelUsageEntry[];
   nowMs?: number;
 }
 
-const MODEL_CACHE_KEY = "odg.model-list-cache.v3";
+const MODEL_CACHE_KEY = "odg.model-list-cache.v4";
 const OPENCODE_TIER_KEY = "odg.opencode-model-tier.v1";
 
 type OpenCodeTierFilter = "free" | "go" | "all";
 
-function openCodeModelTier(id: string, display: string): "free" | "go" | "paid" {
-  const lowerId = id.toLowerCase();
-  if (display.endsWith("· 免费") || lowerId.endsWith("-free") || lowerId.endsWith("/big-pickle")) return "free";
-  if (display.endsWith("· Go") || lowerId.startsWith("opencode-go/")) return "go";
+function openCodeModelTier(entry: ListedModel): "free" | "go" | "paid" {
+  if (isModelFree(entry)) return "free";
+  const lowerId = entry.id.toLowerCase();
+  if (lowerId.startsWith("opencode-go/") || /\bGo\b/.test(entry.name)) return "go";
   return "paid";
 }
 
@@ -166,16 +203,26 @@ function loadOpenCodeTier(): OpenCodeTierFilter {
   return "free";
 }
 
-/** Persistent cache of live model lists per provider so opening the picker uses cached models until refreshed. */
-const modelListCache: Map<string, [string, string][]> = (() => {
-  const map = new Map<string, [string, string][]>();
+function isValidCachedModel(item: unknown): item is RawListedModel {
+  if (Array.isArray(item)) {
+    return item.length >= 2 && typeof item[0] === "string" && typeof item[1] === "string";
+  }
+  if (typeof item === "object" && item !== null) {
+    const obj = item as Record<string, unknown>;
+    return typeof obj.id === "string" && typeof obj.name === "string";
+  }
+  return false;
+}
+
+const modelListCache: Map<string, ListedModel[]> = (() => {
+  const map = new Map<string, ListedModel[]>();
   try {
     const raw = localStorage.getItem(MODEL_CACHE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       for (const [k, v] of Object.entries(parsed)) {
-        if (Array.isArray(v) && v.every((item) => Array.isArray(item) && item.length >= 2 && typeof item[0] === "string" && typeof item[1] === "string")) {
-          map.set(k, v as [string, string][]);
+        if (Array.isArray(v) && v.every(isValidCachedModel)) {
+          map.set(k, v.map(normalizeListedModel));
         }
       }
     }
@@ -185,10 +232,10 @@ const modelListCache: Map<string, [string, string][]> = (() => {
   return map;
 })();
 
-function saveModelListCache(providerId: string, models: [string, string][]) {
+function saveModelListCache(providerId: string, models: ListedModel[]) {
   modelListCache.set(providerId, models);
   try {
-    const obj: Record<string, [string, string][]> = {};
+    const obj: Record<string, ListedModel[]> = {};
     for (const [k, v] of modelListCache.entries()) obj[k] = v;
     localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(obj));
   } catch {
@@ -196,14 +243,21 @@ function saveModelListCache(providerId: string, models: [string, string][]) {
   }
 }
 
-/**
- * The models to choose from, a provider at a time: the session's own first, then the others the user added, under
- * the names given them. Each lists what it says it serves, or its built-in suggestions while that is unknown.
- */
-export function ModelList({ providers, listed, keyed, providerId, model, onPick, onAutoFallback, listModels, modelUsage = [], nowMs = Date.now() }: ModelListProps) {
-  /** The provider whose models are listed. */
+export function ModelList({
+  providers,
+  listed,
+  keyed,
+  providerId,
+  model,
+  onPick,
+  onAutoFallback,
+  listModels,
+  modelUsage = [],
+  nowMs = Date.now(),
+}: ModelListProps) {
+  const { t } = useI18n();
   const [showing, setShowing] = useState(providerId);
-  const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: [string, string][]; why?: string }>(() => {
+  const [asked, setAsked] = useState<{ state: "asking" | "told" | "failed"; models: ListedModel[]; why?: string }>(() => {
     const cached = modelListCache.get(providerId);
     return cached ? { state: "told", models: cached } : { state: "asking", models: [] };
   });
@@ -219,7 +273,6 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
     }
   };
   const forceRefresh = useRef(false);
-  // Use cached list when available; fetch on cache miss or explicit refresh.
   useEffect(() => {
     let current = true;
     const force = forceRefresh.current;
@@ -231,9 +284,10 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
     }
     setAsked((prev) => ({ state: "asking", models: cached ?? prev.models }));
     listModels(showing).then(
-      (models) => {
-        saveModelListCache(showing, models);
-        if (current) setAsked({ state: "told", models });
+      (rawModels) => {
+        const normalized = rawModels.map(normalizeListedModel);
+        saveModelListCache(showing, normalized);
+        if (current) setAsked({ state: "told", models: normalized });
       },
       (error) => {
         if (current) setAsked({ state: "failed", models: cached ?? [], why: String(error) });
@@ -249,28 +303,27 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
   };
   const provider = providers.find((known) => known.id === showing);
   const home = showing === providerId;
-  // If the provider returned a live list of models and the session's current model is no longer in it,
-  // automatically fall back to the provider's first available model instead of keeping a dead model selected.
   const fellBack = useRef<string | null>(null);
   useEffect(() => {
     if (!home || !onAutoFallback || asked.state !== "told" || asked.models.length === 0) return;
-    if (model === "auto" || asked.models.some(([id]) => id === model)) return;
+    if (model === "auto" || asked.models.some((item) => item.id === model)) return;
     const key = `${providerId}:${model}`;
     if (fellBack.current === key) return;
     fellBack.current = key;
-    onAutoFallback(providerId, asked.models[0][0]);
+    onAutoFallback(providerId, asked.models[0].id);
   }, [home, onAutoFallback, asked, providerId, model]);
-  const known = asked.models.length > 0 ? asked.models : asked.state === "failed" ? (provider?.models ?? []) : [];
+  const builtinFallback: ListedModel[] = (provider?.models ?? []).map(normalizeListedModel);
+  const known = asked.models.length > 0 ? asked.models : asked.state === "failed" ? builtinFallback : [];
   const supportsAuto = ["anthropic", "gemini", "openai", "deepseek", "moonshot", "zhipu", "openrouter"].includes(provider?.kind ?? showing);
-  const withAuto: [string, string][] =
-    supportsAuto && !known.some(([id]) => id === "auto")
-      ? [["auto", "智能路由 · 按境界自动选快/强心法"], ...known]
+  const withAuto: ListedModel[] =
+    supportsAuto && !known.some((item) => item.id === "auto")
+      ? [{ id: "auto", name: t("picker.autoRoute") }, ...known]
       : known;
-  // The model in use is always there to return to, even when the provider's list leaves it out.
-  const models = !home || withAuto.some(([id]) => id === model) ? withAuto : [[model, model] as [string, string], ...withAuto];
+  const models: ListedModel[] =
+    !home || withAuto.some((item) => item.id === model) ? withAuto : [{ id: model, name: model }, ...withAuto];
   const isOpenCodeShowing = showing === "opencode" || showing.startsWith("opencode-");
-  const freeModels = isOpenCodeShowing ? models.filter(([id, d]) => openCodeModelTier(id, d) === "free") : [];
-  const goModels = isOpenCodeShowing ? models.filter(([id, d]) => openCodeModelTier(id, d) === "go") : [];
+  const freeModels = isOpenCodeShowing ? models.filter((m) => openCodeModelTier(m) === "free") : [];
+  const goModels = isOpenCodeShowing ? models.filter((m) => openCodeModelTier(m) === "go") : [];
   const hasTierChoice = isOpenCodeShowing && freeModels.length > 0 && (freeModels.length < models.length || goModels.length > 0);
   const activeTier: OpenCodeTierFilter = !hasTierChoice
     ? "all"
@@ -278,9 +331,8 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
       ? "free"
       : openCodeTier;
   const tiered = !hasTierChoice || activeTier === "all" ? models : activeTier === "free" ? freeModels : goModels;
-  const shown = tiered.filter(([id, name]) => `${id} ${name}`.toLowerCase().includes(filter.trim().toLowerCase()));
+  const shown = tiered.filter((item) => `${item.id} ${item.name}`.toLowerCase().includes(filter.trim().toLowerCase()));
   const name = (id: string) => providers.find((known) => known.id === id)?.name ?? id;
-  // The session's own provider first, even one no longer in the list; then the others in it. Kinds not added are left out.
   const tabs = [providerId, ...providers.map((known) => known.id).filter((id) => id !== providerId && listed(id))];
   return (
     <>
@@ -310,7 +362,7 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
       )}
       <div className="mode-menu-head">
         <span>
-          {name(showing)} 的心法
+          {name(showing)} · {t("picker.model")}
           <Info>换了之后，这个分身接下来的话由新心法来答，前情照旧带着。列表会缓存，点右侧刷新按钮可重新向宗门拉取。</Info>
         </span>
         <span className="menu-head-right">
@@ -331,7 +383,7 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
       {hasTierChoice && (
         <div className="model-tier-tabs" role="tablist" aria-label="OpenCode 模型分层">
           <button type="button" role="tab" className="model-tier-pill" aria-selected={activeTier === "free"} onClick={() => pickOpenCodeTier("free")}>
-            免费 {freeModels.length}
+            {t("picker.freeCount", { count: freeModels.length })}
           </button>
           {goModels.length > 0 && (
             <button type="button" role="tab" className="model-tier-pill" aria-selected={activeTier === "go"} onClick={() => pickOpenCodeTier("go")}>
@@ -339,7 +391,7 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
             </button>
           )}
           <button type="button" role="tab" className="model-tier-pill" aria-selected={activeTier === "all"} onClick={() => pickOpenCodeTier("all")}>
-            全部 {models.length}
+            {t("picker.allCount", { count: models.length })}
           </button>
         </div>
       )}
@@ -349,7 +401,9 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
         </div>
       )}
       <div className="menu-scroll">
-        {shown.map(([id, display]) => {
+        {shown.map((entry) => {
+          const { id, name: display } = entry;
+          const free = entry.free === true;
           const stat = findModelUsage(modelUsage, showing, id);
           const coolMs = cooldownRemainingMs(stat, nowMs);
           const todayTok = stat ? todayTokens(stat) : 0;
@@ -358,8 +412,9 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
               <span className="mode-text">
                 <span className="name mono">{id}</span>
                 {display !== id && <span className="hint">{display}</span>}
-                {(coolMs > 0 || todayTok > 0) && (
+                {(free || coolMs > 0 || todayTok > 0) && (
                   <span className="model-meta-badges">
+                    {free && <span className="model-usage-badge">{t("picker.free")}</span>}
                     {coolMs > 0 && (
                       <span className="model-cooldown-pill" title={stat?.cooldown_reason ?? "冷却中"}>
                         冷却 {formatCooldown(coolMs)}
@@ -375,7 +430,6 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
         })}
         {shown.length === 0 && <p className="menu-note">{asked.state === "asking" ? "正在问…" : "没有对得上的。"}</p>}
       </div>
-      {/* Moving to another provider leaves something behind: that is said in the open. Within one, nothing is lost. */}
       {!home && <p className="menu-note">换到 {name(showing)} 之后，前情照旧带着；只是前面那家的推演过程不带过去，别家读不了它。</p>}
     </>
   );
@@ -396,49 +450,65 @@ export function ModePicker({
   trustable: boolean;
   cli?: CliBackend | null;
 }) {
+  const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
-  /** 全权托付 was picked: the dialog that says what it means is open. */
   const [confirming, setConfirming] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menu = useKeepInView(open);
+  useMenuFocus(open, menu, () => setOpen(false), triggerRef);
+
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent) => !root.current?.contains(event.target as Node) && setOpen(false);
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
-  const current = modeOf(mode);
-  const currentHint = modeHintFor(mode, cli);
-  const menu = useKeepInView(open);
+
+  const localizedModes = modesFor(locale);
+  const localizedBypass = bypassFor(locale);
+  const current = modeOf(mode, locale);
+  const currentHint = modeHintFor(mode, cli, locale);
   return (
-    <div className="mode-picker" ref={root} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
+    <div
+      className="mode-picker"
+      ref={root}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+        }
+      }}
+    >
       <button
+        ref={triggerRef}
         type="button"
         className={`select-button ${mode === "bypass" ? "danger" : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={`禁制：${currentHint}。Shift+Tab 切换`}
+        title={`${t("picker.mode")}：${currentHint}。Shift+Tab`}
         onClick={() => setOpen(!open)}
       >
         <ModeIcon mode={mode} />
-        <span className="label sr-only">禁制</span>
+        <span className="label sr-only">{t("picker.mode")}</span>
         <span className="value">{current.name}</span>
       </button>
       {open && (
-        <div className="mode-menu" ref={menu} role="menu" aria-label="禁制">
+        <div className="mode-menu" ref={menu} role="menu" aria-label={t("picker.mode")}>
           <div className="mode-menu-head">
-            <span>禁制</span>
+            <span>{t("picker.mode")}</span>
             <span>
-              <kbd>Shift</kbd> + <kbd>Tab</kbd> 切换
+              <kbd>Shift</kbd> + <kbd>Tab</kbd>
             </span>
           </div>
-          {MODES.map((option) => (
+          {localizedModes.map((option) => (
             <button
               type="button"
               role="menuitemradio"
               aria-checked={option.value === mode}
               key={option.value}
               className="mode-option"
-              autoFocus={option.value === mode}
               onClick={() => {
                 onMode(option.value);
                 setOpen(false);
@@ -447,12 +517,11 @@ export function ModePicker({
               <ModeIcon mode={option.value} />
               <span className="mode-text">
                 <span className="name">{option.name}</span>
-                <span className="hint">{modeHintFor(option.value, cli)}</span>
+                <span className="hint">{modeHintFor(option.value, cli, locale)}</span>
               </span>
               {option.value === mode ? CHECK : <span className="check" aria-hidden="true" />}
             </button>
           ))}
-          {/* Apart from the four, in cinnabar, and only where a worktree keeps its work off the folder's own files. */}
           <button
             type="button"
             role="menuitemradio"
@@ -467,8 +536,8 @@ export function ModePicker({
           >
             <ModeIcon mode="bypass" />
             <span className="mode-text">
-              <span className="name">{BYPASS.name}</span>
-              <span className="hint">{trustable ? modeHintFor("bypass", cli) : "只有独立工作树的分身才能托付"}</span>
+              <span className="name">{localizedBypass.name}</span>
+              <span className="hint">{trustable ? modeHintFor("bypass", cli, locale) : "只有独立工作树的分身才能托付"}</span>
             </span>
             {mode === "bypass" ? CHECK : <span className="check" aria-hidden="true" />}
           </button>

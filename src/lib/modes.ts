@@ -1,6 +1,9 @@
+import { formatMessage, getCurrentLocale, type Locale } from "../i18n";
 import type { CliBackend, Mode } from "./types";
 
-/** The four restrictions (禁制) a 分身 works under, in the order Shift+Tab cycles them. */
+const MODE_ORDER: Mode[] = ["manual", "edit", "plan", "auto"];
+
+/** The four restrictions (禁制) a 分身 works under, in the order Shift+Tab cycles them (default zh-CN). */
 export const MODES: { value: Mode; name: string; hint: string }[] = [
   { value: "manual", name: "步步请示", hint: "改文件、跑命令，每一步都先请本尊定夺" },
   { value: "edit", name: "府内自便", hint: "洞府之内的文件读写自便，跑命令和碰洞府之外的仍要请示" },
@@ -14,7 +17,27 @@ export const MODES: { value: Mode; name: string; hint: string }[] = [
  */
 export const BYPASS = { value: "bypass" as Mode, name: "全权托付", hint: "什么都不请示：任何命令、洞府之外、.git、上网、身外法器，一概自行放行" };
 
-export const modeOf = (value: Mode | undefined) => (value === "bypass" ? BYPASS : (MODES.find((mode) => mode.value === value) ?? MODES[1]));
+export function modesFor(locale: Locale = getCurrentLocale()): { value: Mode; name: string; hint: string }[] {
+  return MODE_ORDER.map((value) => ({
+    value,
+    name: formatMessage(locale, `mode.${value}.name` as const),
+    hint: formatMessage(locale, `mode.${value}.hint` as const),
+  }));
+}
+
+export function bypassFor(locale: Locale = getCurrentLocale()): { value: Mode; name: string; hint: string } {
+  return {
+    value: "bypass",
+    name: formatMessage(locale, "mode.bypass.name"),
+    hint: formatMessage(locale, "mode.bypass.hint"),
+  };
+}
+
+export const modeOf = (value: Mode | undefined, locale: Locale = getCurrentLocale()) => {
+  if (value === "bypass") return bypassFor(locale);
+  const list = modesFor(locale);
+  return list.find((mode) => mode.value === value) ?? list[1];
+};
 
 /** The mode after `value`, for Shift+Tab: one of the four, so it never lands on 全权托付; from that, the first. */
 export const nextMode = (value: Mode): Mode => MODES[(MODES.findIndex((mode) => mode.value === value) + 1) % MODES.length].value;
@@ -23,21 +46,21 @@ export const nextMode = (value: Mode): Mode => MODES[(MODES.findIndex((mode) => 
  * Describe what `mode` actually enforces when a session is backed by a headless external CLI (`cli !== null`),
  * where per-step interactive approval cards do not exist.
  */
-export function modeHintFor(mode: Mode | undefined, cli: CliBackend | null = null): string {
-  const resolved = modeOf(mode);
+export function modeHintFor(mode: Mode | undefined, cli: CliBackend | null = null, locale: Locale = getCurrentLocale()): string {
+  const resolved = modeOf(mode, locale);
   if (!cli) return resolved.hint;
   switch (resolved.value) {
     case "manual":
-      return "无头 CLI 不弹逐条审批卡，此档下只读不改、不跑命令";
+      return formatMessage(locale, "mode.cli.manual");
     case "plan":
-      return "只读分析与规划，不改文件、不跑写入命令";
+      return formatMessage(locale, "mode.cli.plan");
     case "edit":
       return cli === "codex"
-        ? "Codex 无头模式下按洞府内可写沙箱（workspace-write）运行"
-        : "允许改洞府内文件，不自动放行命令（需跑命令请切至「放手施为」）";
+        ? formatMessage(locale, "mode.cli.editCodex")
+        : formatMessage(locale, "mode.cli.editOther");
     case "auto":
-      return "交由本机 CLI 的自动/审核模式放行命令与已启用的 MCP 法器";
+      return formatMessage(locale, "mode.cli.auto");
     case "bypass":
-      return "全权放行：跳过本机 CLI 的全部权限询问";
+      return formatMessage(locale, "mode.cli.bypass");
   }
 }

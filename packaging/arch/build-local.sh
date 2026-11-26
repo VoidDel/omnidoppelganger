@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-VERSION="$(node -p "require('${ROOT}/package.json').version")"
+VERSION="$(node --input-type=module -e 'import fs from "node:fs"; process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).version);' "${ROOT}/package.json")"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/odg-arch-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -19,7 +19,7 @@ git -C "$ROOT" archive --format=tar.gz --prefix="omnidoppelganger-${VERSION}/" -
 
 (
   cd "$WORK"
-  makepkg -f --noconfirm
+  makepkg -f --noconfirm --skipinteg
 )
 
 OUT="${ROOT}/target/arch"

@@ -346,21 +346,32 @@ pub async fn rename_session(app: State<'_, App>, id: String, title: String) -> R
     .map_err(|error| error.to_string())?
 }
 
-#[tauri::command]
-pub async fn land_session(app: State<'_, App>, id: String) -> Result<Landed, String> {
-    let session = app.0.live(&id).await?;
-    let summary = session.summary();
-    let made = summary
-        .worktree
+pub async fn land_session_core<L: Llm + 'static>(core: &Arc<AppCore<L>>, id: &str) -> Result<Landed, String> {
+    let session = core.live(id).await?;
+    let made = session
+        .worktree()
+        .cloned()
         .ok_or("this session works in the folder itself, so there is nothing to bring back")?;
-    if session.status() != odg_core::agent::Status::Idle
-        || session
-            .children()
-            .iter()
-            .any(|child| child.status() != odg_core::agent::Status::Idle)
-    {
-        return Err("the agent is working; stop it or wait before bringing its work back".to_string());
+    if !session.is_idle_tree() {
+        return Err(crate::error::coded(
+            crate::error::ERR_WORKTREE_BUSY,
+            "the agent is working; stop it or wait before bringing its work back",
+        ));
     }
+    // Clone loaded session handles in a short critical section and immediately release the table lock
+    // before inspecting sibling sessions sharing the same worktree checkout.
+    let loaded = core.loaded_sessions();
+    if loaded.iter().any(|other| {
+        other.id() != session.id()
+            && other.worktree().is_some_and(|wt| wt.checkout == made.checkout)
+            && !other.is_idle_tree()
+    }) {
+        return Err(crate::error::coded(
+            crate::error::ERR_WORKTREE_BUSY,
+            "another session sharing this worktree is still working; stop it or wait before bringing its work back",
+        ));
+    }
+    let summary = session.summary();
     let message = format!(
         "odg: {}",
         if summary.title.is_empty() {
@@ -372,6 +383,11 @@ pub async fn land_session(app: State<'_, App>, id: String) -> Result<Landed, Str
     tokio::task::spawn_blocking(move || worktree::land(&made, &message))
         .await
         .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn land_session(app: State<'_, App>, id: String) -> Result<Landed, String> {
+    land_session_core(&app.0, &id).await
 }
 
 #[tauri::command]

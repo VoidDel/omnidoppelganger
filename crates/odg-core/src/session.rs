@@ -12,8 +12,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::events::{Envelope, Event, Fork, SkillInfo, Worktree};
+use crate::fsutil::ensure_private_dir;
 use crate::policy::Mode;
 use crate::providers::DEFAULT_PROVIDER;
+use crate::sync_ext::MutexExt;
 
 /// The newest format this build reads, and the one it writes. Format 2 added
 /// the `provider` field to the header. Format 3 added the `context/compacted`,
@@ -114,6 +116,23 @@ pub struct NewSession<'a> {
     pub aside: Option<&'a str>,
 }
 
+fn open_new_private_log_file(path: &Path) -> io::Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.create_new(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 impl SessionStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -129,7 +148,7 @@ impl SessionStore {
 
     /// Evict a cached summary entry for `id` (if present).
     pub fn invalidate_cache(&self, id: &str) {
-        self.summary_cache.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        self.summary_cache.lock_unpoisoned().remove(id);
     }
 
     /// The store a log is kept in.
@@ -168,9 +187,10 @@ impl SessionStore {
         } = new;
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
-        fs::create_dir_all(&directory)?;
+        ensure_private_dir(&self.root)?;
+        ensure_private_dir(&directory)?;
         let path = directory.join(FILE_NAME);
-        let file = OpenOptions::new().create_new(true).append(true).open(&path)?;
+        let file = open_new_private_log_file(&path)?;
         let mut log = SessionLog {
             id: id.clone(),
             path,
@@ -253,9 +273,10 @@ impl SessionStore {
 
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
-        fs::create_dir_all(&directory)?;
+        ensure_private_dir(&self.root)?;
+        ensure_private_dir(&directory)?;
         let path = directory.join(FILE_NAME);
-        let file = OpenOptions::new().create_new(true).append(true).open(&path)?;
+        let file = open_new_private_log_file(&path)?;
         let mut log = SessionLog {
             id: id.clone(),
             path,
@@ -339,6 +360,10 @@ impl SessionStore {
     /// appending to can look cut off mid-line, and this truncates it.
     pub fn open(&self, id: &str) -> Result<SessionLog, SessionError> {
         let path = self.path(id)?;
+        let _ = ensure_private_dir(&self.root);
+        if let Some(dir) = path.parent() {
+            let _ = ensure_private_dir(dir);
+        }
         let bytes = fs::read(&path)?;
         let (events, good_bytes) = parse(&path, &bytes)?;
         if good_bytes < bytes.len() {
@@ -347,6 +372,11 @@ impl SessionStore {
             self.invalidate_cache(id);
         }
         let file = OpenOptions::new().append(true).open(&path)?;
+        #[cfg(unix)]
+        if fs::symlink_metadata(&path).is_ok_and(|meta| !meta.file_type().is_symlink()) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+        }
         Ok(SessionLog {
             id: id.to_string(),
             path,
@@ -364,8 +394,7 @@ impl SessionStore {
         let len = meta.len();
         let mtime = meta.modified().ok();
         if mtime.is_some()
-            && let Some((cached_mtime, cached_len, cached_summary)) =
-                self.summary_cache.lock().unwrap_or_else(|e| e.into_inner()).get(id)
+            && let Some((cached_mtime, cached_len, cached_summary)) = self.summary_cache.lock_unpoisoned().get(id)
             && *cached_mtime == mtime
             && *cached_len == len
         {
@@ -374,7 +403,7 @@ impl SessionStore {
         let (events, _) = parse(&path, &fs::read(&path)?)?;
         let summary = summarize(&events);
         if mtime.is_some() {
-            let mut cache = self.summary_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = self.summary_cache.lock_unpoisoned();
             if cache.len() >= MAX_SUMMARY_CACHE_ENTRIES && !cache.contains_key(id) {
                 cache.clear();
             }
@@ -1516,9 +1545,28 @@ pub fn matches(events: &[Envelope], query: &str) -> bool {
 /// Fold a log into its list entry. The title is the name the user gave the
 /// session, or else its first message cut to 40 characters.
 pub fn summarize(events: &[Envelope]) -> SessionSummary {
-    let (id, workspace) = match &events[0].event {
-        Event::SessionCreated { id, workspace, .. } => (id.clone(), workspace.clone()),
-        _ => unreachable!("create and open both guarantee the header"),
+    let Some((first_ts, id, workspace)) = events.first().and_then(|first| match &first.event {
+        Event::SessionCreated { id, workspace, .. } => Some((first.ts.clone(), id.clone(), workspace.clone())),
+        _ => None,
+    }) else {
+        return SessionSummary {
+            id: String::new(),
+            title: String::new(),
+            workspace: String::new(),
+            provider: DEFAULT_PROVIDER.to_string(),
+            model: String::new(),
+            effort: None,
+            parent: None,
+            worktree: None,
+            schedule: None,
+            fork: None,
+            aside: None,
+            mode: Mode::default(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            turn_open: false,
+            awaiting_approval: false,
+        };
     };
     let (provider, model, effort) = (provider(events), model(events), effort(events));
     let named = events.iter().rev().find_map(|envelope| match &envelope.event {
@@ -1590,9 +1638,12 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
         fork: forked_from(events).cloned(),
         aside: aside(events).map(str::to_string),
         mode,
-        created_at: events[0].ts.clone(),
+        created_at: first_ts.clone(),
         // A fork is new when it is made, though the last event copied into it is as old as it was.
-        updated_at: events[0].ts.clone().max(events[events.len() - 1].ts.clone()),
+        updated_at: match events.last() {
+            Some(last) => first_ts.max(last.ts.clone()),
+            None => first_ts,
+        },
         turn_open,
         awaiting_approval: turn_open && !requested.is_empty(),
     }
@@ -3712,5 +3763,45 @@ Read a; it holds x."
         let s2 = store.peek(&id).unwrap();
         assert_eq!(s2.title, "renamed title");
         assert!(!s2.turn_open);
+    }
+
+    #[test]
+    fn summarize_empty_slice_returns_safe_default_without_panicking() {
+        let empty = summarize(&[]);
+        assert_eq!(empty.id, "");
+        assert_eq!(empty.title, "");
+        assert_eq!(empty.workspace, "");
+        assert_eq!(empty.provider, DEFAULT_PROVIDER);
+        assert!(!empty.turn_open && !empty.awaiting_approval);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_store_enforces_0700_dir_and_0600_log_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_root = dir.path().join("sessions");
+        fs::create_dir_all(&sessions_root).unwrap();
+        fs::set_permissions(&sessions_root, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let store = SessionStore::new(&sessions_root);
+        let log = store
+            .create(Path::new("/work"), "anthropic", "claude-opus-5-5")
+            .unwrap();
+        let id = log.id().to_string();
+        let log_path = log.path().to_path_buf();
+        drop(log);
+
+        let mode_of = |p: &Path| fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode_of(&sessions_root), 0o700);
+        assert_eq!(mode_of(log_path.parent().unwrap()), 0o700);
+        assert_eq!(mode_of(&log_path), 0o600);
+
+        let forked = store.fork(&store.read(&id).unwrap(), None).unwrap();
+        let fork_path = forked.path().to_path_buf();
+        drop(forked);
+        assert_eq!(mode_of(fork_path.parent().unwrap()), 0o700);
+        assert_eq!(mode_of(&fork_path), 0o600);
     }
 }

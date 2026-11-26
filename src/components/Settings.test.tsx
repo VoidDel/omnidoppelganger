@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider, setCurrentLocale } from "../i18n";
 import { api } from "../lib/api";
 import { makeMockProvider, makeMockSettingsView } from "../test/mockApi";
 import { SettingsPage } from "./Settings";
@@ -7,6 +8,7 @@ import { SettingsPage } from "./Settings";
 describe("SettingsPage component (P1-15 & P2-14)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    setCurrentLocale("zh-CN");
     vi.spyOn(api, "runtimeStatus").mockResolvedValue({
       status: { state: "missing", outdated: false },
       python_version: "3.12",
@@ -171,5 +173,95 @@ describe("SettingsPage component (P1-15 & P2-14)", () => {
     expect(screen.getByText("60fps streaming & font subset")).toBeTruthy();
     fireEvent.click(dlBtn);
     expect(openSpy).toHaveBeenCalledWith("https://github.com/VoidDel/omnidoppelganger/releases/tag/v0.9.0");
+  });
+
+  it("merges dirty-field patches onto latest view.settings without reverting concurrent external updates (P3-5)", () => {
+    const onSave = vi.fn();
+    const initialView = makeMockSettingsView();
+    const listModels = vi.fn().mockResolvedValue([]);
+
+    const { rerender } = render(
+      <SettingsPage
+        view={initialView}
+        listModels={listModels}
+        onRefresh={vi.fn()}
+        onRevoke={vi.fn()}
+        onSave={onSave}
+        onSaveKey={vi.fn()}
+        onAddProvider={vi.fn()}
+        onRemoveProvider={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "禁制" }));
+    const timeoutInput = document.getElementById("approval-timeout") as HTMLInputElement;
+    // User edits timeout draft to 45 without blurring yet
+    fireEvent.change(timeoutInput, { target: { value: "45" } });
+    expect(timeoutInput.value).toBe("45");
+
+    // External concurrent change updates `mode`, `model`, and `effort` in `view.settings`
+    const externallyUpdatedView = makeMockSettingsView({
+      settings: {
+        ...initialView.settings,
+        mode: "plan",
+        model: "claude-opus-4-6",
+        effort: "max",
+      },
+    });
+    rerender(
+      <SettingsPage
+        view={externallyUpdatedView}
+        listModels={listModels}
+        onRefresh={vi.fn()}
+        onRevoke={vi.fn()}
+        onSave={onSave}
+        onSaveKey={vi.fn()}
+        onAddProvider={vi.fn()}
+        onRemoveProvider={vi.fn()}
+      />,
+    );
+
+    // Uncommitted dirty draft stays "45", and blurring merges patch onto `externallyUpdatedView.settings`
+    expect(timeoutInput.value).toBe("45");
+    fireEvent.blur(timeoutInput);
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "plan",
+        model: "claude-opus-4-6",
+        effort: "max",
+        approval_timeout: 45,
+      }),
+    );
+  });
+
+  it("switches interface locale (updating html[lang]) and toggles auto_update_runtime (P2-13 & P2-16)", () => {
+    const onSave = vi.fn();
+    const view = makeMockSettingsView();
+
+    render(
+      <I18nProvider locale="zh-CN">
+        <SettingsPage
+          view={view}
+          listModels={vi.fn().mockResolvedValue([])}
+          onRefresh={vi.fn()}
+          onRevoke={vi.fn()}
+          onSave={onSave}
+          onSaveKey={vi.fn()}
+          onAddProvider={vi.fn()}
+          onRemoveProvider={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "神通" }));
+    const autoRuntimeToggle = document.getElementById("auto-update-runtime") as HTMLInputElement;
+    expect(autoRuntimeToggle.checked).toBe(false);
+    fireEvent.click(autoRuntimeToggle);
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ auto_update_runtime: true }));
+
+    fireEvent.click(screen.getByRole("button", { name: "外观" }));
+    fireEvent.click(screen.getByRole("radio", { name: /English/ }));
+    expect(document.documentElement.lang).toBe("en");
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ locale: "en" }));
   });
 });

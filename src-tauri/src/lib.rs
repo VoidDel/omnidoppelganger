@@ -2,6 +2,7 @@
 //! global session event forwarding, schedule ticker, and deterministic exit hooks.
 
 mod commands;
+pub mod error;
 mod notify;
 mod pty;
 mod state;
@@ -26,12 +27,20 @@ const SCHEDULES_EVENT: &str = "schedules-changed";
 const SCHEDULE_TICK: Duration = Duration::from_secs(5);
 const STALE_PASTE_MAX_AGE: Duration = Duration::from_secs(7 * 86_400);
 
+pub(crate) fn should_auto_update_runtime(
+    settings: &odg_core::settings::Settings,
+    status: &odg_core::runtime::Status,
+) -> bool {
+    settings.auto_update_runtime && matches!(status, odg_core::runtime::Status::Stale { .. })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     odg_core::env::adopt_shell_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -69,10 +78,7 @@ pub fn run() {
             let schedules = ScheduleStore::new(home.join("schedules.json"));
 
             let runtime_root = home.join("runtime");
-            if matches!(
-                odg_core::runtime::status(&runtime_root),
-                odg_core::runtime::Status::Stale { .. }
-            ) {
+            if should_auto_update_runtime(&settings.load(), &odg_core::runtime::status(&runtime_root)) {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let watch = move |step: odg_core::runtime::Progress| {

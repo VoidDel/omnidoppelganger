@@ -1,35 +1,56 @@
 import "../styles/pages.css";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { LOCALE_OPTIONS, resolveLocale, useI18n } from "../i18n";
 import { api } from "../lib/api";
-import { MODES } from "../lib/modes";
+import { effortName, effortNote } from "../lib/efforts";
+import { mcpTool, shortCount } from "../lib/fold";
+import { modesFor } from "../lib/modes";
+import { formatResetIn, quotaWindowLabel, useAntigravityQuota } from "../lib/modelUsage";
+import { CLI_INFO, cliOf, enabledProviders, setUp } from "../lib/providers";
+import type { KeyStatus, Provider, RawListedModel, Settings, SettingsView, UpdateStatus } from "../lib/types";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Info } from "./Hint";
 import { Icon } from "./Icon";
-import { CLI_INFO, cliOf, enabledProviders, setUp } from "../lib/providers";
-import { RuntimeSection } from "./Runtime";
 import { LanguageServersSection } from "./LanguageServers";
-import { EFFORT_NAMES, effortNote } from "../lib/efforts";
-import { mcpTool, shortCount } from "../lib/fold";
-import { formatResetIn, quotaWindowLabel, useAntigravityQuota } from "../lib/modelUsage";
-import type { KeyStatus, Provider, Settings, SettingsView, UpdateStatus } from "../lib/types";
+import { normalizeListedModel } from "./Pickers";
+import { RuntimeSection } from "./Runtime";
 
-const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
-  { value: "light", name: "白昼", hint: "月白底，宜昼", swatches: [["#FBFCFA", "#1B2A2B"], ["#F6E7A8", "#D9BC55"], ["#B8322A", "#B8322A"]] },
-  { value: "dark", name: "玄夜", hint: "玄青底，宜夜", swatches: [["#1A2A2C", "#E6EEEA"], ["#ECD88C", "#B8962E"], ["#E0584E", "#E0584E"]] },
-  { value: "system", name: "跟随系统", hint: "随系统昼夜更替", swatches: [["#FBFCFA", "#1B2A2B"], ["#1A2A2C", "#E6EEEA"]] },
-];
-
-/** A text field that saves when it loses focus or Enter is pressed, not on every keystroke. */
+/**
+ * A text field that tracks whether the user has edited it (`dirty`), ignores unrelated concurrent external
+ * re-renders while `dirty`, and commits on blur or Enter.
+ */
 function useDraft(value: string, save: (value: string) => void) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  const [dirty, setDirty] = useState(false);
+  const prevPropRef = useRef(value);
+
+  useEffect(() => {
+    if (value !== prevPropRef.current) {
+      prevPropRef.current = value;
+      setDraft(value);
+      setDirty(false);
+    } else if (!dirty) {
+      setDraft(value);
+    }
+  }, [value, dirty]);
+
   const commit = () => {
-    if (draft.trim() !== value) save(draft.trim());
+    const trimmed = draft.trim();
+    setDirty(false);
+    if (trimmed !== value) {
+      save(trimmed);
+    } else {
+      setDraft(value);
+    }
   };
+
   return {
     value: draft,
-    onChange: (event: React.ChangeEvent<HTMLInputElement>) => setDraft(event.target.value),
+    onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
+      setDraft(event.target.value);
+      setDirty(true);
+    },
     onBlur: commit,
     onKeyDown: (event: React.KeyboardEvent<HTMLInputElement>) => event.key === "Enter" && commit(),
   };
@@ -64,7 +85,7 @@ interface KeyDialogProps {
   /** The provider whose name, key and address are set; null to add one. */
   provider: Provider | null;
   view: SettingsView;
-  onSave: (settings: Settings) => unknown;
+  onSavePatch: (patch: Partial<Settings>, baseOverride?: Settings) => unknown;
   onSaveKey: (provider: string, key: string) => unknown;
   onAdd: (kind: string, name: string) => Promise<Added>;
   onClose: () => void;
@@ -83,7 +104,7 @@ function firstFree(view: SettingsView, kind: string): boolean {
  * The window that takes a provider's name, key and address: to add one, of any kind, as many of a kind as wanted,
  * or to change one in the list.
  */
-function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDialogProps) {
+function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onClose }: KeyDialogProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   // Shown as a modal, which keeps the keyboard inside it and closes on Escape.
   useEffect(() => {
@@ -132,7 +153,9 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
     // For local loopback gateways (Magpie), persist the default URL when left blank so it appears in the configured 宗门 list without requiring an API key.
     const effectiveUrl = url || (isLocalGateway && !key.trim() && status.source === "none" ? kind.base_url : "");
     const urls = effectiveUrl ? { ...otherUrls, [id]: effectiveUrl } : otherUrls;
-    if (effectiveUrl !== (base.base_urls[id] ?? "") || names !== base.provider_names) await onSave({ ...base, base_urls: urls, provider_names: names });
+    if (effectiveUrl !== (base.base_urls[id] ?? "") || names !== base.provider_names) {
+      await onSavePatch({ base_urls: urls, provider_names: names }, id === provider?.id ? undefined : base);
+    }
     setBusy(false);
     onClose();
   };
@@ -232,7 +255,7 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
 
 interface KeyListProps {
   view: SettingsView;
-  onSave: (settings: Settings) => unknown;
+  onSavePatch: (patch: Partial<Settings>, baseOverride?: Settings) => unknown;
   onSaveKey: (provider: string, key: string) => unknown;
   onAdd: (kind: string, name: string) => Promise<Added>;
   onRemove: (provider: string) => unknown;
@@ -242,7 +265,7 @@ interface KeyListProps {
  * The providers that are set up, one to a line: which has a key, and where its requests go. One is added, or
  * changed, in a window of its own. The provider new 分身 use is always listed, so a missing key shows.
  */
-function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
+function KeyList({ view, onSavePatch, onSaveKey, onAdd, onRemove }: KeyListProps) {
   const { settings } = view;
   /** The window that is open: for the provider with this id, or `new` to add one. */
   const [editing, setEditing] = useState<string | null>(null);
@@ -257,7 +280,7 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
   const toggle = (provider: Provider, on: boolean) => {
     const current = settings.disabled_providers ?? [];
     const next = on ? current.filter((id) => id !== provider.id) : current.includes(provider.id) ? current : [...current, provider.id];
-    void onSave({ ...settings, disabled_providers: next });
+    void onSavePatch({ disabled_providers: next });
   };
   return (
     <section>
@@ -361,7 +384,7 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
         <KeyDialog
           provider={editing === "new" ? null : (view.providers.find((provider) => provider.id === editing) ?? null)}
           view={view}
-          onSave={onSave}
+          onSavePatch={onSavePatch}
           onSaveKey={onSaveKey}
           onAdd={onAdd}
           onClose={() => setEditing(null)}
@@ -393,28 +416,11 @@ const WINDOW_SOURCES: Record<SettingsView["context_window"]["source"], string> =
 /** The pages the settings are sorted into: what a 分身 runs on, what it may do, what it can reach, and how the app looks. */
 export type SettingsTab = "model" | "rules" | "tools" | "look";
 
-const TABS: { id: SettingsTab; name: string; hint: string; icon: string }[] = [
-  {
-    id: "model",
-    name: "心法",
-    hint: "各个宗门和它们的密钥，默认分身修哪门心法、推演多深，前情留多长",
-    icon: "journal-text",
-  },
-  { id: "rules", name: "禁制", hint: "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）", icon: "shield-check" },
-  { id: "tools", name: "神通", hint: "天机阁（联网搜索）、丹青（生成图片）、文房（文档运行环境）、语言服务（代码导航）。秘籍和身外法器（MCP 服务）在侧栏的「秘籍」「法器」里", icon: "plug" },
-  {
-    id: "look",
-    name: "外观",
-    hint: "白昼还是玄夜",
-    icon: "circle-half",
-  },
-];
-
 /**
  * Which image model the 分身 paints with: the one chosen, while its provider has a key; else the first that has one.
  * What is in force is said under the choice, and when nothing can paint, what puts it right.
  */
-function PainterSection({ view, onSave }: { view: SettingsView; onSave: (settings: Settings) => unknown }) {
+function PainterSection({ view, onSavePatch }: { view: SettingsView; onSavePatch: (patch: Partial<Settings>) => unknown }) {
   const { settings } = view;
   const keyed = (provider: string) => (view.keys[provider]?.source ?? "none") !== "none";
   const providerName = (provider: string) => view.kinds.find((kind) => kind.id === provider)?.name ?? provider;
@@ -434,7 +440,7 @@ function PainterSection({ view, onSave }: { view: SettingsView; onSave: (setting
           </Info>
         </div>
         <div className="inline model-row">
-          <Combo id="painter" value={settings.painter} options={options} editable={false} onSave={(painter) => onSave({ ...settings, painter })} />
+          <Combo id="painter" value={settings.painter} options={options} editable={false} onSave={(painter) => onSavePatch({ painter })} />
         </div>
         {view.painter_ready === null ? (
           <p className="hint missing">还没有 OpenAI 或 GLM（智谱）的密钥，分身现在只能用代码画图。到「心法」那一页给其中一家添上密钥，就能请画师作画。</p>
@@ -449,10 +455,15 @@ function PainterSection({ view, onSave }: { view: SettingsView; onSave: (setting
 }
 
 function UpdateSection({ version }: { version?: string }) {
+  const { locale, t } = useI18n();
   const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [linkingCli, setLinkingCli] = useState(false);
+  const [cliLinked, setCliLinked] = useState<string | null>(null);
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const shownVersion = status?.current_version ?? version ?? __APP_VERSION__;
+  const isWindowsClient = typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
 
   const checkNow = () => {
     setChecking(true);
@@ -466,30 +477,67 @@ function UpdateSection({ version }: { version?: string }) {
       .finally(() => setChecking(false));
   };
 
+  const installNow = () => {
+    setInstalling(true);
+    setError(null);
+    api
+      .installAppUpdate()
+      .then(
+        (installed) => {
+          if (!installed && status?.html_url) {
+            void api.openExternal(status.html_url);
+          }
+        },
+        (err) => setError(String(err)),
+      )
+      .finally(() => setInstalling(false));
+  };
+
+  const linkCli = () => {
+    setLinkingCli(true);
+    setError(null);
+    setCliLinked(null);
+    api
+      .installCliLink()
+      .then(
+        (linkedPath) => setCliLinked(linkedPath),
+        (err) => setError(String(err)),
+      )
+      .finally(() => setLinkingCli(false));
+  };
+
   return (
     <section>
       <div className="usage-head">
-        <h2>版本与更新</h2>
+        <h2>{t("settings.updateHeading")}</h2>
         <div className="usage-actions">
-          <button type="button" className="button outline small" disabled={checking} onClick={checkNow}>
-            {checking ? "检查中…" : "检查更新"}
+          {!isWindowsClient && (
+            <button type="button" className="button outline small" disabled={linkingCli} onClick={linkCli}>
+              {t("settings.cliLinkBtn")}
+            </button>
+          )}
+          <button type="button" className="button outline small" disabled={checking || installing} onClick={checkNow}>
+            {checking ? t("settings.updateChecking") : t("settings.updateCheckBtn")}
           </button>
         </div>
       </div>
       <div className="provider-card">
         <div className="who">
           <span>
-            当前版本 <strong className="mono">v{shownVersion}</strong>
-            {!status && <span className="muted"> · 点右上角「检查更新」比对 GitHub 最新发布</span>}
+            {t("settings.updateCurrent")} <strong className="mono">v{shownVersion}</strong>
+            {!status && <span className="muted">{t("settings.updateCheckHint")}</span>}
           </span>
           {error && <span className="hint failed">{error}</span>}
+          {cliLinked && <span className="hint">{t("settings.cliLinkedNote", { path: cliLinked })}</span>}
           {status && !status.has_update && (
-            <span className="muted">已是最新版本（v{status.latest_version}）。</span>
+            <span className="muted">{t("settings.updateUpToDate", { version: status.latest_version })}</span>
           )}
           {status?.has_update && (
             <span className="muted">
-              发现新版本 <strong className="mono">v{status.latest_version}</strong>
-              {status.published_at ? `（${new Date(status.published_at).toLocaleDateString()}）` : ""}
+              {t("settings.updateAvailable")} <strong className="mono">v{status.latest_version}</strong>
+              {status.published_at
+                ? ` (${new Date(status.published_at).toLocaleDateString(locale === "en" ? "en-US" : "zh-CN")})`
+                : ""}
             </span>
           )}
         </div>
@@ -500,9 +548,14 @@ function UpdateSection({ version }: { version?: string }) {
                 {status.notes}
               </pre>
             )}
-            <div className="actions" style={{ marginTop: "6px" }}>
-              <button type="button" className="button primary small" onClick={() => void api.openExternal(status.html_url)}>
-                前往 GitHub 下载 v{status.latest_version}
+            <div className="actions" style={{ marginTop: "6px", flexWrap: "wrap" }}>
+              <button type="button" className="button primary small" disabled={installing} onClick={installNow}>
+                {installing
+                  ? t("settings.updateInstalling")
+                  : t("settings.updateInstallBtn", { version: status.latest_version })}
+              </button>
+              <button type="button" className="button outline small" onClick={() => void api.openExternal(status.html_url)}>
+                {t("settings.updateDownloadBtn", { version: status.latest_version })}
               </button>
             </div>
           </>
@@ -514,25 +567,25 @@ function UpdateSection({ version }: { version?: string }) {
 
 const REPO_URL = "https://github.com/VoidDel/omnidoppelganger";
 
-const HELP_LINKS: { label: string; hint: string; url: string }[] = [
-  { label: "使用手册", hint: "按任务组织的完整操作说明", url: `${REPO_URL}/blob/main/doc/user-guide.md` },
-  { label: "常见问题", hint: "安装拦截、CLI 识别、禁制与文房排障", url: `${REPO_URL}/blob/main/doc/faq.md` },
-  { label: "隐私政策", hint: "本地存储目录与外部网络请求说明", url: `${REPO_URL}/blob/main/doc/privacy.md` },
-  { label: "问题反馈", hint: "前往 GitHub Issues 提交问题或功能建议", url: `${REPO_URL}/issues/new/choose` },
-];
-
 function HelpSection() {
+  const { t } = useI18n();
+  const links = [
+    { label: t("settings.helpGuide"), hint: t("settings.helpGuideHint"), url: `${REPO_URL}/blob/main/doc/user-guide.md` },
+    { label: t("settings.helpFaq"), hint: t("settings.helpFaqHint"), url: `${REPO_URL}/blob/main/doc/faq.md` },
+    { label: t("settings.helpPrivacy"), hint: t("settings.helpPrivacyHint"), url: `${REPO_URL}/blob/main/doc/privacy.md` },
+    { label: t("settings.helpIssues"), hint: t("settings.helpIssuesHint"), url: `${REPO_URL}/issues/new/choose` },
+  ];
   return (
     <section>
-      <h2>帮助与文档</h2>
+      <h2>{t("settings.helpHeading")}</h2>
       <div className="provider-card">
         <div className="who">
-          <span className="muted">使用说明、排障指南与问题反馈入口。</span>
+          <span className="muted">{t("settings.helpLead")}</span>
         </div>
         <div className="actions" style={{ marginTop: "6px", flexWrap: "wrap" }}>
-          {HELP_LINKS.map((item) => (
+          {links.map((item) => (
             <button
-              key={item.label}
+              key={item.url}
               type="button"
               className="button outline small"
               title={item.hint}
@@ -550,7 +603,7 @@ function HelpSection() {
 interface Props {
   view: SettingsView;
   /** The models a provider serves, asked from the provider itself. */
-  listModels: (provider: string) => Promise<[string, string][]>;
+  listModels: (provider: string) => Promise<RawListedModel[]>;
   onRefresh: () => void;
   onRevoke: (workspace: string, grant: string) => void;
   onSave: (settings: Settings) => unknown;
@@ -560,9 +613,40 @@ interface Props {
 }
 
 export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveProvider, onRevoke, onRefresh, listModels }: Props) {
+  const { locale, setLocale, t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>("model");
   const grants = Object.entries(view.grants);
   const { settings } = view;
+
+  // Dirty-field patch tracking: always merge user-modified keys onto the latest `view.settings` snapshot
+  // so concurrent external changes (e.g., top-bar model/mode switches) are never reverted by stale drafts.
+  const latestSettingsRef = useRef<Settings>(settings);
+  const prevSettingsRef = useRef<Settings>(settings);
+  const dirtyPatchRef = useRef<Partial<Settings>>({});
+
+  if (prevSettingsRef.current !== settings) {
+    const prev = prevSettingsRef.current;
+    for (const key of Object.keys(dirtyPatchRef.current) as (keyof Settings)[]) {
+      if (
+        JSON.stringify(settings[key]) === JSON.stringify(dirtyPatchRef.current[key]) ||
+        JSON.stringify(prev[key]) !== JSON.stringify(settings[key])
+      ) {
+        delete dirtyPatchRef.current[key];
+      }
+    }
+    prevSettingsRef.current = settings;
+  }
+  latestSettingsRef.current = settings;
+
+  const savePatch = useCallback(
+    (patch: Partial<Settings>, baseOverride?: Settings) => {
+      dirtyPatchRef.current = { ...dirtyPatchRef.current, ...patch };
+      const base = baseOverride ?? latestSettingsRef.current;
+      return onSave({ ...base, ...dirtyPatchRef.current });
+    },
+    [onSave],
+  );
+
   const chosen = view.providers.find((provider) => provider.id === settings.provider);
   const note = effortNote(chosen);
   // What the chosen provider says it serves, asked again when the provider or its key changes.
@@ -577,8 +661,12 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
     setAsking(true);
     listModels(settings.provider)
       .then(
-        (models) => {
+        (rawModels) => {
           if (!current) return;
+          const models: [string, string][] = rawModels.map((entry) => {
+            const m = normalizeListedModel(entry);
+            return [m.id, m.name];
+          });
           setServed({ models, why: null });
           // The provider may have said how large its models' context windows are: read what is now known.
           onRefresh();
@@ -598,7 +686,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
   const ceiling = Math.floor(view.context_window.tokens / 5) * 4;
   const timeout = useDraft(String(settings.approval_timeout), (value) => {
     const seconds = Number.parseInt(value, 10);
-    if (Number.isFinite(seconds) && seconds >= 0) onSave({ ...settings, approval_timeout: seconds });
+    if (Number.isFinite(seconds) && seconds >= 0) savePatch({ approval_timeout: seconds });
   });
   const windowKey = `${settings.provider}/${settings.model}`;
   /** Whether the field that corrects the model's window is open, and what is typed in it. */
@@ -612,21 +700,51 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
   /** Keep the window typed for this model, or with nothing typed leave it to be found out; then put the field away. */
   const saveWindow = (value: string) => {
     setEditingWindow(false);
-    const { [windowKey]: kept, ...others } = settings.context_windows;
+    const { [windowKey]: kept, ...others } = latestSettingsRef.current.context_windows;
     const tokens = Number.parseInt(value, 10);
     const next = Number.isFinite(tokens) && tokens > 0 ? tokens : undefined;
-    if (next !== kept) onSave({ ...settings, context_windows: next ? { ...others, [windowKey]: next } : others });
+    if (next !== kept) savePatch({ context_windows: next ? { ...others, [windowKey]: next } : others });
   };
   const limit = useDraft(String(settings.context_limit), (value) => {
     const tokens = Number.parseInt(value, 10);
-    if (Number.isFinite(tokens)) onSave({ ...settings, context_limit: tokens });
+    if (Number.isFinite(tokens)) savePatch({ context_limit: tokens });
   });
+
+  const tabs: { id: SettingsTab; name: string; hint: string; icon: string }[] = [
+    { id: "model", name: t("settings.tabModel"), hint: t("settings.tabModelHint"), icon: "journal-text" },
+    { id: "rules", name: t("settings.tabRules"), hint: t("settings.tabRulesHint"), icon: "shield-check" },
+    { id: "tools", name: t("settings.tabTools"), hint: t("settings.tabToolsHint"), icon: "plug" },
+    { id: "look", name: t("settings.tabLook"), hint: t("settings.tabLookHint"), icon: "circle-half" },
+  ];
+  const papers: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
+    { value: "light", name: t("settings.themeLight"), hint: t("settings.themeLightHint"), swatches: [["#FBFCFA", "#1B2A2B"], ["#F6E7A8", "#D9BC55"], ["#B8322A", "#B8322A"]] },
+    { value: "dark", name: t("settings.themeDark"), hint: t("settings.themeDarkHint"), swatches: [["#1A2A2C", "#E6EEEA"], ["#ECD88C", "#B8962E"], ["#E0584E", "#E0584E"]] },
+    { value: "system", name: t("settings.themeSystem"), hint: t("settings.themeSystemHint"), swatches: [["#FBFCFA", "#1B2A2B"], ["#1A2A2C", "#E6EEEA"]] },
+  ];
+  const modeOptions = modesFor(locale);
+  const currentLocale = resolveLocale(settings.locale ?? locale);
+  const localeCards = LOCALE_OPTIONS.map((opt) => ({
+    value: opt.value,
+    name:
+      opt.value === "zh-CN"
+        ? t("settings.localeZhCN")
+        : opt.value === "zh-plain"
+          ? t("settings.localeZhPlain")
+          : t("settings.localeEn"),
+    hint:
+      opt.value === "zh-CN"
+        ? t("settings.localeZhCNHint")
+        : opt.value === "zh-plain"
+          ? t("settings.localeZhPlainHint")
+          : t("settings.localeEnHint"),
+  }));
+
   return (
     <div className="settings">
       {/* Inside what scrolls, and kept at its top: the strip then lines up with the column under it, whatever the scrollbar takes. */}
       <header className="settings-tabs" data-tauri-drag-region>
         <div className="settings-tabs-inner" data-tauri-drag-region>
-        {TABS.map((item) => (
+        {tabs.map((item) => (
           <button type="button" className="tab" key={item.id} aria-pressed={tab === item.id} title={item.hint} onClick={() => setTab(item.id)}>
             <Icon name={item.icon} size={15} />
             {item.name}
@@ -637,7 +755,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
       <div className="settings-inner">
         {tab === "model" && (
           <>
-        <KeyList view={view} onSave={onSave} onSaveKey={onSaveKey} onAdd={onAddProvider} onRemove={onRemoveProvider} />
+        <KeyList view={view} onSavePatch={savePatch} onSaveKey={onSaveKey} onAdd={onAddProvider} onRemove={onRemoveProvider} />
         <section>
           <h2>
             默认分身
@@ -655,7 +773,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 value={settings.provider}
                 options={enabledProviders(view).map((provider) => ({ value: provider.id, text: provider.name, note: view.keys[provider.id]?.source === "none" ? (cliOf(provider) ? "未装 CLI" : "未填密钥") : "" }))}
                 editable={false}
-                onSave={(id) => onSave({ ...settings, provider: id, model: view.providers.find((provider) => provider.id === id)?.models[0]?.[0] ?? "" })}
+                onSave={(id) => savePatch({ provider: id, model: view.providers.find((provider) => provider.id === id)?.models[0]?.[0] ?? "" })}
               />
             </div>
           </div>
@@ -672,7 +790,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 editable
                 mono
                 placeholder="填写模型 ID"
-                onSave={(value) => onSave({ ...settings, model: value })}
+                onSave={(value) => savePatch({ model: value })}
               />
               <button
                 type="button"
@@ -744,8 +862,8 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             <div className="realms">
               {view.efforts.map((effort) => (
                 <label className="realm" key={effort}>
-                  <input type="radio" name="realm" checked={settings.effort === effort} onChange={() => onSave({ ...settings, effort })} />
-                  <span className="name">{EFFORT_NAMES[effort] ?? effort}</span>
+                  <input type="radio" name="realm" checked={settings.effort === effort} onChange={() => savePatch({ effort })} />
+                  <span className="name">{effortName(effort, locale)}</span>
                 </label>
               ))}
             </div>
@@ -768,11 +886,11 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             </div>
             <div className="kinds" role="radiogroup" aria-labelledby="context-limit-label">
               <label className="kind">
-                <input type="radio" name="context-limit-kind" checked={settings.context_auto} onChange={() => onSave({ ...settings, context_auto: true })} />
+                <input type="radio" name="context-limit-kind" checked={settings.context_auto} onChange={() => savePatch({ context_auto: true })} />
                 自动
               </label>
               <label className="kind">
-                <input type="radio" name="context-limit-kind" checked={!settings.context_auto} onChange={() => onSave({ ...settings, context_auto: false })} />
+                <input type="radio" name="context-limit-kind" checked={!settings.context_auto} onChange={() => savePatch({ context_auto: false })} />
                 自己定
               </label>
             </div>
@@ -811,10 +929,10 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
           </h2>
           <fieldset className="papers pairs">
             <legend>新分身起始的禁制</legend>
-            {MODES.map((option) => (
+            {modeOptions.map((option) => (
               <label className="paper" key={option.value}>
                 <span className="name">
-                  <input type="radio" name="mode" checked={settings.mode === option.value} onChange={() => onSave({ ...settings, mode: option.value })} />
+                  <input type="radio" name="mode" checked={settings.mode === option.value} onChange={() => savePatch({ mode: option.value })} />
                   {option.name}
                 </span>
                 <span className="muted">{option.hint}</span>
@@ -827,7 +945,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
           <h2>结界（沙箱）</h2>
           <div className="label-line">
             <label className="check">
-              <input type="checkbox" checked={settings.sandbox && !!view.sandbox_support.Ok} disabled={!view.sandbox_support.Ok} onChange={(event) => onSave({ ...settings, sandbox: event.target.checked })} />
+              <input type="checkbox" checked={settings.sandbox && !!view.sandbox_support.Ok} disabled={!view.sandbox_support.Ok} onChange={(event) => savePatch({ sandbox: event.target.checked })} />
               <span>给洞府布下结界，把分身运行的命令关在里面</span>
             </label>
             <Info>
@@ -858,7 +976,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
               defaultValue={settings.sandbox_paths.join("\n")}
               onBlur={(event) => {
                 const paths = event.target.value.split("\n").map((line) => line.trim()).filter(Boolean);
-                if (paths.join("\n") !== settings.sandbox_paths.join("\n")) onSave({ ...settings, sandbox_paths: paths });
+                if (paths.join("\n") !== latestSettingsRef.current.sandbox_paths.join("\n")) savePatch({ sandbox_paths: paths });
               }}
             />
           </div>
@@ -868,7 +986,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
           <h2>护法（模型审核）</h2>
           <div className="label-line">
             <label className="check">
-              <input type="checkbox" checked={settings.guardian} onChange={(event) => onSave({ ...settings, guardian: event.target.checked })} />
+              <input type="checkbox" checked={settings.guardian} onChange={(event) => savePatch({ guardian: event.target.checked })} />
               <span>放手施为时，请一位护法先审拿不准的命令</span>
             </label>
             <Info>
@@ -891,8 +1009,9 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                   mono
                   placeholder="留空就用分身自己的心法"
                   onSave={(model) => {
-                    const { [settings.provider]: _, ...others } = settings.guardian_models;
-                    onSave({ ...settings, guardian_models: model ? { ...others, [settings.provider]: model } : others });
+                    const curProvider = latestSettingsRef.current.provider;
+                    const { [curProvider]: _, ...others } = latestSettingsRef.current.guardian_models;
+                    savePatch({ guardian_models: model ? { ...others, [curProvider]: model } : others });
                   }}
                 />
               </div>
@@ -946,7 +1065,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                 value={settings.search_engine}
                 options={view.search_engines.map(([id, what]) => ({ value: id, text: what }))}
                 editable={false}
-                onSave={(engine) => onSave({ ...settings, search_engine: engine })}
+                onSave={(engine) => savePatch({ search_engine: engine })}
               />
             </div>
             {/* Searching does not work yet: said in the open, with what puts it right. */}
@@ -955,21 +1074,34 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             )}
           </div>
         </section>
-        <PainterSection view={view} onSave={onSave} />
+        <PainterSection view={view} onSavePatch={savePatch} />
         <RuntimeSection />
+        <section>
+          <div className="label-line">
+            <label className="check">
+              <input
+                id="auto-update-runtime"
+                type="checkbox"
+                checked={!!settings.auto_update_runtime}
+                onChange={(event) => savePatch({ auto_update_runtime: event.target.checked })}
+              />
+              <span>{t("settings.autoUpdateRuntime")}</span>
+            </label>
+          </div>
+        </section>
         <LanguageServersSection />
           </>
         )}
         {tab === "look" && (
           <>
         <section>
-          <h2>外观</h2>
+          <h2>{t("settings.appearance")}</h2>
           <fieldset className="papers">
-            <legend>天色</legend>
-            {PAPERS.map((paper) => (
+            <legend>{t("settings.themeLegend")}</legend>
+            {papers.map((paper) => (
               <label className="paper" key={paper.value}>
                 <span className="name">
-                  <input type="radio" name="paper" checked={settings.theme === paper.value} onChange={() => onSave({ ...settings, theme: paper.value })} />
+                  <input type="radio" name="paper" checked={settings.theme === paper.value} onChange={() => savePatch({ theme: paper.value })} />
                   {paper.name}
                 </span>
                 <span className="swatches" aria-hidden="true">
@@ -978,6 +1110,29 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
                   ))}
                 </span>
                 <span className="muted">{paper.hint}</span>
+              </label>
+            ))}
+          </fieldset>
+        </section>
+        <section>
+          <h2>{t("settings.languageHeading")}</h2>
+          <fieldset className="papers">
+            <legend>{t("settings.languageLegend")}</legend>
+            {localeCards.map((card) => (
+              <label className="paper" key={card.value}>
+                <span className="name">
+                  <input
+                    type="radio"
+                    name="locale"
+                    checked={currentLocale === card.value}
+                    onChange={() => {
+                      setLocale(card.value);
+                      savePatch({ locale: card.value });
+                    }}
+                  />
+                  {card.name}
+                </span>
+                <span className="muted">{card.hint}</span>
               </label>
             ))}
           </fieldset>

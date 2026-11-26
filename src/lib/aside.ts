@@ -1,3 +1,4 @@
+import { formatMessage, getCurrentLocale, type Locale } from "../i18n";
 import { applyDelta, type StreamBlock } from "./fold";
 import type { Envelope, Status, UiEvent } from "./types";
 
@@ -50,7 +51,7 @@ export function liveReduce(state: LiveLog, action: LiveAction): LiveLog {
   }
 }
 
-/** What a side conversation's answer is said with when it is handed to the main 分身. */
-export function forwarded(text: string): string {
-  return `（以下是本尊在旁聊里得到的结论，转给你参考，看完按需调整，不必回复旁聊）\n\n${text.trim()}`;
+/** What a side conversation's answer is said with when it is handed to the main 分身, localized by `locale`. */
+export function forwarded(text: string, locale: Locale = getCurrentLocale()): string {
+  return formatMessage(locale, "prompt.asideForwarded", { text: text.trim() });
 }

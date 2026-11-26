@@ -47,11 +47,15 @@ cargo run -p odg-cli -- --help
 GitHub Actions CI 会运行下面这些检查，提交 PR 前请先在本地跑通：
 
 ```bash
+pnpm lint                                              # 前端代码风格与 Hooks 静态检查（Biome）
 pnpm test                                              # 前端单元测试（Vitest）
 pnpm build                                             # TypeScript 类型检查与前端打包（Tauri 编译依赖 dist/）
+cargo fmt --all -- --check                             # Rust 代码格式检查
 cargo clippy --workspace --all-targets -- -D warnings  # Rust 静态检查（零警告）
 cargo test --workspace                                 # 核心库、CLI 与桌面壳全部单元/集成测试
 pnpm run eval                                          # 确定性 Agent 端到端场景评测集
+node scripts/check-version.mjs                         # 校验全仓清单版本号一致
+node scripts/check-docs.mjs                            # 校验内置秘籍、斜杠命令与工具文档同源码一致
 ```
 
 在 Windows 上修改了桌面交互或前后端主流程时，可以再跑一遍真实窗口端到端测试（跑在隔离临时目录，不碰本机 `~/.odg`）：
@@ -87,7 +91,16 @@ fix(pty): 响应 Windows ConPTY 光标位置查询避免测试挂起
 
 ## 发布
 
-维护者同步更新工作区版本号（`Cargo.toml`、`crates/odg-core/Cargo.toml`、`crates/odg-cli/Cargo.toml`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`、`package.json` 及锁文件）并推送 `v<版本>` 标签后，`.github/workflows/release.yml` 会在 Windows、macOS、Linux（Ubuntu 与 Arch）上构建全部安装包并发布到 GitHub Releases。
+Rust 工作区下各 crate（`crates/odg-core`、`crates/odg-cli`、`src-tauri`）统一通过 `version.workspace = true` 继承根目录 `Cargo.toml` 中 `[workspace.package]` 的版本号。维护者发版时运行一键改版脚本同步全仓版本并执行门禁校验：
+
+```bash
+node scripts/bump-version.mjs <版本号>   # 一键同步根 Cargo.toml [workspace.package]、package.json、src-tauri/tauri.conf.json 与 packaging/arch/PKGBUILD
+cargo check --workspace                  # 更新 Cargo.lock 中的工作区包版本
+node scripts/check-version.mjs           # 校验全仓发布清单版本完全一致
+node scripts/check-docs.mjs              # 校验文档与内置秘籍/斜杠命令/工具源码一致
+```
+
+提交版本变更并推送 `v<版本号>` 标签后，`.github/workflows/release.yml` 会自动校验标签版本，并在 Windows、macOS、Linux（Ubuntu 与 Arch）上构建经签名公证的桌面安装包、三端独立 `odg-cli` 压缩包、`latest.json` 自动更新清单与 `SHA256SUMS.txt` 发布到 GitHub Releases。
 
 ## 许可
 

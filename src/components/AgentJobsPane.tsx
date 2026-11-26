@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { fileSize, type ToolItem } from "../lib/fold";
 import type { JobSnapshot } from "../lib/types";
+import type { QuotePayload } from "./Composer";
 
 export interface AgentJobsPaneProps {
   sessionId: string;
   runs: ToolItem[];
-  onSendToChat: (quote: string) => void;
+  onSendToChat: (quote: QuotePayload) => void;
   onError: (message: string) => void;
 }
 
@@ -188,9 +189,12 @@ export function AgentJobsPane({ sessionId, runs, onSendToChat, onError }: AgentJ
                               type="button"
                               className="button text small"
                               onClick={() =>
-                                onSendToChat(
-                                  `后台任务 #${job.id}（\`${job.command}\`）最新日志如下，请帮我看看：\n\`\`\`text\n${logText.slice(-6000)}\n\`\`\``,
-                                )
+                                onSendToChat({
+                                  kind: "job",
+                                  jobId: job.id,
+                                  command: job.command,
+                                  content: logText.slice(-6000),
+                                })
                               }
                             >
                               发给分身

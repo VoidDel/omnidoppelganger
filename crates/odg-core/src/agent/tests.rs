@@ -2997,3 +2997,191 @@ async fn deliverable_versions_are_snapshotted_restored_with_backup_and_saved_as_
     .unwrap();
     assert_eq!(forked.snapshot_bytes(&deck_v1).unwrap(), b"%PDF-1.4 v1");
 }
+
+#[tokio::test]
+async fn turn_status_guard_recovers_idle_status_and_unpoisoned_locks_after_panic() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct PanickingLlm {
+        calls: AtomicUsize,
+    }
+
+    impl Llm for PanickingLlm {
+        async fn stream(
+            &self,
+            _request: LlmRequest,
+            _deltas: UnboundedSender<StreamDelta>,
+            _cancel: CancellationToken,
+        ) -> Result<AssistantTurn, LlmError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                panic!("simulated unexpected panic inside async turn");
+            }
+            if n == 1 {
+                return Ok(AssistantTurn {
+                    content: vec![json!({ "type": "text", "text": "recovered turn ok" })],
+                    stop_reason: Some("end_turn".into()),
+                    model: "scripted".into(),
+                    ..Default::default()
+                });
+            }
+            panic!("simulated unexpected panic inside manual compaction");
+        }
+    }
+
+    let home = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(home.path());
+    let log = store.create(ws.path(), "anthropic", "claude-sonnet-5-5").unwrap();
+    let (tx, mut rx) = unbounded_channel();
+    let tuning = Arc::new(|_: &str, _: &str| Tuning {
+        effort: "high".into(),
+        context_limit: u64::MAX,
+        context_window: u64::MAX,
+        guardian: None,
+        approval_wait: None,
+    });
+    let services = Services {
+        grants: Arc::new(GrantStore::new(home.path().join("grants.json"))),
+        mcp: None,
+        skills: None,
+        search: None,
+        sandbox: None,
+        chat: None,
+        runtime: None,
+        painter: None,
+        lsp: None,
+    };
+    let session = Session::new(
+        log,
+        Arc::new(PanickingLlm {
+            calls: AtomicUsize::new(0),
+        }),
+        tuning,
+        services,
+        tx,
+        tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+
+    // 1. Async turn panics: TurnStatusGuard must reset status to Idle and notify watch_idle()!
+    assert!(!session.send("trigger panic".into()));
+    tokio::time::timeout(Duration::from_secs(5), session.wait_idle())
+        .await
+        .expect("wait_idle must resolve when TurnStatusGuard unwinds");
+    assert_eq!(session.status(), Status::Idle);
+    assert!(session.is_idle_tree());
+
+    let mut saw_idle_after_running = false;
+    let mut saw_running = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let UiEvent::Status { status, .. } = ev {
+            if status == Status::Running {
+                saw_running = true;
+            } else if saw_running && status == Status::Idle {
+                saw_idle_after_running = true;
+            }
+        }
+    }
+    assert!(
+        saw_idle_after_running,
+        "expected Status::Running -> Status::Idle on panic unwind"
+    );
+
+    // 2. Subsequent normal turn still works cleanly (no poisoned mutex crash).
+    assert!(!session.send("recover".into()));
+    tokio::time::timeout(Duration::from_secs(5), session.wait_idle())
+        .await
+        .unwrap();
+    assert_eq!(session.status(), Status::Idle);
+
+    // 3. Manual compaction panics: TurnStatusGuard in `compact_now_with` also resets status to Idle!
+    let compact_session = session.clone();
+    let join = tokio::spawn(async move { compact_session.compact_now().await }).await;
+    assert!(join.is_err() && join.unwrap_err().is_panic());
+    tokio::time::timeout(Duration::from_secs(5), session.wait_idle())
+        .await
+        .expect("wait_idle must resolve after compaction panic");
+    assert_eq!(session.status(), Status::Idle);
+}
+
+#[tokio::test]
+async fn cancelling_while_waiting_for_approval_or_question_clears_pending_and_emits_running() {
+    let llm = ScriptedLlm::new(
+        vec![
+            calls(&[("call_cmd", "run_command", json!({ "command": "echo need-approval" }))]),
+            calls(&[(
+                "call_ask",
+                "ask_user",
+                json!({ "questions": [{ "header": "Pick", "question": "Which one?", "options": [{ "label": "A" }, { "label": "B" }] }] }),
+            )]),
+        ],
+        None,
+    );
+    let mut fixture = fixture(llm);
+    fixture.session.set_mode(Mode::Manual);
+
+    // Part 1: Cancel while waiting on ApprovalRequested.
+    fixture.session.send("run command".into());
+    fixture
+        .until(|ev| {
+            matches!(
+                ev,
+                UiEvent::Status {
+                    status: Status::WaitingApproval,
+                    ..
+                }
+            )
+        })
+        .await;
+    assert_eq!(fixture.session.status(), Status::WaitingApproval);
+    fixture.session.cancel();
+    fixture.session.wait_idle().await;
+    assert_eq!(fixture.session.status(), Status::Idle);
+    assert!(
+        !fixture.session.resolve_approval("call_cmd", Decision::AllowOnce),
+        "pending approval oneshot must be removed on cancellation"
+    );
+    let mut statuses_1 = Vec::new();
+    while let Ok(ev) = fixture.events.try_recv() {
+        if let UiEvent::Status { status, .. } = ev {
+            statuses_1.push(status);
+        }
+    }
+    assert!(
+        statuses_1.first() == Some(&Status::Running) && statuses_1.last() == Some(&Status::Idle),
+        "expected Running before Idle after cancelling approval wait, got {statuses_1:?}"
+    );
+
+    // Part 2: Cancel while waiting on QuestionAsked (`ask_user`).
+    fixture.session.send("ask me".into());
+    fixture
+        .until(|ev| {
+            matches!(
+                ev,
+                UiEvent::Status {
+                    status: Status::WaitingApproval,
+                    ..
+                }
+            )
+        })
+        .await;
+    assert_eq!(fixture.session.status(), Status::WaitingApproval);
+    fixture.session.cancel();
+    fixture.session.wait_idle().await;
+    assert_eq!(fixture.session.status(), Status::Idle);
+    assert!(
+        !fixture.session.answer_questions("call_ask", None),
+        "pending question oneshot must be removed on cancellation"
+    );
+    let mut statuses_2 = Vec::new();
+    while let Ok(ev) = fixture.events.try_recv() {
+        if let UiEvent::Status { status, .. } = ev {
+            statuses_2.push(status);
+        }
+    }
+    assert!(
+        statuses_2.first() == Some(&Status::Running) && statuses_2.last() == Some(&Status::Idle),
+        "expected Running before Idle after cancelling question wait, got {statuses_2:?}"
+    );
+}

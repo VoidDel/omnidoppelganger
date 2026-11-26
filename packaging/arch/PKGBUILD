@@ -1,6 +1,6 @@
 # Maintainer: OmniDoppelganger Contributors
 pkgname=omnidoppelganger
-pkgver=0.8.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="OmniDoppelganger desktop app and CLI — local AI coding agent workbench"
 arch=('x86_64' 'aarch64')
@@ -30,7 +30,7 @@ optdepends=(
 )
 options=('!lto')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz" "omnidoppelganger.desktop")
-sha256sums=('SKIP' 'SKIP')
+sha256sums=('372bcef8c8c73453539b210cac69e3d7449badbe7199c088988235972965e504' '7ca396aba270ea9f01b1c1a9bc9cb44caf4cb0264675d50fdc9547a2add70bbf')
 
 prepare() {
   cd "${srcdir}/${pkgname}-${pkgver}"

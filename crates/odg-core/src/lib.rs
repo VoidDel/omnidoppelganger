@@ -41,6 +41,7 @@ pub mod session;
 pub mod settings;
 pub mod skills;
 pub mod sse;
+pub mod sync_ext;
 pub mod templates;
 #[cfg(test)]
 mod testing;

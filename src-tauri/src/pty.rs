@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use odg_core::sync_ext::MutexExt;
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::Serialize;
 
@@ -179,12 +180,12 @@ fn append_pty_buffer(buf: &mut PtyBuffer, chunk: &str) -> (u64, u64) {
 
 impl PtyHandle {
     fn release_os_handles(&self) {
-        let _ = self.writer.lock().unwrap().take();
-        let _ = self.master.lock().unwrap().take();
+        let _ = self.writer.lock_unpoisoned().take();
+        let _ = self.master.lock_unpoisoned().take();
     }
 
     fn kill_and_release(&self) {
-        if let Some(mut child) = self.child.lock().unwrap().take() {
+        if let Some(mut child) = self.child.lock_unpoisoned().take() {
             let _ = child.kill();
         }
         self.release_os_handles();
@@ -261,7 +262,7 @@ impl PtyHub {
         let id = format!("pty-{seq}");
 
         let index_in_session = {
-            let map = self.instances.lock().unwrap();
+            let map = self.instances.lock_unpoisoned();
             map.values().filter(|h| h.session_id == session_id).count() + 1
         };
         let title = format!("{shell_name} {index_in_session}");
@@ -282,7 +283,7 @@ impl PtyHub {
             exited: exited.clone(),
         });
 
-        self.instances.lock().unwrap().insert(id.clone(), handle.clone());
+        self.instances.lock_unpoisoned().insert(id.clone(), handle.clone());
 
         let reader_id = id.clone();
         let reader_session = session_id.clone();
@@ -302,7 +303,7 @@ impl PtyHub {
                             let text = decode_utf8_stream(&mut carry, &buf[..n]);
                             if !text.is_empty() {
                                 let (start_offset, end_offset) = {
-                                    let mut log = reader_backlog.lock().unwrap();
+                                    let mut log = reader_backlog.lock_unpoisoned();
                                     append_pty_buffer(&mut log, &text)
                                 };
                                 on_output(PtyOutputPayload {
@@ -319,7 +320,7 @@ impl PtyHub {
                 }
                 drop(reader);
                 let code = {
-                    let mut child_guard = reader_handle.child.lock().unwrap();
+                    let mut child_guard = reader_handle.child.lock_unpoisoned();
                     let exit = child_guard
                         .as_mut()
                         .and_then(|c| c.wait().ok())
@@ -328,7 +329,7 @@ impl PtyHub {
                     exit
                 };
                 reader_handle.release_os_handles();
-                *reader_exited.lock().unwrap() = Some(code.unwrap_or(0));
+                *reader_exited.lock_unpoisoned() = Some(code.unwrap_or(0));
                 on_exit(PtyExitPayload {
                     id: reader_id,
                     session_id: reader_session,
@@ -338,7 +339,7 @@ impl PtyHub {
             .map_err(|error| format!("无法启动终端监听线程：{error}"))?;
 
         let (initial_backlog, initial_offset) = {
-            let snap = backlog.lock().unwrap();
+            let snap = backlog.lock_unpoisoned();
             (snap.text.clone(), snap.total_bytes)
         };
 
@@ -355,14 +356,14 @@ impl PtyHub {
     }
 
     pub fn list(&self, session_id: &str) -> Vec<PtyInfo> {
-        let map = self.instances.lock().unwrap();
+        let map = self.instances.lock_unpoisoned();
         let mut out: Vec<PtyInfo> = map
             .iter()
             .filter(|(_, h)| h.session_id == session_id)
             .map(|(id, h)| {
-                let exited = *h.exited.lock().unwrap();
+                let exited = *h.exited.lock_unpoisoned();
                 let (backlog, backlog_end_offset) = {
-                    let snap = h.backlog.lock().unwrap();
+                    let snap = h.backlog.lock_unpoisoned();
                     (snap.text.clone(), snap.total_bytes)
                 };
                 PtyInfo {
@@ -384,12 +385,11 @@ impl PtyHub {
     pub fn write(&self, id: &str, data: &str) -> Result<(), String> {
         let handle = self
             .instances
-            .lock()
-            .unwrap()
+            .lock_unpoisoned()
             .get(id)
             .cloned()
             .ok_or("这个终端已经关闭了。")?;
-        let mut guard = handle.writer.lock().unwrap();
+        let mut guard = handle.writer.lock_unpoisoned();
         let writer = guard.as_mut().ok_or("这个终端已经结束运行了。")?;
         writer
             .write_all(data.as_bytes())
@@ -398,12 +398,12 @@ impl PtyHub {
     }
 
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let Some(handle) = self.instances.lock().unwrap().get(id).cloned() else {
+        let Some(handle) = self.instances.lock_unpoisoned().get(id).cloned() else {
             return Ok(());
         };
         let cols = cols.clamp(20, 500);
         let rows = rows.clamp(5, 200);
-        let guard = handle.master.lock().unwrap();
+        let guard = handle.master.lock_unpoisoned();
         let Some(master) = guard.as_ref() else {
             return Ok(());
         };
@@ -418,13 +418,13 @@ impl PtyHub {
     }
 
     pub fn clear_backlog(&self, id: &str) {
-        if let Some(handle) = self.instances.lock().unwrap().get(id) {
-            handle.backlog.lock().unwrap().text.clear();
+        if let Some(handle) = self.instances.lock_unpoisoned().get(id) {
+            handle.backlog.lock_unpoisoned().text.clear();
         }
     }
 
     pub fn close(&self, id: &str) {
-        if let Some(handle) = self.instances.lock().unwrap().remove(id) {
+        if let Some(handle) = self.instances.lock_unpoisoned().remove(id) {
             handle.kill_and_release();
         }
     }
@@ -432,8 +432,7 @@ impl PtyHub {
     pub fn close_session(&self, session_id: &str) {
         let ids: Vec<String> = self
             .instances
-            .lock()
-            .unwrap()
+            .lock_unpoisoned()
             .iter()
             .filter(|(_, h)| h.session_id == session_id)
             .map(|(id, _)| id.clone())
@@ -444,7 +443,7 @@ impl PtyHub {
     }
 
     pub fn shutdown(&self) {
-        let drained: Vec<Arc<PtyHandle>> = self.instances.lock().unwrap().drain().map(|(_, h)| h).collect();
+        let drained: Vec<Arc<PtyHandle>> = self.instances.lock_unpoisoned().drain().map(|(_, h)| h).collect();
         for handle in drained {
             handle.kill_and_release();
         }
@@ -452,10 +451,10 @@ impl PtyHub {
 
     #[cfg(test)]
     pub fn handles_released(&self, id: &str) -> Option<bool> {
-        let handle = self.instances.lock().unwrap().get(id).cloned()?;
-        let master_free = handle.master.lock().unwrap().is_none();
-        let writer_free = handle.writer.lock().unwrap().is_none();
-        let child_free = handle.child.lock().unwrap().is_none();
+        let handle = self.instances.lock_unpoisoned().get(id).cloned()?;
+        let master_free = handle.master.lock_unpoisoned().is_none();
+        let writer_free = handle.writer.lock_unpoisoned().is_none();
+        let child_free = handle.child.lock_unpoisoned().is_none();
         Some(master_free && writer_free && child_free)
     }
 }

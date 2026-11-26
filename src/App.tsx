@@ -1,24 +1,26 @@
-import { type CSSProperties, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { AppLeftSidebar, PANEL_STRIP_WIDTH, normalizeQuote } from "./components/AppPanes";
-import type { ComposerQuoteInput } from "./components/Composer";
+import type { QuotePayload } from "./components/Composer";
 import { HomeEmptyStage, SecondaryPageStage, buildJumpActs } from "./components/EmptyStage";
+import { Guard, lazyWithRetry } from "./components/Guard";
 import { Jump } from "./components/Jump";
 import type { PanelTab } from "./components/SidePanel";
 import type { SidebarTab } from "./components/Sidebar";
 import { StatusBanners } from "./components/StatusBanners";
 import { useCompactLayout, useGlobalShortcuts, usePanel, useSidebar, useTheme } from "./hooks/useGlobalShortcuts";
 import { useSessionController } from "./hooks/useSessionController";
-import { REVIEW_TASK, useSlashCommands } from "./hooks/useSlashCommands";
+import { reviewTaskPrompt, useSlashCommands } from "./hooks/useSlashCommands";
 import { useWorkbenchState } from "./hooks/useWorkbenchState";
 import { useWorkspaceGitSync } from "./hooks/useWorkspaceGitSync";
+import { formatMessage, I18nProvider, resolveLocale } from "./i18n";
 import { api } from "./lib/api";
 import { forwarded } from "./lib/aside";
 import { isProviderEnabled, isProviderKeyed } from "./lib/providers";
 
-const ActiveSessionStage = lazy(() =>
+const ActiveSessionStage = lazyWithRetry(() =>
   import("./components/ActiveSessionStage").then((m) => ({ default: m.ActiveSessionStage })),
 );
-const AppRightPanel = lazy(() =>
+const AppRightPanel = lazyWithRetry(() =>
   import("./components/ActiveSessionStage").then((m) => ({ default: m.AppRightPanel })),
 );
 
@@ -26,6 +28,7 @@ export default function App() {
   const ctl = useSessionController();
   const { state, dispatch, fail, refresh, refreshSettings, saved, scheduled, active, activeId, replay, setReplay } = ctl;
   const [jumping, setJumping] = useState<"all" | "files" | null>(null);
+  const locale = resolveLocale(state.settings?.settings.locale);
   useTheme(state.settings?.settings.theme);
 
   const providers = state.settings?.providers ?? [];
@@ -75,6 +78,7 @@ export default function App() {
   const strip = !compactLayout && (panel.hidden || (ctl.made.length === 0 && ctl.plan.length === 0 && !peek));
   const panelHidden = compactLayout ? !drawerOpen : strip;
   const showPanel = inChat && !!active && (!compactLayout || drawerOpen);
+  const drawerInert = compactLayout && drawerOpen && showPanel;
   const showWorkbenchRef = useRef(wb.showWorkbench);
   showWorkbenchRef.current = wb.showWorkbench;
 
@@ -92,22 +96,22 @@ export default function App() {
   const summonTerminal = useCallback(() => summonPanel("terminal"), [summonPanel]);
 
   const quoteIntoMain = useCallback(
-    (input: string | ComposerQuoteInput) => {
+    (input: QuotePayload) => {
       if (wb.showWorkbench) wb.setInWorkbench(false);
-      ctl.setSeed({ id: Date.now(), quote: normalizeQuote(input) });
+      ctl.setSeed({ id: Date.now(), quote: normalizeQuote(input, locale) });
     },
-    [wb.showWorkbench, wb.setInWorkbench, ctl.setSeed],
+    [wb.showWorkbench, wb.setInWorkbench, ctl.setSeed, locale],
   );
   const quoteIntoAside = useCallback(
-    (input: string | ComposerQuoteInput) => {
+    (input: QuotePayload) => {
       if (!canAside) return;
-      ctl.setAsideSeed({ id: Date.now(), quote: normalizeQuote(input) });
+      ctl.setAsideSeed({ id: Date.now(), quote: normalizeQuote(input, locale) });
       summonAside();
     },
-    [canAside, summonAside, ctl.setAsideSeed],
+    [canAside, summonAside, ctl.setAsideSeed, locale],
   );
   const quoteIntoChat = useCallback(
-    (input: string | ComposerQuoteInput) => (wb.showWorkbench && canAside ? quoteIntoAside(input) : quoteIntoMain(input)),
+    (input: QuotePayload) => (wb.showWorkbench && canAside ? quoteIntoAside(input) : quoteIntoMain(input)),
     [wb.showWorkbench, canAside, quoteIntoAside, quoteIntoMain],
   );
   const attachIntoMain = useCallback(
@@ -128,14 +132,14 @@ export default function App() {
 
   const handleForwardFromAside = useCallback(
     (text: string) => {
-      ctl.send(forwarded(text));
+      ctl.send(forwarded(text, locale));
       if (ctl.stateRef.current.status !== "idle") {
-        dispatch({ type: "note", note: "已作为传音转给主分身，它做完眼下这一步就会收到。" });
+        dispatch({ type: "note", note: formatMessage(locale, "aside.forwardedQueued") });
       } else if (showWorkbenchRef.current) {
-        dispatch({ type: "note", note: "已转给主分身。" });
+        dispatch({ type: "note", note: formatMessage(locale, "aside.forwardedIdle") });
       }
     },
-    [ctl.send, ctl.stateRef, dispatch],
+    [ctl.send, ctl.stateRef, dispatch, locale],
   );
 
   useGlobalShortcuts({
@@ -217,209 +221,214 @@ export default function App() {
   );
 
   return (
-    <div
-      className={["app", showPanel && "with-panel", sidebar.hidden && "sidebar-hidden"].filter(Boolean).join(" ")}
-      style={{ "--sidebar-width": `${sidebar.width}px`, "--panel-width": `${strip ? PANEL_STRIP_WIDTH : panel.width}px` } as CSSProperties}
-    >
-      {!sidebar.hidden && (
-        <AppLeftSidebar
-          sessions={state.sessions}
-          active={active}
-          activeId={activeId}
-          isProjectSession={isProjectSession}
-          canAside={canAside}
-          page={state.page}
-          tab={leftTab}
-          onTab={setLeftTab}
-          width={sidebar.width}
-          onResize={(width) => setSidebar({ ...sidebar, width })}
-          status={state.status}
-          activeWbFile={wb.activeWbFile}
-          fsRefreshTick={git.fsRefreshTick}
-          gitRefreshTick={git.gitRefreshTick}
-          gitChangeCount={git.gitChangeCount}
-          gitBadges={git.gitBadges}
-          gitState={git.gitState}
-          onSelectGitRepo={git.setSelectedGitRepo}
-          onSetGitState={git.setGitState}
-          onBumpRefresh={git.bumpRefresh}
-          onOpenFile={wb.openWorkbenchFile}
-          onOpenDiff={wb.openWorkbenchDiff}
-          onAttachMain={attachIntoMain}
-          onAttachAside={attachIntoAside}
-          onDeletedPath={wb.handleDeletedWorkspacePath}
-          onRenamedPath={wb.handleRenamedWorkspacePath}
-          onAskReview={() => (ctl.send(REVIEW_TASK), wb.showWorkbench && wb.setInWorkbench(false))}
-          onHome={ctl.goHome}
-          onMcp={toMcp}
-          onSkills={toSkills}
-          onSchedules={toSchedules}
-          onSettings={toSettings}
-          onChat={ctl.chat}
-          onOpen={ctl.open}
-          onNew={ctl.create}
-          onNewIn={ctl.createIn}
-          onForkSession={ctl.forkSessionById}
-          onDeleteSession={(id) => api.deleteSession(id).then(() => ctl.dispatchDeleted(id), fail)}
-          onExportSession={ctl.exportSession}
-          onCleanScheduled={(ids) => void ctl.cleanScheduledSessions(ids)}
-          onSessionUpdated={(item) => dispatch({ type: "session", item })}
-          onNote={(note) => dispatch({ type: "note", note })}
-          onError={fail}
-        />
-      )}
-      <main className="main">
-        <div className="stage-drag" data-tauri-drag-region />
-        {!(inChat && active) && banners}
-        {!inChat ? (
-          <SecondaryPageStage
-            page={state.page}
-            settings={state.settings}
-            schedules={state.schedules}
+    <I18nProvider locale={locale}>
+      <div
+        className={["app", showPanel && "with-panel", sidebar.hidden && "sidebar-hidden"].filter(Boolean).join(" ")}
+        style={{ "--sidebar-width": `${sidebar.width}px`, "--panel-width": `${strip ? PANEL_STRIP_WIDTH : panel.width}px` } as CSSProperties}
+      >
+        {!sidebar.hidden && (
+          <AppLeftSidebar
+            inert={drawerInert}
             sessions={state.sessions}
-            active={active}
-            saved={saved}
-            scheduled={scheduled}
-            refreshSettings={refreshSettings}
-            onSettingsLoaded={(settings) => dispatch({ type: "settings", settings })}
-            onSchedulesLoaded={(schedules) => dispatch({ type: "schedules", schedules })}
-            onOpenSession={ctl.open}
-            onCleanSessions={(ids) => void ctl.cleanScheduledSessions(ids)}
-            onError={fail}
-          />
-        ) : active ? (
-          <Suspense fallback={null}>
-            <ActiveSessionStage
-              active={active}
-              sessions={state.sessions}
-              events={state.events}
-              queued={state.queued}
-              status={state.status}
-              rows={ctl.rows}
-              stops={ctl.stops}
-              spent={ctl.spent}
-              costUsd={ctl.costUsd}
-              planReady={ctl.planReady}
-              isChatSession={isChatSession}
-              isProjectSession={isProjectSession}
-              canAside={canAside}
-              settings={state.settings}
-              providers={providers}
-              replay={replay}
-              setReplay={setReplay}
-              wb={wb}
-              fsRefreshTick={git.fsRefreshTick}
-              gitRefreshTick={git.gitRefreshTick}
-              sidebarHidden={sidebar.hidden}
-              onShowSidebar={() => setSidebar((cur) => ({ ...cur, hidden: false }))}
-              panelHidden={panelHidden}
-              onTogglePanel={() => {
-                if (compactLayout) setDrawerOpen((o) => (!o && setPeek(true), !o));
-                else if (strip) (setPeek(true), setPanel({ ...panel, hidden: false }));
-                else setPanel({ ...panel, hidden: true });
-              }}
-              banners={banners}
-              drafts={ctl.draftsRef.current}
-              seed={ctl.seed}
-              onClearSeed={() => ctl.setSeed(null)}
-              slashCommands={slashCommands}
-              listedCheck={listedCheck}
-              keyedCheck={keyedCheck}
-              onSaveLimit={(limit) => saveLimit(limit, refresh)}
-              onOpenSession={ctl.open}
-              onForkFrom={ctl.forkFrom}
-              onExportSession={ctl.exportSession}
-              onDeleteSession={ctl.dispatchDeleted}
-              onRefreshSessions={refresh}
-              onSessionUpdated={(item) => dispatch({ type: "session", item })}
-              onNote={(note) => dispatch({ type: "note", note })}
-              onError={fail}
-              onDecide={ctl.decide}
-              onAnswer={ctl.answer}
-              onOpenFile={ctl.openFile}
-              onPicture={ctl.pictureOf}
-              versionOf={ctl.versionOf}
-              onQuoteIntoMain={quoteIntoMain}
-              onQuoteIntoAside={quoteIntoAside}
-              onAttachIntoMain={attachIntoMain}
-              onAttachIntoAside={attachIntoAside}
-              onSwitchMode={ctl.switchMode}
-              onCarryOut={ctl.carryOut}
-              onSend={ctl.send}
-            />
-          </Suspense>
-        ) : (
-          <HomeEmptyStage
-            missingKey={missingKey}
-            defaultProviderName={defaultProvider?.name}
-            sessions={state.sessions}
-            schedules={state.schedules}
-            onCreate={ctl.create}
-            onChat={ctl.chat}
-            onOpenSettings={() => dispatch({ type: "page", page: "settings" })}
-            onOpenSession={ctl.open}
-            onOpenSchedules={toSchedules}
-          />
-        )}
-      </main>
-      {jumping && (
-        <Jump
-          mode={jumping}
-          sessions={state.sessions}
-          acts={buildJumpActs({ isProjectSession, active, goHome: ctl.goHome, create: ctl.create, chat: ctl.chat, openLeftTab: showSidebarTab, summonAside, summonTerminal, toSkills, toMcp, toSchedules, toSettings })}
-          onOpen={ctl.open}
-          onSearch={api.searchSessions}
-          onSearchFiles={isProjectSession && activeId ? (q) => api.searchWorkspaceFiles(activeId, q, 60) : undefined}
-          onOpenFile={isProjectSession ? (relPath, line) => (dispatch({ type: "page", page: "chat" }), wb.openWorkbenchFile(relPath, false, line)) : undefined}
-          onClose={() => setJumping(null)}
-        />
-      )}
-      {showPanel && (
-        <Suspense fallback={null}>
-          <AppRightPanel
             active={active}
             activeId={activeId}
-            sessions={state.sessions}
-            status={state.status}
-            replaying={!!replay}
-            canAside={canAside}
             isProjectSession={isProjectSession}
-            showWorkbench={wb.showWorkbench}
-            compactLayout={compactLayout}
-            strip={strip}
-            panelWidth={panel.width}
-            sidebarWidth={sidebar.hidden ? 0 : sidebar.width}
-            files={ctl.files}
-            runs={ctl.runs}
-            plan={ctl.plan}
-            made={ctl.made}
-            summonTab={summonPanelTab}
-            drafts={ctl.draftsRef.current}
-            providers={providers}
-            defaultEffort={state.settings?.settings.effort ?? "high"}
-            efforts={state.settings?.efforts ?? ["low", "medium", "high", "xhigh", "max"]}
-            contextSetting={state.settings?.settings.context_limit ?? 0}
-            contextAuto={!!state.settings?.settings.context_auto}
-            asideSeed={ctl.asideSeed}
-            onClearAsideSeed={() => ctl.setAsideSeed(null)}
-            listedCheck={listedCheck}
-            keyedCheck={keyedCheck}
-            onSaveLimit={saveLimit}
-            onRefreshSessions={refresh}
-            onAsideId={(aid) => active && aid && ctl.asideIdsRef.current.set(active.id, aid)}
-            onForwardFromAside={handleForwardFromAside}
-            onQuoteIntoChat={quoteIntoChat}
-            onResize={(width) => setPanel({ ...panel, width })}
-            onWiden={() => (setPeek(true), setPanel((cur) => (cur.hidden ? { ...cur, hidden: false } : cur)))}
-            onCloseDrawer={() => setDrawerOpen(false)}
-            onInspectFile={isProjectSession ? (relPath) => wb.openWorkbenchFile(relPath, false) : undefined}
-            onOpenFile={ctl.openFile}
-            onRestoreArtifact={ctl.restoreArtifact}
-            onSaveArtifactCopy={ctl.saveArtifactCopy}
+            canAside={canAside}
+            page={state.page}
+            tab={leftTab}
+            onTab={setLeftTab}
+            width={sidebar.width}
+            onResize={(width) => setSidebar({ ...sidebar, width })}
+            status={state.status}
+            activeWbFile={wb.activeWbFile}
+            fsRefreshTick={git.fsRefreshTick}
+            gitRefreshTick={git.gitRefreshTick}
+            gitChangeCount={git.gitChangeCount}
+            gitBadges={git.gitBadges}
+            gitState={git.gitState}
+            onSelectGitRepo={git.setSelectedGitRepo}
+            onSetGitState={git.setGitState}
+            onBumpRefresh={git.bumpRefresh}
+            onOpenFile={wb.openWorkbenchFile}
+            onOpenDiff={wb.openWorkbenchDiff}
+            onAttachMain={attachIntoMain}
+            onAttachAside={attachIntoAside}
+            onDeletedPath={wb.handleDeletedWorkspacePath}
+            onRenamedPath={wb.handleRenamedWorkspacePath}
+            onAskReview={() => (ctl.send(reviewTaskPrompt(locale)), wb.showWorkbench && wb.setInWorkbench(false))}
+            onHome={ctl.goHome}
+            onMcp={toMcp}
+            onSkills={toSkills}
+            onSchedules={toSchedules}
+            onSettings={toSettings}
+            onChat={ctl.chat}
+            onOpen={ctl.open}
+            onNew={ctl.create}
+            onNewIn={ctl.createIn}
+            onForkSession={ctl.forkSessionById}
+            onDeleteSession={(id) => api.deleteSession(id).then(() => ctl.dispatchDeleted(id), fail)}
+            onExportSession={ctl.exportSession}
+            onCleanScheduled={(ids) => void ctl.cleanScheduledSessions(ids)}
+            onSessionUpdated={(item) => dispatch({ type: "session", item })}
+            onNote={(note) => dispatch({ type: "note", note })}
             onError={fail}
           />
-        </Suspense>
-      )}
-    </div>
+        )}
+        <main className="main" inert={drawerInert || undefined}>
+          <div className="stage-drag" data-tauri-drag-region />
+          {!(inChat && active) && banners}
+          {!inChat ? (
+            <SecondaryPageStage
+              page={state.page}
+              settings={state.settings}
+              schedules={state.schedules}
+              sessions={state.sessions}
+              active={active}
+              saved={saved}
+              scheduled={scheduled}
+              refreshSettings={refreshSettings}
+              onSettingsLoaded={(settings) => dispatch({ type: "settings", settings })}
+              onSchedulesLoaded={(schedules) => dispatch({ type: "schedules", schedules })}
+              onOpenSession={ctl.open}
+              onCleanSessions={(ids) => void ctl.cleanScheduledSessions(ids)}
+              onError={fail}
+            />
+          ) : active ? (
+            <Suspense fallback={null}>
+              <ActiveSessionStage
+                active={active}
+                sessions={state.sessions}
+                events={state.events}
+                queued={state.queued}
+                status={state.status}
+                rows={ctl.rows}
+                stops={ctl.stops}
+                spent={ctl.spent}
+                costUsd={ctl.costUsd}
+                planReady={ctl.planReady}
+                isChatSession={isChatSession}
+                isProjectSession={isProjectSession}
+                canAside={canAside}
+                settings={state.settings}
+                providers={providers}
+                replay={replay}
+                setReplay={setReplay}
+                wb={wb}
+                fsRefreshTick={git.fsRefreshTick}
+                gitRefreshTick={git.gitRefreshTick}
+                sidebarHidden={sidebar.hidden}
+                onShowSidebar={() => setSidebar((cur) => ({ ...cur, hidden: false }))}
+                panelHidden={panelHidden}
+                onTogglePanel={() => {
+                  if (compactLayout) setDrawerOpen((o) => (!o && setPeek(true), !o));
+                  else if (strip) (setPeek(true), setPanel({ ...panel, hidden: false }));
+                  else setPanel({ ...panel, hidden: true });
+                }}
+                banners={banners}
+                drafts={ctl.draftsRef.current}
+                seed={ctl.seed}
+                onClearSeed={() => ctl.setSeed(null)}
+                slashCommands={slashCommands}
+                listedCheck={listedCheck}
+                keyedCheck={keyedCheck}
+                onSaveLimit={(limit) => saveLimit(limit, refresh)}
+                onOpenSession={ctl.open}
+                onForkFrom={ctl.forkFrom}
+                onExportSession={ctl.exportSession}
+                onDeleteSession={ctl.dispatchDeleted}
+                onRefreshSessions={refresh}
+                onSessionUpdated={(item) => dispatch({ type: "session", item })}
+                onNote={(note) => dispatch({ type: "note", note })}
+                onError={fail}
+                onDecide={ctl.decide}
+                onAnswer={ctl.answer}
+                onOpenFile={ctl.openFile}
+                onPicture={ctl.pictureOf}
+                versionOf={ctl.versionOf}
+                onQuoteIntoMain={quoteIntoMain}
+                onQuoteIntoAside={quoteIntoAside}
+                onAttachIntoMain={attachIntoMain}
+                onAttachIntoAside={attachIntoAside}
+                onSwitchMode={ctl.switchMode}
+                onCarryOut={ctl.carryOut}
+                onSend={ctl.send}
+              />
+            </Suspense>
+          ) : (
+            <HomeEmptyStage
+              missingKey={missingKey}
+              defaultProviderName={defaultProvider?.name}
+              sessions={state.sessions}
+              schedules={state.schedules}
+              onCreate={ctl.create}
+              onChat={ctl.chat}
+              onOpenSettings={() => dispatch({ type: "page", page: "settings" })}
+              onOpenSession={ctl.open}
+              onOpenSchedules={toSchedules}
+            />
+          )}
+        </main>
+        {jumping && (
+          <Guard name={formatMessage(locale, "guard.jump")} resetKey={jumping} onDismiss={() => setJumping(null)}>
+            <Jump
+              mode={jumping}
+              sessions={state.sessions}
+              acts={buildJumpActs({ isProjectSession, active, goHome: ctl.goHome, create: ctl.create, chat: ctl.chat, openLeftTab: showSidebarTab, summonAside, summonTerminal, toSkills, toMcp, toSchedules, toSettings }, locale)}
+              onOpen={ctl.open}
+              onSearch={api.searchSessions}
+              onSearchFiles={isProjectSession && activeId ? (q) => api.searchWorkspaceFiles(activeId, q, 60) : undefined}
+              onOpenFile={isProjectSession ? (relPath, line) => (dispatch({ type: "page", page: "chat" }), wb.openWorkbenchFile(relPath, false, line)) : undefined}
+              onClose={() => setJumping(null)}
+            />
+          </Guard>
+        )}
+        {showPanel && (
+          <Suspense fallback={null}>
+            <AppRightPanel
+              active={active}
+              activeId={activeId}
+              sessions={state.sessions}
+              status={state.status}
+              replaying={!!replay}
+              canAside={canAside}
+              isProjectSession={isProjectSession}
+              showWorkbench={wb.showWorkbench}
+              compactLayout={compactLayout}
+              strip={strip}
+              panelWidth={panel.width}
+              sidebarWidth={sidebar.hidden ? 0 : sidebar.width}
+              files={ctl.files}
+              runs={ctl.runs}
+              plan={ctl.plan}
+              made={ctl.made}
+              summonTab={summonPanelTab}
+              drafts={ctl.draftsRef.current}
+              providers={providers}
+              defaultEffort={state.settings?.settings.effort ?? "high"}
+              efforts={state.settings?.efforts ?? ["low", "medium", "high", "xhigh", "max"]}
+              contextSetting={state.settings?.settings.context_limit ?? 0}
+              contextAuto={!!state.settings?.settings.context_auto}
+              asideSeed={ctl.asideSeed}
+              onClearAsideSeed={() => ctl.setAsideSeed(null)}
+              listedCheck={listedCheck}
+              keyedCheck={keyedCheck}
+              onSaveLimit={saveLimit}
+              onRefreshSessions={refresh}
+              onAsideId={(aid) => active && aid && ctl.asideIdsRef.current.set(active.id, aid)}
+              onForwardFromAside={handleForwardFromAside}
+              onQuoteIntoChat={quoteIntoChat}
+              onResize={(width) => setPanel({ ...panel, width })}
+              onWiden={() => (setPeek(true), setPanel((cur) => (cur.hidden ? { ...cur, hidden: false } : cur)))}
+              onCloseDrawer={() => setDrawerOpen(false)}
+              onInspectFile={isProjectSession ? (relPath) => wb.openWorkbenchFile(relPath, false) : undefined}
+              onOpenFile={ctl.openFile}
+              onRestoreArtifact={ctl.restoreArtifact}
+              onSaveArtifactCopy={ctl.saveArtifactCopy}
+              onError={fail}
+            />
+          </Suspense>
+        )}
+      </div>
+    </I18nProvider>
   );
 }

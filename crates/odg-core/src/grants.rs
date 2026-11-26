@@ -13,7 +13,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::fsutil::write_atomically;
+use crate::fsutil::{ensure_private_dir, write_private_atomically};
+use crate::sync_ext::MutexExt;
 
 /// Grant key marking a workspace as trusted to load project-local instructions (`AGENTS.md` / `CLAUDE.md`),
 /// `.odg/skills/`, and `.odg/prompts/`.
@@ -74,14 +75,14 @@ impl GrantStore {
     }
 
     fn change(&self, change: impl FnOnce(&mut Grants)) -> io::Result<()> {
-        let _guard = self.writing.lock().unwrap();
+        let _guard = self.writing.lock_unpoisoned();
         let mut grants = self.all();
         change(&mut grants);
         grants.retain(|_, kept| !kept.is_empty());
-        if let Some(directory) = self.path.parent() {
-            std::fs::create_dir_all(directory)?;
+        if let Some(directory) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            ensure_private_dir(directory)?;
         }
-        write_atomically(
+        write_private_atomically(
             &self.path,
             &serde_json::to_vec_pretty(&grants).map_err(io::Error::other)?,
         )

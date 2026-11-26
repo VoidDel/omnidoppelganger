@@ -7,24 +7,27 @@
 //! `credentials.json` beside the settings, in plain text.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::anthropic::DEFAULT_MODEL;
-use crate::fsutil::write_atomically;
+use crate::fsutil::{ensure_private_dir, write_private_atomically};
 use crate::llm::Endpoint;
 use crate::policy::Mode;
 use crate::providers::{
     DEFAULT_PROVIDER, Instance, Listed, PROVIDERS, Provider, UNKNOWN_CONTEXT_WINDOW, documented_window, instance,
     is_added, provider,
 };
+use crate::sync_ext::MutexExt;
 use crate::web::{INTERNATIONAL_ENGINE, SEARCH_ENGINES, SearchConfig};
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const THEMES: &[&str] = &["system", "light", "dark"];
+pub const LOCALES: &[&str] = &["zh-CN", "zh-plain", "en"];
+pub const DEFAULT_LOCALE: &str = "zh-CN";
 /// Most models here hold a million tokens, but every request sends the whole
 /// conversation, so compacting long before the window is full keeps a long
 /// session affordable.
@@ -72,6 +75,10 @@ fn default_guardian() -> bool {
 
 fn default_search_engine() -> String {
     SEARCH_ENGINES[0].0.to_string()
+}
+
+fn default_locale() -> String {
+    DEFAULT_LOCALE.to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,6 +153,13 @@ pub struct Settings {
     /// In auto mode, the seconds a request for approval waits before it is declined by itself; 0 waits for good.
     #[serde(default = "default_approval_timeout")]
     pub approval_timeout: u64,
+    /// Interface and built-in prompt language: `"zh-CN"` (poetic ink Chinese), `"zh-plain"` (modern Chinese), or `"en"`.
+    #[serde(default = "default_locale")]
+    pub locale: String,
+    /// Whether an already-installed document runtime may update itself silently in the background on startup.
+    /// Defaults to `false` so no unprompted background network request occurs without user consent.
+    #[serde(default)]
+    pub auto_update_runtime: bool,
 }
 
 impl Default for Settings {
@@ -170,6 +184,8 @@ impl Default for Settings {
             guardian: true,
             guardian_models: BTreeMap::new(),
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
+            locale: default_locale(),
+            auto_update_runtime: false,
         }
     }
 }
@@ -208,6 +224,12 @@ impl Settings {
         }
         if !THEMES.contains(&self.theme.as_str()) {
             self.theme = default.theme;
+        }
+        let trimmed_locale = self.locale.trim();
+        if LOCALES.contains(&trimmed_locale) {
+            self.locale = trimmed_locale.to_string();
+        } else {
+            self.locale = default.locale;
         }
         let names = self.provider_names.clone();
         let active_provider = self.provider.clone();
@@ -430,11 +452,13 @@ impl SettingsStore {
     /// keeps them in its own file so it never reads or changes the keys of
     /// the user's everyday home. Keys still in the file are moved over.
     pub fn at_home() -> Self {
+        let dir = home();
+        let _ = ensure_private_dir(&dir);
         let custom = std::env::var_os("ODG_HOME").is_some_and(|value| !value.is_empty());
         let store = if custom {
-            Self::new(home())
+            Self::new(dir)
         } else {
-            Self::with_vault(home(), Arc::new(SystemVault))
+            Self::with_vault(dir, Arc::new(SystemVault))
         };
         store.migrate_keys();
         store
@@ -471,7 +495,7 @@ impl SettingsStore {
     /// Also primes the in-memory vault cache so subsequent reads do not touch the OS keychain again.
     pub fn migrate_keys(&self) {
         let Some(vault) = &self.vault else { return };
-        let mut cache = self.vault_cache.lock().unwrap();
+        let mut cache = self.vault_cache.lock_unpoisoned();
         let (mut bundle, had_bundle) = match vault.get(BUNDLE_KEY) {
             Ok(Some(raw)) => (Self::parse_bundle(&raw), true),
             Ok(None) => (BTreeMap::new(), false),
@@ -543,7 +567,7 @@ impl SettingsStore {
     /// known from then on without asking again. Models it gave no size for
     /// keep whatever was known of them.
     pub fn record_models(&self, provider: &str, models: &[Listed]) -> std::io::Result<()> {
-        let mut held = self.windows.lock().unwrap();
+        let mut held = self.windows.lock_unpoisoned();
         let windows = held.get_or_insert_with(|| self.read_windows());
         let mut changed = false;
         for model in models {
@@ -560,8 +584,8 @@ impl SettingsStore {
         if !changed {
             return Ok(());
         }
-        std::fs::create_dir_all(&self.directory)?;
-        write_atomically(
+        ensure_private_dir(&self.directory)?;
+        write_private_atomically(
             &self.models_path(),
             &serde_json::to_vec_pretty(&*windows).map_err(std::io::Error::other)?,
         )
@@ -585,7 +609,7 @@ impl SettingsStore {
                 source: WindowSource::Set,
             };
         }
-        let mut held = self.windows.lock().unwrap();
+        let mut held = self.windows.lock_unpoisoned();
         let reported = held
             .get_or_insert_with(|| self.read_windows())
             .get(provider)
@@ -624,8 +648,8 @@ impl SettingsStore {
 
     pub fn save(&self, settings: Settings) -> std::io::Result<Settings> {
         let settings = settings.valid();
-        std::fs::create_dir_all(&self.directory)?;
-        write_atomically(
+        ensure_private_dir(&self.directory)?;
+        write_private_atomically(
             &self.settings_path(),
             &serde_json::to_vec_pretty(&settings).map_err(std::io::Error::other)?,
         )?;
@@ -643,7 +667,7 @@ impl SettingsStore {
     /// Read the cached vaulted key bundle, loading it once from the OS credential manager on first use.
     fn vaulted_key(&self, name: &str) -> Option<String> {
         let vault = self.vault.as_ref()?;
-        let mut cache = self.vault_cache.lock().unwrap();
+        let mut cache = self.vault_cache.lock_unpoisoned();
         if let VaultCache::Unloaded = &*cache {
             *cache = match vault.get(BUNDLE_KEY) {
                 Ok(Some(raw)) => VaultCache::Loaded(Self::parse_bundle(&raw)),
@@ -873,7 +897,7 @@ impl SettingsStore {
         let name = format!("{provider_id}_api_key");
         let mut credentials = self.credentials();
         if let Some(vault) = &self.vault {
-            let mut cache = self.vault_cache.lock().unwrap();
+            let mut cache = self.vault_cache.lock_unpoisoned();
             let current = match &*cache {
                 VaultCache::Loaded(map) => Ok(map.clone()),
                 VaultCache::Unloaded | VaultCache::Unavailable => vault
@@ -907,7 +931,7 @@ impl SettingsStore {
         known(provider_id)?;
         let name = format!("{provider_id}_api_key");
         if let Some(vault) = &self.vault {
-            let mut cache = self.vault_cache.lock().unwrap();
+            let mut cache = self.vault_cache.lock_unpoisoned();
             let mut map = match &*cache {
                 VaultCache::Loaded(map) => map.clone(),
                 VaultCache::Unloaded | VaultCache::Unavailable => vault
@@ -944,13 +968,12 @@ impl SettingsStore {
                 _ => Ok(()),
             };
         }
-        std::fs::create_dir_all(&self.directory)?;
+        ensure_private_dir(&self.directory)?;
         let path = self.credentials_path();
-        write_atomically(
+        write_private_atomically(
             &path,
             &serde_json::to_vec_pretty(&credentials).map_err(std::io::Error::other)?,
-        )?;
-        restrict(&path)
+        )
     }
 }
 
@@ -961,17 +984,6 @@ fn known(provider_id: &str) -> std::io::Result<&'static Provider> {
             format!("unknown provider `{provider_id}`"),
         )
     })
-}
-
-#[cfg(unix)]
-fn restrict(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn restrict(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 /// Show the first 7 and last 4 characters of a key of 16 or more; hide shorter keys entirely.
@@ -1394,6 +1406,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             context_window,
+            free: false,
         };
         let window = |tokens, source| Window { tokens, source };
         let plain = Settings::default();
@@ -1624,5 +1637,83 @@ mod tests {
                 key: Some("sk-kimi".into())
             }
         );
+    }
+
+    #[test]
+    fn defaults_and_validates_locale_and_auto_update_runtime_for_legacy_settings() {
+        let fresh = Settings::default();
+        assert_eq!(fresh.locale, "zh-CN");
+        assert!(!fresh.auto_update_runtime);
+
+        // Legacy settings.json without `locale` or `auto_update_runtime` reads cleanly with safe defaults.
+        let legacy =
+            serde_json::from_str::<Settings>(r#"{"model":"claude-sonnet-5-5","effort":"high","theme":"dark"}"#)
+                .unwrap()
+                .valid();
+        assert_eq!(legacy.locale, "zh-CN");
+        assert!(!legacy.auto_update_runtime);
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(directory.path().join("home"));
+        for valid_locale in ["zh-CN", "zh-plain", "en"] {
+            let saved = store
+                .save(Settings {
+                    locale: format!(" {valid_locale} "),
+                    auto_update_runtime: true,
+                    ..Settings::default()
+                })
+                .unwrap();
+            assert_eq!(saved.locale, valid_locale);
+            assert!(saved.auto_update_runtime);
+        }
+        let fallback = store
+            .save(Settings {
+                locale: "fr-FR".into(),
+                ..Settings::default()
+            })
+            .unwrap();
+        assert_eq!(fallback.locale, "zh-CN");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enforces_0700_dir_and_0600_file_permissions_on_settings_credentials_models_and_grants() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join(".odg");
+        // Pre-create home with overly broad 0o755 permissions to verify tightening to 0o700.
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let store = SettingsStore::new(&home);
+        store.save(Settings::default()).unwrap();
+        store
+            .save_api_key("anthropic", "sk-ant-api03-abcdefghijklmnop")
+            .unwrap();
+        store
+            .record_models(
+                "zhipu",
+                &[Listed {
+                    id: "glm-5.3".into(),
+                    name: "GLM-5.3".into(),
+                    context_window: Some(200_000),
+                    free: false,
+                }],
+            )
+            .unwrap();
+
+        let grants_path = home.join("grants.json");
+        let grants = crate::grants::GrantStore::new(&grants_path);
+        grants
+            .add(std::path::Path::new("/work/proj"), "command:cargo test")
+            .unwrap();
+
+        let mode_of = |p: &std::path::Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode_of(&home), 0o700);
+        assert_eq!(mode_of(&home.join("settings.json")), 0o600);
+        assert_eq!(mode_of(&home.join("credentials.json")), 0o600);
+        assert_eq!(mode_of(&home.join("models.json")), 0o600);
+        assert_eq!(mode_of(&grants_path), 0o600);
     }
 }

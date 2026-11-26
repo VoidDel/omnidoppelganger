@@ -732,3 +732,174 @@ fn odg_cli_sigint_cancels_turn_kills_child_group_and_closes_session_log() {
         "expected cancelled reason, got: {last}"
     );
 }
+
+#[test]
+fn lands_isolated_worktree_session_into_origin_and_rejects_invalid_targets() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    for args in [
+        &["init", "--initial-branch", "main"][..],
+        &["config", "user.name", "Test"],
+        &["config", "user.email", "test@example.com"],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::write(repo.path().join("README.md"), "base\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // 1. Create a worktree session (`-w`) where the agent writes `landed.txt`.
+    let (addr, srv) = serve(vec![
+        Reply {
+            text: "Writing in isolated worktree.",
+            tool: Some((
+                "write_file",
+                json!({ "path": "landed.txt", "content": "merged from worktree\n" }),
+            )),
+        },
+        Reply {
+            text: "Worktree change ready.",
+            tool: None,
+        },
+    ]);
+    let wt_run = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args([
+            "-C",
+            &repo.path().to_string_lossy(),
+            "-w",
+            "--yes",
+            "--json",
+            "add",
+            "landed.txt",
+        ])
+        .env("ODG_HOME", home.path())
+        .env("ANTHROPIC_BASE_URL", &addr)
+        .env("ANTHROPIC_API_KEY", "test-key")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(wt_run.status.success(), "{}", String::from_utf8_lossy(&wt_run.stderr));
+    let _ = srv.join().unwrap();
+
+    let header: Value = serde_json::from_str(String::from_utf8_lossy(&wt_run.stdout).lines().next().unwrap()).unwrap();
+    let wt_session_id = header["session_id"].as_str().unwrap().to_string();
+    // Origin checkout is still untouched before `--land`.
+    assert!(!repo.path().join("landed.txt").exists());
+
+    // 2. Land by session prefix with `--json`.
+    let prefix = &wt_session_id[..8];
+    let land_json = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["--land", prefix, "--json"])
+        .env("ODG_HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        land_json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&land_json.stderr)
+    );
+    let landed_payload: Value = serde_json::from_slice(&land_json.stdout).unwrap();
+    assert_eq!(landed_payload["kind"], "landed");
+    assert_eq!(landed_payload["session_id"], wt_session_id);
+    assert_eq!(landed_payload["into"], "main");
+    assert_eq!(landed_payload["commits"], 1);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("landed.txt")).unwrap(),
+        "merged from worktree\n"
+    );
+
+    // 3. Landing a second time reports 0 new commits cleanly in human output.
+    let land_again = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["--land", &wt_session_id])
+        .env("ODG_HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(land_again.status.success());
+    assert!(
+        String::from_utf8_lossy(&land_again.stdout).contains("Nothing new to land"),
+        "{}",
+        String::from_utf8_lossy(&land_again.stdout)
+    );
+
+    // 4. Rejects a non-worktree session with exit status 1.
+    let (addr2, srv2) = serve(vec![Reply {
+        text: "Plain session.",
+        tool: None,
+    }]);
+    let plain_run = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["-C", &repo.path().to_string_lossy(), "--json", "plain"])
+        .env("ODG_HOME", home.path())
+        .env("ANTHROPIC_BASE_URL", &addr2)
+        .env("ANTHROPIC_API_KEY", "test-key")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(plain_run.status.success());
+    let _ = srv2.join().unwrap();
+    let plain_header: Value =
+        serde_json::from_str(String::from_utf8_lossy(&plain_run.stdout).lines().next().unwrap()).unwrap();
+    let plain_id = plain_header["session_id"].as_str().unwrap();
+
+    let bad_land = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["--land", plain_id])
+        .env("ODG_HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(bad_land.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&bad_land.stderr).contains("no isolated worktree"),
+        "{}",
+        String::from_utf8_lossy(&bad_land.stderr)
+    );
+
+    // 5. Rejects a worktree session whose turn is still open (`not idle`).
+    let log_file = home
+        .path()
+        .join("sessions")
+        .join(&wt_session_id)
+        .join("session.v1.jsonl");
+    let mut raw = std::fs::read_to_string(&log_file).unwrap();
+    raw.push_str("{\"seq\":99,\"ts\":\"2026-11-26T00:00:00Z\",\"type\":\"turn/start\",\"data\":{\"turn\":99}}\n");
+    std::fs::write(&log_file, raw).unwrap();
+
+    let busy_land = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["--land", &wt_session_id])
+        .env("ODG_HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(busy_land.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&busy_land.stderr).contains("not idle"),
+        "{}",
+        String::from_utf8_lossy(&busy_land.stderr)
+    );
+}

@@ -7,20 +7,12 @@ name: CI
 on:
   push:
     branches: [main]
-    # Pure human-facing documentation changes nothing compiled or embedded.
-    # Embedded skill definitions (`crates/odg-core/skills/*/SKILL.md`) are NEVER ignored.
     paths-ignore:
-      - "README.md"
-      - "CONTRIBUTING.md"
       - "LICENSE*"
-      - "doc/**"
       - ".github/ISSUE_TEMPLATE/**"
   pull_request:
     paths-ignore:
-      - "README.md"
-      - "CONTRIBUTING.md"
       - "LICENSE*"
-      - "doc/**"
       - ".github/ISSUE_TEMPLATE/**"
 
 permissions:
@@ -74,6 +66,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verify manifest version alignment
         run: node scripts/check-version.mjs
+      - name: Verify documentation consistency
+        run: node scripts/check-docs.mjs
       - name: Frontend lint
         run: pnpm lint
       - name: Frontend tests

@@ -270,12 +270,13 @@ pub fn parse_magpie_quotas_json(raw: &str) -> Result<AntigravityQuota, String> {
 /// Query real-time subscription quotas from a Magpie gateway (`GET /v1/magpie/quotas`).
 /// Cached per `base_url` for 60 seconds unless `force` is true.
 pub async fn fetch_quota(base_url: &str, api_key: Option<&str>, force: bool) -> Result<AntigravityQuota, String> {
+    use crate::sync_ext::MutexExt;
     let origin = magpie_origin(base_url)?;
 
     static CACHE: OnceLock<Mutex<HashMap<String, (Instant, AntigravityQuota)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if !force
-        && let Some((at, quota)) = cache.lock().unwrap().get(&origin)
+        && let Some((at, quota)) = cache.lock_unpoisoned().get(&origin)
         && at.elapsed() < QUOTA_CACHE_TTL
     {
         return Ok(quota.clone());
@@ -327,7 +328,7 @@ pub async fn fetch_quota(base_url: &str, api_key: Option<&str>, force: bool) -> 
     }
 
     let quota = parse_magpie_quotas_json(&body)?;
-    cache.lock().unwrap().insert(origin, (Instant::now(), quota.clone()));
+    cache.lock_unpoisoned().insert(origin, (Instant::now(), quota.clone()));
     Ok(quota)
 }
 

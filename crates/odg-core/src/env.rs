@@ -15,20 +15,23 @@ use std::path::{Path, PathBuf};
 /// Widen this process's `PATH` with the folders programs are usually installed in, keeping what it had. Called once,
 /// at start, before anything is started that is looked for on the `PATH`.
 pub fn adopt_shell_path() {
-    let current: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect())
-        .unwrap_or_default();
-    let home = dirs::home_dir().unwrap_or_default();
-    let widened = widened(&current, usual_folders(&home));
-    if widened == current {
-        return; // Started from a terminal, which gave it a shell's own `PATH`: there is nothing to add.
-    }
-    let Ok(joined) = std::env::join_paths(&widened) else {
-        return;
-    };
-    // SAFETY: this is called once, at start, before any thread of the app's own is started that reads the environment.
-    // A program started before this call would see the old `PATH`, which is what it would have had anyway.
-    unsafe { std::env::set_var("PATH", joined) };
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let current: Vec<PathBuf> = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default();
+        let home = dirs::home_dir().unwrap_or_default();
+        let widened = widened(&current, usual_folders(&home));
+        if widened == current {
+            return; // Started from a terminal, which gave it a shell's own `PATH`: there is nothing to add.
+        }
+        let Ok(joined) = std::env::join_paths(&widened) else {
+            return;
+        };
+        // SAFETY: guarded by `ONCE` so `set_var("PATH", ...)` runs at most once per process lifetime,
+        // at start, before any thread of the app's own is started that reads the environment.
+        unsafe { std::env::set_var("PATH", joined) };
+    });
 }
 
 /// `current` after `extra`, in that order, each folder once: the ones in `extra` only where they are there, since the
@@ -178,5 +181,13 @@ mod tests {
                 .iter()
                 .any(|folder| folder.starts_with(empty.path()))
         );
+    }
+
+    #[test]
+    fn adopt_shell_path_is_idempotent_across_repeated_calls() {
+        adopt_shell_path();
+        let after_first = std::env::var_os("PATH");
+        adopt_shell_path();
+        assert_eq!(std::env::var_os("PATH"), after_first);
     }
 }

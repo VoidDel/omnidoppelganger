@@ -1,6 +1,7 @@
 // Folds the session log into what the window draws. The log is the only input,
 // so reopening a session shows exactly what was on screen before.
 
+import { formatMessage, getCurrentLocale, type Locale } from "../i18n";
 import { estimateTokensUsd } from "./pricing";
 import type {
   ContentBlock,
@@ -551,6 +552,8 @@ export function usage(events: Envelope[]): Usage {
   const raw: UsageBreakdown = { prompt: 0, input: 0, output: 0, skill: 0, mcp: 0, tools: 0 };
   let instructionsTokens = 0;
   let skillsCatalogTokens = 0;
+  const turnTokens = new Map<number, UsageBreakdown>();
+  let currentTurn = 0;
 
   const add = (tokens: Tokens | undefined) => {
     if (!tokens) return;
@@ -559,18 +562,48 @@ export function usage(events: Envelope[]): Usage {
     spent.output += tokens.output;
   };
 
-  // Locate the last compaction event in reverse so pre-compaction message/tool payloads skip character-level token scanning.
+  const recordTurnDelta = (turn: number, est: CachedTokenEst) => {
+    let bucket = turnTokens.get(turn);
+    if (!bucket) {
+      bucket = { prompt: 0, input: 0, output: 0, skill: 0, mcp: 0, tools: 0 };
+      turnTokens.set(turn, bucket);
+    }
+    bucket.input += est.input;
+    bucket.output += est.output;
+    bucket.skill += est.skill;
+    bucket.mcp += est.mcp;
+    bucket.tools += est.tools;
+    raw.input += est.input;
+    raw.output += est.output;
+    raw.skill += est.skill;
+    raw.mcp += est.mcp;
+    raw.tools += est.tools;
+  };
+
+  // Locate the last compaction event in reverse so discarded pre-compaction turns skip character-level token scanning,
+  // while still estimating retained turns (`turn >= kept_from_turn`).
   let lastCompactedIdx = -1;
+  let lastKeptFromTurn: number | undefined;
   for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type === "context/compacted") {
+    const ev = events[i];
+    if (ev.type === "context/compacted") {
       lastCompactedIdx = i;
+      lastKeptFromTurn = ev.data.kept_from_turn;
       break;
     }
   }
 
   for (let i = 0; i < events.length; i++) {
     const event = events[i];
-    if (i < lastCompactedIdx) {
+    if (event.type === "turn/start") {
+      currentTurn = event.data.turn;
+      continue;
+    }
+
+    const skipPreCompaction =
+      i < lastCompactedIdx && (lastKeptFromTurn === undefined || currentTurn < lastKeptFromTurn);
+
+    if (skipPreCompaction) {
       if (event.type === "instructions/loaded") {
         instructionsTokens = estimateEnvelopeTokens(event).instructions ?? 0;
       } else if (event.type === "skills/listed") {
@@ -588,32 +621,50 @@ export function usage(events: Envelope[]): Usage {
     } else if (event.type === "skills/listed") {
       skillsCatalogTokens = estimateEnvelopeTokens(event).skillsCatalog ?? 0;
     } else if (event.type === "user/message") {
-      const est = estimateEnvelopeTokens(event);
-      raw.input += est.input;
+      recordTurnDelta(currentTurn, estimateEnvelopeTokens(event));
     } else if (event.type === "assistant/message") {
       add(event.data.tokens);
       if (event.data.tokens) context = event.data.tokens.input + event.data.tokens.output;
-      const est = estimateEnvelopeTokens(event);
-      raw.output += est.output;
-      raw.skill += est.skill;
-      raw.mcp += est.mcp;
+      recordTurnDelta(currentTurn, estimateEnvelopeTokens(event));
     } else if (event.type === "guardian/reviewed") {
       add(event.data.tokens);
     } else if (event.type === "tool/result") {
       add(event.data.meta?.tokens);
-      const est = estimateEnvelopeTokens(event);
-      raw.skill += est.skill;
-      raw.mcp += est.mcp;
-      raw.tools += est.tools;
+      recordTurnDelta(currentTurn, estimateEnvelopeTokens(event));
     } else if (event.type === "context/compacted") {
       add(event.data.tokens);
-      context = event.data.tokens?.output ?? 0;
       const est = estimateEnvelopeTokens(event);
+      const summaryOut = est.summary ?? 0;
+      const keptFrom = event.data.kept_from_turn;
       raw.input = 0;
-      raw.output = est.summary ?? 0;
+      raw.output = summaryOut;
       raw.skill = 0;
       raw.mcp = 0;
       raw.tools = 0;
+
+      if (keptFrom !== undefined) {
+        for (const [turn, tb] of [...turnTokens.entries()]) {
+          if (turn < keptFrom) {
+            turnTokens.delete(turn);
+          } else {
+            raw.input += tb.input;
+            raw.output += tb.output;
+            raw.skill += tb.skill;
+            raw.mcp += tb.mcp;
+            raw.tools += tb.tools;
+          }
+        }
+        const retainedEst =
+          raw.input + (raw.output - summaryOut) + raw.skill + raw.mcp + raw.tools;
+        context =
+          (event.data.tokens?.output ?? summaryOut) +
+          instructionsTokens +
+          skillsCatalogTokens +
+          retainedEst;
+      } else {
+        turnTokens.clear();
+        context = event.data.tokens?.output ?? 0;
+      }
     }
   }
 
@@ -719,17 +770,17 @@ export function fileSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** What a document attached is, as its chip says it: `3 页`, `Word 文档`, `2 个工作表`, `12 张幻灯片`. */
-export function documentLabel(document: DocumentKind, parts?: number): string {
+/** What a document attached is, as its chip says it: `3 页`, `Word 文档`, `2 个工作表`, `12 张幻灯片` (or localized). */
+export function documentLabel(document: DocumentKind, parts?: number, locale: Locale = getCurrentLocale()): string {
   switch (document) {
     case "pdf":
-      return `${parts ?? 0} 页`;
+      return formatMessage(locale, "doc.pdfPages", { count: parts ?? 0 });
     case "word":
-      return "Word 文档";
+      return formatMessage(locale, "doc.word");
     case "excel":
-      return `${parts ?? 0} 个工作表`;
+      return formatMessage(locale, "doc.excelSheets", { count: parts ?? 0 });
     case "powerpoint":
-      return `${parts ?? 0} 张幻灯片`;
+      return formatMessage(locale, "doc.pptSlides", { count: parts ?? 0 });
   }
 }
 

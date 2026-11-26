@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { inFlight, land } from "../lib/flight";
 import { type Item, type Row, type StreamBlock, type ToolItem, documentLabel, fileSize, shortCount, undoableTurns } from "../lib/fold";
+import { useMenuFocus } from "../lib/menuFocus";
 import { EMPTY_STREAM, useSessionStream } from "../lib/streamStore";
 import type { Decision, Image, Mode, Reply, SessionItem, Status } from "../lib/types";
 import type { ComposerQuoteInput } from "./Composer";
@@ -799,6 +800,7 @@ export function Transcript({
     canScrollBottom: boolean;
   } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  useMenuFocus(!!contextMenu, contextMenuRef, () => setContextMenu(null));
 
   useEffect(() => {
     if (!contextMenu) return;

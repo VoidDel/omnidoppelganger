@@ -404,6 +404,25 @@
   white-space: pre;
 }
 
+.tool-output-chunk {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
+.tool-output-chunk + .tool-output-chunk {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.tool-more-bar {
+  padding: 8px 12px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .diff + .diff {
   border-top: 1px dashed var(--line-strong);
 }

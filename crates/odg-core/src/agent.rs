@@ -30,6 +30,7 @@ use crate::session::{
     SessionLog, SessionStore, SessionSummary, context_estimate, derive_messages, instructions, read_instructions,
     skills, summarize, unanswered_tool_uses,
 };
+use crate::sync_ext::MutexExt;
 use crate::tools::{self, ToolContext, ToolOutput};
 use crate::undo;
 
@@ -207,6 +208,39 @@ pub struct RestoredArtifact {
     pub backed_up: bool,
 }
 
+/// RAII guard that resets a session's state to [`Status::Idle`], clears pending user prompts, and
+/// broadcasts `watch` + `UiEvent::Status` if an async turn or manual compaction unwinds from a panic
+/// or is dropped before finishing cleanly.
+struct TurnStatusGuard<'a, L: Llm> {
+    inner: &'a Inner<L>,
+    armed: bool,
+}
+
+impl<'a, L: Llm> TurnStatusGuard<'a, L> {
+    fn new(inner: &'a Inner<L>) -> Self {
+        Self { inner, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<L: Llm> Drop for TurnStatusGuard<'_, L> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        {
+            let mut state = self.inner.state.lock_unpoisoned();
+            state.approvals.clear();
+            state.questions.clear();
+            state.status = Status::Idle;
+        }
+        self.inner.emit_status(Status::Idle);
+    }
+}
+
 /// A live session: the log plus the agent that appends to it.
 pub struct Session<L: Llm> {
     inner: Arc<Inner<L>>,
@@ -355,7 +389,7 @@ impl<L: Llm> Session<L> {
     }
 
     pub fn status(&self) -> Status {
-        self.inner.state.lock().unwrap().status
+        self.inner.state.lock_unpoisoned().status
     }
 
     /// Id of the session whose agent set this one off as a subagent.
@@ -394,18 +428,28 @@ impl<L: Llm> Session<L> {
     /// Where this side conversation's briefings on the session it is beside come from. Each message the user
     /// sends is preceded in the log by the briefing then, unless it is the same as the one logged last.
     pub fn set_brief_source(&self, source: BriefSource) {
-        *self.inner.brief.lock().unwrap() = Some(source);
+        *self.inner.brief.lock_unpoisoned() = Some(source);
     }
 
     /// The subagents this session's agent has set off since the app started.
     /// Each is a session of its own, to be shown, messaged, and stopped like any other.
     pub fn children(&self) -> Vec<Session<L>> {
-        self.inner.children.lock().unwrap().values().cloned().collect()
+        self.inner.children.lock_unpoisoned().values().cloned().collect()
+    }
+
+    /// The isolated Git worktree this session works in, if any, without locking or folding the log.
+    pub fn worktree(&self) -> Option<&crate::events::Worktree> {
+        self.inner.worktree.as_ref()
+    }
+
+    /// Whether both this session and all of its spawned subagents are currently [`Status::Idle`].
+    pub fn is_idle_tree(&self) -> bool {
+        self.status() == Status::Idle && self.children().iter().all(|child| child.status() == Status::Idle)
     }
 
     /// The subagent with this session id, if this session's agent set it off.
     pub fn child(&self, id: &str) -> Option<Session<L>> {
-        self.inner.children.lock().unwrap().get(id).cloned()
+        self.inner.children.lock_unpoisoned().get(id).cloned()
     }
 
     /// Returns once no turn is running: at once when none is.
@@ -421,12 +465,12 @@ impl<L: Llm> Session<L> {
 
     /// Every event logged so far.
     pub fn snapshot(&self) -> Vec<Envelope> {
-        self.inner.log.lock().unwrap().events().to_vec()
+        self.inner.log.lock_unpoisoned().events().to_vec()
     }
 
     /// The log's summary, with the mode as it is now rather than as the last message recorded it.
     pub fn summary(&self) -> SessionSummary {
-        let summary = summarize(self.inner.log.lock().unwrap().events());
+        let summary = summarize(self.inner.log.lock_unpoisoned().events());
         SessionSummary {
             mode: self.mode(),
             ..summary
@@ -450,18 +494,18 @@ impl<L: Llm> Session<L> {
             return Err(format!("there is no provider `{provider}`"));
         }
         // Held to the end: a turn cannot start between the check and the change.
-        let state = self.inner.state.lock().unwrap();
+        let state = self.inner.state.lock_unpoisoned();
         if state.status != Status::Idle {
             return Err("the agent is working; stop it or wait before changing the model".to_string());
         }
-        let moved = *self.inner.provider.lock().unwrap() != provider;
-        if moved || *self.inner.model.lock().unwrap() != model {
+        let moved = *self.inner.provider.lock_unpoisoned() != provider;
+        if moved || *self.inner.model.lock_unpoisoned() != model {
             self.inner.append(Event::ModelChanged {
                 model: model.to_string(),
                 provider: moved.then(|| provider.to_string()),
             })?;
-            *self.inner.provider.lock().unwrap() = provider.to_string();
-            *self.inner.model.lock().unwrap() = model.to_string();
+            *self.inner.provider.lock_unpoisoned() = provider.to_string();
+            *self.inner.model.lock_unpoisoned() = model.to_string();
         }
         drop(state);
         Ok(())
@@ -475,11 +519,11 @@ impl<L: Llm> Session<L> {
                 crate::settings::EFFORTS.join(", ")
             ));
         }
-        if self.inner.effort.lock().unwrap().as_deref() != Some(effort) {
+        if self.inner.effort.lock_unpoisoned().as_deref() != Some(effort) {
             self.inner.append(Event::EffortChanged {
                 effort: effort.to_string(),
             })?;
-            *self.inner.effort.lock().unwrap() = Some(effort.to_string());
+            *self.inner.effort.lock_unpoisoned() = Some(effort.to_string());
         }
         Ok(())
     }
@@ -499,7 +543,7 @@ impl<L: Llm> Session<L> {
     /// Switch modes. The next tool call is decided by the new mode, and the
     /// next message records it, which is when the model learns of plan mode.
     pub fn set_mode(&self, mode: Mode) {
-        self.inner.state.lock().unwrap().mode = mode;
+        self.inner.state.lock_unpoisoned().mode = mode;
     }
 
     /// Give the agent a message. When idle it starts a turn; during a turn the
@@ -513,7 +557,7 @@ impl<L: Llm> Session<L> {
     /// caller has checked the pictures with [`crate::events::check_images`],
     /// and read each file with [`crate::events::attach`].
     pub fn send_with(&self, text: String, images: Vec<Image>, files: Vec<Attached>) -> bool {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock_unpoisoned();
         if state.status != Status::Idle {
             state.inbox.push_back((text, images, files));
             return true;
@@ -532,14 +576,14 @@ impl<L: Llm> Session<L> {
 
     /// Answer a pending approval. Returns false when nothing was waiting for it.
     pub fn resolve_approval(&self, tool_use_id: &str, decision: Decision) -> bool {
-        let sender = self.inner.state.lock().unwrap().approvals.remove(tool_use_id);
+        let sender = self.inner.state.lock_unpoisoned().approvals.remove(tool_use_id);
         sender.is_some_and(|sender| sender.send(decision).is_ok())
     }
 
     /// Answer the questions an `ask_user` call is waiting on: a reply to each, in their order, or `None` to
     /// leave it to the agent. Returns false when nothing was waiting for it.
     pub fn answer_questions(&self, tool_use_id: &str, answers: Option<Vec<Reply>>) -> bool {
-        let sender = self.inner.state.lock().unwrap().questions.remove(tool_use_id);
+        let sender = self.inner.state.lock_unpoisoned().questions.remove(tool_use_id);
         sender.is_some_and(|sender| sender.send(answers).is_ok())
     }
 
@@ -548,11 +592,11 @@ impl<L: Llm> Session<L> {
     /// turns, so no edit is in flight. See [`crate::undo`].
     pub fn undo(&self, turn: u64) -> Result<undo::Outcome, String> {
         // Held to the end: a turn cannot start while files are being restored.
-        let state = self.inner.state.lock().unwrap();
+        let state = self.inner.state.lock_unpoisoned();
         if state.status != Status::Idle {
             return Err("the agent is working; stop it or wait before undoing".to_string());
         }
-        let plan = undo::plan(self.inner.log.lock().unwrap().events(), turn);
+        let plan = undo::plan(self.inner.log.lock_unpoisoned().events(), turn);
         if plan.is_empty() {
             return Err(format!("turn {turn} and those after it have no edits to undo"));
         }
@@ -652,7 +696,7 @@ impl<L: Llm> Session<L> {
         }
         // Forked sessions reference snapshots kept by the session they were forked from.
         let mut source = {
-            let log = self.inner.log.lock().unwrap();
+            let log = self.inner.log.lock_unpoisoned();
             crate::session::forked_from(log.events()).map(|fork| fork.session.clone())
         };
         for _ in 0..16 {
@@ -674,7 +718,7 @@ impl<L: Llm> Session<L> {
     /// Restore a deliverable in the workspace back to one of its snapshotted versions.
     /// If the live file holds unrecorded edits, those edits are snapshotted first so nothing is lost.
     pub fn restore_artifact(&self, path: &str, snapshot: &str, version: u32) -> Result<RestoredArtifact, String> {
-        let state = self.inner.state.lock().unwrap();
+        let state = self.inner.state.lock_unpoisoned();
         if state.status != Status::Idle {
             return Err("分身正在运功，先等它停下来再恢复历史版本。".to_string());
         }
@@ -803,7 +847,7 @@ impl<L: Llm> Session<L> {
             ));
         }
         let cancel = {
-            let mut state = self.inner.state.lock().unwrap();
+            let mut state = self.inner.state.lock_unpoisoned();
             if state.status != Status::Idle {
                 return Err("the agent is working; stop it or wait before compacting".to_string());
             }
@@ -815,8 +859,9 @@ impl<L: Llm> Session<L> {
             state.cancel.clone()
         };
         self.inner.emit_status(Status::Running);
+        let mut turn_guard = TurnStatusGuard::new(&self.inner);
         let tuning = self.inner.tuning();
-        let estimate = context_estimate(self.inner.log.lock().unwrap().events());
+        let estimate = context_estimate(self.inner.log.lock_unpoisoned().events());
         // Near the window, the conversation itself would not fit beside the question: summarize a transcript of it.
         let near_window = estimate >= tuning.context_window / 10 * 9;
         let outcome = self
@@ -825,7 +870,7 @@ impl<L: Llm> Session<L> {
             .await;
         // What was sent meanwhile is answered now; otherwise the session is idle again.
         let next = {
-            let mut state = self.inner.state.lock().unwrap();
+            let mut state = self.inner.state.lock_unpoisoned();
             let next = state.inbox.pop_front();
             if next.is_none() {
                 state.status = Status::Idle;
@@ -834,6 +879,7 @@ impl<L: Llm> Session<L> {
             }
             next.map(|message| (message, state.cancel.clone()))
         };
+        turn_guard.disarm();
         match next {
             Some((message, cancel)) => {
                 let inner = self.inner.clone();
@@ -856,13 +902,13 @@ impl<L: Llm> Session<L> {
 
     /// Stop the running turn. The turn ends as `cancelled` once the current operation returns.
     pub fn cancel(&self) {
-        self.inner.state.lock().unwrap().cancel.cancel();
+        self.inner.state.lock_unpoisoned().cancel.cancel();
     }
 
     /// Interrupt the step in flight so messages waiting in the inbox are heard at once.
     /// Returns false when nothing was waiting (already picked up), so a late click never cancels the work it meant to trigger.
     pub fn deliver_queued(&self) -> bool {
-        let state = self.inner.state.lock().unwrap();
+        let state = self.inner.state.lock_unpoisoned();
         if state.status == Status::Idle || state.inbox.is_empty() {
             return false;
         }
@@ -940,7 +986,7 @@ impl<L: Llm> Inner<L> {
     }
 
     fn set_status(&self, status: Status) {
-        self.state.lock().unwrap().status = status;
+        self.state.lock_unpoisoned().status = status;
         self.emit_status(status);
     }
 
@@ -969,24 +1015,24 @@ impl<L: Llm> Inner<L> {
     /// The mode the next tool call is decided by. Asking about nothing holds only in a worktree of the
     /// session's own: anywhere else, as in a log left in it and opened where no worktree is, it is auto.
     fn mode(&self) -> Mode {
-        match self.state.lock().unwrap().mode {
+        match self.state.lock_unpoisoned().mode {
             Mode::Bypass if self.worktree.is_none() => Mode::Auto,
             mode => mode,
         }
     }
 
     fn model(&self) -> String {
-        self.model.lock().unwrap().clone()
+        self.model.lock_unpoisoned().clone()
     }
 
     fn provider(&self) -> String {
-        self.provider.lock().unwrap().clone()
+        self.provider.lock_unpoisoned().clone()
     }
 
     /// The settings for a request now: for the provider and model the session is on, at the effort it was set to, if it was.
     fn tuning(&self) -> Tuning {
         let mut tuning = (self.tuning)(&self.provider(), &self.model());
-        if let Some(effort) = self.effort.lock().unwrap().clone() {
+        if let Some(effort) = self.effort.lock_unpoisoned().clone() {
             tuning.effort = effort;
         }
         tuning
@@ -994,7 +1040,7 @@ impl<L: Llm> Inner<L> {
 
     /// The system prompt of the next request: the general part and the instructions the log holds.
     fn system(&self) -> String {
-        let log = self.log.lock().unwrap();
+        let log = self.log.lock_unpoisoned();
         // A fork of a session a schedule started is the user's: they are there, having just made it.
         let scheduled =
             crate::session::schedule(log.events()).is_some() && crate::session::forked_from(log.events()).is_none();
@@ -1020,11 +1066,11 @@ impl<L: Llm> Inner<L> {
         if self.aside.is_none() {
             return Ok(());
         }
-        let source = self.brief.lock().unwrap().clone();
+        let source = self.brief.lock_unpoisoned().clone();
         let Some(brief) = source.and_then(|source| source()) else {
             return Ok(());
         };
-        let same = crate::session::last_brief(self.log.lock().unwrap().events()) == Some(brief.as_str());
+        let same = crate::session::last_brief(self.log.lock_unpoisoned().events()) == Some(brief.as_str());
         if same {
             Ok(())
         } else {
@@ -1055,7 +1101,7 @@ impl<L: Llm> Inner<L> {
             None
         };
         let event = {
-            let log = self.log.lock().unwrap();
+            let log = self.log.lock_unpoisoned();
             let logged = instructions(log.events());
             match (&found, logged) {
                 (Some((path, content)), logged) if logged != Some((path.as_str(), content.as_str())) => {
@@ -1078,7 +1124,7 @@ impl<L: Llm> Inner<L> {
     fn refresh_skills(&self) -> Result<(), String> {
         let roots = self.active_skill_roots();
         let found = crate::skills::listing(&crate::skills::discover(&roots));
-        let changed = skills(self.log.lock().unwrap().events()) != found.as_slice();
+        let changed = skills(self.log.lock_unpoisoned().events()) != found.as_slice();
         if changed {
             self.append(Event::SkillsListed { skills: found })
         } else {
@@ -1326,14 +1372,16 @@ impl<L: Llm> Inner<L> {
     /// turn instead of being dropped. The inbox is checked and the status set
     /// under the same lock `send` takes, so no message falls between the two.
     async fn run_turns(self: Arc<Self>, mut message: Said, mut cancel: CancellationToken) {
+        let mut turn_guard = TurnStatusGuard::new(&self);
         loop {
             self.run_turn(message, &cancel).await;
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock_unpoisoned();
             state.approvals.clear();
             state.questions.clear();
             let Some(next) = state.inbox.pop_front() else {
                 state.status = Status::Idle;
                 drop(state);
+                turn_guard.disarm();
                 self.emit_status(Status::Idle);
                 return;
             };
@@ -1384,7 +1432,7 @@ impl<L: Llm> Inner<L> {
         let (reason, error) = match (opened, cli_kind) {
             (Ok(()), Some(kind)) => {
                 let (conversation_id, briefing) = {
-                    let log = self.log.lock().unwrap();
+                    let log = self.log.lock_unpoisoned();
                     let conv = crate::session::external_session(log.events(), kind.backend_key()).map(str::to_string);
                     let aside_brief = self
                         .aside
@@ -1485,7 +1533,7 @@ impl<L: Llm> Inner<L> {
             (Err(error), _) => ("error", Some(error)),
         };
         // The API rejects a conversation in which a tool call has no result, whatever stopped the turn.
-        let unanswered = unanswered_tool_uses(self.log.lock().unwrap().events());
+        let unanswered = unanswered_tool_uses(self.log.lock_unpoisoned().events());
         for (tool_use_id, tool) in unanswered {
             let _ = self.tool_result(
                 &tool_use_id,
@@ -1551,7 +1599,7 @@ impl<L: Llm> Inner<L> {
             if cancel.is_cancelled() {
                 return Ok("cancelled");
             }
-            let queued: Vec<Said> = self.state.lock().unwrap().inbox.drain(..).collect();
+            let queued: Vec<Said> = self.state.lock_unpoisoned().inbox.drain(..).collect();
             for (text, images, files) in queued {
                 self.brief_before_message()?;
                 self.append(Event::UserMessage {
@@ -1564,7 +1612,7 @@ impl<L: Llm> Inner<L> {
             }
 
             let tuning = self.tuning();
-            let estimate = context_estimate(self.log.lock().unwrap().events());
+            let estimate = context_estimate(self.log.lock_unpoisoned().events());
             if estimate >= tuning.context_limit && self.compactable() {
                 let near_window = estimate >= tuning.context_window / 10 * 9;
                 // Any other failure is let pass: past the limit is not yet past the window, so
@@ -1593,7 +1641,7 @@ impl<L: Llm> Inner<L> {
                 session: self.id.clone(),
                 model: effective_model,
                 system: self.system(),
-                messages: derive_messages(self.log.lock().unwrap().events()),
+                messages: derive_messages(self.log.lock_unpoisoned().events()),
                 tools: self.tool_specs(),
                 effort: tuning.effort.clone(),
             };
@@ -1655,7 +1703,7 @@ impl<L: Llm> Inner<L> {
                 _ => {}
             }
             if calls.is_empty() {
-                if self.state.lock().unwrap().inbox.is_empty() {
+                if self.state.lock_unpoisoned().inbox.is_empty() {
                     return Ok("completed");
                 }
                 continue;
@@ -1727,7 +1775,7 @@ impl<L: Llm> Inner<L> {
                 // A grant of several commands, one per line, holds when each of them is granted.
                 let granted = |grant: &String| {
                     grant.lines().all(|part| {
-                        self.state.lock().unwrap().grants.contains(part) || self.kept.allows(&self.granted_in, part)
+                        self.state.lock_unpoisoned().grants.contains(part) || self.kept.allows(&self.granted_in, part)
                     })
                 };
                 // In plan mode, standing or session grants may never auto-allow non-read-only commands.
@@ -1772,7 +1820,7 @@ impl<L: Llm> Inner<L> {
                 };
                 if let Verdict::Ask { reason, detail, grant } = verdict {
                     let (sender, receiver) = oneshot::channel();
-                    self.state.lock().unwrap().approvals.insert(id.clone(), sender);
+                    self.state.lock_unpoisoned().approvals.insert(id.clone(), sender);
                     // In auto mode nobody may be there to answer: the request is declined by itself in time.
                     let wait = tuning.approval_wait.filter(|_| auto);
                     let expires_at = wait
@@ -1808,12 +1856,16 @@ impl<L: Llm> Inner<L> {
                     }
                     let (decision, timed_out) = tokio::select! {
                         decision = receiver => (decision.unwrap_or(Decision::Deny), false),
-                        () = cancel.cancelled() => return Ok("cancelled"),
+                        () = cancel.cancelled() => {
+                            self.state.lock_unpoisoned().approvals.remove(&id);
+                            self.set_status(Status::Running);
+                            return Ok("cancelled");
+                        }
                         () = async { match wait { Some(wait) => tokio::time::sleep(wait).await, None => std::future::pending().await } } => (Decision::Deny, true),
                     };
                     if timed_out {
                         // An answer arriving now finds nothing waiting for it.
-                        self.state.lock().unwrap().approvals.remove(&id);
+                        self.state.lock_unpoisoned().approvals.remove(&id);
                     }
                     self.set_status(Status::Running);
                     self.append(Event::ApprovalResolved {
@@ -1847,7 +1899,7 @@ impl<L: Llm> Inner<L> {
                                 if decision == Decision::AllowAlways && GrantStore::keeps(part) {
                                     let _ = self.kept.add(&self.granted_in, part);
                                 }
-                                self.state.lock().unwrap().grants.insert(part.to_string());
+                                self.state.lock_unpoisoned().grants.insert(part.to_string());
                             }
                         }
                         Decision::AllowOnce => {}
@@ -1888,7 +1940,7 @@ impl<L: Llm> Inner<L> {
                 self.tool_output(&id, &name, output)?;
             }
             // The plan is the turn's answer: nothing more is asked of the model, unless the user said something meanwhile.
-            if presented && self.state.lock().unwrap().inbox.is_empty() {
+            if presented && self.state.lock_unpoisoned().inbox.is_empty() {
                 return Ok("completed");
             }
         }

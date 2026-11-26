@@ -11,6 +11,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::sync_ext::MutexExt;
+
 use super::servers::{language_id, settings};
 use super::uri;
 
@@ -247,7 +249,7 @@ impl Client {
                         match (method, message.get("id")) {
                             // An answer to a request of ours.
                             (None, Some(id)) => {
-                                let Some(sender) = id.as_i64().and_then(|id| pending.lock().unwrap().remove(&id))
+                                let Some(sender) = id.as_i64().and_then(|id| pending.lock_unpoisoned().remove(&id))
                                 else {
                                     continue;
                                 };
@@ -293,7 +295,7 @@ impl Client {
                             // What the server tells of itself.
                             (Some(method), None) => {
                                 let params = &message["params"];
-                                let mut watch = watch.lock().unwrap();
+                                let mut watch = watch.lock_unpoisoned();
                                 match method {
                                     "$/progress" => {
                                         let token = params["token"].to_string();
@@ -329,12 +331,12 @@ impl Client {
                 }
             };
             {
-                let mut w = watch.lock().unwrap();
+                let mut w = watch.lock_unpoisoned();
                 if w.closed.is_none() {
                     w.closed = Some(close_reason.clone());
                 }
             }
-            for (_, sender) in pending.lock().unwrap().drain() {
+            for (_, sender) in pending.lock_unpoisoned().drain() {
                 let _ = sender.send(Err(RpcError {
                     code: 0,
                     message: close_reason.clone(),
@@ -379,7 +381,7 @@ impl Client {
                 client.close_now();
                 format!("{program} would not start: {}", error.message)
             })?;
-        *client.capabilities.lock().unwrap() = initialized["capabilities"].clone();
+        *client.capabilities.lock_unpoisoned() = initialized["capabilities"].clone();
         client.enqueue(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }))?;
         Ok(client)
     }
@@ -393,19 +395,19 @@ impl Client {
     /// Synchronously mark the client closed and kill its process group immediately.
     pub(super) fn close_now(&self) {
         {
-            let mut watch = self.watch.lock().unwrap();
+            let mut watch = self.watch.lock_unpoisoned();
             if watch.closed.is_none() {
                 watch.closed = Some("the language server was shut down".to_string());
             }
         }
-        for (_, sender) in self.pending.lock().unwrap().drain() {
+        for (_, sender) in self.pending.lock_unpoisoned().drain() {
             let _ = sender.send(Err(RpcError {
                 code: 0,
                 message: "the language server was shut down".to_string(),
             }));
         }
         self.changed.notify_waiters();
-        self.group_guard.lock().unwrap().kill_now();
+        self.group_guard.lock_unpoisoned().kill_now();
     }
 
     /// Shut down the client and await child process termination so executable file locks are released.
@@ -432,20 +434,20 @@ impl Client {
                 message: "Cancelled.".to_string(),
             });
         }
-        if let Some(why) = self.watch.lock().unwrap().closed.clone() {
+        if let Some(why) = self.watch.lock_unpoisoned().closed.clone() {
             return Err(RpcError { code: 0, message: why });
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, sender);
+        self.pending.lock_unpoisoned().insert(id, sender);
         if let Err(message) = self.enqueue(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })) {
-            self.pending.lock().unwrap().remove(&id);
+            self.pending.lock_unpoisoned().remove(&id);
             return Err(RpcError { code: 0, message });
         }
         tokio::select! {
             biased;
             () = cancel.cancelled() => {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending.lock_unpoisoned().remove(&id);
                 let _ = self.enqueue(json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": id } }));
                 Err(RpcError { code: 0, message: "Cancelled.".to_string() })
             }
@@ -453,7 +455,7 @@ impl Client {
                 Ok(Ok(answer)) => answer,
                 Ok(Err(_)) => Err(RpcError { code: 0, message: "the language server stopped".to_string() }),
                 Err(_) => {
-                    self.pending.lock().unwrap().remove(&id);
+                    self.pending.lock_unpoisoned().remove(&id);
                     let _ = self.enqueue(json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": id } }));
                     Err(RpcError { code: 0, message: format!("no answer to {method} within {} seconds", wait.as_secs()) })
                 }
@@ -466,7 +468,7 @@ impl Client {
     }
 
     pub fn closed(&self) -> bool {
-        self.watch.lock().unwrap().closed.is_some()
+        self.watch.lock_unpoisoned().closed.is_some()
     }
 
     #[cfg(test)]
@@ -476,7 +478,7 @@ impl Client {
 
     /// Whether the server is at work: indexing, loading the project, or not yet said to be done.
     pub(super) fn busy(&self) -> bool {
-        let watch = self.watch.lock().unwrap();
+        let watch = self.watch.lock_unpoisoned();
         watch.closed.is_none()
             && (!watch.progress.is_empty()
                 || watch.quiescent == Some(false)
@@ -542,7 +544,7 @@ impl Client {
             Some(doc) => {
                 let version = doc.version + 1;
                 // What the server published for the old text no longer holds.
-                self.watch.lock().unwrap().diagnostics.remove(&document);
+                self.watch.lock_unpoisoned().diagnostics.remove(&document);
                 self.notify(
                     "textDocument/didChange",
                     json!({ "textDocument": { "uri": document, "version": version }, "contentChanges": [{ "text": text }] }),
@@ -552,7 +554,7 @@ impl Client {
                 doc.last_used = now_tick;
             }
             None => {
-                self.watch.lock().unwrap().diagnostics.remove(&document);
+                self.watch.lock_unpoisoned().diagnostics.remove(&document);
                 self.notify(
                     "textDocument/didOpen",
                     json!({ "textDocument": { "uri": document, "languageId": language_id(path), "version": 1, "text": text } }),
@@ -610,7 +612,7 @@ impl Client {
         let deadline = tokio::time::Instant::now() + most;
         loop {
             let notified = self.changed.notified();
-            if let Some(found) = self.watch.lock().unwrap().diagnostics.get(document) {
+            if let Some(found) = self.watch.lock_unpoisoned().diagnostics.get(document) {
                 return Ok(found.clone());
             }
             tokio::select! {

@@ -298,6 +298,12 @@
   overflow: visible;
 }
 
+[lang="en"] .token {
+  min-width: 18px;
+  width: auto;
+  padding-inline: 4px;
+}
+
 .token .plate {
   fill: var(--jade);
 }

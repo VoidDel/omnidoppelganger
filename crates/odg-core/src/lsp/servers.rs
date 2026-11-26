@@ -308,10 +308,11 @@ pub fn downloaded(root: &Path, language: &Language) -> Option<PathBuf> {
 /// Whether a program answers its version check: a stand-in that fails, such as rustup's for a component not installed,
 /// does not. Asked once for each program while the app runs.
 pub(super) async fn works(program: &Path, version_arg: &'static str) -> bool {
+    use crate::sync_ext::MutexExt;
     static ASKED: std::sync::LazyLock<Mutex<HashMap<(PathBuf, &'static str), bool>>> =
         std::sync::LazyLock::new(Mutex::default);
     let key = (program.to_path_buf(), version_arg);
-    if let Some(known) = ASKED.lock().unwrap().get(&key) {
+    if let Some(known) = ASKED.lock_unpoisoned().get(&key) {
         return *known;
     }
     let mut command = tokio::process::Command::new(program);
@@ -324,7 +325,7 @@ pub(super) async fn works(program: &Path, version_arg: &'static str) -> bool {
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let answered = matches!(tokio::time::timeout(Duration::from_secs(15), command.status()).await, Ok(Ok(status)) if status.success());
-    ASKED.lock().unwrap().insert(key, answered);
+    ASKED.lock_unpoisoned().insert(key, answered);
     answered
 }
 

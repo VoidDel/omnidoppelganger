@@ -31,6 +31,7 @@ odg: run tasks with the OmniDoppelganger agent from the command line.
 Usage:
   odg [options] <task>
   odg --export <session-id>
+  odg --land <session-id>
 
 Options:
   -C, --workspace <dir>   The folder to work in. Default: the current folder.
@@ -38,6 +39,7 @@ Options:
                           (starts a new one when none exists yet).
   -r, --resume <id>       Resume an existing session by id (or unique prefix).
   -w, --worktree          Run a new session in an isolated Git worktree.
+      --land <id>         Merge a worktree session's branch back into its origin.
       --json              Stream structured NDJSON events to standard output.
       --export <id>       Export a stored session as Markdown to standard output.
       --provider <id>     The model provider. Default: the one chosen in settings.
@@ -69,6 +71,7 @@ struct Options {
     continue_latest: bool,
     resume: Option<String>,
     worktree: bool,
+    land: Option<String>,
     json: bool,
     export: Option<String>,
     provider: Option<String>,
@@ -94,6 +97,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
             "-c" | "--continue" => options.continue_latest = true,
             "-r" | "--resume" => options.resume = Some(value("--resume")?),
             "-w" | "--worktree" => options.worktree = true,
+            "--land" => options.land = Some(value("--land")?),
             "--json" => options.json = true,
             "--export" => options.export = Some(value("--export")?),
             "--provider" => options.provider = Some(value("--provider")?),
@@ -118,6 +122,16 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
             _ => words.push(argument),
         }
     }
+    if options.land.is_some() && options.export.is_some() {
+        return Err("--land and --export cannot be used together".to_string());
+    }
+    if options.land.is_some()
+        && (options.continue_latest || options.resume.is_some() || options.worktree || !words.is_empty())
+    {
+        return Err(
+            "--land takes only a session id (and optional --json), without a task or session flags".to_string(),
+        );
+    }
     if options.continue_latest && options.resume.is_some() {
         return Err("--continue and --resume cannot be used together".to_string());
     }
@@ -128,7 +142,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
         return Err("--mode bypass requires --worktree (-w) or resuming a worktree session".to_string());
     }
     options.task = words.join(" ").trim().to_string();
-    if options.export.is_none() && options.task.is_empty() {
+    if options.export.is_none() && options.land.is_none() && options.task.is_empty() {
         return Err("give the task to run; see odg --help".to_string());
     }
     Ok(options)
@@ -452,6 +466,63 @@ async fn run(options: Options) -> Result<ExitOutcome, RunError> {
         let id = resolve_session_id(&session_store, target)?;
         let events = session_store.read(&id).map_err(|e| e.to_string())?;
         print!("{}", odg_core::export::to_markdown(&events, None));
+        return Ok(ExitOutcome::Completed);
+    }
+    if let Some(target) = &options.land {
+        let id = resolve_session_id(&session_store, target)?;
+        let summary = session_store.peek(&id).map_err(|e| e.to_string())?;
+        let made = summary
+            .worktree
+            .clone()
+            .ok_or_else(|| format!("session `{id}` has no isolated worktree to land"))?;
+        if summary.turn_open || summary.awaiting_approval {
+            return Err(RunError::Runtime(format!(
+                "session `{id}` is not idle; stop or finish its running turn before landing"
+            )));
+        }
+        if let Some(busy) = session_store.list().into_iter().find(|other| {
+            other.id != id
+                && (other.turn_open || other.awaiting_approval)
+                && other.worktree.as_ref().is_some_and(|wt| wt.checkout == made.checkout)
+        }) {
+            return Err(RunError::Runtime(format!(
+                "another session (`{}`) sharing worktree {} is not idle; wait before landing",
+                busy.id, made.checkout
+            )));
+        }
+        let message = format!(
+            "odg: {}",
+            if summary.title.is_empty() {
+                "work of a session"
+            } else {
+                summary.title.as_str()
+            }
+        );
+        let branch = made.branch.clone();
+        let landed = tokio::task::spawn_blocking(move || odg_core::worktree::land(&made, &message))
+            .await
+            .map_err(|e| e.to_string())??;
+        if options.json {
+            println!(
+                "{}",
+                json!({
+                    "kind": "landed",
+                    "session_id": id,
+                    "branch": branch,
+                    "into": landed.into,
+                    "commits": landed.commits,
+                })
+            );
+        } else if landed.commits == 0 {
+            println!("Nothing new to land from {branch} into {}.", landed.into);
+        } else {
+            println!(
+                "Landed {} commit{} from {branch} into {}.",
+                landed.commits,
+                if landed.commits == 1 { "" } else { "s" },
+                landed.into
+            );
+        }
         return Ok(ExitOutcome::Completed);
     }
 
@@ -1190,6 +1261,11 @@ mod tests {
         assert!(worktree.worktree && worktree.task == "try refactor");
         let export = parsed(&["--export", "0190abc"]).unwrap();
         assert_eq!(export.export.as_deref(), Some("0190abc"));
+        let land = parsed(&["--land", "0190def", "--json"]).unwrap();
+        assert_eq!((land.land.as_deref(), land.json), (Some("0190def"), true));
+        assert!(parsed(&["--land", "0190def", "--export", "0190def"]).is_err());
+        assert!(parsed(&["--land", "0190def", "extra"]).is_err());
+        assert!(parsed(&["--land"]).unwrap_err().contains("needs a value"));
         // After `--` everything is the task, even what looks like an option.
         assert_eq!(parsed(&["--", "explain", "--mode"]).unwrap().task, "explain --mode");
 

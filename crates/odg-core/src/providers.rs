@@ -18,6 +18,7 @@ use crate::gemini::{self, GeminiClient};
 use crate::llm::{AssistantTurn, EndpointSource, Llm, LlmError, LlmRequest, StreamDelta, Tokens};
 use crate::openai_chat::ChatClient;
 use crate::openai_responses::ResponsesClient;
+use crate::sync_ext::MutexExt;
 
 /// Virtual model id that routes automatically between a provider's fast and flagship models by effort level.
 pub const AUTO_MODEL: &str = "auto";
@@ -422,13 +423,44 @@ pub fn context_window(provider: &str, model: &str) -> u64 {
 }
 
 /// A model as its provider lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Listed {
     pub id: String,
     /// The name to show; the id where the provider gives none.
     pub name: String,
     /// How many tokens its context window holds, where the provider says.
+    #[serde(default)]
     pub context_window: Option<u64>,
+    /// Whether the provider offers this model at zero cost.
+    #[serde(default)]
+    pub free: bool,
+}
+
+fn is_zero_cost_field(value: &Value) -> Option<bool> {
+    match value {
+        Value::Number(n) => n.as_f64().map(|v| v == 0.0),
+        Value::String(s) => s.trim().parse::<f64>().ok().map(|v| v == 0.0),
+        _ => None,
+    }
+}
+
+fn is_listed_model_free(id: &str, model: &Value) -> bool {
+    if model["free"].as_bool() == Some(true) {
+        return true;
+    }
+    let lower = id.to_ascii_lowercase();
+    if lower.ends_with(":free") || lower.ends_with("-free") {
+        return true;
+    }
+    if let Some(pricing) = model.get("pricing").filter(|p| p.is_object())
+        && let (Some(true), Some(true)) = (
+            is_zero_cost_field(&pricing["prompt"]).or_else(|| is_zero_cost_field(&pricing["input"])),
+            is_zero_cost_field(&pricing["completion"]).or_else(|| is_zero_cost_field(&pricing["output"])),
+        )
+    {
+        return true;
+    }
+    false
 }
 
 /// The fields a model's context window is listed under: Anthropic's,
@@ -532,6 +564,7 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
                     id: id.to_string(),
                     name: display.to_string(),
                     context_window,
+                    free: is_listed_model_free(id, model),
                 })
             })
             .collect()
@@ -551,6 +584,7 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
                     id: id.to_string(),
                     name: model["display_name"].as_str().unwrap_or(id).to_string(),
                     context_window,
+                    free: is_listed_model_free(id, model),
                 })
             })
             .collect()
@@ -641,7 +675,7 @@ impl Router {
     /// The client for an Anthropic provider other than the first, made again when its address changed.
     fn added_anthropic(&self, id: &str) -> Result<Arc<AnthropicClient>, LlmError> {
         let base_url = (self.endpoints)(id).base_url;
-        let mut added = self.added.lock().unwrap();
+        let mut added = self.added.lock_unpoisoned();
         if let Some((made_for, client)) = added.get(id)
             && *made_for == base_url
         {
@@ -933,6 +967,13 @@ mod tests {
             // Each provider's own field for the window: DeepSeek's, then Kimi's. Nothing is read from a count of zero.
             listing(json!({ "data": [{ "id": "deepseek-v4-pro", "context_window": 1_048_576, "max_output_tokens": 393_216 }, { "id": "deepseek-flash", "context_window": 0 }] })),
             listing(json!({ "data": [{ "id": "kimi-k3", "context_length": 262_144, "supports_image_in": true }] })),
+            listing(json!({
+                "data": [
+                    { "id": "deepseek/deepseek-r1:free", "display_name": "DeepSeek R1 (Free)", "pricing": { "prompt": "0", "completion": "0" } },
+                    { "id": "qwen/qwen-coder", "pricing": { "prompt": "0", "completion": "0" } },
+                    { "id": "anthropic/claude-sonnet-4.6", "pricing": { "prompt": "0.000003", "completion": "0.000015" } }
+                ]
+            })),
             error(401, r#"{"error":{"message":"bad key","type":"authentication_error"}}"#),
             listing(json!({ "data": [] })),
         ])
@@ -941,6 +982,13 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             context_window,
+            free: false,
+        };
+        let free_named = |id: &str, name: &str, context_window: Option<u64>| Listed {
+            id: id.to_string(),
+            name: name.to_string(),
+            context_window,
+            free: true,
         };
         assert_eq!(
             list_models("anthropic", &address, Some("sk-ant")).await.unwrap(),
@@ -968,6 +1016,14 @@ mod tests {
         assert_eq!(
             list_models("moonshot", &address, Some("k")).await.unwrap(),
             [named("kimi-k3", "kimi-k3", Some(262_144))]
+        );
+        assert_eq!(
+            list_models("openrouter", &address, Some("k")).await.unwrap(),
+            [
+                free_named("deepseek/deepseek-r1:free", "DeepSeek R1 (Free)", None),
+                free_named("qwen/qwen-coder", "qwen/qwen-coder", None),
+                named("anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6", None),
+            ]
         );
         assert_eq!(
             list_models("deepseek", &address, Some("k")).await.unwrap_err(),

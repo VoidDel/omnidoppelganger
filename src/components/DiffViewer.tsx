@@ -1,11 +1,16 @@
 import "../styles/workbench.css";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import { api } from "../lib/api";
 import { escapeHtml, highlightLines } from "../lib/highlight";
 import { sameDiffView } from "../lib/refresh";
 import type { DiffStage, GitDiffView } from "../lib/types";
-import type { ComposerQuoteInput } from "./Composer";
+import type { QuotePayload, StructuredQuote } from "./Composer";
 import { Icon } from "./Icon";
+
+export const DIFF_INITIAL_LINES = 800;
+export const DIFF_CHUNK_SIZE = 400;
+export const DIFF_LOAD_STEP = 1000;
 
 export interface DiffViewerProps {
   sessionId: string;
@@ -15,8 +20,24 @@ export interface DiffViewerProps {
   repo?: string | null;
   refreshTick?: number;
   onOpenSource: (relPath: string, line?: number) => void;
-  onQuoteToMain: (quote: ComposerQuoteInput) => void;
-  onQuoteToAside?: (quote: ComposerQuoteInput) => void;
+  onQuoteToMain: (quote: QuotePayload) => void;
+  onQuoteToAside?: (quote: QuotePayload) => void;
+}
+
+interface RenderedDiffLine {
+  kind: "+" | "-" | " ";
+  old_line?: number | null;
+  new_line?: number | null;
+  text: string;
+  html: string;
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
 }
 
 export function DiffViewer({
@@ -30,9 +51,15 @@ export function DiffViewer({
   onQuoteToMain,
   onQuoteToAside,
 }: DiffViewerProps) {
+  const { t } = useI18n();
   const [diff, setDiff] = useState<GitDiffView | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [visibleLineLimit, setVisibleLineLimit] = useState<number>(DIFF_INITIAL_LINES);
+
+  useEffect(() => {
+    setVisibleLineLimit(DIFF_INITIAL_LINES);
+  }, [sessionId, path, stage, commit, repo]);
 
   /** The diff on screen, the one wanted now, and the order they were asked in, as in the code viewer. */
   const shownKey = useRef<string | null>(null);
@@ -72,40 +99,61 @@ export function DiffViewer({
     );
   }, [sessionId, path, stage, commit, repo, refreshTick]);
 
-  // Pre-highlight lines per hunk so syntax tokens colorize inside +/- rows cleanly.
-  const highlightedHunks = useMemo(() => {
+  const totalLines = useMemo(
+    () => (diff ? diff.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0) : 0),
+    [diff],
+  );
+
+  // Highlight only visible lines up to `visibleLineLimit` and partition into 400-line `content-visibility: auto` chunks.
+  const visibleHunks = useMemo(() => {
     if (!diff) return [];
-    return diff.hunks.map((hunk) => {
-      const joined = hunk.lines.map((l) => l.text).join("\n");
-      const htmls = diff.language ? highlightLines(joined, diff.language) : hunk.lines.map((l) => escapeHtml(l.text));
-      return {
-        ...hunk,
-        renderedLines: hunk.lines.map((line, i) => ({
-          ...line,
-          html: htmls[i] ?? escapeHtml(line.text),
-        })),
-      };
-    });
-  }, [diff]);
+    let remaining = visibleLineLimit;
+    const out: { header: string; chunks: RenderedDiffLine[][] }[] = [];
+    for (const hunk of diff.hunks) {
+      if (remaining <= 0) break;
+      const slice = hunk.lines.slice(0, remaining);
+      remaining -= slice.length;
+      const joined = slice.map((l) => l.text).join("\n");
+      const htmls = diff.language ? highlightLines(joined, diff.language) : slice.map((l) => escapeHtml(l.text));
+      const renderedLines: RenderedDiffLine[] = slice.map((line, i) => ({
+        ...line,
+        html: htmls[i] ?? escapeHtml(line.text),
+      }));
+      out.push({
+        header: hunk.header,
+        chunks: chunkArray(renderedLines, DIFF_CHUNK_SIZE),
+      });
+    }
+    return out;
+  }, [diff, visibleLineLimit]);
 
   const stageLabel =
-    stage === "staged" ? "已暂存改动" : stage === "commit" ? `提交 ${commit?.slice(0, 7) ?? ""}` : "工作区改动";
+    stage === "staged"
+      ? t("quote.diffStaged")
+      : stage === "commit"
+        ? t("quote.diffCommit", { commit: commit?.slice(0, 7) ?? "" })
+        : t("quote.diffUnstaged");
   const segments = path.split("/");
   const firstLine = diff?.hunks[0]?.new_start || 1;
 
-  const formatDiffQuote = (): ComposerQuoteInput | null => {
+  const formatDiffQuote = (): StructuredQuote | null => {
     if (!diff || diff.hunks.length === 0) return null;
     const body = diff.hunks
       .map((h) => `${h.header}\n${h.lines.map((l) => `${l.kind}${l.text}`).join("\n")}`)
       .join("\n")
       .slice(0, 6000);
-    const name = segments[segments.length - 1] || diff.path;
     return {
-      label: `${name} · ${stageLabel}`,
-      meta: `+${diff.added} −${diff.removed}`,
-      content: `请看 \`${diff.path}\` 的 ${stageLabel}：\n\`\`\`diff\n${body}\n\`\`\``,
+      kind: "diff",
+      path: diff.path,
+      stage,
+      commit,
+      added: diff.added,
+      removed: diff.removed,
+      content: body,
     };
   };
+
+  const shownCount = Math.min(visibleLineLimit, totalLines);
 
   return (
     <div className="code-viewer diff-viewer">
@@ -175,39 +223,54 @@ export function DiffViewer({
           <div className="viewer-placeholder failed">{error}</div>
         ) : !diff ? null : diff.binary ? (
           <div className="viewer-placeholder muted">二进制文件发生变动，无法按文本行展示差异。</div>
-        ) : highlightedHunks.length === 0 ? (
+        ) : visibleHunks.length === 0 ? (
           <div className="viewer-placeholder muted">这一处当前没有文本差异。</div>
         ) : (
           <div className="rich-diff-list">
-            {highlightedHunks.map((hunk, hIdx) => (
+            {visibleHunks.map((hunk, hIdx) => (
               <div key={hIdx} className="rich-hunk">
                 <div className="rich-hunk-header mono">{hunk.header}</div>
                 <div className="rich-hunk-lines">
-                  {hunk.renderedLines.map((line, lIdx) => (
-                    <div
-                      key={lIdx}
-                      className={`rich-diff-row ${line.kind === "+" ? "added" : line.kind === "-" ? "removed" : "context"}`}
-                    >
-                      <span className="diff-no old" data-line={line.old_line ?? ""} aria-hidden="true" />
-                      <button
-                        type="button"
-                        className="diff-no new"
-                        data-line={line.new_line ?? ""}
-                        aria-label={line.new_line ? `跳到源文件第 ${line.new_line} 行` : undefined}
-                        disabled={!line.new_line}
-                        title={line.new_line ? `跳到源文件第 ${line.new_line} 行` : undefined}
-                        onClick={() => line.new_line && onOpenSource(path, line.new_line)}
-                      />
-                      <span className="diff-sign" data-sign={line.kind === "-" ? "−" : line.kind} aria-hidden="true" />
-                      <div
-                        className="line-code"
-                        dangerouslySetInnerHTML={{ __html: line.html || "<br>" }}
-                      />
+                  {hunk.chunks.map((chunk, cIdx) => (
+                    <div key={cIdx} className="rich-hunk-chunk">
+                      {chunk.map((line, lIdx) => (
+                        <div
+                          key={lIdx}
+                          className={`rich-diff-row ${line.kind === "+" ? "added" : line.kind === "-" ? "removed" : "context"}`}
+                        >
+                          <span className="diff-no old" data-line={line.old_line ?? ""} aria-hidden="true" />
+                          <button
+                            type="button"
+                            className="diff-no new"
+                            data-line={line.new_line ?? ""}
+                            aria-label={line.new_line ? `跳到源文件第 ${line.new_line} 行` : undefined}
+                            disabled={!line.new_line}
+                            title={line.new_line ? `跳到源文件第 ${line.new_line} 行` : undefined}
+                            onClick={() => line.new_line && onOpenSource(path, line.new_line)}
+                          />
+                          <span className="diff-sign" data-sign={line.kind === "-" ? "−" : line.kind} aria-hidden="true" />
+                          <div
+                            className="line-code"
+                            dangerouslySetInnerHTML={{ __html: line.html || "<br>" }}
+                          />
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>
               </div>
             ))}
+            {totalLines > visibleLineLimit && (
+              <div className="diff-more-bar">
+                <button
+                  type="button"
+                  className="button outline small"
+                  onClick={() => setVisibleLineLimit((cur) => Math.min(totalLines, cur + DIFF_LOAD_STEP))}
+                >
+                  {t("workbench.loadMoreLines", { shown: shownCount, total: totalLines })}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

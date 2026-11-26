@@ -1,10 +1,11 @@
 import "../styles/pages.css";
 import { useEffect, useState } from "react";
-import { MODES, modeOf } from "../lib/modes";
+import { useI18n } from "../i18n";
+import { modeOf, modesFor } from "../lib/modes";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Icon } from "./Icon";
-import { WEEKDAYS, blank, clock, describeWhen, draftOf, scheduleOf, type Draft } from "../lib/schedule";
+import { blank, clock, describeWhen, draftOf, scheduleOf, weekdaysFor, type Draft } from "../lib/schedule";
 import type { Mode, Schedule, SessionItem } from "../lib/types";
 import { ahead } from "../lib/when";
 
@@ -28,11 +29,14 @@ interface FormProps {
 }
 
 function Form({ draft, folders, onChange, onPick, onSave, onCancel }: FormProps) {
+  const { locale } = useI18n();
   const [wrong, setWrong] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const set = (change: Partial<Draft>) => onChange({ ...draft, ...change });
+  const weekdays = weekdaysFor(locale);
+  const modeOptions = modesFor(locale);
   const save = () => {
-    const schedule = scheduleOf(draft);
+    const schedule = scheduleOf(draft, locale);
     if (typeof schedule === "string") return setWrong(schedule);
     setSaving(true);
     onSave(schedule).then((error) => {
@@ -88,11 +92,11 @@ function Form({ draft, folders, onChange, onPick, onSave, onCancel }: FormProps)
             </label>
             <input id="schedule-time" className="input short" type="time" value={draft.time} onChange={(event) => set({ time: event.target.value })} />
             <div className="days" role="group" aria-label="每周哪几天">
-              {WEEKDAYS.map((day) => (
-                <label className="day" key={day.value} title={`周${day.name}`}>
+              {weekdays.map((day) => (
+                <label className="day" key={day.value} title={locale === "en" ? day.name : `周${day.name}`}>
                   <input
                     type="checkbox"
-                    aria-label={`周${day.name}`}
+                    aria-label={locale === "en" ? day.name : `周${day.name}`}
                     checked={draft.days.includes(day.value)}
                     onChange={(event) => set({ days: event.target.checked ? [...draft.days, day.value] : draft.days.filter((kept) => kept !== day.value) })}
                   />
@@ -138,8 +142,8 @@ function Form({ draft, folders, onChange, onPick, onSave, onCancel }: FormProps)
       </fieldset>
       <div className="field">
         <label htmlFor="schedule-mode">禁制</label>
-        <Combo id="schedule-mode" value={draft.mode} options={MODES.map((mode) => ({ value: mode.value, text: mode.name }))} editable={false} onSave={(mode) => set({ mode: mode as Mode })} />
-        <p className="hint">{modeOf(draft.mode).hint}。到时辰本尊多半不在：要请示的事会一直候旨，等本尊回来定夺。</p>
+        <Combo id="schedule-mode" value={draft.mode} options={modeOptions.map((mode) => ({ value: mode.value, text: mode.name }))} editable={false} onSave={(mode) => set({ mode: mode as Mode })} />
+        <p className="hint">{modeOf(draft.mode, locale).hint}。到时辰本尊多半不在：要请示的事会一直候旨，等本尊回来定夺。</p>
       </div>
       <label className="check">
         <input type="checkbox" checked={draft.isolated} onChange={(event) => set({ isolated: event.target.checked })} />
@@ -183,6 +187,7 @@ interface Props {
 
 /** The 功课 page: the tasks set to start by themselves, and the form that sets one. */
 export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, onPick, onSave, onDelete, onRun, onCleanSessions }: Props) {
+  const { locale } = useI18n();
   /** The form that is open: for a new schedule, or for the one with its id. */
   const [draft, setDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -294,21 +299,21 @@ export function SchedulesPage({ schedules, sessions, mode, workspace, onOpen, on
                   {schedule.next ? (
                     <>
                       <span className="next-label">下次</span>
-                      <span className="next-when">{clock(schedule.next)}</span>
-                      <span className="next-ahead">{ahead(schedule.next, now)}</span>
+                      <span className="next-when">{clock(schedule.next, locale)}</span>
+                      <span className="next-ahead">{ahead(schedule.next, now, locale)}</span>
                     </>
                   ) : (
                     <span className="next-none">{schedule.when.kind === "once" && schedule.last ? "办过了，不会再办" : "停着，不会自己开始"}</span>
                   )}
                 </div>
                 <p className="schedule-facts">
-                  <span>{describeWhen(schedule.when)}</span>
+                  <span>{describeWhen(schedule.when, locale)}</span>
                   <span title={schedule.workspace}>洞府 {baseName(schedule.workspace)}</span>
-                  <span>禁制「{modeOf(schedule.mode).name}」</span>
+                  <span>禁制「{modeOf(schedule.mode, locale).name}」</span>
                   {schedule.isolated && <span>独立工作树</span>}
                   {schedule.last && (
                     <span>
-                      上次：{clock(schedule.last.at)}
+                      上次：{clock(schedule.last.at, locale)}
                       {started && (
                         <>
                           ，

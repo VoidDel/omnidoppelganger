@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ComposerDraft, ComposerSeed } from "../components/Composer";
 import { STEP_MS } from "../components/Replay";
+import { formatMessage, getCurrentLocale } from "../i18n";
 import { api } from "../lib/api";
 import {
   type FoldCache,
@@ -317,7 +318,9 @@ export function useSessionController() {
   const carryOut = useCallback(
     (mode: Mode) => {
       if (!activeId) return;
-      switchMode(mode).then(() => api.sendMessage(activeId, "照这个计划动手。")).catch(fail);
+      switchMode(mode)
+        .then(() => api.sendMessage(activeId, formatMessage(getCurrentLocale(), "prompt.carryOut")))
+        .catch(fail);
     },
     [activeId, switchMode, fail],
   );

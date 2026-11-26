@@ -11,6 +11,7 @@ use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::policy::Mode;
 use crate::providers;
 use crate::session::{NewSession, derive_messages, transcript};
+use crate::sync_ext::MutexExt;
 use crate::tools::{self, ToolOutput};
 
 use super::prompts::{GUARDIAN, SUMMARIZE, verdict};
@@ -123,7 +124,7 @@ impl<L: Llm> Inner<L> {
                 let root = std::sync::Arc::downgrade(self);
                 std::sync::Arc::new(move || {
                     let Some(root) = root.upgrade() else { return Vec::new() };
-                    let log = root.log.lock().unwrap();
+                    let log = root.log.lock_unpoisoned();
                     log.events()
                         .iter()
                         .filter_map(|envelope| match &envelope.event {
@@ -146,16 +147,16 @@ impl<L: Llm> Inner<L> {
         )
         .map_err(|error| error.to_string())?;
         let (mode, grants) = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock_unpoisoned();
             (state.mode, state.grants.clone())
         };
         {
-            let mut state = child.inner.state.lock().unwrap();
+            let mut state = child.inner.state.lock_unpoisoned();
             state.mode = mode;
             state.grants = grants;
         }
         child.rename(name)?;
-        if let Some(effort) = self.effort.lock().unwrap().clone() {
+        if let Some(effort) = self.effort.lock_unpoisoned().clone() {
             child.set_effort(&effort)?;
         }
         self.children
@@ -203,12 +204,16 @@ impl<L: Llm> Inner<L> {
         self.set_status(Status::WaitingApproval);
         let (answers, timed_out) = tokio::select! {
             answers = receiver => (answers.unwrap_or(None), false),
-            () = cancel.cancelled() => return Ok(None),
+            () = cancel.cancelled() => {
+                self.state.lock_unpoisoned().questions.remove(tool_use_id);
+                self.set_status(Status::Running);
+                return Ok(None);
+            }
             () = async { match wait { Some(wait) => tokio::time::sleep(wait).await, None => std::future::pending().await } } => (None, true),
         };
         if timed_out {
             // An answer arriving now finds nothing waiting for it.
-            self.state.lock().unwrap().questions.remove(tool_use_id);
+            self.state.lock_unpoisoned().questions.remove(tool_use_id);
         }
         self.set_status(Status::Running);
         let declined = answers.is_none() && !timed_out;
@@ -382,7 +387,7 @@ impl<L: Llm> Inner<L> {
         loop {
             let text = |text: String| json!({ "type": "text", "text": text });
             let (messages, kept_from_turn) = {
-                let log = self.log.lock().unwrap();
+                let log = self.log.lock_unpoisoned();
                 let all_events = log.events();
                 let retained = if from_transcript {
                     None
@@ -502,7 +507,7 @@ impl<L: Llm> Inner<L> {
             }
             let kept = root_msgs[root_msgs.len().saturating_sub(8)..].to_vec();
             let sub_task = {
-                let log = self.log.lock().unwrap();
+                let log = self.log.lock_unpoisoned();
                 log.events()
                     .iter()
                     .filter_map(|envelope| match &envelope.event {
@@ -514,7 +519,7 @@ impl<L: Llm> Inner<L> {
             };
             (kept, (!sub_task.is_empty()).then_some(sub_task))
         } else {
-            let log = self.log.lock().unwrap();
+            let log = self.log.lock_unpoisoned();
             let messages: Vec<String> = log
                 .events()
                 .iter()
@@ -611,7 +616,7 @@ impl<L: Llm> Inner<L> {
 
     /// Whether the model has said anything since the last compaction: without that there is nothing to summarize.
     pub(super) fn compactable(&self) -> bool {
-        let log = self.log.lock().unwrap();
+        let log = self.log.lock_unpoisoned();
         let since = log
             .events()
             .iter()

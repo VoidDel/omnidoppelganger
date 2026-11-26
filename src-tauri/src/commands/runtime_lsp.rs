@@ -12,6 +12,9 @@ use crate::state::App;
 /// The event that says how far setting up the document runtime has got.
 pub const RUNTIME_EVENT: &str = "runtime-progress";
 
+/// Maximum execution time for `!` inline shell commands (`doc/user-guide.md`).
+pub const INLINE_COMMAND_TIMEOUT_SECS: u64 = 30;
+
 const INLINE_SENSITIVE_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -554,5 +557,5 @@ pub async fn run_inline_command(
     if !cwd.is_dir() {
         return Err(format!("洞府目录不存在：{}", cwd.display()));
     }
-    run_inline_shell_with_sandbox(&command, &cwd, sandbox_extra, 15, 32_000).await
+    run_inline_shell_with_sandbox(&command, &cwd, sandbox_extra, INLINE_COMMAND_TIMEOUT_SECS, 32_000).await
 }

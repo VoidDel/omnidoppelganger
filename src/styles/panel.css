@@ -991,7 +991,7 @@
 .term-run {
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--paper-2, transparent);
+  background: var(--well);
 }
 
 .term-run-head {
@@ -1012,7 +1012,7 @@
 }
 
 .term-run-head:hover {
-  background: var(--hover, rgba(0, 0, 0, 0.03));
+  background: var(--wash);
   border-radius: 5px;
 }
 

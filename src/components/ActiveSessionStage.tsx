@@ -1,6 +1,7 @@
-import { type ComponentProps, type Dispatch, type ReactNode, type SetStateAction, Suspense, lazy } from "react";
+import { type ComponentProps, type Dispatch, type ReactNode, type SetStateAction, Suspense, useEffect, useRef } from "react";
 import type { useSessionController } from "../hooks/useSessionController";
 import type { useWorkbenchState } from "../hooks/useWorkbenchState";
+import { useI18n } from "../i18n";
 import { api } from "../lib/api";
 import type { Row, Usage } from "../lib/fold";
 import { turnAt } from "../lib/replay";
@@ -9,17 +10,17 @@ import type { Envelope, Mode, Provider, SessionItem, SettingsView, Status } from
 import { AgentJobsPane } from "./AgentJobsPane";
 import { joinWs } from "./AppPanes";
 import { AsidePane } from "./AsidePane";
-import { Composer, type ComposerQuoteInput, type ComposerSeed } from "./Composer";
+import { Composer, type ComposerSeed, type QuotePayload } from "./Composer";
 import { ChatEmptyStage } from "./EmptyStage";
-import { Guard } from "./Guard";
+import { Guard, lazyWithRetry } from "./Guard";
 import { ReplayBar } from "./Replay";
 import { SessionHeader } from "./SessionHeader";
 import { type PanelTab, SidePanel } from "./SidePanel";
 import { Transcript } from "./Transcript";
 import { Workbench, WorkbenchTabsBar } from "./Workbench";
 
-const TerminalPane = lazy(() => import("./TerminalPane"));
-const DiffViewer = lazy(() => import("./DiffViewer").then((m) => ({ default: m.DiffViewer })));
+const TerminalPane = lazyWithRetry(() => import("./TerminalPane"));
+const DiffViewer = lazyWithRetry(() => import("./DiffViewer").then((m) => ({ default: m.DiffViewer })));
 
 export interface ActiveSessionStageProps {
   active: SessionItem;
@@ -67,8 +68,8 @@ export interface ActiveSessionStageProps {
   onOpenFile: ComponentProps<typeof Transcript>["onOpenFile"];
   onPicture: ComponentProps<typeof Transcript>["onPicture"];
   versionOf: ComponentProps<typeof Transcript>["versionOf"];
-  onQuoteIntoMain: (input: string | ComposerQuoteInput) => void;
-  onQuoteIntoAside: (input: string | ComposerQuoteInput) => void;
+  onQuoteIntoMain: (input: QuotePayload) => void;
+  onQuoteIntoAside: (input: QuotePayload) => void;
   onAttachIntoMain: (absPath: string) => void;
   onAttachIntoAside: (absPath: string) => void;
   onSwitchMode: (mode: Mode) => Promise<void>;
@@ -78,9 +79,10 @@ export interface ActiveSessionStageProps {
 
 export function ActiveSessionStage(props: ActiveSessionStageProps) {
   const { active, replay, wb, canAside, isProjectSession } = props;
+  const { t } = useI18n();
   return (
     <>
-      <Guard name="标题栏" className="bar" resetKey={active.id}>
+      <Guard name={t("guard.header")} className="bar" resetKey={active.id}>
         <SessionHeader
           session={active}
           parent={props.sessions.find((s) => s.id === active.parent)}
@@ -111,20 +113,22 @@ export function ActiveSessionStage(props: ActiveSessionStageProps) {
       </Guard>
       {props.banners}
       {isProjectSession && wb.wbTabs.length > 0 && !replay && (
-        <WorkbenchTabsBar
-          tabs={wb.wbTabs}
-          inWorkbench={wb.showWorkbench}
-          activeTabId={wb.activeTabId}
-          chatStatus={props.status}
-          onSelectChat={() => wb.setInWorkbench(false)}
-          onSelectTab={(id) => (wb.setActiveTabId(id), wb.setInWorkbench(true))}
-          onMoveTab={wb.moveWorkbenchTab}
-          onCloseTab={wb.closeWorkbenchTab}
-          onCloseAllTabs={wb.closeAllWorkbenchTabs}
-        />
+        <Guard name={t("guard.tabsBar")} resetKey={active.id}>
+          <WorkbenchTabsBar
+            tabs={wb.wbTabs}
+            inWorkbench={wb.showWorkbench}
+            activeTabId={wb.activeTabId}
+            chatStatus={props.status}
+            onSelectChat={() => wb.setInWorkbench(false)}
+            onSelectTab={(id) => (wb.setActiveTabId(id), wb.setInWorkbench(true))}
+            onMoveTab={wb.moveWorkbenchTab}
+            onCloseTab={wb.closeWorkbenchTab}
+            onCloseAllTabs={wb.closeAllWorkbenchTabs}
+          />
+        </Guard>
       )}
       {wb.showWorkbench ? (
-        <Guard name="工作台" className="fill" resetKey={active.id}>
+        <Guard name={t("guard.workbench")} className="fill" resetKey={active.id}>
           <Workbench
             sessionId={active.id}
             tabs={wb.wbTabs}
@@ -136,7 +140,7 @@ export function ActiveSessionStage(props: ActiveSessionStageProps) {
             onAttachToAside={canAside ? (rel) => props.onAttachIntoAside(joinWs(active.workspace, rel)) : undefined}
             onError={props.onError}
             renderDiff={(tab) => (
-              <Suspense fallback={<div className="viewer-placeholder muted">正在加载对比…</div>}>
+              <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
                 <DiffViewer
                   key={tab.id}
                   sessionId={active.id}
@@ -163,7 +167,7 @@ export function ActiveSessionStage(props: ActiveSessionStageProps) {
               providers={props.providers}
             />
           ) : (
-            <Guard name="对话" className="fill" resetKey={active.id}>
+            <Guard name={t("guard.transcript")} className="fill" resetKey={active.id}>
               <Transcript
                 key={active.id}
                 sessionId={active.id}
@@ -208,7 +212,7 @@ export function ActiveSessionStage(props: ActiveSessionStageProps) {
             />
           )}
           <div style={{ display: replay ? "none" : "contents" }}>
-            <Guard name="输入框" className="under" resetKey={active.id}>
+            <Guard name={t("guard.composer")} className="under" resetKey={active.id}>
               <Composer
                 key={active.id}
                 sessionKey={active.id}
@@ -286,7 +290,7 @@ export interface AppRightPanelProps {
   onRefreshSessions: () => void;
   onAsideId: (asideId: string | null) => void;
   onForwardFromAside: (text: string) => void;
-  onQuoteIntoChat: (input: string | ComposerQuoteInput) => void;
+  onQuoteIntoChat: (input: QuotePayload) => void;
   onResize: (width: number) => void;
   onWiden: () => void;
   onCloseDrawer: () => void;
@@ -298,112 +302,154 @@ export interface AppRightPanelProps {
 }
 
 export function AppRightPanel(props: AppRightPanelProps) {
-  const { active, canAside, replaying } = props;
+  const { active, canAside, replaying, compactLayout } = props;
+  const { t } = useI18n();
+  const drawerHostRef = useRef<HTMLDivElement>(null);
+
+  // Trap Tab focus inside the drawer and return focus to trigger when rendered as a narrow-screen modal drawer.
+  useEffect(() => {
+    if (!compactLayout) return;
+    const prevFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const host = drawerHostRef.current;
+    const focusables = () =>
+      host
+        ? [...host.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')].filter(
+            (el) => el.offsetParent !== null,
+          )
+        : [];
+    requestAnimationFrame(() => {
+      if (host && !host.contains(document.activeElement)) {
+        focusables()[0]?.focus();
+      }
+    });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const list = focusables();
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      prevFocused?.focus();
+    };
+  }, [compactLayout]);
+
   return (
     <>
-      {props.compactLayout && <div className="panel-scrim" aria-hidden="true" onClick={props.onCloseDrawer} />}
-      <Guard name="侧栏" className="panel" resetKey={props.activeId}>
-        <SidePanel
-          files={props.files}
-          runs={props.runs}
-          todos={props.plan}
-          products={props.made}
-          workspace={active?.workspace}
-          width={props.panelWidth}
-          sidebarWidth={props.sidebarWidth}
-          onResize={props.onResize}
-          narrow={props.strip}
-          onWiden={props.onWiden}
-          working={props.status === "running"}
-          frozen={replaying}
-          renderAside={
-            canAside && active
-              ? (visible) => (
-                  <AsidePane
-                    key={active.id}
-                    main={active}
-                    visible={visible}
-                    sessions={props.sessions}
-                    onAsideId={props.onAsideId}
-                    onForward={props.onForwardFromAside}
-                    onError={props.onError}
-                    renderComposer={({ aside, status: asideStatus, usage: asideUsage, onItem, onSend: sendAside, onStop: stopAside, onCompact: compactAside }) => (
-                      <Composer
-                        key={aside.id}
-                        sessionKey={aside.id}
-                        workspace={aside.workspace}
-                        drafts={props.drafts}
-                        status={asideStatus}
-                        providers={props.providers}
-                        listed={props.listedCheck}
-                        keyed={props.keyedCheck}
-                        providerId={aside.provider}
-                        model={aside.model}
-                        effort={aside.effort ?? props.defaultEffort}
-                        effortSet={aside.effort !== null}
-                        efforts={props.efforts}
-                        onEffort={(effort) => api.setEffort(aside.id, effort).then(onItem, props.onError)}
-                        listModels={api.listModels}
-                        onModel={(p, m) => api.setModel(aside.id, p, m).then(onItem, props.onError)}
-                        vision={aside.vision}
-                        mode={aside.mode}
-                        usage={asideUsage}
-                        contextLimit={aside.context_limit}
-                        contextCeiling={aside.context_ceiling}
-                        contextSetting={props.contextSetting || aside.context_limit}
-                        contextAuto={props.contextAuto}
-                        onLimit={(limit) =>
-                          props.onSaveLimit(limit, () => {
-                            props.onRefreshSessions();
-                            api.asideSession(active.id).then(
-                              (v) => v && onItem((({ events: _, abandoned_brief: __, ...it }) => it)(v)),
-                              () => undefined,
-                            );
-                          })
-                        }
-                        planReady={false}
-                        onMode={(mode) => api.setMode(aside.id, mode).then(onItem, props.onError)}
-                        onCarryOut={() => undefined}
-                        onSend={sendAside}
-                        onStop={stopAside}
-                        onCompact={compactAside}
-                        trustable={false}
-                        seed={props.asideSeed}
-                        onSeedConsumed={props.onClearAsideSeed}
-                        commands={[]}
-                        aside
-                        acceptDrops={visible && props.showWorkbench}
-                        placeholder={
-                          props.status !== "idle"
-                            ? "主分身运功中，在此旁聊发问（只读，不打断它）…"
-                            : "在此旁聊发问（只读洞府，自动知晓主分身进展）…"
-                        }
-                      />
-                    )}
-                  />
-                )
-              : undefined
-          }
-          jobsPane={
-            active && !replaying ? (
-              <AgentJobsPane sessionId={active.id} runs={props.runs} onSendToChat={props.onQuoteIntoChat} onError={props.onError} />
-            ) : undefined
-          }
-          terminalPane={
-            active && !replaying ? (
-              <Suspense fallback={<div className="viewer-placeholder muted">正在加载用户终端…</div>}>
-                <TerminalPane sessionId={active.id} onSendToChat={props.onQuoteIntoChat} onError={props.onError} />
-              </Suspense>
-            ) : undefined
-          }
-          summonTab={props.summonTab}
-          onInspectFile={props.onInspectFile}
-          onOpenFile={props.onOpenFile}
-          onRestoreArtifact={props.onRestoreArtifact}
-          onSaveArtifactCopy={props.onSaveArtifactCopy}
-          onCloseDrawer={props.compactLayout ? props.onCloseDrawer : undefined}
-        />
-      </Guard>
+      {compactLayout && <div className="panel-scrim" aria-hidden="true" onClick={props.onCloseDrawer} />}
+      <div ref={drawerHostRef} style={{ display: "contents" }}>
+        <Guard name={t("guard.panel")} className="panel" resetKey={props.activeId}>
+          <SidePanel
+            files={props.files}
+            runs={props.runs}
+            todos={props.plan}
+            products={props.made}
+            workspace={active?.workspace}
+            width={props.panelWidth}
+            sidebarWidth={props.sidebarWidth}
+            onResize={props.onResize}
+            narrow={props.strip}
+            onWiden={props.onWiden}
+            working={props.status === "running"}
+            frozen={replaying}
+            renderAside={
+              canAside && active
+                ? (visible) => (
+                    <AsidePane
+                      key={active.id}
+                      main={active}
+                      visible={visible}
+                      sessions={props.sessions}
+                      onAsideId={props.onAsideId}
+                      onForward={props.onForwardFromAside}
+                      onError={props.onError}
+                      renderComposer={({ aside, status: asideStatus, usage: asideUsage, onItem, onSend: sendAside, onStop: stopAside, onCompact: compactAside }) => (
+                        <Composer
+                          key={aside.id}
+                          sessionKey={aside.id}
+                          workspace={aside.workspace}
+                          drafts={props.drafts}
+                          status={asideStatus}
+                          providers={props.providers}
+                          listed={props.listedCheck}
+                          keyed={props.keyedCheck}
+                          providerId={aside.provider}
+                          model={aside.model}
+                          effort={aside.effort ?? props.defaultEffort}
+                          effortSet={aside.effort !== null}
+                          efforts={props.efforts}
+                          onEffort={(effort) => api.setEffort(aside.id, effort).then(onItem, props.onError)}
+                          listModels={api.listModels}
+                          onModel={(p, m) => api.setModel(aside.id, p, m).then(onItem, props.onError)}
+                          vision={aside.vision}
+                          mode={aside.mode}
+                          usage={asideUsage}
+                          contextLimit={aside.context_limit}
+                          contextCeiling={aside.context_ceiling}
+                          contextSetting={props.contextSetting || aside.context_limit}
+                          contextAuto={props.contextAuto}
+                          onLimit={(limit) =>
+                            props.onSaveLimit(limit, () => {
+                              props.onRefreshSessions();
+                              api.asideSession(active.id).then(
+                                (v) => v && onItem((({ events: _, abandoned_brief: __, ...it }) => it)(v)),
+                                () => undefined,
+                              );
+                            })
+                          }
+                          planReady={false}
+                          onMode={(mode) => api.setMode(aside.id, mode).then(onItem, props.onError)}
+                          onCarryOut={() => undefined}
+                          onSend={sendAside}
+                          onStop={stopAside}
+                          onCompact={compactAside}
+                          trustable={false}
+                          seed={props.asideSeed}
+                          onSeedConsumed={props.onClearAsideSeed}
+                          commands={[]}
+                          aside
+                          acceptDrops={visible && props.showWorkbench}
+                          placeholder={
+                            props.status !== "idle"
+                              ? t("composer.asidePlaceholderBusy")
+                              : t("composer.asidePlaceholderIdle")
+                          }
+                        />
+                      )}
+                    />
+                  )
+                : undefined
+            }
+            jobsPane={
+              active && !replaying ? (
+                <AgentJobsPane sessionId={active.id} runs={props.runs} onSendToChat={props.onQuoteIntoChat} onError={props.onError} />
+              ) : undefined
+            }
+            terminalPane={
+              active && !replaying ? (
+                <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
+                  <TerminalPane sessionId={active.id} onSendToChat={props.onQuoteIntoChat} onError={props.onError} />
+                </Suspense>
+              ) : undefined
+            }
+            summonTab={props.summonTab}
+            onInspectFile={props.onInspectFile}
+            onOpenFile={props.onOpenFile}
+            onRestoreArtifact={props.onRestoreArtifact}
+            onSaveArtifactCopy={props.onSaveArtifactCopy}
+            onCloseDrawer={compactLayout ? props.onCloseDrawer : undefined}
+          />
+        </Guard>
+      </div>
     </>
   );
 }

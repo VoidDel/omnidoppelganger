@@ -1,10 +1,12 @@
 import "../styles/workbench.css";
-import { Suspense, lazy, type ReactNode, useState } from "react";
+import { type KeyboardEvent, type ReactNode, Suspense, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import type { Status } from "../lib/types";
+import type { QuotePayload } from "./Composer";
+import { lazyWithRetry } from "./Guard";
 import { Icon } from "./Icon";
-import type { ComposerQuoteInput } from "./Composer";
 
-const CodeViewer = lazy(() => import("./CodeViewer").then((m) => ({ default: m.CodeViewer })));
+const CodeViewer = lazyWithRetry(() => import("./CodeViewer").then((m) => ({ default: m.CodeViewer })));
 
 export type WorkbenchTab =
   | {
@@ -40,7 +42,8 @@ export interface WorkbenchTabsBarProps {
 
 /**
  * Unified top tab bar shown whenever any file or diff is open: `对话` always stands first, fixed in place and
- * non-closable, followed by the open file and diff tabs.
+ * non-closable, followed by the open file and diff tabs. Uses sibling `<button role="tab">` + close button
+ * inside `.wb-tab-item` (eliminating nested interactive controls) with ArrowLeft/Right/Home/End navigation.
  */
 export function WorkbenchTabsBar({
   tabs,
@@ -53,18 +56,56 @@ export function WorkbenchTabsBar({
   onCloseTab,
   onCloseAllTabs,
 }: WorkbenchTabsBarProps) {
-  const activeFile = inWorkbench ? (tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null) : null;
+  const { t } = useI18n();
+  const activeFile = inWorkbench ? (tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null) : null;
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  const tablistRef = useRef<HTMLDivElement>(null);
+
+  const handleTablistKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const buttons = tablistRef.current
+      ? [...tablistRef.current.querySelectorAll<HTMLButtonElement>('button[role="tab"]')]
+      : [];
+    if (buttons.length === 0) return;
+    event.preventDefault();
+    const focusedIdx = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const activeIdx = !inWorkbench ? 0 : Math.max(1, tabs.findIndex((tb) => tb.id === activeFile?.id) + 1);
+    const cur = focusedIdx >= 0 ? focusedIdx : activeIdx;
+    let next = cur;
+    if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = buttons.length - 1;
+    else if (event.key === "ArrowRight") next = (cur + 1) % buttons.length;
+    else if (event.key === "ArrowLeft") next = (cur - 1 + buttons.length) % buttons.length;
+
+    buttons[next]?.focus();
+    if (next === 0) onSelectChat();
+    else if (tabs[next - 1]) onSelectTab(tabs[next - 1].id);
+  };
+
   return (
     <div className="workbench-tabs-bar">
-      <div className="workbench-tabs" role="tablist" aria-label="对话与已打开的文件标签">
-        <div role="tab" aria-selected={!inWorkbench} className={`wb-tab wb-tab-chat ${!inWorkbench ? "active" : ""}`}>
-          <button type="button" className="wb-tab-label" title="主分身对话（固定在首位，不可移动或关闭）" onClick={onSelectChat}>
+      <div
+        ref={tablistRef}
+        className="workbench-tabs"
+        role="tablist"
+        aria-label={t("workbench.tablistAria")}
+        onKeyDown={handleTablistKeyDown}
+      >
+        <div className={`wb-tab wb-tab-item wb-tab-chat ${!inWorkbench ? "active" : ""}`}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!inWorkbench}
+            tabIndex={!inWorkbench ? 0 : -1}
+            className="wb-tab-label"
+            title={t("workbench.chatTabTitle")}
+            onClick={onSelectChat}
+          >
             <Icon name="chat-left-text" size={13} />
-            <span className="wb-tab-name">对话</span>
-            {inWorkbench && chatStatus === "waiting_approval" && <span className="seal small">候</span>}
-            {inWorkbench && chatStatus === "running" && <span className="dot busy" title="分身运功中" />}
+            <span className="wb-tab-name">{t("workbench.chatTab")}</span>
+            {inWorkbench && chatStatus === "waiting_approval" && <span className="seal small">{t("nav.sealAwait")}</span>}
+            {inWorkbench && chatStatus === "running" && <span className="dot busy" title={t("nav.running")} />}
           </button>
         </div>
         {tabs.map((tab) => {
@@ -72,18 +113,16 @@ export function WorkbenchTabsBar({
           const badge =
             tab.kind === "diff"
               ? tab.stage === "staged"
-                ? "暂存对比"
+                ? t("workbench.diffStaged")
                 : tab.stage === "commit"
-                  ? `${tab.commit?.slice(0, 7) ?? "提交"}`
-                  : "改动对比"
+                  ? `${tab.commit?.slice(0, 7) ?? t("workbench.diffCommit")}`
+                  : t("workbench.diffUnstaged")
               : null;
           return (
             <div
               key={tab.id}
-              role="tab"
-              aria-selected={selected}
               draggable={tabs.length > 1}
-              className={`wb-tab ${selected ? "active" : ""} ${draggingId === tab.id ? "dragging" : ""} ${overId === tab.id && draggingId !== tab.id ? "drop-target" : ""}`}
+              className={`wb-tab wb-tab-item ${selected ? "active" : ""} ${draggingId === tab.id ? "dragging" : ""} ${overId === tab.id && draggingId !== tab.id ? "drop-target" : ""}`}
               onDragStart={(e) => {
                 setDraggingId(tab.id);
                 e.dataTransfer.effectAllowed = "move";
@@ -118,6 +157,9 @@ export function WorkbenchTabsBar({
             >
               <button
                 type="button"
+                role="tab"
+                aria-selected={selected}
+                tabIndex={selected ? 0 : -1}
                 className="wb-tab-label"
                 title={tab.path}
                 onClick={() => onSelectTab(tab.id)}
@@ -128,8 +170,8 @@ export function WorkbenchTabsBar({
               <button
                 type="button"
                 className="wb-tab-close"
-                aria-label={`关闭 ${tab.name}`}
-                title="关闭标签"
+                aria-label={t("workbench.closeTabAria", { name: tab.name })}
+                title={t("workbench.closeTab")}
                 onClick={(e) => {
                   e.stopPropagation();
                   onCloseTab(tab.id);
@@ -147,18 +189,18 @@ export function WorkbenchTabsBar({
             <button
               type="button"
               className="wb-await-pill"
-              title="主分身有操作或提问等待本尊定夺，点击切回对话批阅"
+              title={t("workbench.awaitPill")}
               onClick={onSelectChat}
             >
               <span className="seal small" aria-hidden="true">
-                候
+                {t("nav.sealAwait")}
               </span>
-              <span>分身候旨 · 去定夺</span>
+              <span>{t("workbench.awaitPill")}</span>
             </button>
           )}
           {tabs.length > 1 && (
-            <button type="button" className="button text small" title="关闭全部文件标签" onClick={onCloseAllTabs}>
-              全关
+            <button type="button" className="button text small" title={t("workbench.closeAllTitle")} onClick={onCloseAllTabs}>
+              {t("workbench.closeAll")}
             </button>
           )}
         </div>
@@ -172,8 +214,8 @@ export interface WorkbenchProps {
   tabs: WorkbenchTab[];
   activeTabId: string | null;
   refreshTick?: number;
-  onQuoteToMain: (quote: ComposerQuoteInput) => void;
-  onQuoteToAside?: (quote: ComposerQuoteInput) => void;
+  onQuoteToMain: (quote: QuotePayload) => void;
+  onQuoteToAside?: (quote: QuotePayload) => void;
   onAttachPath: (relPath: string) => void;
   onAttachToAside?: (relPath: string) => void;
   onError: (message: string) => void;

@@ -1,11 +1,13 @@
 import "../styles/workbench.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import { api } from "../lib/api";
 import { documentLabel, fileSize } from "../lib/fold";
 import { findInLines, highlightLines } from "../lib/highlight";
+import { useMenuFocus } from "../lib/menuFocus";
 import { sameFileView } from "../lib/refresh";
 import type { FileView } from "../lib/types";
-import type { ComposerQuoteInput } from "./Composer";
+import type { QuotePayload, StructuredQuote } from "./Composer";
 import { Icon } from "./Icon";
 import { MarkdownContent } from "./Markdown";
 
@@ -19,8 +21,8 @@ export interface CodeViewerProps {
   targetLine?: number;
   jumpSeq?: number;
   refreshTick?: number;
-  onQuoteToMain: (quote: ComposerQuoteInput) => void;
-  onQuoteToAside?: (quote: ComposerQuoteInput) => void;
+  onQuoteToMain: (quote: QuotePayload) => void;
+  onQuoteToAside?: (quote: QuotePayload) => void;
   onAttachPath: (relPath: string) => void;
   onAttachToAside?: (relPath: string) => void;
   onError: (message: string) => void;
@@ -50,6 +52,7 @@ export function CodeViewer({
   onAttachToAside,
   onError,
 }: CodeViewerProps) {
+  const { locale } = useI18n();
   const [view, setView] = useState<FileView | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -72,10 +75,12 @@ export function CodeViewer({
     x: number;
     y: number;
     selectedText: string;
-    quote: ComposerQuoteInput | null;
+    quote: StructuredQuote | null;
+    quoteLabel?: string;
   } | null>(null);
   const quoteBarRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  useMenuFocus(!!contextMenu, contextMenuRef, () => setContextMenu(null));
 
   // In-file search bar
   const [findOpen, setFindOpen] = useState<boolean>(false);
@@ -202,36 +207,32 @@ export function CodeViewer({
     ? { start: Math.min(selection.anchor, selection.end), end: Math.max(selection.anchor, selection.end) }
     : null;
 
-  const formatRangeQuote = (start: number, end: number): ComposerQuoteInput | null => {
+  const formatRangeQuote = (start: number, end: number): StructuredQuote | null => {
     if (view?.kind !== "text") return null;
     const slice = rawLines.slice(start - 1, end).join("\n");
-    const lang = view.language ?? "";
-    const rangeLabel = start === end ? `第 ${start} 行` : `第 ${start}-${end} 行`;
-    const shortRange = start === end ? `L${start}` : `L${start}-${end}`;
     return {
-      label: `${view.name}:${shortRange}`,
-      meta: `${end - start + 1} 行`,
-      content: `请看 \`${view.path}\`（${rangeLabel}）：\n\`\`\`${lang}\n${slice}\n\`\`\``,
+      kind: "code",
+      path: view.path,
+      lineRange: [start, end],
+      language: view.language,
+      content: slice,
     };
   };
 
-  const selectedQuote = (): ComposerQuoteInput | null => {
+  const selectedQuote = (): StructuredQuote | null => {
     if (!selectedRange) return null;
     return formatRangeQuote(selectedRange.start, selectedRange.end);
   };
 
-  const formatDragQuote = (): ComposerQuoteInput | null => {
+  const formatDragQuote = (): StructuredQuote | null => {
     if (!dragQuote || !view) return null;
     if (view.kind === "text" && dragQuote.startLine !== null && dragQuote.endLine !== null) {
       return formatRangeQuote(dragQuote.startLine, dragQuote.endLine);
     }
-    const trimmed = dragQuote.text.trim();
-    const lines = trimmed.split(/\r?\n/);
-    const quoted = lines.map((line) => `> ${line}`).join("\n");
     return {
-      label: view.name,
-      meta: lines.length > 1 ? `${lines.length} 行` : `${trimmed.length} 字`,
-      content: `请看 \`${view.path}\`：\n${quoted}`,
+      kind: "code",
+      path: view.path,
+      content: dragQuote.text.trim(),
     };
   };
 
@@ -338,7 +339,8 @@ export function CodeViewer({
     const container = scrollRef.current;
     const sel = window.getSelection();
     let selText = "";
-    let quote: ComposerQuoteInput | null = null;
+    let quote: StructuredQuote | null = null;
+    let quoteLabel: string | undefined;
     if (container && sel && !sel.isCollapsed && sel.rangeCount > 0 && view && view.kind !== "image" && view.kind !== "binary") {
       const range = sel.getRangeAt(0);
       if (container.contains(range.commonAncestorContainer)) {
@@ -357,26 +359,23 @@ export function CodeViewer({
             }
           }
           quote = formatRangeQuote(startLine, endLine);
+          quoteLabel = `${view.name}:${startLine === endLine ? `L${startLine}` : `L${startLine}-${endLine}`}`;
         } else if (selText.trim()) {
-          const trimmed = selText.trim();
-          const lines = trimmed.split(/\r?\n/);
-          quote = {
-            label: view.name,
-            meta: lines.length > 1 ? `${lines.length} 行` : `${trimmed.length} 字`,
-            content: `请看 \`${view.path}\`：\n${lines.map((line) => `> ${line}`).join("\n")}`,
-          };
+          quote = { kind: "code", path: view.path, content: selText.trim() };
+          quoteLabel = view.name;
         }
       }
     } else if (selectedRange && view?.kind === "text") {
       selText = rawLines.slice(selectedRange.start - 1, selectedRange.end).join("\n");
       quote = formatRangeQuote(selectedRange.start, selectedRange.end);
+      quoteLabel = `${view.name}:${selectedRange.start === selectedRange.end ? `L${selectedRange.start}` : `L${selectedRange.start}-${selectedRange.end}`}`;
     }
     const menuWidth = 200;
     const menuHeight = quote ? 310 : 220;
     const x = Math.min(event.clientX, Math.max(8, window.innerWidth - menuWidth - 8));
     const y = Math.min(event.clientY, Math.max(8, window.innerHeight - menuHeight - 8));
     setDragQuote(null);
-    setContextMenu({ x, y, selectedText: selText, quote });
+    setContextMenu({ x, y, selectedText: selText, quote, quoteLabel });
   };
 
   const sendDragQuote = (target: "main" | "aside") => {
@@ -648,7 +647,7 @@ export function CodeViewer({
         ) : view.kind === "document" ? (
           <div className="viewer-doc">
             <div className="viewer-doc-note">
-              <span>已提取文档正文（{documentLabel(view.doc_kind, view.parts ?? undefined)}）。排版与插图请用系统默认程序查看。</span>
+              <span>已提取文档正文（{documentLabel(view.doc_kind, view.parts ?? undefined, locale)}）。排版与插图请用系统默认程序查看。</span>
               <button
                 type="button"
                 className="button outline small"
@@ -852,7 +851,7 @@ export function CodeViewer({
                   onQuoteToMain(quote);
                 }}
               >
-                引用到分身 ({contextMenu.quote.label})
+                引用到分身 ({contextMenu.quoteLabel ?? path})
               </button>
               {onQuoteToAside && (
                 <button
@@ -866,7 +865,7 @@ export function CodeViewer({
                     onQuoteToAside(quote);
                   }}
                 >
-                  旁聊提问 ({contextMenu.quote.label})
+                  旁聊提问 ({contextMenu.quoteLabel ?? path})
                 </button>
               )}
               <div className="tree-context-sep" role="separator" />

@@ -18,7 +18,6 @@ use std::sync::Mutex;
 use chrono::{DateTime, Datelike, Days, Duration, LocalResult, NaiveDateTime, NaiveTime, SecondsFormat, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::fsutil::write_atomically;
 use crate::policy::Mode;
 
 /// The longest gap an `every` schedule may have: a week.
@@ -199,16 +198,17 @@ impl ScheduleStore {
 
     /// Read the list, change it, and write it back when `change` says it changed.
     fn change<T>(&self, change: impl FnOnce(&mut Vec<Schedule>) -> Result<(T, bool), String>) -> Result<T, String> {
-        let _guard = self.writing.lock().unwrap();
+        use crate::sync_ext::MutexExt;
+        let _guard = self.writing.lock_unpoisoned();
         let mut schedules = self.all();
         let (result, changed) = change(&mut schedules)?;
         if changed {
             let failed = |error: std::io::Error| format!("cannot write {}: {error}", self.path.display());
-            if let Some(directory) = self.path.parent() {
-                std::fs::create_dir_all(directory).map_err(failed)?;
+            if let Some(directory) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                crate::fsutil::ensure_private_dir(directory).map_err(failed)?;
             }
             let text = serde_json::to_vec_pretty(&schedules).map_err(|error| error.to_string())?;
-            write_atomically(&self.path, &text).map_err(failed)?;
+            crate::fsutil::write_private_atomically(&self.path, &text).map_err(failed)?;
         }
         Ok(result)
     }

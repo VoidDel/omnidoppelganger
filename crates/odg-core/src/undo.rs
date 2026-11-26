@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::events::{Envelope, Event};
-use crate::fsutil::write_atomically;
+use crate::fsutil::{ensure_private_dir, write_atomically, write_private_atomically};
 
 /// The largest deliverable snapshotted for version history (50 MB, matching attached documents).
 pub const ARTIFACT_SNAPSHOT_BYTES: u64 = 50 * 1024 * 1024;
@@ -33,7 +33,7 @@ pub fn fingerprint(bytes: &[u8]) -> String {
 /// contents are stored once, so a file edited many times does not grow the
 /// directory with each edit's unchanged neighbours.
 pub fn save(directory: &Path, bytes: &[u8]) -> io::Result<String> {
-    std::fs::create_dir_all(directory)?;
+    ensure_private_dir(directory)?;
     let base = fingerprint(bytes);
     for attempt in 0.. {
         // Two contents can share a fingerprint; the name then gets a suffix rather than the wrong contents.
@@ -47,7 +47,7 @@ pub fn save(directory: &Path, bytes: &[u8]) -> io::Result<String> {
             Ok(existing) if existing == bytes => return Ok(name),
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                write_atomically(&path, bytes)?;
+                write_private_atomically(&path, bytes)?;
                 return Ok(name);
             }
             Err(error) => return Err(error),

@@ -8,6 +8,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use crate::providers::Listed;
+use crate::sync_ext::MutexExt;
 
 use super::{CliKind, context_window};
 
@@ -113,7 +114,7 @@ pub fn resolve_cursor_model_for_effort(model: &str, effort: &str) -> String {
     } else {
         cursor_effort_rank(effort)
     };
-    let cache = cursor_variant_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cursor_variant_cache().lock_unpoisoned();
     if let Some(variants) = cache.get(&base_id)
         && let Some(chosen) = pick_cursor_variant(target_rank, variants)
     {
@@ -151,7 +152,7 @@ pub(super) async fn list_cursor_models(bin: &Path) -> Result<Vec<Listed>, String
     if parsed.is_empty() {
         return Err("cursor-agent --list-models 未返回任何可用模型，请先登录 Cursor CLI。".to_string());
     }
-    *cursor_variant_cache().lock().unwrap_or_else(|e| e.into_inner()) = variants;
+    *cursor_variant_cache().lock_unpoisoned() = variants;
     Ok(parsed)
 }
 
@@ -214,6 +215,7 @@ pub(super) fn parse_grok_models_output(raw: &str) -> Vec<Listed> {
             id: id.to_string(),
             name,
             context_window: Some(context_window(CliKind::Grok)),
+            free: id.to_ascii_lowercase().ends_with("-free"),
         };
         if is_default && default_item.is_none() {
             default_item = Some(listed);
@@ -270,10 +272,12 @@ pub(super) fn parse_cursor_models_output(raw: &str) -> (Vec<Listed>, CursorVaria
             }
         } else {
             index_by_base.insert(base_id.clone(), models.len());
+            let free = base_id.to_ascii_lowercase().ends_with("-free");
             models.push(Listed {
                 id: base_id,
                 name: display,
                 context_window: Some(context_window(CliKind::Cursor)),
+                free,
             });
         }
     }
@@ -414,6 +418,7 @@ pub(super) fn parse_opencode_api_models(raw: &str, free_only: bool) -> Vec<Liste
                 id: full_id,
                 name: display,
                 context_window: ctx,
+                free: tier == 0,
             },
         ));
     }
@@ -445,6 +450,7 @@ pub(super) fn parse_opencode_models_output(raw: &str) -> Vec<Listed> {
                 id: trimmed.to_string(),
                 name,
                 context_window: Some(context_window(CliKind::OpenCode)),
+                free: tier == 0,
             },
         ));
     }

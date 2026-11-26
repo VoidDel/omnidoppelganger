@@ -29,6 +29,7 @@ import type {
   PtyExitPayload,
   PtyInfo,
   PtyOutputPayload,
+  RawListedModel,
   Reply,
   RestoredArtifact,
   RuntimeProgress,
@@ -120,8 +121,8 @@ export const api = {
   /** Put a skill in from a folder on this computer or a Git address; `path` is the folder in it that holds the skill. */
   installSkill: (source: string, path: string | null, replace = false) => invoke<SkillsView>("install_skill", { source, path, replace }),
   writeSkill: (name: string, description: string, body: string, replace = false) => invoke<SkillsView>("write_skill", { name, description, body, replace }),
-  /** The models a provider serves with the saved key, `[id, display name]`, asked from the provider itself. */
-  listModels: (provider: string) => invoke<[string, string][]>("list_models", { provider }),
+  /** The models a provider serves with the saved key, asked from the provider itself. */
+  listModels: (provider: string) => invoke<RawListedModel[]>("list_models", { provider }),
   /** Undo the agent's file edits from `turn` on. Rejects while a turn is running. */
   undoTurn: (id: string, turn: number) => invoke<{ restored: string[]; skipped: string[] }>("undo_turn", { id, turn }),
   cancelTurn: (id: string) => invoke<void>("cancel_turn", { id }),
@@ -225,6 +226,8 @@ export const api = {
   /** Best-effort native OS desktop notification when the app is in the background. */
   notifyDesktop: (title: string, body: string) => invoke<void>("notify_desktop", { title, body }),
   checkAppUpdate: () => invoke<UpdateStatus>("check_app_update"),
+  installAppUpdate: () => invoke<boolean>("install_app_update"),
+  installCliLink: () => invoke<string>("install_cli_link"),
   /** Per-model token usage statistics and active cooldown timers. */
   getModelUsage: () => invoke<ModelUsageEntry[]>("get_model_usage"),
   listPromptTemplates: (id?: string | null) => invoke<PromptTemplateInfo[]>("list_prompt_templates", { id: id ?? null }),

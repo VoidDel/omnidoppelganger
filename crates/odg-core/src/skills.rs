@@ -24,6 +24,24 @@ const DESCRIPTION_CHARS: usize = 300;
 /// A skill's instructions are replayed in every later request, like a file read.
 const BODY_CHARS: usize = 50_000;
 
+/// Stable structured error codes prefixed on skill management errors (`[<CODE>] <message>`)
+/// so desktop IPC and i18n layers can localize problems without matching English prose.
+pub const ERR_SKILL_EXISTS: &str = "ERR_SKILL_EXISTS";
+pub const ERR_SKILL_NOT_FOUND: &str = "ERR_SKILL_NOT_FOUND";
+pub const ERR_SKILL_SUBFOLDERS: &str = "ERR_SKILL_SUBFOLDERS";
+pub const ERR_SKILL_INVALID_SOURCE: &str = "ERR_SKILL_INVALID_SOURCE";
+pub const ERR_SKILL_INVALID_NAME: &str = "ERR_SKILL_INVALID_NAME";
+pub const ERR_SKILL_BUILTIN: &str = "ERR_SKILL_BUILTIN";
+pub const ERR_SKILL_TOO_LARGE: &str = "ERR_SKILL_TOO_LARGE";
+pub const ERR_SKILL_PATH_ESCAPE: &str = "ERR_SKILL_PATH_ESCAPE";
+pub const ERR_SKILL_GIT_MISSING: &str = "ERR_SKILL_GIT_MISSING";
+pub const ERR_SKILL_CLONE_FAILED: &str = "ERR_SKILL_CLONE_FAILED";
+pub const ERR_SKILL_CLONE_TIMEOUT: &str = "ERR_SKILL_CLONE_TIMEOUT";
+
+fn coded(code: &str, message: impl std::fmt::Display) -> String {
+    format!("[{code}] {message}")
+}
+
 /// A skill found on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
@@ -249,7 +267,10 @@ pub fn catalog(root: &Path) -> Vec<Listed> {
 /// changed is taken out only with `force`.
 pub fn switch(root: &Path, name: &str, on: bool, force: bool) -> Result<(), String> {
     let Some((_, text)) = BUILTINS.iter().find(|(builtin, _)| *builtin == name) else {
-        return Err(format!("`{name}` is not one of the app's skills"));
+        return Err(coded(
+            ERR_SKILL_NOT_FOUND,
+            format!("`{name}` is not one of the app's skills"),
+        ));
     };
     let directory = root.join(name);
     let file = directory.join(FILE_NAME);
@@ -278,9 +299,17 @@ pub fn remove(root: &Path, name: &str) -> Result<(), String> {
     let skill = discover(&[root.to_path_buf()])
         .into_iter()
         .find(|skill| skill.name == name)
-        .ok_or_else(|| format!("There is no skill `{name}` in {}.", root.display()))?;
+        .ok_or_else(|| {
+            coded(
+                ERR_SKILL_NOT_FOUND,
+                format!("There is no skill `{name}` in {}.", root.display()),
+            )
+        })?;
     if skill.directory.parent() != Some(root) {
-        return Err(format!("{} is not in {}.", skill.directory.display(), root.display()));
+        return Err(coded(
+            ERR_SKILL_PATH_ESCAPE,
+            format!("{} is not in {}.", skill.directory.display(), root.display()),
+        ));
     }
     std::fs::remove_dir_all(&skill.directory)
         .map_err(|error| format!("Cannot take away {}: {error}", skill.directory.display()))
@@ -373,15 +402,21 @@ pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, Strin
     let Some((skill, _)) = read(source) else {
         let within = skills_within(source);
         return Err(if within.is_empty() {
-            format!(
-                "There is no {FILE_NAME} in {}, nor in the folders below it: it is not a skill.",
-                source.display()
+            coded(
+                ERR_SKILL_NOT_FOUND,
+                format!(
+                    "There is no {FILE_NAME} in {}, nor in the folders below it: it is not a skill.",
+                    source.display()
+                ),
             )
         } else {
-            format!(
-                "There is no {FILE_NAME} at the top of {}. Skills in the folders below it: {}. Pass the one wanted as `path`.",
-                source.display(),
-                within.join(", ")
+            coded(
+                ERR_SKILL_SUBFOLDERS,
+                format!(
+                    "There is no {FILE_NAME} at the top of {}. Skills in the folders below it: {}. Pass the one wanted as `path`.",
+                    source.display(),
+                    within.join(", ")
+                ),
             )
         });
     };
@@ -400,13 +435,19 @@ pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, Strin
         .trim_matches('-')
         .to_string();
     if folder.is_empty() {
-        return Err(format!("The skill's name `{}` gives no folder name.", skill.name));
+        return Err(coded(
+            ERR_SKILL_INVALID_NAME,
+            format!("The skill's name `{}` gives no folder name.", skill.name),
+        ));
     }
     let destination = into.join(&folder);
     if destination.exists() && !replace {
-        return Err(format!(
-            "A skill is already installed at {}. Pass `replace` to put this one in its place.",
-            destination.display()
+        return Err(coded(
+            ERR_SKILL_EXISTS,
+            format!(
+                "A skill is already installed at {}. Pass `replace` to put this one in its place.",
+                destination.display()
+            ),
         ));
     }
     // What to copy, counted before anything is written.
@@ -429,10 +470,13 @@ pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, Strin
                 files.push(path);
             }
             if files.len() > INSTALL_FILES || bytes > INSTALL_BYTES {
-                return Err(format!(
-                    "{} holds more than a skill does ({INSTALL_FILES} files or {} MB): it is not installed.",
-                    source.display(),
-                    INSTALL_BYTES / 1024 / 1024
+                return Err(coded(
+                    ERR_SKILL_TOO_LARGE,
+                    format!(
+                        "{} holds more than a skill does ({INSTALL_FILES} files or {} MB): it is not installed.",
+                        source.display(),
+                        INSTALL_BYTES / 1024 / 1024
+                    ),
                 ));
             }
         }
@@ -492,14 +536,18 @@ fn remove_tree(root: &Path) {
 
 fn validate_relative_subpath(subpath: &str) -> Result<(), String> {
     if subpath.contains('\0') {
-        return Err("Skill subpath contains invalid null byte.".to_string());
+        return Err(coded(
+            ERR_SKILL_PATH_ESCAPE,
+            "Skill subpath contains invalid null byte.",
+        ));
     }
     for component in Path::new(subpath).components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!(
-                    "Skill path `{subpath}` must stay inside the source repository without `..`."
+                return Err(coded(
+                    ERR_SKILL_PATH_ESCAPE,
+                    format!("Skill path `{subpath}` must stay inside the source repository without `..`."),
                 ));
             }
         }
@@ -510,12 +558,18 @@ fn validate_relative_subpath(subpath: &str) -> Result<(), String> {
 /// Fetch a Git repository's latest commit into a folder of its own, for a skill to be installed from.
 async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &CancellationToken) -> Result<(), String> {
     if url.is_empty() || url.starts_with('-') || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(format!("Refusing unsafe Git repository URL `{url}`."));
+        return Err(coded(
+            ERR_SKILL_INVALID_SOURCE,
+            format!("Refusing unsafe Git repository URL `{url}`."),
+        ));
     }
     if let Some(branch) = branch
         && (branch.is_empty() || branch.starts_with('-') || branch.chars().any(|c| c.is_whitespace() || c.is_control()))
     {
-        return Err(format!("Refusing unsafe Git branch `{branch}`."));
+        return Err(coded(
+            ERR_SKILL_INVALID_SOURCE,
+            format!("Refusing unsafe Git branch `{branch}`."),
+        ));
     }
     let mut command = tokio::process::Command::new("git");
     command.args([
@@ -551,15 +605,20 @@ async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &Cancellati
     };
     match output {
         Ok(Ok(output)) if output.status.success() => Ok(()),
-        Ok(Ok(output)) => Err(format!(
-            "`git clone {url}` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+        Ok(Ok(output)) => Err(coded(
+            ERR_SKILL_CLONE_FAILED,
+            format!(
+                "`git clone {url}` failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
         )),
-        Ok(Err(error)) => Err(format!(
-            "Cannot run git ({error}): it must be installed to install a skill from a repository."
+        Ok(Err(error)) => Err(coded(
+            ERR_SKILL_GIT_MISSING,
+            format!("Cannot run git ({error}): it must be installed to install a skill from a repository."),
         )),
-        Err(_) => Err(format!(
-            "`git clone {url}` took more than three minutes and was stopped."
+        Err(_) => Err(coded(
+            ERR_SKILL_CLONE_TIMEOUT,
+            format!("`git clone {url}` took more than three minutes and was stopped."),
         )),
     }
 }
@@ -608,13 +667,19 @@ pub async fn fetch(
                 .canonicalize()
                 .map_err(|e| format!("Cannot verify cloned skill directory: {e}"))?;
             let from_canon = from.canonicalize().map_err(|_| {
-                format!(
-                    "There is no skill folder at {} inside the cloned repository.",
-                    from.display()
+                coded(
+                    ERR_SKILL_NOT_FOUND,
+                    format!(
+                        "There is no skill folder at {} inside the cloned repository.",
+                        from.display()
+                    ),
                 )
             })?;
             if !from_canon.starts_with(&temp_canon) {
-                return Err("Skill path escapes the cloned repository.".to_string());
+                return Err(coded(
+                    ERR_SKILL_PATH_ESCAPE,
+                    "Skill path escapes the cloned repository.",
+                ));
             }
             Ok(())
         })();
@@ -626,7 +691,7 @@ pub async fn fetch(
         && let (Ok(local_canon), Ok(from_canon)) = (local.canonicalize(), from.canonicalize())
         && !from_canon.starts_with(&local_canon)
     {
-        return Err("Skill path escapes the source folder.".to_string());
+        return Err(coded(ERR_SKILL_PATH_ESCAPE, "Skill path escapes the source folder."));
     }
     let target = into.to_path_buf();
     let installed = tokio::task::spawn_blocking(move || install(&from, &target, replace)).await;
@@ -652,23 +717,33 @@ pub fn valid_name(name: &str) -> bool {
 /// `replace`, and then only its `SKILL.md`: the files beside it are kept.
 pub fn write(into: &Path, name: &str, description: &str, body: &str, replace: bool) -> Result<Skill, String> {
     if !valid_name(name) {
-        return Err(format!(
-            "The name `{name}` will not do: lower-case letters, digits and `-` only, at most 64."
+        return Err(coded(
+            ERR_SKILL_INVALID_NAME,
+            format!("The name `{name}` will not do: lower-case letters, digits and `-` only, at most 64."),
         ));
     }
     if BUILTINS.iter().any(|(builtin, _)| *builtin == name) {
-        return Err(format!("`{name}` is the name of a skill that comes with the app."));
+        return Err(coded(
+            ERR_SKILL_BUILTIN,
+            format!("`{name}` is the name of a skill that comes with the app."),
+        ));
     }
     // One line: it is what the model is told of the skill, in the list sent with every request.
     let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
     if description.is_empty() || body.trim().is_empty() {
-        return Err("A skill needs a description and instructions.".to_string());
+        return Err(coded(
+            ERR_SKILL_INVALID_SOURCE,
+            "A skill needs a description and instructions.",
+        ));
     }
     let directory = into.join(name);
     if directory.join(FILE_NAME).exists() && !replace {
-        return Err(format!(
-            "A skill is already installed at {}. Pass `replace` to put this one in its place.",
-            directory.display()
+        return Err(coded(
+            ERR_SKILL_EXISTS,
+            format!(
+                "A skill is already installed at {}. Pass `replace` to put this one in its place.",
+                directory.display()
+            ),
         ));
     }
     std::fs::create_dir_all(&directory).map_err(|error| format!("Cannot make {}: {error}", directory.display()))?;
@@ -701,7 +776,10 @@ mod tests {
 
         // A folder that holds skills but is not one names them.
         let missed = install(&source, &into, false).unwrap_err();
-        assert!(missed.contains("skills/pdf") && missed.contains("`path`"), "{missed}");
+        assert!(
+            missed.starts_with("[ERR_SKILL_SUBFOLDERS]") && missed.contains("skills/pdf") && missed.contains("`path`"),
+            "{missed}"
+        );
         // The skill goes in a folder named for it, scripts and all, its Git folder left behind.
         let installed = install(&source.join("skills/pdf"), &into, false).unwrap();
         assert_eq!(
@@ -711,10 +789,10 @@ mod tests {
         assert!(into.join("pdf-tools/scripts/split.py").is_file() && !into.join("pdf-tools/.git").exists());
         assert_eq!(discover(std::slice::from_ref(&into))[0].name, "pdf tools");
         // Not over one already there, unless asked to.
+        let exists_err = install(&source.join("skills/pdf"), &into, false).unwrap_err();
         assert!(
-            install(&source.join("skills/pdf"), &into, false)
-                .unwrap_err()
-                .contains("replace")
+            exists_err.starts_with("[ERR_SKILL_EXISTS]") && exists_err.contains("replace"),
+            "{exists_err}"
         );
         std::fs::write(
             source.join("skills/pdf/SKILL.md"),
@@ -727,10 +805,10 @@ mod tests {
             std::fs::read_dir(&into).unwrap().count() == 1,
             "nothing is left half installed"
         );
+        let not_found = install(&directory.path().join("empty"), &into, false).unwrap_err();
         assert!(
-            install(&directory.path().join("empty"), &into, false)
-                .unwrap_err()
-                .contains("not a skill")
+            not_found.starts_with("[ERR_SKILL_NOT_FOUND]") && not_found.contains("not a skill"),
+            "{not_found}"
         );
     }
 
@@ -909,7 +987,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains(".."), "{err}");
+        assert!(
+            err.starts_with("[ERR_SKILL_PATH_ESCAPE]") && err.contains(".."),
+            "{err}"
+        );
 
         let err_gh = fetch(
             "https://github.com/anthropics/skills/tree/main/skills/../../outside",
@@ -921,12 +1002,18 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err_gh.contains(".."), "{err_gh}");
+        assert!(
+            err_gh.starts_with("[ERR_SKILL_PATH_ESCAPE]") && err_gh.contains(".."),
+            "{err_gh}"
+        );
 
         let err_clone = clone("--upload-pack=evil", None, &directory.path().join("clone_out"), &cancel)
             .await
             .unwrap_err();
-        assert!(err_clone.contains("unsafe"), "{err_clone}");
+        assert!(
+            err_clone.starts_with("[ERR_SKILL_INVALID_SOURCE]") && err_clone.contains("unsafe"),
+            "{err_clone}"
+        );
         let err_branch = clone(
             "https://github.com/me/repo.git",
             Some("--upload-pack=evil"),
@@ -935,7 +1022,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err_branch.contains("unsafe"), "{err_branch}");
+        assert!(
+            err_branch.starts_with("[ERR_SKILL_INVALID_SOURCE]") && err_branch.contains("unsafe"),
+            "{err_branch}"
+        );
     }
 
     fn skill(root: &Path, folder: &str, text: &str) {

@@ -1,6 +1,8 @@
 import "../styles/pages.css";
 import { useEffect, useState } from "react";
+import { getCurrentLocale, type Locale, useI18n } from "../i18n";
 import { api } from "../lib/api";
+import { type LocalizedSkillError, localizeSkillError } from "../lib/errorCode";
 import type { ListedSkill, SkillsView } from "../lib/types";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { FormDialog, Row } from "./FormDialog";
@@ -108,41 +110,14 @@ const WAYS: [Way, string][] = [
 /** A skill's name as skills are named everywhere: lower-case letters, digits and `-`. */
 const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
-/** What went wrong putting a skill in, in the user's words: with a way to put it in place of one there, or the folders below to choose from. */
-export function skillProblem(error: string): {
-  text: string;
-  replace?: boolean;
-  choices?: string[];
-} {
-  if (error.includes("already installed")) return { text: "秘籍目录里已经有同名的一部。", replace: true };
-  const below = /Skills in the folders below it: (.+?)\. Pass/.exec(error);
-  if (below)
-    return {
-      text: "这里顶上没有 SKILL.md，下面的文件夹里有这几部，选一部收入：",
-      choices: below[1].split(", "),
-    };
-  if (error.includes("it is not a skill"))
-    return {
-      text: "这里找不到 SKILL.md，下面几层文件夹里也没有：它不是一部秘籍。",
-    };
-  if (error.startsWith("Cannot run git"))
-    return {
-      text: "这台电脑上找不到 Git。先装好 Git（git-scm.com），再关掉程序重开。",
-    };
-  const failed = /^`git clone .*?` failed: ([\s\S]*)$/.exec(error);
-  if (failed) return { text: `下载失败：${failed[1]}` };
-  if (error.includes("took more than three minutes")) return { text: "下载超过三分钟还没完，停下了。" };
-  if (error.includes("will not do")) return { text: "名称只能用小写字母、数字和 -，最多 64 个字符。" };
-  if (error.includes("comes with the app")) return { text: "这个名字是内置秘籍用的，换一个。" };
-  if (error.includes("holds more than a skill does"))
-    return {
-      text: "这个文件夹太大，不像一部秘籍（超过 2000 个文件或 50 MB），没有收入。",
-    };
-  return { text: error };
+/** What went wrong putting a skill in, parsed from structured backend error codes (`[ERR_*]` / `{ code }`) and localized via `i18n`. */
+export function skillProblem(error: unknown, locale: Locale = getCurrentLocale()): LocalizedSkillError {
+  return localizeSkillError(error, locale);
 }
 
 /** The window for adding a 秘籍 of the user's own: written here, or put in from a folder or a Git repository. */
 function SkillDialog({ onDone, onClose }: { onDone: (view: SkillsView) => void; onClose: () => void }) {
+  const { locale, t } = useI18n();
   const [way, setWay] = useState<Way>("write");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -150,7 +125,7 @@ function SkillDialog({ onDone, onClose }: { onDone: (view: SkillsView) => void; 
   const [folder, setFolder] = useState("");
   const [address, setAddress] = useState("");
   const [within, setWithin] = useState("");
-  const [wrong, setWrong] = useState<ReturnType<typeof skillProblem> | null>(null);
+  const [wrong, setWrong] = useState<LocalizedSkillError | null>(null);
   const [saving, setSaving] = useState(false);
   const typed =
     <T,>(set: (value: T) => void) =>
@@ -162,7 +137,7 @@ function SkillDialog({ onDone, onClose }: { onDone: (view: SkillsView) => void; 
     const missing =
       way === "write"
         ? !SKILL_NAME.test(name.trim())
-          ? "名称只能用小写字母、数字和 -，最多 64 个字符。"
+          ? t("err.skillInvalidName")
           : !description.trim()
             ? "写一句说明：分身靠它决定什么时候翻开这部秘籍。"
             : !body.trim()
@@ -170,7 +145,7 @@ function SkillDialog({ onDone, onClose }: { onDone: (view: SkillsView) => void; 
               : null
         : way === "folder"
           ? !folder.trim() && "选一个带 SKILL.md 的文件夹。"
-          : !/^(https?:\/\/|git@|ssh:\/\/)/.test(address.trim()) && !address.trim().endsWith(".git") && "填仓库的地址，以 https:// 或 git@ 开头。";
+          : !/^(https?:\/\/|git@|ssh:\/\/)/.test(address.trim()) && !address.trim().endsWith(".git") && t("err.skillInvalidSource");
     if (missing) return setWrong({ text: missing });
     setSaving(true);
     setWrong(null);
@@ -186,7 +161,7 @@ function SkillDialog({ onDone, onClose }: { onDone: (view: SkillsView) => void; 
       },
       (error) => {
         setSaving(false);
-        setWrong(skillProblem(String(error)));
+        setWrong(skillProblem(error, locale));
       },
     );
   };

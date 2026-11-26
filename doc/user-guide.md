@@ -26,13 +26,10 @@
 
 ## 安装
 
-从 [Releases](https://github.com/VoidDel/omnidoppelganger/releases) 下载对应系统的安装包：
+从 [Releases](https://github.com/VoidDel/omnidoppelganger/releases) 下载对应系统的桌面安装包（同页还提供三平台独立的 `odg-cli` 命令行压缩包及 `SHA256SUMS.txt` 校验文件）：
 
-- **Windows 10 / 11（64 位）**：下载 `.exe`（NSIS 安装向导）或 `.msi` 安装包。安装包尚未购买代码签名证书，SmartScreen 弹出“Windows 已保护你的电脑”时，点 **更多信息 › 仍要运行**。Windows 10 若缺少 WebView2 运行时，安装程序会自动引导安装。
-- **macOS（Apple Silicon，macOS 12+）**：打开 `.dmg`，把 **OmniDoppelganger** 拖进“应用程序”。应用目前使用本地 Ad-hoc 签名、未经 Apple 公证，首次打开若提示“已损坏”或“无法验证开发者”，在终端执行一次下面这条命令移除隔离属性即可正常打开：
-  ```bash
-  xattr -cr /Applications/OmniDoppelganger.app
-  ```
+- **Windows 10 / 11（64 位）**：下载经代码签名的 `.exe`（NSIS 安装向导）或 `.msi` 安装包。Windows 10 若缺少 WebView2 运行时，安装程序会自动引导补装。
+- **macOS（Apple Silicon 与 Intel，macOS 12+）**：打开经 Apple Developer ID 签名与公证的 `.dmg`，把 **OmniDoppelganger** 拖进“应用程序”即可直接打开。（若运行的是本地无证书源码自编译的 Ad-hoc 包被系统拦截，可在终端执行一次 `xattr -cr /Applications/OmniDoppelganger.app` 放行。）
 - **Linux（64 位）**：
   - Debian / Ubuntu：`sudo apt install ./OmniDoppelganger_*_amd64.deb`
   - Fedora / RHEL：`sudo dnf install ./OmniDoppelganger-*.x86_64.rpm`
@@ -128,15 +125,19 @@
 
 | 命令 | 中文别名示例 | 作用 |
 |---|---|---|
-| `/new` | `/新分身` | 在当前洞府再化出一个新分身 |
-| `/aside` | `/旁聊` | 打开右侧只读“旁聊”面板，不打断主分身 |
+| `/new` | `/新分身` `/化出` | 在当前洞府再化出一个新分身 |
+| `/aside` | `/旁聊` `/侧聊` | 打开右侧只读“旁聊”面板，不打断主分身 |
 | `/fork` | `/分叉` | 将截至目前的对话分叉为一个独立的新分身 |
-| `/compact [重点]` | `/摘要` `/压缩` | 将前情浓缩为摘要，可附加保留重点（如 `/compact 保留接口签名与报错栈`） |
-| `/export` | `/导出` | 将当前会话完整导出为 Markdown（`.md`）文件 |
-| `/trust` | `/信任` | 信任当前洞府，加载仓库内的 `AGENTS.md`、`.odg/skills` 与 `.odg/prompts` |
-| `/init` | — | 让分身通读当前项目并生成一份贴合仓库约定的 `AGENTS.md` |
+| `/compact [重点]` | `/凝练` `/摘要` `/压缩` | 将前情浓缩为摘要，可附加保留重点（如 `/compact 保留接口签名与报错栈`） |
+| `/usage` | `/用量` `/额度` `/灵石` | 打开灵石与用量面板，查看上下文占用、各模型累计消耗、冷却倒计时与订阅额度 |
+| `/export` | `/导出` `/导出会话` | 将当前会话完整导出为 Markdown（`.md`）文件 |
+| `/trust` | `/信任` `/授信` | 信任（或收回授信）当前洞府，控制是否加载仓库内的 `AGENTS.md`、`.odg/skills` 与 `.odg/prompts` |
+| `/files` | `/文件` `/目录` | 在左侧栏打开当前洞府的文件树管理面板（闲谈会话下隐藏） |
+| `/git` | `/版本` `/仓库` | 在左侧栏打开 Git 变更、提交与分支管理面板（闲谈会话下隐藏） |
+| `/terminal` | `/终端` `/命令行` | 打开或聚焦右侧交互式本地运行终端（`Ctrl/⌘+J`） |
+| `/init` | `/立规矩` `/规矩` | 让分身通读当前项目并生成一份贴合仓库约定的 `AGENTS.md` |
 | `/review` | `/审查` | 让分身审查当前工作区尚未提交的 Git 改动 |
-| `/model` | `/心法` | 切换当前分身的心法（模型） |
+| `/model` | `/心法` `/功法` `/模型` | 切换当前分身的心法（模型）或宗门 |
 | `/effort` | `/境界` | 切换当前分身的境界（思考深度） |
 | `/mode` | `/禁制` | 切换当前分身的禁制（权限模式） |
 | `/rename <新名字>` | `/改名` | 修改当前会话标题 |
@@ -239,7 +240,7 @@ arg-hint: <问题编号> [模块路径]
 
 点左侧栏底部的 **秘籍**（或输入 `/skills`）：
 
-- 内置 **提交说明、审查改动、系统排错、编写测试、安全重构、撰写文档、界面设计、发布说明、安全审查、画图** 以及 **Word、Excel、PPT、PDF** 制作等十余部专项秘籍。打开开关即拷入 `~/.odg/skills/`，你可以按团队习惯自由编辑其中的 `SKILL.md`。
+- 内置**十五部**专项秘籍：**提交说明**（`commit-message`）、**审查改动**（`code-review`）、**系统排错**（`debugging`）、**编写测试**（`writing-tests`）、**端到端实测验证**（`e2e-verification`）、**安全重构**（`refactoring`）、**撰写文档**（`writing-docs`）、**界面设计**（`frontend-design`）、**发布说明**（`release-notes`）、**安全审查**（`security-review`）、**画图**（`image`），以及制作 **Word**（`docx`）、**Excel**（`xlsx`）、**PPT**（`pptx`）、**PDF**（`pdf`）文档的四部。打开开关即拷入 `~/.odg/skills/`，你可以按团队习惯自由编辑其中的 `SKILL.md`。
 - 平常分身只读取每部秘籍的名称与一句话简介，不挤占上下文；遇到匹配任务或被 `/秘籍名` 点名时才用 `load_skill` 研读全文。
 - 支持把团队共享秘籍放在仓库的 `.odg/skills/<名称>/SKILL.md` 下随 Git 提交，也支持让分身通过 `install_skill` 从本地目录或 GitHub 仓库子目录一键安装。
 
@@ -247,7 +248,7 @@ arg-hint: <问题编号> [模块路径]
 
 ## 文房、画图与丹青
 
-- **文房（独立 Python 文档与数据环境）**：在 **设置 › 神通 › 文房** 点一键准备（或等分身首次做文档时请示安装），应用会按严格哈希校验下载独立的 Python 3.12 与 `python-docx`、`openpyxl`、`XlsxWriter`、`python-pptx`、`reportlab`、`pypdf`、`pandas`、`Pillow`、`matplotlib`、`qrcode`、`resvg` 到 `~/.odg/runtime/`（约 90 MB，完全不改动系统 Python）。若本机装有 LibreOffice，分身生成 Office 文档后还会自动调用它做排版转换与公式验算。
+- **文房（独立 Python 文档与数据环境）**：在 **设置 › 神通 › 文房** 点一键准备（或等分身首次做文档时请示安装），应用会按严格哈希校验下载独立的 Python 3.12 与 `python-docx`、`openpyxl`、`XlsxWriter`、`python-pptx`、`reportlab`、`pypdf`、`pandas`、`Pillow`、`lxml`、`matplotlib`、`qrcode`、`resvg` 到 `~/.odg/runtime/`（约 90 MB，完全不改动系统 Python）。文房默认不在后台静默联网自动升级（受设置项 `auto_update_runtime` 控制：默认关闭，仅在你主动点击安装/更新、批准 `document_runtime` 或在设置中开启自动更新时才联网补装变更的依赖库）。若本机装有 LibreOffice，分身生成 Office 文档后还会自动调用它做排版转换与公式验算。
 - **代码画图**：架构图、流程图、示意图、海报卡片优先写成矢量 SVG（需要位图时用 `resvg` 转高清 PNG），统计图表用 `matplotlib`，直接在对话流中内联展示。
 - **丹青（AI 生图）**：需要写实配图、插画或图标素材时，配置了 OpenAI（`GPT Image`）或智谱 GLM（`GLM-Image` / `CogView`）密钥即可在“设置 › 神通 › 丹青”选定画师，由分身调用 `generate_image` 作画并存入洞府。
 - **产物面板**：分身显式交付（`deliver_files`）或每轮在洞府里新产出的文档、表格、演示稿、PDF、图片、音视频与压缩包，都会汇总在右侧 **产物** 面板，点击即可打开预览或在系统文件管理器中定位。
@@ -278,9 +279,12 @@ arg-hint: <问题编号> [模块路径]
 
 ## 命令行 `odg`
 
-除桌面窗口外，仓库还提供共用同一套 `~/.odg/` 配置、密钥、通行符、MCP 与秘籍的命令行工具 `odg`（源码构建：`cargo build --release -p odg-cli`）：
+除桌面窗口外，还提供共用同一套 `~/.odg/` 配置、密钥、通行符、MCP 与秘籍的命令行工具 `odg`（可直接从 GitHub Releases 下载三平台独立 `odg-cli` 压缩包，macOS / Linux 也可在桌面端“设置 › 神通”一键软链至 `~/.local/bin/odg`，或源码构建 `cargo build --release -p odg-cli`）：
 
 ```bash
+# 查看当前 CLI 版本号
+odg --version
+
 # 在当前目录跑一次任务（分身回答输出到 stdout，工具过程输出到 stderr）
 odg "排查为什么单元测试失败并给出修复补丁"
 
@@ -291,8 +295,12 @@ odg -C ../my-service --mode auto "跑一遍测试并修掉编译警告"
 odg -c "顺便把刚改的函数补上文档注释"
 odg -r 8f3a1c "继续完成剩下的重构步骤"
 
-# 在隔离的 Git 工作树里启动新会话，不碰当前工作区
+# 在隔离的 Git 工作树里启动新会话（不碰当前工作区），或开启“全权托付”无交互执行
 odg -w --mode auto "尝试把日志库迁移到 tracing"
+odg -w --mode bypass "在隔离工作树中全自动完成重构并跑通全部测试"
+
+# 将 -w 独立工作树会话的改动一键提交并安全合并回原工作区当前分支
+odg --land 8f3a1c
 
 # 在脚本或流水线中输出结构化 NDJSON 事件流，或无交互自动批准/拒绝
 odg --json --no "只读审查当前分支的安全隐患"
@@ -309,10 +317,10 @@ odg --export 8f3a1c > session-notes.md
 
 打开设置（左下角齿轮或 `/settings`），顶部按四页组织：
 
-- **心法**：添加/管理宗门、API 密钥与自定义接口地址，查看 Antigravity 订阅额度，设置新分身默认的宗门、心法、境界及上下文窗口大小。
+- **心法**：添加/管理宗门、API 密钥与自定义接口地址，查看 Antigravity / Magpie 订阅额度，设置新分身默认的宗门、心法、境界及上下文窗口大小。
 - **禁制**：设置新分身默认禁制、开启/关闭护法及选用审核模型、调整“放手施为”请示超时秒数、开启/配置命令结界（macOS / Linux）、设置自动压缩上下文上限，以及按洞府查看和收回“通行符”（长期授权与项目信任）。
-- **神通**：配置“天机阁”联网搜索引擎、选定“丹青”生图画师、一键安装或移除“文房”独立 Python 运行时与“语言服务”（LSP）。
-- **外观**：切换亮色/暗色宣纸主题（天色）、在 **版本与更新** 中一键检查 GitHub 最新发布并跳转下载，以及在 **帮助与文档** 中直达本手册、常见问题、隐私说明和问题反馈页面。
+- **神通**：配置“天机阁”联网搜索引擎、选定“丹青”生图画师、一键安装/更新或移除“文房”独立 Python 运行时（可按需开关 `auto_update_runtime`，默认关闭不静默联网）、管理“语言服务”（LSP），以及在 macOS / Linux 下将 `odg` CLI 一键链接到 `~/.local/bin/odg`。
+- **外观**：切换界面语言（**雅言中文** `zh-CN` / **现代中文** `zh-plain` / **English** `en`）、切换亮色/暗色宣纸主题（天色）、在 **版本与更新** 中查看当前静态版本号并一键检查/校验签名执行应用内平滑升级，以及在 **帮助与文档** 中直达本手册、常见问题、隐私说明和问题反馈页面。（当应用窗口不在前台时，分身完成回合或停下候旨还会自动推送系统桌面通知。）
 
 ---
 
@@ -345,26 +353,34 @@ macOS 上把下面表里的 `Ctrl` 换成 `⌘`（切换到终端的 `` Ctrl+` `
 
 | 路径 | 内容 |
 |---|---|
-| `sessions/<id>/session.v1.jsonl` | 每个分身会话的完整追加式事件日志（对话、工具调用与结果、审批、文件快照引用） |
-| `settings.json` | 宗门、默认心法、禁制、结界、护法、主题等设置 |
+| `sessions/<id>/session.v1.jsonl` | 每个分身会话的完整追加式事件日志（对话、工具调用与结果、审批）及同目录下的每轮文件撤销快照 |
+| `settings.json` | 宗门、默认心法、禁制、结界、护法、界面语言（`locale`）、文房自动更新（`auto_update_runtime`）、主题等设置 |
+| `credentials.json` | 仅在系统凭据管理器不可用或显式指定了 `ODG_HOME` 时才生成，存放密钥 |
 | `grants.json` | 按洞府隔离保存的通行符（长期命令授权、项目信任等） |
-| `mcp.json` | 已启用的内置与自定义 MCP 法器配置（注意：写入其中的令牌与环境变量为明文） |
+| `mcp.json` | 已启用的内置与自定义 MCP 法器配置（注意：写入其中的令牌、请求头与环境变量按规范为明文） |
 | `schedules.json` | 功课（定时任务）配置 |
+| `model-usage.json` | 本地各模型累计 Token 消耗统计与限流/额度冷却截止时间 |
+| `models.json` | 各供应商返回的模型上下文窗口大小缓存 |
 | `skills/` | 已启用或自建的全局秘籍（`<名称>/SKILL.md`） |
 | `prompts/` | 全局参数化提示词模板（`<命令名>.md`） |
 | `lsp/` · `runtime/` | 按需下载的独立语言服务可执行文件，以及文房 Python 3.12 与文档库 |
 | `worktrees/` | 独立工作树分身的 Git Worktree 目录 |
 | `闲谈/` | “闲谈”会话默认读写文件的目录 |
-| `credentials.json` | 仅在系统凭据管理器不可用或显式指定了 `ODG_HOME` 时才生成，存放明文密钥 |
+| `pastes/` | 输入框粘贴超长文本生成的本地临时附件（超过 7 天或从草稿移除时自动清理） |
+| `mcp-memory.jsonl` | 启用内置 `memory` 本机 MCP 法器时的本地跨会话记忆文件 |
+| `app-icon.png` | Windows / Linux 原生系统桌面通知使用的本地应用图标缓存 |
+| `tmp/` | 本机 CLI 通信、秘籍拉取与快照中转的私有临时目录（不写入系统公共 `/tmp`） |
 
-API 密钥默认保存在操作系统的安全凭据存储中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service，条目归在 `OmniDoppelganger` 名下）。卸载应用不会自动删除 `~/.odg/`；如需彻底清除所有本地记录，删除 `~/.odg/` 目录并在系统凭据管理器中移除 `OmniDoppelganger` 相关条目即可。
+API 密钥默认保存在操作系统的安全凭据存储中（Windows 凭据管理器、macOS 钥匙串——官方签名包自动绑定 Developer ID Team ID ACL、Linux Secret Service，条目归在 `OmniDoppelganger` 名下）。在 macOS 与 Linux（Unix）下，`~/.odg/` 根目录及 `sessions/`、`pastes/`、`tmp/` 等敏感子目录统一强制设为 `0700`（仅当前用户可读写），`credentials.json` 与 `mcp.json` 等敏感配置以 `0600` 权限原子写入并拒绝悬空符号链接。卸载应用不会自动删除 `~/.odg/`；如需彻底清除所有本地记录，删除 `~/.odg/` 目录并在系统凭据管理器中移除 `OmniDoppelganger` 相关条目即可。
 
 ### 常用环境变量
 
 | 环境变量 | 作用 |
 |---|---|
-| `ANTHROPIC_API_KEY` · `OPENAI_API_KEY` · `GEMINI_API_KEY` · `OPENROUTER_API_KEY` · `DEEPSEEK_API_KEY` · `MOONSHOT_API_KEY` · `ZHIPUAI_API_KEY` · `MAGPIE_API_KEY` | 对应宗门未在设置页保存密钥时自动读取 |
+| `ANTHROPIC_API_KEY` · `OPENAI_API_KEY` · `GEMINI_API_KEY` · `GOOGLE_API_KEY` · `OPENROUTER_API_KEY` · `DEEPSEEK_API_KEY` · `MOONSHOT_API_KEY` · `ZHIPUAI_API_KEY` · `MAGPIE_API_KEY` | 对应宗门未在设置页保存密钥时自动读取（Google Gemini 同时支持 `GEMINI_API_KEY` 与 `GOOGLE_API_KEY`） |
 | `ANTHROPIC_BASE_URL` | 覆盖默认 Anthropic 官方接口地址 |
 | `ODG_AGY_BIN` · `ODG_CODEX_BIN` · `ODG_CLAUDE_BIN` · `ODG_CURSOR_AGENT_BIN` · `ODG_GROK_BIN` · `ODG_OPENCODE_BIN` | 手动指定对应本机编码 CLI 可执行文件的绝对路径 |
-| `ODG_PYTHON_MIRROR` · `PIP_INDEX_URL` | 下载“文房” Python 与依赖库时改用自定义镜像源（哈希校验保持不变） |
+| `ODG_PYTHON_MIRROR` · `PIP_INDEX_URL` | 下载“文房” Python 与依赖库时改用自定义镜像源（SHA-256 哈希校验保持不变） |
+| `ODG_E2E_WORKSPACE` | 端到端测试用：新建会话时直接使用该工作目录，免弹系统文件夹选择框 |
+| `ODG_TEST_DOWNLOADS` | 开发测试用：运行测试时实际联网核验语言服务与运行时的下载流程 |
 | `ODG_HOME` | 自定义数据根目录（默认 `~/.odg`）；设置后密钥改存该目录下的 `credentials.json` |

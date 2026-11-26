@@ -6,10 +6,11 @@ import { type ITheme, Terminal } from "@xterm/xterm";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { PtyInfo, PtyOutputPayload } from "../lib/types";
+import type { QuotePayload } from "./Composer";
 
 export interface TerminalPaneProps {
   sessionId: string;
-  onSendToChat: (quote: string) => void;
+  onSendToChat: (quote: QuotePayload) => void;
   onError: (message: string) => void;
 }
 
@@ -484,7 +485,7 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
               type="button"
               className="button primary small"
               title="将终端选中的内容发到对话输入框"
-              onClick={() => onSendToChat(`终端输出如下，请帮我看看：\n\`\`\`text\n${selectedText.slice(0, 6000)}\n\`\`\``)}
+              onClick={() => onSendToChat({ kind: "terminal", content: selectedText.slice(0, 6000) })}
             >
               发给分身
             </button>

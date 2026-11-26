@@ -311,7 +311,14 @@ describe("Workbench hooks & StatusBanners (P2-2, P2-12)", () => {
     );
     expect(screen.queryByRole("region", { name: "洞府项目信任确认" })).toBeNull();
 
-    expect(normalizeQuote("请看 `src/App.tsx` 第 10 行：\n> const x = 1;").label).toBe("src/App.tsx");
-    expect(normalizeQuote("终端输出：\n$ ls").label).toBe("终端输出");
+    expect(
+      normalizeQuote({ kind: "code", path: "src/App.tsx", lineRange: [10, 10], content: "const x = 1;" }, "zh-CN").label,
+    ).toBe("App.tsx:L10");
+    expect(normalizeQuote({ kind: "terminal", content: "$ ls" }, "zh-CN").label).toBe("终端输出");
+    expect(normalizeQuote({ kind: "job", jobId: "b1", command: "pnpm dev", content: "ready" }, "en").label).toBe("Job #b1");
+    expect(
+      normalizeQuote({ kind: "diff", path: "src/App.tsx", stage: "staged", added: 2, removed: 1, content: "+x" }, "en").label,
+    ).toBe("App.tsx · staged diff");
+    expect(normalizeQuote("raw plain quote", "en").label).toBe("Quoted snippet");
   });
 });

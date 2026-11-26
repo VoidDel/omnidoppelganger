@@ -19,6 +19,7 @@ pub struct SseParser {
     data: Vec<String>,
     data_bytes: usize,
     discarding_line: bool,
+    discarding_event: bool,
 }
 
 impl SseParser {
@@ -65,14 +66,15 @@ impl SseParser {
                 // Per WHATWG SSE §9.2.6 ("dispatch the event"): always reset the event type,
                 // and if the `data` buffer is empty, return without dispatching an event.
                 let event_name = std::mem::take(&mut self.event);
-                if !self.data.is_empty() {
+                let dropped = std::mem::replace(&mut self.discarding_event, false);
+                if !dropped && !self.data.is_empty() {
                     events.push(SseEvent {
                         event: event_name,
                         data: self.data.join("\n"),
                     });
-                    self.data.clear();
-                    self.data_bytes = 0;
                 }
+                self.data.clear();
+                self.data_bytes = 0;
                 continue;
             }
             if raw_line.starts_with(b":") {
@@ -83,15 +85,19 @@ impl SseParser {
             if let Some(value) = line.strip_prefix("event:") {
                 self.event = value.trim().to_string();
             } else if let Some(value) = line.strip_prefix("data:") {
+                if self.discarding_event {
+                    continue;
+                }
                 let piece = value.strip_prefix(' ').unwrap_or(value);
                 if self.data_bytes.saturating_add(piece.len()) <= MAX_SSE_BUFFER_BYTES {
                     self.data_bytes += piece.len() + 1;
                     self.data.push(piece.to_string());
                 } else {
+                    self.discarding_event = true;
                     self.data.clear();
                     self.data_bytes = 0;
                 }
-            } else if line == "data" {
+            } else if line == "data" && !self.discarding_event {
                 self.data_bytes += 1;
                 self.data.push(String::new());
             } else if line == "event" {
@@ -158,6 +164,103 @@ mod tests {
             vec![SseEvent {
                 event: String::new(),
                 data: "{\"recovered\":true}".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn reassembles_4_byte_utf8_emojis_across_single_byte_chunks() {
+        let payload = "event: delta\ndata: {\"emoji\":\"🚀🦀🧪🎉👨‍👩‍👧‍👦\",\"zh\":\"水墨修真\"}\n\n";
+        let mut parser = SseParser::default();
+        let mut events = Vec::new();
+        for &byte in payload.as_bytes() {
+            events.extend(parser.feed(std::slice::from_ref(&byte)));
+        }
+        assert_eq!(
+            events,
+            vec![SseEvent {
+                event: "delta".into(),
+                data: "{\"emoji\":\"🚀🦀🧪🎉👨‍👩‍👧‍👦\",\"zh\":\"水墨修真\"}".into(),
+            }]
+        );
+        assert!(!events[0].data.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn handles_crlf_crlf_split_across_arbitrary_chunk_boundaries() {
+        let chunks: &[&[u8]] = &[
+            b"event: message\r",
+            b"\ndata: first\r",
+            b"\n: comment mid-event\r",
+            b"\ndata: second\r",
+            b"\n\r",
+            b"\ndata: after-crlf\r\n",
+            b"\r",
+            b"\n",
+        ];
+        let mut parser = SseParser::default();
+        let mut events = Vec::new();
+        for chunk in chunks {
+            events.extend(parser.feed(chunk));
+        }
+        assert_eq!(
+            events,
+            vec![
+                SseEvent {
+                    event: "message".into(),
+                    data: "first\nsecond".into(),
+                },
+                SseEvent {
+                    event: String::new(),
+                    data: "after-crlf".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn concatenates_multiline_data_and_ignores_colon_comments() {
+        let stream = concat!(
+            ": opening comment\n",
+            ":\n",
+            "event: patch\n",
+            "data: alpha\n",
+            "data:  two-leading-spaces\n",
+            ": comment inside multiline data\n",
+            "data\n",
+            "data:\n",
+            "data: omega\n",
+            "\n",
+        );
+        let mut parser = SseParser::default();
+        let events = parser.feed(stream.as_bytes());
+        assert_eq!(
+            events,
+            vec![SseEvent {
+                event: "patch".into(),
+                data: "alpha\n two-leading-spaces\n\n\nomega".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn discards_oversized_multiline_data_event_whole_and_recovers_on_following_event() {
+        let mut parser = SseParser::default();
+        let line_payload = "a".repeat(1024 * 1024); // 1 MiB per `data:` line
+        let line = format!("data: {line_payload}\n");
+        for _ in 0..33 {
+            assert!(parser.feed(line.as_bytes()).is_empty());
+        }
+        // Trailing small line before `\n\n` must NOT be emitted as a truncated fragment!
+        assert!(parser.feed(b"data: trailing_fragment\n\n").is_empty());
+
+        // Next event after the blank line recovers cleanly.
+        let next = parser.feed(b"event: ok\ndata: clean\n\n");
+        assert_eq!(
+            next,
+            vec![SseEvent {
+                event: "ok".into(),
+                data: "clean".into(),
             }]
         );
     }

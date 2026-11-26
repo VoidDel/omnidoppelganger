@@ -14,7 +14,7 @@ env:
 
 jobs:
   verify:
-    name: Verify version alignment, lint, and test gates
+    name: Verify version alignment, docs, lint, and test gates
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     steps:
@@ -36,6 +36,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
@@ -48,36 +50,59 @@ jobs:
       - name: Verify internal manifest version alignment
         if: "!startsWith(github.ref, 'refs/tags/v')"
         run: node scripts/check-version.mjs
+      - name: Verify documentation consistency
+        run: node scripts/check-docs.mjs
       - name: Frontend lint
         run: pnpm lint
       - name: Frontend tests
         run: pnpm test
       - name: Frontend build
         run: pnpm build
+      - name: Rust formatting check
+        run: cargo fmt --all -- --check
+      - name: Rust static checks
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Rust workspace tests (locked)
         run: cargo test --workspace --locked
 
   desktop:
-    name: Build desktop bundles (${{ matrix.platform }})
+    name: Build desktop & CLI bundles (${{ matrix.platform }})
     needs: [verify]
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: windows-latest
+            tauri_args: "--target x86_64-pc-windows-msvc"
+            rust_targets: "x86_64-pc-windows-msvc"
+            cli_targets: "x86_64-pc-windows-msvc"
             bundle_globs: |
-              target/release/bundle/nsis/*.exe
-              target/release/bundle/msi/*.msi
+              target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
+              target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+              target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.sig
+              target/cli-dist/*
           - platform: macos-latest
+            tauri_args: "--target universal-apple-darwin"
+            rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+            cli_targets: "aarch64-apple-darwin x86_64-apple-darwin"
             bundle_globs: |
-              target/release/bundle/dmg/*.dmg
+              target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+              target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+              target/cli-dist/*
           - platform: ubuntu-22.04
+            tauri_args: "--target x86_64-unknown-linux-gnu"
+            rust_targets: "x86_64-unknown-linux-gnu"
+            cli_targets: "x86_64-unknown-linux-gnu"
             bundle_globs: |
-              target/release/bundle/deb/*.deb
-              target/release/bundle/rpm/*.rpm
-              target/release/bundle/appimage/*.AppImage
+              target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+              target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.sig
+              target/cli-dist/*
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -88,11 +113,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
           shared-key: release-${{ matrix.platform }}
-      - name: Install Linux Tauri dependencies
+      - name: Install Linux Tauri & AppImage dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
@@ -101,11 +128,152 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libssl-dev
-      - run: pnpm install --frozen-lockfile
-      - name: Build Tauri bundles
-        run: pnpm tauri build
-      - name: Upload bundle artifacts
+            libssl-dev \
+            file \
+            libfuse2
+      - name: Configure macOS code signing keychain
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APPLE_CERTIFICATE}" ] && [ -n "${APPLE_SIGNING_IDENTITY}" ]; then
+            KEYCHAIN_PATH="$RUNNER_TEMP/odg-signing.keychain-db"
+            KEYCHAIN_PASS="$(uuidgen)"
+            CERT_PATH="$RUNNER_TEMP/odg-cert.p12"
+            echo "${APPLE_CERTIFICATE}" | base64 --decode > "$CERT_PATH"
+            security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -P "${APPLE_CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            rm -f "$CERT_PATH"
+            echo "APPLE_SIGNING_IDENTITY=${APPLE_SIGNING_IDENTITY}" >> "$GITHUB_ENV"
+            echo "ODG_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          else
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+      - name: Stage Windows Authenticode certificate
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          set -euo pipefail
+          if [ -n "${WINDOWS_CERTIFICATE}" ]; then
+            PFX_PATH="$RUNNER_TEMP/odg-windows-cert.pfx"
+            echo "${WINDOWS_CERTIFICATE}" | base64 --decode > "$PFX_PATH"
+            echo "ODG_WINDOWS_PFX=$PFX_PATH" >> "$GITHUB_ENV"
+          fi
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build Tauri desktop bundles
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          EXTRA_CONFIG="$(node -e '
+            const cfg = {};
+            if (process.env.TAURI_SIGNING_PRIVATE_KEY) {
+              cfg.bundle = { createUpdaterArtifacts: true };
+            }
+            if (process.env.TAURI_UPDATER_PUBKEY) {
+              cfg.plugins = { updater: { pubkey: process.env.TAURI_UPDATER_PUBKEY } };
+            }
+            if (Object.keys(cfg).length > 0) {
+              process.stdout.write(JSON.stringify(cfg));
+            }
+          ')"
+          if [ -n "$EXTRA_CONFIG" ]; then
+            pnpm tauri build ${{ matrix.tauri_args }} --config "$EXTRA_CONFIG"
+          else
+            pnpm tauri build ${{ matrix.tauri_args }}
+          fi
+      - name: Sign Windows desktop installers (when certificate configured)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ($env:ODG_WINDOWS_PFX -and (Test-Path $env:ODG_WINDOWS_PFX)) {
+            $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+            $ts = if ($env:WINDOWS_TIMESTAMP_URL) { $env:WINDOWS_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe not found on Windows runner" }
+            Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release/bundle" -Recurse -Include *.exe,*.msi | ForEach-Object {
+              & $signtool.FullName sign /f $env:ODG_WINDOWS_PFX /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr $ts /td SHA256 $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($_.FullName)" }
+              if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+                pnpm tauri signer sign --app-version $version $_.FullName
+                if ($LASTEXITCODE -ne 0) { throw "tauri signer failed for $($_.FullName)" }
+              }
+            }
+          }
+      - name: Build and package standalone odg-cli archives
+        shell: bash
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node --input-type=module -e 'import fs from "node:fs"; process.stdout.write(JSON.parse(fs.readFileSync("package.json", "utf8")).version);')"
+          mkdir -p target/cli-dist
+          for TARGET in ${{ matrix.cli_targets }}; do
+            cargo build --release --locked -p odg-cli --target "$TARGET"
+            STAGE="$(mktemp -d)"
+            if [[ "$TARGET" == *windows* ]]; then
+              BIN_SRC="target/${TARGET}/release/odg.exe"
+              cp "$BIN_SRC" "$STAGE/odg.exe"
+              if [ -n "${ODG_WINDOWS_PFX:-}" ] && [ -f "${ODG_WINDOWS_PFX:-}" ]; then
+                pwsh -NoProfile -Command '
+                  $ts = if ($env:WINDOWS_TIMESTAMP_URL) { $env:WINDOWS_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
+                  $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+                  & $signtool.FullName sign /f $env:ODG_WINDOWS_PFX /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr $ts /td SHA256 $args[0]
+                  if ($LASTEXITCODE -ne 0) { throw "signtool failed for odg.exe" }
+                ' "$STAGE/odg.exe"
+              fi
+              cp LICENSE README.md "$STAGE/"
+              ARCHIVE_PATH="$PWD/target/cli-dist/odg-cli-v${VERSION}-${TARGET}.zip"
+              (cd "$STAGE" && 7z a -tzip "$ARCHIVE_PATH" odg.exe LICENSE README.md >/dev/null)
+            else
+              BIN_SRC="target/${TARGET}/release/odg"
+              cp "$BIN_SRC" "$STAGE/odg"
+              chmod 0755 "$STAGE/odg"
+              if [[ "$TARGET" == *darwin* ]] && [ "${APPLE_SIGNING_IDENTITY:-}" != "" ] && [ "${APPLE_SIGNING_IDENTITY:-}" != "-" ]; then
+                codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$STAGE/odg"
+              fi
+              cp LICENSE README.md "$STAGE/"
+              ARCHIVE_PATH="$PWD/target/cli-dist/odg-cli-v${VERSION}-${TARGET}.tar.gz"
+              tar -C "$STAGE" -czf "$ARCHIVE_PATH" odg LICENSE README.md
+            fi
+            rm -rf "$STAGE"
+            ls -lh "$ARCHIVE_PATH"
+          done
+      - name: Clean up temporary signing credentials
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${ODG_SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$ODG_SIGNING_KEYCHAIN" || true
+          fi
+          if [ -n "${ODG_WINDOWS_PFX:-}" ]; then
+            rm -f "$ODG_WINDOWS_PFX" || true
+          fi
+      - name: Upload desktop and CLI bundle artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bundles-${{ matrix.platform }}
@@ -151,11 +319,14 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
-      - name: Validate platform packages and generate SHA256SUMS.txt
+      - name: Validate platform packages, build latest.json, and generate SHA256SUMS.txt
         run: |
           set -euo pipefail
           require_non_empty() {
@@ -174,9 +345,14 @@ jobs:
 
           require_non_empty "Windows NSIS installer (.exe)" "*.exe"
           require_non_empty "Windows MSI installer (.msi)" "*.msi"
-          require_non_empty "macOS disk image (.dmg)" "*.dmg"
+          require_non_empty "macOS universal disk image (.dmg)" "*.dmg"
           require_non_empty "Ubuntu Debian package (.deb)" "*.deb"
+          require_non_empty "Ubuntu AppImage (.AppImage)" "*.AppImage"
           require_non_empty "Arch Linux package (.pkg.tar.zst)" "*.pkg.tar.zst"
+          require_non_empty "Windows odg-cli archive (.zip)" "odg-cli-v*-x86_64-pc-windows-msvc.zip"
+          require_non_empty "macOS ARM64 odg-cli archive (.tar.gz)" "odg-cli-v*-aarch64-apple-darwin.tar.gz"
+          require_non_empty "macOS x86_64 odg-cli archive (.tar.gz)" "odg-cli-v*-x86_64-apple-darwin.tar.gz"
+          require_non_empty "Linux x86_64 odg-cli archive (.tar.gz)" "odg-cli-v*-x86_64-unknown-linux-gnu.tar.gz"
 
           mkdir -p release-assets
           while IFS= read -r -d '' file; do
@@ -188,12 +364,55 @@ jobs:
             cp "$file" "release-assets/$base"
           done < <(find artifacts -type f ! -name '*-debug-*.pkg.tar.*' -size +0c -print0)
 
+          # Assemble Tauri Updater `latest.json` manifest when `.sig` updater signatures are present.
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import path from "node:path";
+            const dir = "release-assets";
+            const files = fs.readdirSync(dir);
+            const sigFiles = files.filter((f) => f.endsWith(".sig"));
+            if (sigFiles.length > 0) {
+              const tag = process.env.GITHUB_REF_NAME || "v1.0.0";
+              const repo = process.env.GITHUB_REPOSITORY || "VoidDel/omnidoppelganger";
+              const dl = (name) => `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(name)}`;
+              const findSigned = (pred) => {
+                const bin = files.find((f) => !f.endsWith(".sig") && pred(f) && files.includes(`${f}.sig`));
+                if (!bin) return null;
+                return {
+                  signature: fs.readFileSync(path.join(dir, `${bin}.sig`), "utf8").trim(),
+                  url: dl(bin),
+                };
+              };
+              const platforms = {};
+              const mac = findSigned((f) => f.endsWith(".app.tar.gz"));
+              if (mac) {
+                platforms["darwin-aarch64"] = mac;
+                platforms["darwin-x86_64"] = mac;
+              }
+              const linux = findSigned((f) => f.endsWith(".AppImage"));
+              if (linux) platforms["linux-x86_64"] = linux;
+              const win = findSigned((f) => f.endsWith(".exe")) ?? findSigned((f) => f.endsWith(".msi"));
+              if (win) platforms["windows-x86_64"] = win;
+              if (Object.keys(platforms).length > 0) {
+                const manifest = {
+                  version: tag.replace(/^[vV]/, ""),
+                  notes: `Release ${tag} — see https://github.com/${repo}/releases/tag/${tag}`,
+                  pub_date: new Date().toISOString(),
+                  platforms,
+                };
+                fs.writeFileSync(path.join(dir, "latest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+                console.log("Generated Tauri Updater manifest release-assets/latest.json");
+              }
+            }
+          '
+
           (
             cd release-assets
-            LC_ALL=C sha256sum -- * > SHA256SUMS.txt
-            echo "Generated SHA256SUMS.txt:"
-            cat SHA256SUMS.txt
+            LC_ALL=C sha256sum -- * > ../SHA256SUMS.txt
           )
+          mv SHA256SUMS.txt release-assets/SHA256SUMS.txt
+          echo "Generated SHA256SUMS.txt:"
+          cat release-assets/SHA256SUMS.txt
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:

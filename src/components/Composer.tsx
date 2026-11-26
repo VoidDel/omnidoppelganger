@@ -1,16 +1,17 @@
 import "../styles/composer.css";
-import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import { api } from "../lib/api";
-import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
+import { effortHint, effortName, effortNote } from "../lib/efforts";
 import { launchFrom } from "../lib/flight";
 import { type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { allTokens, cooldownRemainingMs, findModelUsage, formatCooldown, formatResetIn, quotaGroupForModel, quotaWindowLabel, todayTokens, useModelUsage, useProviderQuota } from "../lib/modelUsage";
-import { MODES, modeHintFor, nextMode } from "../lib/modes";
+import { modeHintFor, modesFor, nextMode } from "../lib/modes";
 import { type PasteKind, detectPasteKind, nextPastedFilename, shouldCollapsePaste } from "../lib/paste";
 import { estimateTokensUsd, formatUsd } from "../lib/pricing";
 import { CLI_INFO, cliOf } from "../lib/providers";
 import { type Offer, type SlashChoice, type SlashCommand, completion, offers, parse } from "../lib/slash";
-import type { FoundFile, Image, Mode, Picked, Provider, Status } from "../lib/types";
+import type { FoundFile, Image, Mode, Picked, Provider, RawListedModel, Status } from "../lib/types";
 import { Mark } from "./Backdrop";
 import { Icon } from "./Icon";
 import { Light } from "./Light";
@@ -42,6 +43,22 @@ export interface ComposerQuote {
 }
 
 export type ComposerQuoteInput = Omit<ComposerQuote, "id">;
+
+export interface StructuredQuote {
+  kind: "job" | "terminal" | "code" | "diff";
+  path?: string;
+  lineRange?: [number, number];
+  language?: string | null;
+  stage?: "unstaged" | "staged" | "commit";
+  commit?: string | null;
+  added?: number;
+  removed?: number;
+  jobId?: string;
+  command?: string;
+  content: string;
+}
+
+export type QuotePayload = StructuredQuote | ComposerQuoteInput | string;
 
 export interface ComposerSeed {
   id: number;
@@ -127,7 +144,7 @@ export interface ComposerProps {
   /** Have the 分身 summarize the conversation now, optionally preserving `focus` topics. */
   onCompact: (focus?: string) => void;
   onModel: (provider: string, model: string) => void;
-  listModels: (provider: string) => Promise<[string, string][]>;
+  listModels: (provider: string) => Promise<RawListedModel[]>;
   /** The last turn in plan mode ended with the 分身's answer: offer to carry it out. */
   planReady: boolean;
   onMode: (mode: Mode) => void;
@@ -211,6 +228,11 @@ function useBoxHeight() {
 }
 
 export function Composer(props: ComposerProps) {
+  const uid = useId();
+  const inputId = `${uid}-input`;
+  const slashMenuId = `${uid}-slash-menu`;
+  const atMenuId = `${uid}-at-menu`;
+  const { locale, t } = useI18n();
   const { status, providers, listed, keyed, providerId, model, effort, effortSet, efforts, vision, mode, usage, contextLimit, contextCeiling, contextSetting, contextAuto, planReady } = props;
   const { entries: modelUsage, nowMs, refresh: refreshModelUsage, clearCooldown } = useModelUsage(`${status}:${usage.spent.input}:${usage.spent.output}:${providerId}:${model}`);
   const activeModelStat = findModelUsage(modelUsage, providerId, model);
@@ -346,27 +368,43 @@ export function Composer(props: ComposerProps) {
   const [modelSummon, setModelSummon] = useState(0);
   /** Changed to open the 灵石 / 用量 menu, from "/usage". */
   const [usageSummon, setUsageSummon] = useState(0);
-  const effortChoices: SlashChoice[] = efforts.map((level) => ({ value: level, label: EFFORT_NAMES[level] ?? level, hint: EFFORT_HINTS[level] }));
-  const modeChoices: SlashChoice[] = MODES.map((one) => ({ value: one.value, label: one.name, hint: modeHintFor(one.value, cli) }));
+  const localizedModes = modesFor(locale);
+  const effortChoices: SlashChoice[] = efforts.map((level) => ({
+    value: level,
+    label: effortName(level, locale),
+    hint: effortHint(level, locale),
+  }));
+  const modeChoices: SlashChoice[] = localizedModes.map((one) => ({
+    value: one.value,
+    label: one.name,
+    hint: modeHintFor(one.value, cli, locale),
+  }));
   const picked = (choices: SlashChoice[], arg: string, what: string) =>
     choices.find((choice) => choice.value === arg.toLowerCase() || choice.label === arg) ?? `没有「${arg}」这一${what}：可选 ${choices.map((choice) => choice.label).join("、")}。`;
   const own: SlashCommand[] = [
     {
       name: "compact",
-      label: "凝练",
+      label: t("slash.compact.label"),
       aliases: ["凝练", "摘要", "压缩"],
-      arg: "[保留重点]",
-      hint: "现在就把前情凝成摘要（可跟要保留的重点；近期轮次原样保留）",
-      unavailable: busy ? "分身运功时不能凝练，等它收功" : usage.context === 0 ? "还没有前情可凝" : undefined,
+      arg: t("slash.compact.arg"),
+      hint: t("slash.compact.hint"),
+      unavailable: busy ? t("slash.compact.busy") : usage.context === 0 ? t("slash.compact.empty") : undefined,
       run: (arg) => onCompact(arg.trim() || undefined),
     },
-    { name: "model", label: "心法", aliases: ["心法", "功法", "模型"], hint: "换心法，也能换到别的宗门", unavailable: busy ? "分身运功时不能换心法，等它收功" : undefined, run: () => setModelSummon((count) => count + 1) },
+    {
+      name: "model",
+      label: t("slash.model.label"),
+      aliases: ["心法", "功法", "模型"],
+      hint: t("slash.model.hint"),
+      unavailable: busy ? t("slash.model.busy") : undefined,
+      run: () => setModelSummon((count) => count + 1),
+    },
     {
       name: "effort",
-      label: "境界",
-      aliases: ["境界"],
-      hint: "换这个分身的境界：推演深浅",
-      arg: "<境界>",
+      label: t("slash.effort.label"),
+      aliases: ["境界", "推理强度"],
+      hint: t("slash.effort.hint"),
+      arg: t("slash.effort.arg"),
       choices: effortChoices,
       run: (arg) => {
         const choice = picked(effortChoices, arg, "档境界");
@@ -376,10 +414,10 @@ export function Composer(props: ComposerProps) {
     },
     {
       name: "mode",
-      label: "禁制",
-      aliases: ["禁制"],
-      hint: "换禁制：分身不问就能做什么",
-      arg: "<禁制>",
+      label: t("slash.mode.label"),
+      aliases: ["禁制", "权限模式"],
+      hint: t("slash.mode.hint"),
+      arg: t("slash.mode.arg"),
       choices: modeChoices,
       run: (arg) => {
         const choice = picked(modeChoices, arg, "种禁制");
@@ -387,20 +425,24 @@ export function Composer(props: ComposerProps) {
         onMode(choice.value as Mode);
       },
     },
-    {
-      name: "usage",
-      label: "用量",
-      aliases: ["用量", "额度", "灵石"],
-      hint: "查看灵石用量、模型累计消耗、冷却倒计时与订阅额度",
-      run: () => {
-        refreshModelUsage();
-        if (quotaSource) agyQuota.refresh(true);
-        setUsageSummon((n) => n + 1);
-      },
-    },
+    ...(!given.some((c) => c.name === "usage")
+      ? [
+          {
+            name: "usage",
+            label: t("slash.usage.label"),
+            aliases: ["用量", "额度", "灵石"],
+            hint: t("slash.usage.hint"),
+            run: () => {
+              refreshModelUsage();
+              if (quotaSource) agyQuota.refresh(true);
+              setUsageSummon((n) => n + 1);
+            },
+          },
+        ]
+      : []),
   ];
   const rank = (command: SlashCommand) => (COMMAND_ORDER.includes(command.name) ? COMMAND_ORDER.indexOf(command.name) : COMMAND_ORDER.length);
-  const commands = [...own, ...given].sort((a, b) => rank(a) - rank(b));
+  const commands = [...own, ...given.filter((g) => !own.some((o) => o.name === g.name))].sort((a, b) => rank(a) - rank(b));
   /** The text the menu was put away for with Escape: shown again once the text changes. */
   const [dismissed, setDismissed] = useState<string | null>(null);
   /** The menu opened with the "/" button: every command, whatever the box holds, until one is taken or it is put away. */
@@ -632,36 +674,36 @@ export function Composer(props: ComposerProps) {
           <>
             <Mark state="working" size={18} />
             <span>
-              正在洞府执行 <code className="mono">!{runningInline}</code>…
+              {t("composer.statusInline")} <code className="mono">!{runningInline}</code>…
             </span>
           </>
         )}
         {status === "running" && (
           <>
             <Mark state="working" size={18} />
-            <span>分身正在运功。此刻传音，它做完这一步就会听到，不会打断它。</span>
+            <span>{t("composer.statusRunning")}</span>
           </>
         )}
         {status === "waiting_approval" && (
           <>
             <Mark state="waiting" size={18} />
-            <span>分身收功候旨，本尊定夺后继续。</span>
+            <span>{t("composer.statusWaiting")}</span>
           </>
         )}
         {mode === "bypass" && status === "idle" && !planReady && (
-          <span className="trusted-note">全权托付中：分身什么都不请示。</span>
+          <span className="trusted-note">{t("composer.statusBypass")}</span>
         )}
         {cli && mode !== "bypass" && status === "idle" && !planReady && (
           <span>
-            {CLI_INFO[cli].label}（无头模式）：{modeHintFor(mode, cli)}。
+            {CLI_INFO[cli].label}：{modeHintFor(mode, cli, locale)}。
           </span>
         )}
         {status === "idle" && planReady && (
           <>
-            <span>计划已呈上。本尊点头，就换个禁制让它动手：</span>
-            {MODES.filter((option) => option.value === "edit" || option.value === "auto").map((option) => (
+            <span>{t("composer.planReady")}</span>
+            {localizedModes.filter((option) => option.value === "edit" || option.value === "auto").map((option) => (
               <button type="button" key={option.value} className="button outline small" onClick={() => onCarryOut(option.value)}>
-                {option.name}，照计划动手
+                {t("composer.carryOutBtn", { mode: option.name })}
               </button>
             ))}
           </>
@@ -672,13 +714,13 @@ export function Composer(props: ComposerProps) {
         {/* Not in 全权托付: there the box keeps its cinnabar edge, which says more. */}
         {status === "running" && mode !== "bypass" && <Light aura />}
         <div className={`composer-box ${mode === "bypass" ? "trusted" : ""} ${dropping ? "dropping" : ""}`}>
-          {dropping && <div className="drop-note">松手，把文件附给分身</div>}
+          {dropping && <div className="drop-note">{t("composer.dropNote")}</div>}
           {/* The box's top edge, to drag: up makes more room to write in, down gives it back to the conversation. */}
           <div
             className={`composer-grip ${dragging ? "dragging" : ""}`}
             role="separator"
             aria-orientation="horizontal"
-            aria-label="拖动调整输入框高度，双击恢复"
+            aria-label={t("composer.gripAria")}
             aria-valuenow={height}
             tabIndex={0}
             onPointerDown={(event) => {
@@ -834,7 +876,7 @@ export function Composer(props: ComposerProps) {
           )}
           {/* The "/" menu: what the typed name may be, or, a command named, the values it takes. */}
           {menu.length > 0 && (
-            <div className="slash-menu" id="slash-menu" role="listbox" aria-label="命令" ref={menuList}>
+            <div className="slash-menu" id={slashMenuId} role="listbox" aria-label={t("composer.slashAria")} ref={menuList}>
               {menu[0].kind === "choice" && <div className="mode-menu-head">{`/${menu[0].command.name}：${menu[0].command.hint}`}</div>}
               <div className="slash-list">
                 {menu.map((offer, at) => {
@@ -842,14 +884,13 @@ export function Composer(props: ComposerProps) {
                   return (
                     <div
                       key={offer.kind === "choice" ? offer.choice.value : offer.command.name}
-                      id={`slash-${at}`}
+                      id={`${uid}-slash-${at}`}
                       role="option"
                       aria-selected={at === Math.min(chosen, menu.length - 1)}
                       aria-disabled={!!offer.command.unavailable}
                       className="slash-option"
                       title={hintText}
                       onMouseEnter={() => setChosen(at)}
-                      // Taken on the press, so that the box keeps the focus the menu was opened from.
                       onMouseDown={(event) => {
                         event.preventDefault();
                         accept(offer);
@@ -877,23 +918,25 @@ export function Composer(props: ComposerProps) {
                   );
                 })}
               </div>
-              <p className="slash-foot">↑↓ 选择 · Tab 补全 · 回车执行 · Esc 收起</p>
+              <p className="slash-foot">{t("composer.slashFoot")}</p>
             </div>
           )}
           {/* The "@" menu: fuzzy-search workspace files to mention and attach. */}
           {atActive && menu.length === 0 && (
-            <div className="slash-menu at-menu" id="at-menu" role="listbox" aria-label="引用文件" ref={atMenuList}>
-              <div className="mode-menu-head">{atMention?.query ? `@${atMention.query} · 洞府文件` : "@ 引用洞府文件"}</div>
+            <div className="slash-menu at-menu" id={atMenuId} role="listbox" aria-label={t("composer.atAria")} ref={atMenuList}>
+              <div className="mode-menu-head">
+                {atMention?.query ? t("composer.atHeadQuery", { query: atMention.query }) : t("composer.atHeadDefault")}
+              </div>
               <div className="slash-list">
                 {atItems.length === 0 ? (
                   <div className="slash-hint" style={{ padding: "8px 12px" }}>
-                    没有匹配的文件
+                    {t("composer.atEmpty")}
                   </div>
                 ) : (
                   atItems.map((file, at) => (
                     <div
                       key={file.path}
-                      id={`at-${at}`}
+                      id={`${uid}-at-${at}`}
                       role="option"
                       aria-selected={at === Math.min(atChosen, atItems.length - 1)}
                       className="slash-option"
@@ -912,29 +955,29 @@ export function Composer(props: ComposerProps) {
                   ))
                 )}
               </div>
-              <p className="slash-foot">↑↓ 选择 · Tab / 回车引用并附入 · Esc 收起</p>
+              <p className="slash-foot">{t("composer.atFoot")}</p>
             </div>
           )}
           {inlineRaw !== null && menu.length === 0 && !atActive && (
-            <p className="slash-foot" style={{ borderTop: "none", borderBottom: "1px solid var(--border)" }}>
-              ! 内联命令：回车在洞府执行并将输出附作上下文引用 · Shift+Enter 换行作普通消息
+            <p className="slash-foot" style={{ borderTop: "none", borderBottom: "1px solid var(--line)" }}>
+              {t("composer.inlineFoot")}
             </p>
           )}
-          <label htmlFor="composer-input" className="sr-only">
-            给分身的法旨
+          <label htmlFor={inputId} className="sr-only">
+            {t("composer.inputLabel")}
           </label>
           <textarea
-            id="composer-input"
+            id={inputId}
             ref={input}
             rows={2}
             value={text}
-            placeholder={placeholder ?? (busy ? "给分身传一句音" : "吩咐一件事，回车传令；打 / 唤出命令，打 @ 引用文件")}
-            aria-controls={menu.length > 0 ? "slash-menu" : atActive ? "at-menu" : undefined}
+            placeholder={placeholder ?? (busy ? t("composer.placeholderBusy") : t("composer.placeholderIdle"))}
+            aria-controls={menu.length > 0 ? slashMenuId : atActive ? atMenuId : undefined}
             aria-activedescendant={
               menu.length > 0
-                ? `slash-${Math.min(chosen, menu.length - 1)}`
+                ? `${uid}-slash-${Math.min(chosen, menu.length - 1)}`
                 : atActive && atItems.length > 0
-                  ? `at-${Math.min(atChosen, atItems.length - 1)}`
+                  ? `${uid}-at-${Math.min(atChosen, atItems.length - 1)}`
                   : undefined
             }
             onChange={(event) => {
@@ -1046,9 +1089,8 @@ export function Composer(props: ComposerProps) {
                   className="select-button"
                   aria-haspopup="listbox"
                   aria-expanded={menu.length > 0}
-                  aria-controls={menu.length > 0 ? "slash-menu" : undefined}
+                  aria-controls={menu.length > 0 ? slashMenuId : undefined}
                   title="命令：也可以在输入框行首打 / 唤出"
-                  // The box keeps the keyboard, so the arrows, Enter and Escape work in the menu as when it is typed up.
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     input.current?.focus();
@@ -1063,7 +1105,7 @@ export function Composer(props: ComposerProps) {
                   }}
                 >
                   <Icon name="slash" size={15} />
-                  <span className="label sr-only">命令</span>
+                  <span className="label sr-only">{t("composer.slashAria")}</span>
                 </button>
               </div>
             )}
@@ -1136,20 +1178,20 @@ export function Composer(props: ComposerProps) {
               )}
             </Popup>
             <Popup
-              name="境界"
-              title={`境界：${EFFORT_NAMES[effort] ?? effort}，${effortSet ? "这个分身单独定的" : "跟着设置里的默认"}。点开换一档`}
+              name={t("picker.effort")}
+              title={`${t("picker.effort")}：${effortName(effort, locale)}`}
               label={
                 <>
                   <Icon name="bar-chart-fill" size={15} />
-                  <span className="label sr-only">境界</span>
-                  <span className="value">{EFFORT_NAMES[effort] ?? effort}</span>
+                  <span className="label sr-only">{t("picker.effort")}</span>
+                  <span className="value">{effortName(effort, locale)}</span>
                 </>
               }
             >
               {(close) => (
                 <>
                   <div className="mode-menu-head">
-                    <span>境界</span>
+                    <span>{t("picker.effort")}</span>
                     <span>{effortSet ? "这个分身单独定的" : "跟着设置里的默认"}</span>
                   </div>
                   {efforts.map((level) => (
@@ -1160,14 +1202,13 @@ export function Composer(props: ComposerProps) {
                       key={level}
                       className="mode-option plain"
                       onClick={() => {
-                        // Choosing the default's own level still sets this 分身 apart: the settings may change later.
                         if (level !== effort || !effortSet) onEffort(level);
                         close();
                       }}
                     >
                       <span className="mode-text">
-                        <span className="name">{EFFORT_NAMES[level] ?? level}</span>
-                        <span className="hint">{EFFORT_HINTS[level]}</span>
+                        <span className="name">{effortName(level, locale)}</span>
+                        <span className="hint">{effortHint(level, locale)}</span>
                       </span>
                       {level === effort ? CHECK : <span />}
                     </button>
@@ -1441,33 +1482,53 @@ export function Composer(props: ComposerProps) {
               </Popup>
             )}
             <span className="spacer" />
-            {/* A 令牌, the tablet an order is sent with: 令 on jade for an order, 音 on gold for a word to a 分身 at work.
-                While the 分身 works the token is away with the order, and shows only when there is a word to send after it. */}
             {(!busy || !empty) && (
-              <button type="button" key={busy ? "word" : "order"} ref={sender} className="token-button" disabled={empty} title={busy ? "传音：分身做完这一步就会听到" : "传令（回车）"} onClick={submit}>
+              <button
+                type="button"
+                key={busy ? "word" : "order"}
+                ref={sender}
+                className="token-button"
+                disabled={empty}
+                title={busy ? t("composer.sendWord") : t("composer.sendOrder")}
+                onClick={submit}
+              >
                 <svg className={`token ${busy ? "word" : ""}`} aria-hidden="true" width="26" height="32" viewBox="0 0 32 40">
                   <path className="plate" d="M7 1.5h18l5.5 5.5v21L16 38.5 1.5 28V7Z" />
                   <path className="rim" d="M8.2 4.5h15.6l3.7 3.7v18.3L16 34.8 4.5 26.5V8.2Z" />
                   <circle className="hole" cx="16" cy="8.6" r="1.7" />
-                  <text x="16" y="26" textAnchor="middle">
-                    {busy ? "音" : "令"}
-                  </text>
+                  {locale === "en" ? (
+                    <path
+                      d="M16 27.5V15.5M11.5 20L16 15.5L20.5 20"
+                      fill="none"
+                      stroke="var(--jade-ink)"
+                      strokeWidth="2.2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  ) : (
+                    <text x="16" y="26" textAnchor="middle">
+                      {busy ? t("composer.tokenWord") : t("composer.tokenOrder")}
+                    </text>
+                  )}
                 </svg>
-                <span className="sr-only">{busy ? "传音" : "传令"}</span>
+                <span className="sr-only">{busy ? t("composer.sendWord") : t("composer.sendOrder")}</span>
               </button>
             )}
-            {/* In the token's place while the 分身 works: a token of cinnabar, the order that calls it back. */}
             {busy && (
-              <button type="button" className="token-button stop" title="收回分身：停下这一轮" onClick={onStop}>
+              <button type="button" className="token-button stop" title={t("composer.stopAgent")} onClick={onStop}>
                 <svg className="token halt" aria-hidden="true" width="26" height="32" viewBox="0 0 32 40">
                   <path className="plate" d="M7 1.5h18l5.5 5.5v21L16 38.5 1.5 28V7Z" />
                   <path className="rim" d="M8.2 4.5h15.6l3.7 3.7v18.3L16 34.8 4.5 26.5V8.2Z" />
                   <circle className="hole" cx="16" cy="8.6" r="1.7" />
-                  <text x="16" y="26" textAnchor="middle">
-                    止
-                  </text>
+                  {locale === "en" ? (
+                    <rect x="11.5" y="16.5" width="9" height="9" rx="1.4" fill="var(--cinnabar-on)" />
+                  ) : (
+                    <text x="16" y="26" textAnchor="middle">
+                      {t("composer.tokenStop")}
+                    </text>
+                  )}
                 </svg>
-                <span className="sr-only">收回分身</span>
+                <span className="sr-only">{t("composer.stopAgent")}</span>
               </button>
             )}
           </div>

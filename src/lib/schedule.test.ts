@@ -12,12 +12,15 @@ describe("schedules", () => {
     expect(describeWhen({ kind: "every", minutes: 120 })).toBe("每隔 2 小时");
     expect(describeWhen({ kind: "every", minutes: 90 })).toBe("每隔 90 分钟");
     expect(describeWhen({ kind: "once", at: "2026-11-20T09:05:30" })).toBe("只一次：11月20日 09:05");
+    expect(describeWhen({ kind: "daily", time: "18:30", days: [5, 1] }, "en")).toBe("Every Mon, Fri at 18:30");
+    expect(describeWhen({ kind: "once", at: "2026-11-20T09:05:30" }, "en")).toBe("Once: Nov 20 09:05");
   });
 
   it("reads a stored moment on the user's own clock", () => {
     // Built from local parts, so the test holds in any time zone.
     expect(clock(new Date(2026, 10, 20, 9, 5).toISOString())).toBe("11月20日 周五 09:05");
     expect(clock(new Date(2026, 10, 22, 23, 0).toISOString())).toBe("11月22日 周日 23:00");
+    expect(clock(new Date(2026, 10, 20, 9, 5).toISOString(), "en")).toContain("Nov 20");
     expect(clock("soon")).toBe("soon");
   });
 

@@ -1,15 +1,28 @@
+import { formatMessage, getCurrentLocale, intlLocaleOf, type Locale } from "../i18n";
 import type { Mode, Schedule, When } from "./types";
 
 /** The days of the week as a schedule numbers them: 1 is Monday, 7 is Sunday. */
-export const WEEKDAYS: { value: number; name: string }[] = [
-  { value: 1, name: "一" },
-  { value: 2, name: "二" },
-  { value: 3, name: "三" },
-  { value: 4, name: "四" },
-  { value: 5, name: "五" },
-  { value: 6, name: "六" },
-  { value: 7, name: "日" },
+export const WEEKDAYS: { value: number; name: string; enName: string }[] = [
+  { value: 1, name: "一", enName: "Mon" },
+  { value: 2, name: "二", enName: "Tue" },
+  { value: 3, name: "三", enName: "Wed" },
+  { value: 4, name: "四", enName: "Thu" },
+  { value: 5, name: "五", enName: "Fri" },
+  { value: 6, name: "六", enName: "Sat" },
+  { value: 7, name: "日", enName: "Sun" },
 ];
+
+export function weekdaysFor(locale: Locale = getCurrentLocale()): { value: number; name: string }[] {
+  // Reference Monday 2026-11-16 .. Sunday 2026-11-22 formatted via Intl.DateTimeFormat
+  if (locale === "en") {
+    const fmt = new Intl.DateTimeFormat(intlLocaleOf(locale), { weekday: "short" });
+    return WEEKDAYS.map((d) => ({
+      value: d.value,
+      name: fmt.format(new Date(2026, 10, 15 + d.value, 12, 0)),
+    }));
+  }
+  return WEEKDAYS.map((d) => ({ value: d.value, name: d.name }));
+}
 
 const two = (value: number) => String(value).padStart(2, "0");
 
@@ -18,29 +31,56 @@ export function localStamp(date: Date): string {
   return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}T${two(date.getHours())}:${two(date.getMinutes())}`;
 }
 
-/** When a schedule runs, in a line: 每天 09:00, 每周一、三 09:00, 每隔 2 小时, 只一次：11月20日 09:00. */
-export function describeWhen(when: When): string {
+/** When a schedule runs, in a line, formatted via `Intl.DateTimeFormat` and `i18n`. */
+export function describeWhen(when: When, locale: Locale = getCurrentLocale()): string {
+  const tag = intlLocaleOf(locale);
   switch (when.kind) {
     case "once": {
-      const [date, time = ""] = when.at.split("T");
-      const [, month, day] = date.split("-");
-      return `只一次：${Number(month)}月${Number(day)}日 ${time.slice(0, 5)}`;
+      const [datePart, time = ""] = when.at.split("T");
+      const [year, month, day] = datePart.split("-").map(Number);
+      const parsed = new Date(year || 2026, (month || 1) - 1, day || 1, 12, 0);
+      const formattedDate = Number.isNaN(parsed.getTime())
+        ? datePart
+        : new Intl.DateTimeFormat(tag, { month: "short", day: "numeric" }).format(parsed);
+      return formatMessage(locale, "schedule.onceAt", { date: formattedDate, time: time.slice(0, 5) });
     }
     case "daily": {
-      const days = WEEKDAYS.filter((day) => when.days.includes(day.value));
-      if (days.length === 0 || days.length === WEEKDAYS.length) return `每天 ${when.time}`;
-      return `每周${days.map((day) => day.name).join("、")} ${when.time}`;
+      const days = weekdaysFor(locale).filter((day) => when.days.includes(day.value));
+      if (days.length === 0 || days.length === WEEKDAYS.length) {
+        return formatMessage(locale, "schedule.everyDay", { time: when.time });
+      }
+      const sep = locale === "en" ? ", " : "、";
+      return formatMessage(locale, "schedule.everyWeek", {
+        days: days.map((day) => day.name).join(sep),
+        time: when.time,
+      });
     }
     case "every":
-      return when.minutes % 60 === 0 ? `每隔 ${when.minutes / 60} 小时` : `每隔 ${when.minutes} 分钟`;
+      return when.minutes % 60 === 0
+        ? formatMessage(locale, "schedule.everyHours", { hours: when.minutes / 60 })
+        : formatMessage(locale, "schedule.everyMinutes", { minutes: when.minutes });
   }
 }
 
-/** A moment the store wrote, as the user reads a clock: 11月20日 周五 09:00. */
-export function clock(stamp: string): string {
+/** A moment the store wrote, formatted via `Intl.DateTimeFormat`. */
+export function clock(stamp: string, locale: Locale = getCurrentLocale()): string {
   const date = new Date(stamp);
   if (Number.isNaN(date.getTime())) return stamp;
-  return `${date.getMonth() + 1}月${date.getDate()}日 周${WEEKDAYS[(date.getDay() + 6) % 7].name} ${two(date.getHours())}:${two(date.getMinutes())}`;
+  const tag = intlLocaleOf(locale);
+  if (locale === "en") {
+    return new Intl.DateTimeFormat(tag, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date);
+  }
+  const md = new Intl.DateTimeFormat(tag, { month: "short", day: "numeric" }).format(date);
+  const wk = new Intl.DateTimeFormat(tag, { weekday: "short" }).format(date);
+  const hm = new Intl.DateTimeFormat(tag, { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+  return `${md} ${wk} ${hm}`;
 }
 
 /** A schedule as the form holds it: every kind's fields at once, so switching kinds loses nothing typed. */
@@ -83,19 +123,19 @@ export function draftOf(schedule: Schedule, now: Date): Draft {
 }
 
 /** What the form says, as a schedule to save; or what is missing from it, in words for the user. */
-export function scheduleOf(draft: Draft): Schedule | string {
-  if (!draft.workspace.trim()) return "还没选洞府：功课得有个地方办。";
-  if (!draft.prompt.trim()) return "还没写交办的事。";
+export function scheduleOf(draft: Draft, locale: Locale = getCurrentLocale()): Schedule | string {
+  if (!draft.workspace.trim()) return formatMessage(locale, "schedule.errNoWorkspace");
+  if (!draft.prompt.trim()) return formatMessage(locale, "schedule.errNoPrompt");
   let when: When;
   if (draft.kind === "once") {
-    if (!draft.at) return "还没定时辰。";
+    if (!draft.at) return formatMessage(locale, "schedule.errNoTime");
     when = { kind: "once", at: draft.at };
   } else if (draft.kind === "daily") {
-    if (!draft.time) return "还没定时辰。";
+    if (!draft.time) return formatMessage(locale, "schedule.errNoTime");
     when = { kind: "daily", time: draft.time, days: [...draft.days].sort() };
   } else {
     const gap = Number(draft.gap);
-    if (!Number.isInteger(gap) || gap < 1) return "隔多久要填一个不小于 1 的整数。";
+    if (!Number.isInteger(gap) || gap < 1) return formatMessage(locale, "schedule.errBadGap");
     when = { kind: "every", minutes: draft.unit === "hours" ? gap * 60 : gap };
   }
   return { id: draft.id, name: draft.name.trim(), workspace: draft.workspace.trim(), prompt: draft.prompt.trim(), when, mode: draft.mode, isolated: draft.isolated, enabled: draft.enabled };

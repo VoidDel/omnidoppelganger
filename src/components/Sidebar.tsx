@@ -1,5 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import pkg from "../../package.json";
+import { useI18n } from "../i18n";
+import { useMenuFocus } from "../lib/menuFocus";
 import type { SessionItem } from "../lib/types";
 import { ago } from "../lib/when";
 import { Logo } from "./Backdrop";
@@ -26,6 +28,7 @@ export interface SidebarProps {
   gitCount?: number;
   width?: number;
   onResize?: (width: number) => void;
+  inert?: boolean;
   /** Back to the home screen: no 分身 open. */
   onHome: () => void;
   onMcp: () => void;
@@ -95,6 +98,7 @@ export function Sidebar({
   gitCount = 0,
   width = SIDEBAR_WIDTH.initial,
   onResize,
+  inert,
   onHome,
   onMcp,
   onSkills,
@@ -112,6 +116,7 @@ export function Sidebar({
   onCleanScheduled,
   onRevealWorkspace,
 }: SidebarProps) {
+  const { locale, t } = useI18n();
   const now = useNow(30_000);
   const [folded, toggleFolded] = useFolded();
   const [query, setQuery] = useState("");
@@ -120,6 +125,7 @@ export function Sidebar({
   const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number; confirm?: "delete" | "clean" } | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  useMenuFocus(!!menu, menuRef, () => setMenu(null));
 
   useEffect(() => {
     if (!menu) return;
@@ -183,14 +189,14 @@ export function Sidebar({
     const rows = [session, ...(open(session.id) ? family(session.id) : [])];
     groups.set(homeOf(session), [...(groups.get(homeOf(session)) ?? []), ...rows]);
   }
-  const titleOf = (session: SessionItem) => session.title || (session.parent ? "子分身" : "新分身");
-  // Those waiting for 本尊 stand at the head of the list wherever they are in it, but for the one already on screen.
+  const titleOf = (session: SessionItem) =>
+    session.title || (session.parent ? t("nav.childDefault") : t("nav.sessionDefault"));
   const waiting = sessions.filter((session) => session.status === "waiting_approval" && !(page === "chat" && session.id === activeId));
   const showSwitcher = page === "chat" && !!filesPane && !!onTab;
   const activeTab: SidebarTab = showSwitcher ? (tab === "git" && !gitPane ? "sessions" : tab) : "sessions";
 
   return (
-    <nav className="sidebar" aria-label="侧边导航">
+    <nav className="sidebar" aria-label={t("nav.sidebarAria")} inert={inert || undefined}>
       <div className="sidebar-drag" data-tauri-drag-region />
       {onResize && (
         <div
@@ -221,14 +227,13 @@ export function Sidebar({
           }}
         />
       )}
-      {/* The name over the door is the way back to the home screen. */}
-      <button type="button" className="brand" title={`回到首页 · OmniDoppelganger v${pkg.version}`} aria-current={page === "chat" && !activeId ? "page" : undefined} onClick={onHome}>
+      <button type="button" className="brand" title={t("nav.homeTitle", { version: pkg.version })} aria-current={page === "chat" && !activeId ? "page" : undefined} onClick={onHome}>
         <Logo />
         <span className="brand-name">OmniDoppelganger</span>
         <span className="brand-version">v{pkg.version}</span>
       </button>
       {showSwitcher && (
-        <div className="sidebar-modes" role="tablist" aria-label="左栏视图">
+        <div className="sidebar-modes" role="tablist" aria-label={t("nav.modeAria")}>
           <button
             type="button"
             role="tab"
@@ -236,8 +241,8 @@ export function Sidebar({
             className={`sidebar-mode ${activeTab === "sessions" ? "active" : ""}`}
             onClick={() => onTab("sessions")}
           >
-            分身
-            {waiting.length > 0 && <span className="seal small">候</span>}
+            {t("nav.tabSessions")}
+            {waiting.length > 0 && <span className="seal small">{t("nav.sealAwait")}</span>}
           </button>
           <button
             type="button"
@@ -246,7 +251,7 @@ export function Sidebar({
             className={`sidebar-mode ${activeTab === "files" ? "active" : ""}`}
             onClick={() => onTab("files")}
           >
-            文件
+            {t("nav.tabFiles")}
           </button>
           {gitPane && (
             <button
@@ -256,7 +261,7 @@ export function Sidebar({
               className={`sidebar-mode ${activeTab === "git" ? "active" : ""}`}
               onClick={() => onTab("git")}
             >
-              Git
+              {t("nav.tabGit")}
               {gitCount > 0 && <span className="mode-badge">{gitCount}</span>}
             </button>
           )}
@@ -268,23 +273,22 @@ export function Sidebar({
         <div className="sidebar-pane">{gitPane}</div>
       ) : (
         <>
-          {/* Work in a folder, or just talk: a 分身 for a project, or one in the folder kept for conversations. */}
           <div className="sidebar-new">
         <button type="button" className="button primary" onClick={onNew}>
           <Icon name="plus-lg" size={14} />
-          开辟洞府
+          {t("nav.newWorkspace")}
         </button>
-        <button type="button" className="button outline" title="闲谈：不选文件夹，直接和分身说话" onClick={onChat}>
+        <button type="button" className="button outline" title={t("nav.chatTitle")} onClick={onChat}>
           {CHAT_ICON}
-          闲谈
+          {t("nav.chat")}
         </button>
       </div>
       {sessions.length > 0 && (
         <>
           <label htmlFor="session-search" className="sr-only">
-            搜索会话
+            {t("nav.searchSessions")}
           </label>
-          <input id="session-search" className="input" type="search" placeholder="搜标题、洞府、说过的话" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <input id="session-search" className="input" type="search" placeholder={t("nav.searchPlaceholder")} value={query} onChange={(event) => setQuery(event.target.value)} />
         </>
       )}
       {waiting.length > 0 && (
@@ -394,7 +398,7 @@ export function Sidebar({
                           {!child && (
                             <span className="row-meta">
                               <span className="row-when" title={new Date(session.updated_at).toLocaleString()}>
-                                {state === "await" ? "候旨" : state === "busy" ? "运功中" : ago(session.updated_at, now)}
+                                {state === "await" ? t("nav.awaiting") : state === "busy" ? t("nav.running") : ago(session.updated_at, now, locale)}
                               </span>
                               {session.fork && <span className="chip kin" title="分叉：它的前情抄自另一个分身">分叉</span>}
                               {session.schedule && <span className="chip kin" title={`功课「${session.schedule}」到时辰化出的分身`}>功课</span>}
@@ -434,23 +438,22 @@ export function Sidebar({
       </div>
         </>
       )}
-      {/* The pages at the foot, close together: one group, apart from the 分身 above. */}
       <div className="sidebar-foot">
-        <button type="button" className="row-button" aria-current={page === "skills" ? "page" : undefined} title="秘籍：分身遇到对得上的事才研读的做事说明" onClick={onSkills}>
+        <button type="button" className="row-button" aria-current={page === "skills" ? "page" : undefined} title={t("nav.skillsTitle")} onClick={onSkills}>
           <Icon name="book" size={15} />
-          秘籍
+          {t("nav.skills")}
         </button>
-        <button type="button" className="row-button" aria-current={page === "mcp" ? "page" : undefined} title="法器：给分身添上本事的 MCP 服务" onClick={onMcp}>
+        <button type="button" className="row-button" aria-current={page === "mcp" ? "page" : undefined} title={t("nav.mcpTitle")} onClick={onMcp}>
           <Icon name="bell" size={15} />
-          法器
+          {t("nav.mcp")}
         </button>
-        <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title="功课：到了时辰，自行化出分身去办" onClick={onSchedules}>
+        <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title={t("nav.schedulesTitle")} onClick={onSchedules}>
           <Icon name="clock" size={15} />
-          功课
+          {t("nav.schedules")}
         </button>
         <button type="button" className="row-button" aria-current={page === "settings" ? "page" : undefined} onClick={onSettings}>
           <Icon name="gear" size={15} />
-          设置
+          {t("nav.settings")}
         </button>
       </div>
       {menu && menuSession && (

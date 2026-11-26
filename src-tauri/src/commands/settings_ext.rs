@@ -132,7 +132,7 @@ pub async fn remove_provider(app: State<'_, App>, id: String) -> Result<Settings
 }
 
 #[tauri::command]
-pub async fn list_models(app: State<'_, App>, provider: String) -> Result<Vec<(String, String)>, String> {
+pub async fn list_models(app: State<'_, App>, provider: String) -> Result<Vec<odg_core::providers::Listed>, String> {
     let endpoint = app.settings.endpoint(&provider);
     let base_url = if provider == "anthropic" {
         anthropic_base_url()
@@ -144,12 +144,91 @@ pub async fn list_models(app: State<'_, App>, provider: String) -> Result<Vec<(S
     let prov = provider.clone();
     let listed = models.clone();
     let _ = tokio::task::spawn_blocking(move || store.record_models(&prov, &listed)).await;
-    Ok(models.into_iter().map(|model| (model.id, model.name)).collect())
+    Ok(models)
 }
 
 #[tauri::command]
 pub async fn check_app_update() -> Result<odg_core::update::UpdateStatus, String> {
     odg_core::update::check_latest(env!("CARGO_PKG_VERSION")).await
+}
+
+#[tauri::command]
+pub async fn install_app_update(handle: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = handle.updater().map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    handle.restart()
+}
+
+#[cfg(unix)]
+pub(crate) fn link_cli_binary_into(
+    source_cli: &std::path::Path,
+    target_bin_dir: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if !source_cli.is_file() {
+        return Err(format!("`odg` binary not found at {}", source_cli.display()));
+    }
+    std::fs::create_dir_all(target_bin_dir).map_err(|e| format!("cannot create {}: {e}", target_bin_dir.display()))?;
+    let link_path = target_bin_dir.join("odg");
+    if let Ok(meta) = std::fs::symlink_metadata(&link_path) {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(&link_path)
+                .map_err(|e| format!("cannot replace symlink {}: {e}", link_path.display()))?;
+        } else if link_path != source_cli {
+            return Err(format!(
+                "{} already exists as a regular file; remove or rename it first",
+                link_path.display()
+            ));
+        } else {
+            return Ok(link_path);
+        }
+    }
+    std::os::unix::fs::symlink(source_cli, &link_path).map_err(|e| {
+        format!(
+            "cannot symlink {} -> {}: {e}",
+            link_path.display(),
+            source_cli.display()
+        )
+    })?;
+    Ok(link_path)
+}
+
+#[tauri::command]
+pub fn install_cli_link() -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        let current = std::env::current_exe().map_err(|e| e.to_string())?;
+        let candidates: Vec<PathBuf> = [
+            current.parent().map(|dir| dir.join("odg")),
+            Some(PathBuf::from("/usr/bin/odg")),
+            Some(PathBuf::from("/usr/local/bin/odg")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let Some(src) = candidates.into_iter().find(|p| p.is_file()) else {
+            return Err(
+                "bundled `odg` binary not found beside the desktop app; download `odg-cli` from GitHub Releases"
+                    .to_string(),
+            );
+        };
+        let home = std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .ok_or("cannot determine HOME directory")?;
+        let link = link_cli_binary_into(&src, &home.join(".local/bin"))?;
+        Ok(link.display().to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        Err("on Windows, download the standalone `odg-cli` zip from GitHub Releases and add it to PATH".to_string())
+    }
 }
 
 #[tauri::command]

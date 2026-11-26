@@ -27,8 +27,9 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::fsutil::write_atomically;
+use crate::fsutil::{ensure_private_dir, write_private_atomically};
 use crate::sse::SseParser;
+use crate::sync_ext::MutexExt;
 
 /// The protocol revision this client asks for. A server may answer with
 /// another it supports; the tool calls used here are the same in all of them.
@@ -122,7 +123,7 @@ pub struct CallResult {
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex.lock_unpoisoned()
 }
 
 /// A connection that carries JSON-RPC messages one per line, as a server
@@ -806,10 +807,10 @@ impl McpHub {
     /// Check and save new configuration text, then connect to what it lists.
     pub fn save_config(&self, text: &str) -> Result<(), String> {
         parse_config(text)?;
-        if let Some(directory) = self.path.parent() {
-            std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        if let Some(directory) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            ensure_private_dir(directory).map_err(|error| error.to_string())?;
         }
-        write_atomically(&self.path, text.as_bytes()).map_err(|error| error.to_string())?;
+        write_private_atomically(&self.path, text.as_bytes()).map_err(|error| error.to_string())?;
         self.reload();
         Ok(())
     }
@@ -853,10 +854,10 @@ impl McpHub {
         let config = parse_config(&text)?
             .remove(name)
             .ok_or_else(|| format!("`{name}` is not in the list it was put in"))?;
-        if let Some(directory) = self.path.parent() {
-            std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        if let Some(directory) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            ensure_private_dir(directory).map_err(|error| error.to_string())?;
         }
-        write_atomically(&self.path, text.as_bytes()).map_err(|error| error.to_string())?;
+        write_private_atomically(&self.path, text.as_bytes()).map_err(|error| error.to_string())?;
         if config.disabled {
             lock(&self.slots).remove(name);
         } else {
@@ -1432,5 +1433,44 @@ mod tests {
         );
         // A server without the capability is not taken to have resources.
         assert!(!testing::echo_server().await.resources);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn enforces_0700_dir_and_0600_file_permissions_on_mcp_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join(".odg");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = home.join("mcp.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let hub = McpHub::new(&path, tokio::runtime::Handle::current());
+        hub.save_config(
+            r#"{ "mcpServers": { "remote": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer secret" }, "disabled": true } } }"#,
+        )
+        .unwrap();
+
+        let mode_of = |p: &std::path::Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode_of(&home), 0o700);
+        assert_eq!(mode_of(&path), 0o600);
+
+        // `add` also preserves 0o700 / 0o600.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        hub.add(
+            "added",
+            &ServerConfig {
+                url: Some("https://example.com/two".into()),
+                disabled: true,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(mode_of(&home), 0o700);
+        assert_eq!(mode_of(&path), 0o600);
     }
 }

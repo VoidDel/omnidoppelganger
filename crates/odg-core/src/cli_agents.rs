@@ -178,6 +178,7 @@ impl CliKind {
                 id: (*id).to_string(),
                 name: (*name).to_string(),
                 context_window: Some(context_window(self)),
+                free: false,
             })
             .collect())
     }

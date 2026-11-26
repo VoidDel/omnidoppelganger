@@ -537,7 +537,9 @@ fn parses_opencode_v2_stream_events_and_models() {
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].id, "opencode/big-pickle");
     assert_eq!(listed[0].name, "big-pickle · 免费");
+    assert!(listed[0].free);
     assert_eq!(listed[1].id, "opencode/claude-sonnet-5-5");
+    assert!(!listed[1].free);
 
     let api_json = r#"{"data":[
         {"id":"gemini-4-neon","providerID":"opencode","name":"Gemini 4 Neon","cost":[{"input":3,"output":15}],"limit":{"context":1048576}},
@@ -550,8 +552,11 @@ fn parses_opencode_v2_stream_events_and_models() {
         vec!["opencode/big-pickle", "opencode-go/glm-5.3", "opencode/gemini-4-neon"]
     );
     assert_eq!(all[0].name, "Big Pickle · 免费");
+    assert!(all[0].free);
     assert_eq!(all[1].name, "GLM-5.3 · Go");
+    assert!(!all[1].free);
     assert_eq!(all[2].name, "Gemini 4 Neon");
+    assert!(!all[2].free);
     assert_eq!(all[2].context_window, Some(1_048_576));
 
     let free_only = parse_opencode_api_models(api_json, true);

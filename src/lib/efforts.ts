@@ -2,6 +2,7 @@
 // to highest, one for each of the API's five effort levels. Shared by the settings, where the default is set, and
 // the composer, where one 分身 is set apart from it.
 
+import { formatMessage, getCurrentLocale, type Locale, type MessageKey } from "../i18n";
 import { cliOf } from "./providers";
 import type { Provider } from "./types";
 
@@ -15,6 +16,18 @@ export const EFFORT_HINTS: Record<string, string> = {
   xhigh: "推演更深，难题、大改动",
   max: "推演到底，最慢最费灵石",
 };
+
+const KNOWN_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+export function effortName(level: string, locale: Locale = getCurrentLocale()): string {
+  if (!KNOWN_EFFORTS.has(level)) return level;
+  return formatMessage(locale, `effort.${level}.name` as MessageKey);
+}
+
+export function effortHint(level: string, locale: Locale = getCurrentLocale()): string | undefined {
+  if (!KNOWN_EFFORTS.has(level)) return undefined;
+  return formatMessage(locale, `effort.${level}.hint` as MessageKey);
+}
 
 /** How a provider's effort setting lands, for a note under the realms. */
 export function effortNote(provider: Provider | undefined): string {

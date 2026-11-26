@@ -40,7 +40,21 @@ export type ContentBlock =
   | { type: "fallback"; from: { model: string }; to: { model: string } };
 
 export type SessionEvent =
-  | { type: "session/created"; data: { id: string; workspace: string; provider?: string; model: string; format: number; parent?: string; schedule?: string; fork?: { session: string; turn: number } } }
+  | {
+      type: "session/created";
+      data: {
+        id: string;
+        workspace: string;
+        provider?: string;
+        model: string;
+        format: number;
+        parent?: string;
+        schedule?: string;
+        fork?: { session: string; turn: number };
+        worktree?: Worktree;
+        aside?: string;
+      };
+    }
   | { type: "subagent/started"; data: { tool_use_id: string; session: string; name: string } }
   | { type: "session/renamed"; data: { title: string } }
   | { type: "model/changed"; data: { model: string; provider?: string } }
@@ -443,7 +457,20 @@ export interface Settings {
   guardian_models: Record<string, string>;
   /** In 放手施为, the seconds a request waits before it is declined by itself; 0 waits for good. */
   approval_timeout: number;
+  /** UI & built-in prompt locale: `"zh-CN"` (classic ink), `"zh-plain"` (modern Chinese), or `"en"` (English). */
+  locale?: string;
+  /** Whether to automatically update/install missing Python document runtime libraries on startup. */
+  auto_update_runtime?: boolean;
 }
+
+export interface ListedModel {
+  id: string;
+  name: string;
+  free?: boolean;
+  context_window?: number | null;
+}
+
+export type RawListedModel = [string, string, boolean?] | ListedModel;
 
 export interface KeyStatus {
   source: "saved" | "env" | "cli" | "none";
