@@ -1,6 +1,6 @@
 [package]
 name = "omnidoppelganger"
-version = "0.7.24"
+version = "0.7.25"
 description = "OmniDoppelganger desktop app"
 authors = []
 edition = "2024"
@@ -23,7 +23,7 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2.8.4"
-odg-core = { version = "0.7.24", path = "../crates/odg-core" }
+odg-core = { version = "0.7.25", path = "../crates/odg-core" }
 tokio = { version = "1.54.1", features = ["sync", "rt", "time"] }
 tokio-util = "0.7.20"
 tauri-plugin-opener = "2.7.3"
