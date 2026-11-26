@@ -104,7 +104,7 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
   // Local CLI backends (`agy`, `codex`, `claude`, `cursor-agent`, `grok`) reuse their own CLI login and need neither an API key nor an HTTP base URL.
   const cli = cliOf(kind);
   const isCli = cli !== null;
-  const isLocalGateway = kind.id === "magpie";
+  const isLocalGateway = kind.id === "magpie" || kind.id === "ollama";
   const takesAddress = target !== "anthropic" && !isCli;
   const save = async () => {
     const url = takesAddress ? address.trim() : "";
@@ -170,7 +170,7 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
           {!isCli && (
             <>
               <label htmlFor="key-value">
-                {status.source === "saved" ? "换一个密钥（不换就留空）" : isLocalGateway ? "API 密钥（可选，本机 Magpie 默认免密）" : "API 密钥"}
+                {status.source === "saved" ? "换一个密钥（不换就留空）" : isLocalGateway ? "API 密钥（可选，本机服务默认免密）" : "API 密钥"}
               </label>
               <input
                 id="key-value"
@@ -178,7 +178,7 @@ function KeyDialog({ provider, view, onSave, onSaveKey, onAdd, onClose }: KeyDia
                 type="password"
                 autoComplete="off"
                 autoFocus
-                placeholder={isLocalGateway ? "留空即可；若 Magpie 开启鉴权再填写" : "粘贴密钥"}
+                placeholder={isLocalGateway ? "留空即可；若开启了鉴权再填写" : "粘贴密钥"}
                 value={key}
                 onChange={(event) => setKey(event.target.value)}
               />

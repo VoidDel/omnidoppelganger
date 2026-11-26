@@ -253,15 +253,20 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
   const fellBack = useRef<string | null>(null);
   useEffect(() => {
     if (!home || !onAutoFallback || asked.state !== "told" || asked.models.length === 0) return;
-    if (asked.models.some(([id]) => id === model)) return;
+    if (model === "auto" || asked.models.some(([id]) => id === model)) return;
     const key = `${providerId}:${model}`;
     if (fellBack.current === key) return;
     fellBack.current = key;
     onAutoFallback(providerId, asked.models[0][0]);
   }, [home, onAutoFallback, asked, providerId, model]);
   const known = asked.models.length > 0 ? asked.models : asked.state === "failed" ? (provider?.models ?? []) : [];
+  const supportsAuto = ["anthropic", "gemini", "openai", "deepseek", "moonshot", "zhipu", "openrouter"].includes(provider?.kind ?? showing);
+  const withAuto: [string, string][] =
+    supportsAuto && !known.some(([id]) => id === "auto")
+      ? [["auto", "智能路由 · 按境界自动选快/强心法"], ...known]
+      : known;
   // The model in use is always there to return to, even when the provider's list leaves it out.
-  const models = !home || known.some(([id]) => id === model) ? known : [[model, model] as [string, string], ...known];
+  const models = !home || withAuto.some(([id]) => id === model) ? withAuto : [[model, model] as [string, string], ...withAuto];
   const isOpenCodeShowing = showing === "opencode" || showing.startsWith("opencode-");
   const freeModels = isOpenCodeShowing ? models.filter(([id, d]) => openCodeModelTier(id, d) === "free") : [];
   const goModels = isOpenCodeShowing ? models.filter(([id, d]) => openCodeModelTier(id, d) === "go") : [];

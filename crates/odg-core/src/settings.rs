@@ -579,7 +579,11 @@ impl SettingsStore {
     /// The environment variable key for the first instance of a provider kind, if set.
     fn env_key(provider_id: &str) -> Option<String> {
         let variable = provider(provider_id).filter(|kind| kind.id == provider_id)?.key_env?;
-        std::env::var(variable).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
+        std::env::var(variable)
+            .ok()
+            .or_else(|| (provider_id == "gemini").then(|| std::env::var("GOOGLE_API_KEY").ok()).flatten())
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
     }
 
     /// The saved key and whether it came from the plain-text file. The vault
@@ -666,7 +670,9 @@ impl SettingsStore {
     /// Where a provider's next request goes and with which key.
     pub fn endpoint(&self, provider_id: &str) -> Endpoint {
         let base_url = self.load().base_urls.get(provider_id).cloned().or_else(|| provider(provider_id).map(|known| known.base_url.to_string())).unwrap_or_default();
-        let key = self.api_key(provider_id).or_else(|| (crate::providers::kind_id(provider_id) == "magpie").then(|| "magpie".to_string()));
+        let key = self.api_key(provider_id).or_else(|| {
+            matches!(crate::providers::kind_id(provider_id), "magpie" | "ollama").then(|| provider_id.to_string())
+        });
         Endpoint { base_url, key }
     }
 

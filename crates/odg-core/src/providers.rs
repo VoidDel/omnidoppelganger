@@ -14,9 +14,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::anthropic::{self, AnthropicClient};
 use crate::cli_agents::CliKind;
+use crate::gemini::{self, GeminiClient};
 use crate::llm::{AssistantTurn, EndpointSource, Llm, LlmError, LlmRequest, StreamDelta, Tokens};
 use crate::openai_chat::ChatClient;
 use crate::openai_responses::ResponsesClient;
+
+/// Virtual model id that routes automatically between a provider's fast and flagship models by effort level.
+pub const AUTO_MODEL: &str = "auto";
 
 /// The wire protocol a provider speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -24,6 +28,8 @@ use crate::openai_responses::ResponsesClient;
 pub enum Protocol {
     /// Anthropic Messages API.
     Anthropic,
+    /// Google Gemini `v1beta` `streamGenerateContent` API.
+    Gemini,
     /// OpenAI Responses API. OpenAI's reasoning models call tools only through it.
     Responses,
     /// OpenAI-style Chat Completions, with the provider's own extensions.
@@ -79,6 +85,37 @@ pub const PROVIDERS: &[Provider] = &[
         other_urls: &[],
         key_env: Some("OPENAI_API_KEY"),
         models: &[("gpt-6.2-astra", "GPT-6.2 Astra"), ("gpt-6.2-sol", "GPT-6.2 Sol")],
+    },
+    Provider {
+        id: "gemini",
+        name: "Google Gemini",
+        protocol: Protocol::Gemini,
+        base_url: gemini::DEFAULT_BASE_URL,
+        other_urls: &[],
+        key_env: Some("GEMINI_API_KEY"),
+        models: gemini::MODELS,
+    },
+    Provider {
+        id: "openrouter",
+        name: "OpenRouter",
+        protocol: Protocol::Chat(Flavor::Generic),
+        base_url: "https://openrouter.ai/api/v1",
+        other_urls: &[],
+        key_env: Some("OPENROUTER_API_KEY"),
+        models: &[
+            ("anthropic/claude-sonnet-4.6", "Claude Sonnet 4.6"),
+            ("google/gemini-2.5-pro", "Gemini 2.5 Pro"),
+            ("deepseek/deepseek-chat-v3.1", "DeepSeek Chat V3.1"),
+        ],
+    },
+    Provider {
+        id: "ollama",
+        name: "Ollama（本机模型）",
+        protocol: Protocol::Chat(Flavor::Generic),
+        base_url: "http://127.0.0.1:11434/v1",
+        other_urls: &[("http://localhost:11434/v1", "localhost 别名")],
+        key_env: None,
+        models: &[],
     },
     Provider {
         id: "deepseek",
@@ -255,16 +292,53 @@ pub fn instance(id: &str, name: Option<&str>) -> Option<Instance> {
 /// The context window assumed for a model no provider here documents.
 pub const UNKNOWN_CONTEXT_WINDOW: u64 = 128_000;
 
+/// Resolve the virtual `auto` model for `provider_id` given `effort` (`low` / `medium` pick fast/economical
+/// models; `high` / `xhigh` / `max` pick flagship reasoning models).
+pub fn resolve_auto_model(provider_id: &str, effort: &str) -> Option<String> {
+    let fast = matches!(effort, "low" | "medium");
+    let chosen = match kind_id(provider_id) {
+        "anthropic" => match effort {
+            "low" => "claude-haiku-5-5",
+            "medium" => "claude-sonnet-5-5",
+            _ => "claude-opus-5-5",
+        },
+        "gemini" => if fast { "gemini-2.5-flash" } else { "gemini-2.5-pro" },
+        "openai" => if fast { "gpt-6.2-sol" } else { "gpt-6.2-astra" },
+        "deepseek" => if fast { "deepseek-flash" } else { "deepseek-v4-pro" },
+        "moonshot" => if fast { "kimi-k3.1-pro-highspeed" } else { "kimi-k3.1-pro" },
+        "zhipu" => if fast { "glm-5.3-flash" } else { "glm-5.3" },
+        "openrouter" => if fast { "google/gemini-2.5-flash" } else { "anthropic/claude-sonnet-4.6" },
+        _ => {
+            let known = provider(provider_id)?;
+            if known.models.is_empty() {
+                return None;
+            }
+            if fast {
+                known.models.last()?.0
+            } else {
+                known.models.first()?.0
+            }
+        }
+    };
+    Some(chosen.to_string())
+}
+
 /// How many tokens a model's context window holds, from each provider's
 /// documentation as of November 2026. `None` for a model that is not listed:
 /// a newer one typed in by hand, or anything on a custom service.
 pub fn documented_window(provider: &str, model: &str) -> Option<u64> {
+    if model == AUTO_MODEL
+        && let Some(resolved) = resolve_auto_model(provider, "high")
+    {
+        return documented_window(provider, &resolved);
+    }
     if let Some(Protocol::Cli(kind)) = self::provider(provider).map(|known| known.protocol) {
         return Some(crate::cli_agents::context_window(kind));
     }
     match (kind_id(provider), model) {
         ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => Some(1_000_000),
         ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(1_050_000),
+        ("gemini", m) if m.starts_with("gemini-") => Some(1_048_576),
         ("deepseek", "deepseek-v4-pro" | "deepseek-flash") => Some(1_000_000),
         ("moonshot", "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "kimi-k3") => Some(1_048_576),
         // Zhipu's model overview, which is the only place it says: its list of models carries no sizes.
@@ -304,12 +378,18 @@ const WINDOW_FIELDS: [&str; 3] = ["max_input_tokens", "context_window", "context
 /// `None` where it does not say (a model typed in by hand, a custom service),
 /// in which case a picture is sent and the provider decides.
 pub fn vision(provider: &str, model: &str) -> Option<bool> {
+    if model == AUTO_MODEL
+        && let Some(resolved) = resolve_auto_model(provider, "high")
+    {
+        return vision(provider, &resolved);
+    }
     if matches!(self::provider(provider).map(|known| known.protocol), Some(Protocol::Cli(_))) {
         return Some(true);
     }
     match (kind_id(provider), model) {
         ("anthropic", model) if anthropic::MODELS.iter().any(|(id, _)| *id == model) => Some(true),
         ("openai", "gpt-6.2-astra" | "gpt-6.2-sol") => Some(true),
+        ("gemini", m) if m.starts_with("gemini-") => Some(true),
         ("deepseek", "deepseek-flash") => Some(true),
         ("deepseek", "deepseek-v4-pro") => Some(false),
         ("moonshot", "kimi-k3.1-pro" | "kimi-k3") => Some(true),
@@ -322,9 +402,8 @@ pub fn vision(provider: &str, model: &str) -> Option<bool> {
 /// Ask a provider which models it serves, as the provider orders them.
 /// Every provider here has a list endpoint in the OpenAI shape,
 /// `{"data": [{"id": ...}]}`; Anthropic's adds a display name and wants its
-/// own headers, and some say how large each model's context window is. The
-/// list holds whatever the key may use, which for some providers includes
-/// models that are not for chat.
+/// own headers, Gemini returns `{"models": [{"name": "models/...", ...}]}`,
+/// and some say how large each model's context window is.
 pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -> Result<Vec<Listed>, String> {
     let known = provider(provider_id).ok_or_else(|| format!("there is no provider `{provider_id}`"))?;
     if let Protocol::Cli(kind) = known.protocol {
@@ -333,7 +412,7 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
     let key = key
         .map(str::trim)
         .filter(|key| !key.is_empty())
-        .or_else(|| (known.id == "magpie").then_some("magpie"))
+        .or_else(|| matches!(known.id, "magpie" | "ollama").then_some("local"))
         .ok_or("no API key is saved for this provider")?;
     let base = base_url.trim_end_matches('/');
     if base.is_empty() {
@@ -342,6 +421,7 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
     let http = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(15)).timeout(std::time::Duration::from_secs(30)).build().map_err(|error| error.to_string())?;
     let request = match known.protocol {
         Protocol::Anthropic => http.get(format!("{base}/v1/models?limit=1000")).header("x-api-key", key).header("anthropic-version", anthropic::API_VERSION),
+        Protocol::Gemini => http.get(format!("{base}/models?pageSize=1000")).header("x-goog-api-key", key),
         Protocol::Responses | Protocol::Chat(_) => http.get(format!("{base}/models")).bearer_auth(key),
         Protocol::Cli(_) => unreachable!("handled above"),
     };
@@ -351,17 +431,38 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
         return Err(error.to_string());
     }
     let listed: Value = response.json().await.map_err(|error| format!("the provider's answer is not JSON: {error}"))?;
-    let models: Vec<Listed> = listed["data"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|model| {
-            let id = model["id"].as_str().filter(|id| !id.is_empty())?;
-            let context_window = WINDOW_FIELDS.iter().find_map(|field| model[*field].as_u64()).filter(|tokens| *tokens > 0);
-            Some(Listed { id: id.to_string(), name: model["display_name"].as_str().unwrap_or(id).to_string(), context_window })
-        })
-        .collect();
+    let models: Vec<Listed> = if known.protocol == Protocol::Gemini {
+        listed["models"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter(|model| {
+                model["supportedGenerationMethods"]
+                    .as_array()
+                    .is_none_or(|methods| methods.iter().any(|m| m.as_str() == Some("generateContent")))
+            })
+            .filter_map(|model| {
+                let raw_name = model["name"].as_str().filter(|s| !s.is_empty())?;
+                let id = raw_name.strip_prefix("models/").unwrap_or(raw_name);
+                let display = model["displayName"].as_str().filter(|s| !s.is_empty()).unwrap_or(id);
+                let context_window = model["inputTokenLimit"].as_u64().filter(|&t| t > 0);
+                Some(Listed { id: id.to_string(), name: display.to_string(), context_window })
+            })
+            .collect()
+    } else {
+        listed["data"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|model| {
+                let id = model["id"].as_str().filter(|id| !id.is_empty())?;
+                let context_window = WINDOW_FIELDS.iter().find_map(|field| model[*field].as_u64()).filter(|tokens| *tokens > 0);
+                Some(Listed { id: id.to_string(), name: model["display_name"].as_str().unwrap_or(id).to_string(), context_window })
+            })
+            .collect()
+    };
     if models.is_empty() { Err("the provider listed no models".to_string()) } else { Ok(models) }
 }
 
@@ -376,6 +477,11 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
             let cached = count(&usage["cache_read_input_tokens"]);
             Tokens { input: count(&usage["input_tokens"]) + cached + count(&usage["cache_creation_input_tokens"]), cached, output: count(&usage["output_tokens"]) }
         }
+        Protocol::Gemini => Tokens {
+            input: count(&usage["promptTokenCount"]),
+            cached: count(&usage["cachedContentTokenCount"]),
+            output: count(&usage["candidatesTokenCount"]) + count(&usage["thoughtsTokenCount"]),
+        },
         Protocol::Responses => {
             Tokens { input: count(&usage["input_tokens"]), cached: count(&usage["input_tokens_details"]["cached_tokens"]), output: count(&usage["output_tokens"]) }
         }
@@ -396,6 +502,7 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
 /// Sends each request to the client for its session's provider.
 pub struct Router {
     anthropic: AnthropicClient,
+    gemini: GeminiClient,
     chat: ChatClient,
     responses: ResponsesClient,
     endpoints: EndpointSource,
@@ -408,7 +515,14 @@ impl Router {
     /// `endpoints` gives every other provider's address and key per request,
     /// Anthropic ones the user added among them.
     pub fn new(anthropic: AnthropicClient, endpoints: EndpointSource) -> Result<Self, LlmError> {
-        Ok(Self { anthropic, chat: ChatClient::new(endpoints.clone())?, responses: ResponsesClient::new(endpoints.clone())?, endpoints, added: Mutex::default() })
+        Ok(Self {
+            anthropic,
+            gemini: GeminiClient::new(endpoints.clone())?,
+            chat: ChatClient::new(endpoints.clone())?,
+            responses: ResponsesClient::new(endpoints.clone())?,
+            endpoints,
+            added: Mutex::default(),
+        })
     }
 
     /// The client for an Anthropic provider other than the first, made again when its address changed.
@@ -428,10 +542,14 @@ impl Router {
 }
 
 impl Llm for Router {
-    async fn stream(&self, request: LlmRequest, deltas: UnboundedSender<StreamDelta>, cancel: CancellationToken) -> Result<AssistantTurn, LlmError> {
+    async fn stream(&self, mut request: LlmRequest, deltas: UnboundedSender<StreamDelta>, cancel: CancellationToken) -> Result<AssistantTurn, LlmError> {
         let Some(provider) = provider(&request.provider) else {
             return Err(LlmError::Protocol(format!("this build does not know the provider `{}`", request.provider)));
         };
+        if request.model == AUTO_MODEL {
+            request.model = resolve_auto_model(&request.provider, &request.effort)
+                .ok_or_else(|| LlmError::NotConfigured(format!("provider `{}` has no built-in auto routing target; pick a specific model", request.provider)))?;
+        }
         match provider.protocol {
             // Any but the first Anthropic provider, whose address comes from the environment, has an address of its own.
             Protocol::Anthropic if request.provider != DEFAULT_PROVIDER => {
@@ -439,6 +557,7 @@ impl Llm for Router {
                 client.stream(request, deltas, cancel).await
             }
             Protocol::Anthropic => self.anthropic.stream(request, deltas, cancel).await,
+            Protocol::Gemini => self.gemini.stream(request, deltas, cancel).await,
             Protocol::Responses => self.responses.stream(request, deltas, cancel).await,
             Protocol::Chat(flavor) => self.chat.stream(flavor, request, deltas, cancel).await,
             Protocol::Cli(kind) => Err(LlmError::Protocol(format!("{} runs through its local CLI backend", kind.display_name()))),
@@ -455,7 +574,7 @@ pub fn effort_for(protocol: Protocol, effort: &str) -> Option<&'static str> {
     };
     match protocol {
         // These accept all five as they are.
-        Protocol::Anthropic | Protocol::Responses | Protocol::Cli(CliKind::Antigravity | CliKind::ClaudeCode | CliKind::Cursor) => Some(level(["low", "medium", "high", "xhigh", "max"])),
+        Protocol::Anthropic | Protocol::Gemini | Protocol::Responses | Protocol::Cli(CliKind::Antigravity | CliKind::ClaudeCode | CliKind::Cursor) => Some(level(["low", "medium", "high", "xhigh", "max"])),
         Protocol::Cli(CliKind::Codex) => Some(level(["low", "medium", "high", "xhigh", "xhigh"])),
         // Grok 1.0.92 accepts low/high/xhigh/max (no `medium`).
         Protocol::Cli(CliKind::Grok) => Some(level(["low", "high", "high", "xhigh", "max"])),
@@ -480,9 +599,19 @@ mod tests {
             let custom = provider.id.starts_with("custom");
             let cli = matches!(provider.protocol, Protocol::Cli(_));
             assert_eq!(provider.base_url.is_empty(), custom || cli, "{}", provider.id);
-            assert_eq!(provider.models.is_empty(), custom || matches!(provider.id, "magpie" | "antigravity" | "cursor" | "grok" | "opencode"), "{}", provider.id);
+            assert_eq!(
+                provider.models.is_empty(),
+                custom || matches!(provider.id, "magpie" | "ollama" | "antigravity" | "cursor" | "grok" | "opencode"),
+                "{}",
+                provider.id
+            );
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);
+        assert_eq!(provider("gemini").unwrap().protocol, Protocol::Gemini);
+        assert_eq!(resolve_auto_model("anthropic", "low").as_deref(), Some("claude-haiku-5-5"));
+        assert_eq!(resolve_auto_model("anthropic", "high").as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(resolve_auto_model("gemini", "medium").as_deref(), Some("gemini-2.5-flash"));
+        assert_eq!(resolve_auto_model("gemini", "xhigh").as_deref(), Some("gemini-2.5-pro"));
         assert_eq!(provider("custom_anthropic").unwrap().protocol, Protocol::Anthropic);
         assert!(provider("nobody").is_none());
     }
@@ -519,6 +648,8 @@ mod tests {
         assert_eq!(tokens("deepseek", &deepseek), Some(Tokens { input: 1000, cached: 900, output: 40 }));
         let responses = json!({ "input_tokens": 1000, "output_tokens": 40, "input_tokens_details": { "cached_tokens": 900 } });
         assert_eq!(tokens("openai", &responses), Some(Tokens { input: 1000, cached: 900, output: 40 }));
+        let gemini = json!({ "promptTokenCount": 1000, "cachedContentTokenCount": 600, "candidatesTokenCount": 30, "thoughtsTokenCount": 10 });
+        assert_eq!(tokens("gemini", &gemini), Some(Tokens { input: 1000, cached: 600, output: 40 }));
         assert_eq!(tokens("zhipu", &json!({})), None);
 
         assert_eq!((vision("zhipu", "glm-5.3"), vision("zhipu", "glm-5.3-flash"), vision("zhipu", "glm-5.2")), (Some(false), Some(true), None));

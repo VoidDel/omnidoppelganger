@@ -1186,6 +1186,7 @@ impl<L: Llm> Inner<L> {
     async fn run_steps(&self, cancel: &CancellationToken) -> Result<&'static str, String> {
         // The provider refused the last request as too long, and the conversation was compacted for it.
         let mut overflowed = false;
+        let mut pinned_auto_model: Option<String> = None;
         for _ in 0..MAX_STEPS {
             if cancel.is_cancelled() {
                 return Ok("cancelled");
@@ -1207,10 +1208,24 @@ impl<L: Llm> Inner<L> {
                 }
             }
 
+            let configured_model = self.model();
+            let effective_model = if configured_model == providers::AUTO_MODEL {
+                if let Some(pinned) = &pinned_auto_model {
+                    pinned.clone()
+                } else {
+                    let resolved = providers::resolve_auto_model(&self.provider(), &tuning.effort)
+                        .unwrap_or(configured_model);
+                    pinned_auto_model = Some(resolved.clone());
+                    resolved
+                }
+            } else {
+                configured_model
+            };
+
             let request = LlmRequest {
                 provider: self.provider(),
                 session: self.id.clone(),
-                model: self.model(),
+                model: effective_model,
                 system: self.system(),
                 messages: derive_messages(self.log.lock().unwrap().events()),
                 tools: self.tool_specs(),

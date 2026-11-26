@@ -25,7 +25,7 @@ import { isProviderEnabled } from "./lib/providers";
 import { api } from "./lib/api";
 import { notifyBackground } from "./lib/notify";
 import { forwarded } from "./lib/aside";
-import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, type StreamBlock } from "./lib/fold";
+import { applyDelta, changedFiles, commandRuns, fold, products, sessionCostUsd, todos, usage, type StreamBlock } from "./lib/fold";
 import { modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
 import type { SlashCommand } from "./lib/slash";
@@ -1196,7 +1196,15 @@ export default function App() {
             providers={providers}
             // The 宗门 the user added are offered; one can be moved to once it has a key, but a compatible service (a local server) may need none.
             listed={(provider) => !!state.settings && !!providers.find((known) => known.id === provider && isProviderEnabled(state.settings!, known))}
-            keyed={(provider) => (state.settings?.keys[provider]?.source ?? "none") !== "none" || !!providers.find((known) => known.id === provider)?.kind.startsWith("custom")}
+            keyed={(provider) => {
+              const kind = providers.find((known) => known.id === provider)?.kind ?? "";
+              return (
+                (state.settings?.keys[provider]?.source ?? "none") !== "none" ||
+                kind.startsWith("custom") ||
+                kind === "magpie" ||
+                kind === "ollama"
+              );
+            }}
             providerId={active.provider}
             model={active.model}
             effort={active.effort ?? state.settings?.settings.effort ?? "high"}
@@ -1208,6 +1216,7 @@ export default function App() {
             vision={active.vision}
             mode={active.mode}
             usage={spent}
+            costUsd={sessionCostUsd(state.events, active.provider, active.model)}
             contextLimit={active.context_limit}
             contextCeiling={active.context_ceiling}
             contextSetting={state.settings?.settings.context_limit ?? active.context_limit}

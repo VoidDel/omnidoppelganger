@@ -1,6 +1,7 @@
 // Folds the session log into what the window draws. The log is the only input,
 // so reopening a session shows exactly what was on screen before.
 
+import { estimateTokensUsd } from "./pricing";
 import type { ContentBlock, Decision, DiffHunk, DocumentKind, Envelope, Image, Question, Reply, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
 
 export interface ToolItem {
@@ -379,6 +380,42 @@ export function usage(events: Envelope[]): Usage {
     }
   }
   return { context, spent, breakdown };
+}
+
+/** Sum the estimated USD cost across every priced request in `events` (preserving exact per-turn model rates). */
+export function sessionCostUsd(events: Envelope[], fallbackProvider = "anthropic", fallbackModel = ""): number | null {
+  let provider = fallbackProvider;
+  let model = fallbackModel;
+  let total = 0;
+  let anyPriced = false;
+  for (const event of events) {
+    if (event.type === "session/created") {
+      provider = event.data.provider ?? "anthropic";
+      model = event.data.model;
+    } else if (event.type === "model/changed") {
+      if (event.data.provider) provider = event.data.provider;
+      model = event.data.model;
+    } else if (event.type === "assistant/message" && event.data.tokens) {
+      const c = estimateTokensUsd(provider, event.data.model || model, event.data.tokens);
+      if (c !== null) {
+        total += c;
+        anyPriced = true;
+      }
+    } else if (event.type === "guardian/reviewed" && event.data.tokens) {
+      const c = estimateTokensUsd(provider, event.data.model || model, event.data.tokens);
+      if (c !== null) {
+        total += c;
+        anyPriced = true;
+      }
+    } else if (event.type === "context/compacted" && event.data.tokens) {
+      const c = estimateTokensUsd(provider, model, event.data.tokens);
+      if (c !== null) {
+        total += c;
+        anyPriced = true;
+      }
+    }
+  }
+  return anyPriced ? total : null;
 }
 
 /** A content block of the message being generated. */

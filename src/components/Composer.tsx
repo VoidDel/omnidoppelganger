@@ -6,6 +6,7 @@ import { type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { allTokens, cooldownRemainingMs, findModelUsage, formatCooldown, formatResetIn, quotaGroupForModel, quotaWindowLabel, todayTokens, useModelUsage, useProviderQuota } from "../lib/modelUsage";
 import { MODES, nextMode } from "../lib/modes";
 import { type PasteKind, detectPasteKind, nextPastedFilename, shouldCollapsePaste } from "../lib/paste";
+import { estimateTokensUsd, formatUsd } from "../lib/pricing";
 import { CLI_INFO, cliOf } from "../lib/providers";
 import { type Offer, type SlashChoice, type SlashCommand, completion, offers, parse } from "../lib/slash";
 import type { FoundFile, Image, Mode, Picked, Provider, Status } from "../lib/types";
@@ -112,6 +113,8 @@ export interface ComposerProps {
   vision: boolean | null;
   mode: Mode;
   usage: Usage;
+  /** Estimated accumulated USD API cost across this session's turns, when known. */
+  costUsd?: number | null;
   /** The number of tokens at which the conversation is compacted, the most it can be for this model, and the limit as set. */
   contextLimit: number;
   contextCeiling: number;
@@ -1201,6 +1204,7 @@ export function Composer(props: ComposerProps) {
                     </span>
                     {(() => {
                       const cachePct = usage.spent.input > 0 ? Math.min(100, Math.round((usage.spent.cached / usage.spent.input) * 100)) : 0;
+                      const estCost = props.costUsd ?? estimateTokensUsd(providerId, model, usage.spent);
                       const inputTip =
                         usage.spent.cached > 0
                           ? `累计输入 ${shortCount(usage.spent.input)}（缓存 ${shortCount(usage.spent.cached)} · ${cachePct}%）`
@@ -1218,6 +1222,15 @@ export function Composer(props: ComposerProps) {
                           <span className="stones-pill mono" data-tip={`累计输出 ${shortCount(usage.spent.output)}`} aria-label={`累计输出 ${shortCount(usage.spent.output)}`}>
                             {shortCount(usage.spent.output)}
                           </span>
+                          {estCost !== null && estCost > 0 && (
+                            <span
+                              className="stones-pill mono"
+                              data-tip={`按公开 API 单价与缓存命中估算本会话账单 ≈ ${formatUsd(estCost)}`}
+                              aria-label={`估算账单 ${formatUsd(estCost)}`}
+                            >
+                              ≈ {formatUsd(estCost)}
+                            </span>
+                          )}
                         </span>
                       );
                     })()}

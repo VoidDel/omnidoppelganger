@@ -18,7 +18,7 @@ export const EFFORT_HINTS: Record<string, string> = {
 
 /** How a provider's effort setting lands, for a note under the realms. */
 export function effortNote(provider: Provider | undefined): string {
-  if (!provider || provider.protocol === "anthropic" || provider.protocol === "responses") return "";
+  if (!provider || provider.protocol === "anthropic" || provider.protocol === "gemini" || provider.protocol === "responses") return "";
   const cli = cliOf(provider);
   if (cli) {
     switch (cli) {

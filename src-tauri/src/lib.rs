@@ -186,11 +186,12 @@ impl App {
         if self.settings.key_status(provider).source != "none" {
             return true;
         }
-        odg_core::providers::kind_id(provider) == "magpie"
+        let kind = odg_core::providers::kind_id(provider);
+        matches!(kind, "magpie" | "ollama")
             && (settings.provider == provider
                 || settings.base_urls.contains_key(provider)
                 || settings.provider_names.contains_key(provider)
-                || provider != "magpie")
+                || provider != kind)
     }
 
     /// If an idle session points at a removed/disabled/unconfigured provider or an empty model,
