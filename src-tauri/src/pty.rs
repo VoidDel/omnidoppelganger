@@ -401,10 +401,11 @@ mod tests {
 
     #[test]
     fn spawns_writes_reads_and_closes_pty_cleanly() {
-        let hub = PtyHub::new();
+        let hub = Arc::new(PtyHub::new());
         let temp = tempfile::tempdir().unwrap();
         let collected = Arc::new(Mutex::new(String::new()));
         let out_sink = collected.clone();
+        let responder_hub = hub.clone();
 
         let info = hub
             .spawn(
@@ -413,6 +414,11 @@ mod tests {
                 80,
                 24,
                 move |payload| {
+                    // Headless Windows ConPTY + PowerShell/.NET queries cursor position via CSI `6n` (`\x1b[6n`)
+                    // and blocks until the terminal emulator answers `\x1b[row;colR` (handled by xterm.js in UI).
+                    if payload.data.contains("\x1b[6n") {
+                        let _ = responder_hub.write(&payload.id, "\x1b[1;1R");
+                    }
                     out_sink.lock().unwrap().push_str(&payload.data);
                 },
                 |_| {},
