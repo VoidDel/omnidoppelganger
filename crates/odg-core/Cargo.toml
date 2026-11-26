@@ -3,6 +3,7 @@ name = "odg-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 calamine = { version = "0.38.0", features = ["dates"] }

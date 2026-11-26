@@ -3,6 +3,7 @@ name = "odg-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Run one OmniDoppelganger task from the command line"
 
 [[bin]]

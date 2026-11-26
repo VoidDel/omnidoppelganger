@@ -9,7 +9,9 @@ db-path = "~/.cargo/advisory-dbs"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 unmaintained = "workspace"
 yanked = "warn"
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "chrono is required by calamine and odg-core timestamp formatting; unmaintained notice only, no security vulnerability" },
+]
 
 [bans]
 multiple-versions = "warn"
