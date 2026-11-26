@@ -820,8 +820,13 @@ async fn session_sandbox_protects_worktree_origin_git_hooks_and_config() {
         eprintln!("skipping sandbox eval: {why}");
         return;
     }
-    let home = tempfile::tempdir().unwrap();
-    let root = tempfile::tempdir().unwrap();
+    // Place the simulated user home and origin repository outside `/tmp` (`std::env::temp_dir()`)
+    // because `Session` grants write access to system temp directories, and Linux Landlock rules
+    // are purely additive (a child path under `/tmp` would inherit `/tmp`'s write access).
+    let target_tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(target_tmp).unwrap();
+    let home = tempfile::tempdir_in(target_tmp).unwrap();
+    let root = tempfile::tempdir_in(target_tmp).unwrap();
     let origin = root.path().join("origin");
     let wt_root = root.path().join("worktrees");
     std::fs::create_dir_all(origin.join("src")).unwrap();

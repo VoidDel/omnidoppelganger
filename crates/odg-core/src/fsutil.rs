@@ -338,14 +338,14 @@ pub(crate) fn write_private_new_in(
         options.mode(0o600);
     }
     let mut file = options.open(&path)?;
-    let written = (|| {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        }
-        file.write_all(contents)
-    })();
+    #[cfg(unix)]
+    let written = {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .and_then(|()| file.write_all(contents))
+    };
+    #[cfg(not(unix))]
+    let written = file.write_all(contents);
     if let Err(error) = written {
         let _ = fs::remove_file(&path);
         return Err(error);

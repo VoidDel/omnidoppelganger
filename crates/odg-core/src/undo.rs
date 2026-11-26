@@ -288,6 +288,7 @@ mod tests {
             after: None,
         };
 
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut plan = vec![good, bad_snap, outside_undo, git_undo];
 
         #[cfg(unix)]
