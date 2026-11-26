@@ -20,7 +20,9 @@ pub struct UpdateStatus {
     pub published_at: Option<String>,
 }
 
-fn parse_semver(raw: &str) -> Option<((u64, u64, u64), Option<&str>)> {
+type Semver<'a> = ((u64, u64, u64), Option<&'a str>);
+
+fn parse_semver(raw: &str) -> Option<Semver<'_>> {
     let clean = raw.trim().trim_start_matches(['v', 'V']);
     let (core, pre) = match clean.split_once('-') {
         Some((c, p)) => (c, Some(p)),

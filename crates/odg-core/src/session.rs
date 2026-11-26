@@ -521,7 +521,7 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     pending.clear();
                     turn_starts.clear();
                     if let Some(first_content) = kept_msgs.first_mut().filter(|m| m["role"] == "user").and_then(|m| m["content"].as_array_mut()) {
-                        header.extend(first_content.drain(..));
+                        header.append(first_content);
                         *first_content = header;
                     } else {
                         kept_msgs.insert(0, json!({ "role": "user", "content": header }));
