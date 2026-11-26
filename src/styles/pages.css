@@ -9,6 +9,7 @@
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
+  font-family: var(--brush);
   display: flex;
   align-items: center;
 }
@@ -34,6 +35,7 @@
   min-height: 0;
   overflow-y: auto;
   padding-bottom: 56px;
+  font-family: var(--brush);
 }
 
 .settings-inner {
