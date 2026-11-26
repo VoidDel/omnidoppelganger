@@ -1,0 +1,21 @@
+name: 功能建议
+description: 希望增加或改进的功能与交互体验
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题
+      description: 现在用起来哪里不顺手，或者什么场景还做不到
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 希望它怎么工作
+      description: 你理想中的交互方式、命令或配置方式
+  - type: textarea
+    id: other
+    attributes:
+      label: 补充参考（可选）
+      description: 其他工具里类似的设计、示意图或截图等

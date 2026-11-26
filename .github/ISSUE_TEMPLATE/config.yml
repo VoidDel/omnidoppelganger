@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用手册
+    url: https://github.com/VoidDel/omnidoppelganger/blob/main/doc/user-guide.md
+    about: 怎么配置宗门与本机 CLI、用代码工作台、切换禁制、配 MCP 法器与提示词模板
+  - name: 常见问题
+    url: https://github.com/VoidDel/omnidoppelganger/blob/main/doc/faq.md
+    about: 安装被拦截、找不到 CLI 或 npx、项目信任提示、文房换源、撤销与工作树说明

@@ -1,0 +1,65 @@
+name: 问题反馈
+description: 对话报错、工具执行异常、界面问题、本机 CLI 连接失败等
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 提交前请先看一眼 [常见问题](https://github.com/VoidDel/omnidoppelganger/blob/main/doc/faq.md) 和 [使用手册](https://github.com/VoidDel/omnidoppelganger/blob/main/doc/user-guide.md)，也许已经有现成解法。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: “设置 › 外观 › 版本与更新”里显示的版本号（或命令行 `odg` 的版本）
+      placeholder: "0.8.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS（Apple Silicon）
+        - macOS（Intel）
+        - Linux（deb）
+        - Linux（rpm）
+        - Linux（Arch / pkg.tar.zst）
+        - Linux（AppImage）
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 哪一部分
+      options:
+        - 模型宗门 / 流式对话
+        - 本机编码 CLI（agy / codex / claude / cursor-agent / grok / opencode）
+        - 文件读写 / 命令执行 / 禁制审批 / 结界
+        - 代码工作台（文件树 / 代码查看器 / Git / 终端 / 旁聊）
+        - 代码导航（LSP） / 身外法器（MCP） / 秘籍（Skills）
+        - 文房（Office / PDF / Python 运行时） / 画图 / 丹青
+        - 分叉 / 回溯 / 撤销 / 工作树 / 功课
+        - 命令行 odg
+        - 安装、启动、更新或界面显示
+        - 其他
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: 使用的宗门与心法
+      description: 例如 Anthropic claude-sonnet-4-6、GLM glm-5.3、Google Gemini、Ollama 或本机 claude CLI
+      placeholder: "GLM / glm-5.3"
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 做了什么、期望什么、实际看到了什么。如果能稳定重现，请写出步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错信息或会话导出片段（可选）
+      description: 可粘贴报错提示，或附上通过 `/export` 导出的相关片段。请先抹掉私有路径、业务代码与任何密钥令牌（切勿上传 credentials.json 或 mcp.json）。

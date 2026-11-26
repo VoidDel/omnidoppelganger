@@ -509,6 +509,41 @@ function UpdateSection() {
   );
 }
 
+const REPO_URL = "https://github.com/VoidDel/omnidoppelganger";
+
+const HELP_LINKS: { label: string; hint: string; url: string }[] = [
+  { label: "使用手册", hint: "按任务组织的完整操作说明", url: `${REPO_URL}/blob/main/doc/user-guide.md` },
+  { label: "常见问题", hint: "安装拦截、CLI 识别、禁制与文房排障", url: `${REPO_URL}/blob/main/doc/faq.md` },
+  { label: "隐私政策", hint: "本地存储目录与外部网络请求说明", url: `${REPO_URL}/blob/main/doc/privacy.md` },
+  { label: "问题反馈", hint: "前往 GitHub Issues 提交问题或功能建议", url: `${REPO_URL}/issues/new/choose` },
+];
+
+function HelpSection() {
+  return (
+    <section>
+      <h2>帮助与文档</h2>
+      <div className="provider-card">
+        <div className="who">
+          <span className="muted">使用说明、排障指南与问题反馈入口。</span>
+        </div>
+        <div className="actions" style={{ marginTop: "6px", flexWrap: "wrap" }}>
+          {HELP_LINKS.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              className="button outline small"
+              title={item.hint}
+              onClick={() => void api.openExternal(item.url)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 interface Props {
   view: SettingsView;
   /** The models a provider serves, asked from the provider itself. */
@@ -945,6 +980,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
           </fieldset>
         </section>
         <UpdateSection />
+        <HelpSection />
           </>
         )}
       </div>
