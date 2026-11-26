@@ -36,7 +36,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-22.04, macos-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Linux desktop dependencies
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -48,10 +48,10 @@ jobs:
             patchelf \
             libssl-dev \
             xvfb
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 12
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -87,7 +87,7 @@ jobs:
         run: node e2e/run.mjs
       - name: Upload WebView2 E2E diagnostics
         if: failure() && matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-diagnostics-windows
           path: e2e/artifacts/**
@@ -98,11 +98,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 12
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Audit production npm dependencies
