@@ -51,8 +51,13 @@ pub(super) fn apply_mcp_bridge_args_in(
                 return None;
             }
             let payload = serde_json::to_vec_pretty(&json!({ "mcpServers": map })).ok()?;
-            let path = crate::fsutil::write_private_new_in(base_home, "mcp", &format!("mcp-{turn}-"), ".json", &payload).ok()?;
-            insert_before_prompt_tail(args, vec!["--mcp-config".to_string(), path.to_string_lossy().into_owned()]);
+            let path =
+                crate::fsutil::write_private_new_in(base_home, "mcp", &format!("mcp-{turn}-"), ".json", &payload)
+                    .ok()?;
+            insert_before_prompt_tail(
+                args,
+                vec!["--mcp-config".to_string(), path.to_string_lossy().into_owned()],
+            );
             Some(TempPromptGuard::file_only(path))
         }
         CliKind::Codex => {
@@ -131,7 +136,10 @@ pub(super) fn build_agy_mcp_add_args(name: &str, srv: &crate::mcp::ServerConfig)
 /// file or its parent Antigravity config directory exists on disk.
 pub(super) fn resolve_agy_mcp_config_path(user_home: &Path) -> Option<PathBuf> {
     let candidates = [
-        user_home.join(".gemini").join("antigravity-cli").join("mcp_config.json"),
+        user_home
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("mcp_config.json"),
         user_home.join(".gemini").join("antigravity").join("mcp_config.json"),
     ];
     for cfg in &candidates {
@@ -151,7 +159,10 @@ pub(super) fn resolve_agy_mcp_config_path(user_home: &Path) -> Option<PathBuf> {
 
 /// Merge enabled `odg` MCP servers (`~/.odg/mcp.json`) into Antigravity's `mcp_config.json`,
 /// preserving any non-`odg` entries configured directly in Antigravity.
-pub(super) fn merge_agy_mcp_json(existing: Option<&str>, servers: &BTreeMap<String, crate::mcp::ServerConfig>) -> Option<String> {
+pub(super) fn merge_agy_mcp_json(
+    existing: Option<&str>,
+    servers: &BTreeMap<String, crate::mcp::ServerConfig>,
+) -> Option<String> {
     let mut root = existing
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
         .and_then(|v| v.as_object().cloned())
@@ -215,7 +226,9 @@ pub(super) async fn sync_antigravity_mcp_in(
     }
     let mut all_ok = true;
     for (name, srv) in enabled {
-        let Some(add_args) = build_agy_mcp_add_args(name, srv) else { continue };
+        let Some(add_args) = build_agy_mcp_add_args(name, srv) else {
+            continue;
+        };
         let mut cmd = Command::new(bin);
         cmd.args(&add_args)
             .stdin(Stdio::null())
@@ -257,7 +270,10 @@ pub(super) async fn sync_antigravity_mcp(bin: &Path, servers: &BTreeMap<String, 
 
 /// Merge enabled `odg` MCP servers (`~/.odg/mcp.json`) into an existing Cursor `mcp.json` value,
 /// preserving any non-`odg` entries the user configured directly in Cursor.
-pub(super) fn merge_cursor_mcp_json(existing: Option<&str>, servers: &BTreeMap<String, crate::mcp::ServerConfig>) -> Option<String> {
+pub(super) fn merge_cursor_mcp_json(
+    existing: Option<&str>,
+    servers: &BTreeMap<String, crate::mcp::ServerConfig>,
+) -> Option<String> {
     let mut root = existing
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
         .and_then(|v| v.as_object().cloned())
@@ -305,7 +321,12 @@ pub(super) fn sync_cursor_mcp_in(user_home: &Path, servers: &BTreeMap<String, cr
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            if std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&cursor_dir).is_err() {
+            if std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&cursor_dir)
+                .is_err()
+            {
                 return false;
             }
         }

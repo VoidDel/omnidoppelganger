@@ -24,9 +24,12 @@ pub fn edits_files(tool: &str) -> bool {
 pub(super) async fn read_file(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let path = resolve(&context.workspace, string_arg(input, "path")?);
     let shown = display(&context.workspace, &path);
-    let metadata = std::fs::metadata(&path).map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?;
+    let metadata =
+        std::fs::metadata(&path).map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?;
     if metadata.is_dir() {
-        return Err(ToolOutput::error(format!("{shown} is a directory. Use `find_files` to list it.")));
+        return Err(ToolOutput::error(format!(
+            "{shown} is a directory. Use `find_files` to list it."
+        )));
     }
     let named_picture = crate::events::image_type(&path).is_some();
     if named_picture && metadata.len() > crate::events::IMAGE_FILE_BYTES {
@@ -67,10 +70,16 @@ pub(super) async fn read_file(input: &Value, context: &ToolContext) -> Result<To
         };
         let (content, lines, selected) = numbered(&read.text, input, &shown);
         let content = format!("[{shown} is {}]\n{content}", read.describe());
-        return Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected, "document": read.kind, "parts": read.parts })));
+        return Ok(ToolOutput::ok(
+            content,
+            json!({ "path": shown, "lines": lines, "shown": selected, "document": read.kind, "parts": read.parts }),
+        ));
     }
     if metadata.len() > READ_FILE_BYTES {
-        return Err(ToolOutput::error(format!("{shown} is {} bytes, over the {READ_FILE_BYTES}-byte limit.", metadata.len())));
+        return Err(ToolOutput::error(format!(
+            "{shown} is {} bytes, over the {READ_FILE_BYTES}-byte limit.",
+            metadata.len()
+        )));
     }
     let read_path = path.clone();
     let bytes = tokio::task::spawn_blocking(move || std::fs::read(&read_path))
@@ -85,7 +94,10 @@ pub(super) async fn read_file(input: &Value, context: &ToolContext) -> Result<To
         return Err(ToolOutput::error(format!("{shown} is a binary file.")));
     }
     let (content, lines, selected) = numbered(&String::from_utf8_lossy(&bytes), input, &shown);
-    Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected })))
+    Ok(ToolOutput::ok(
+        content,
+        json!({ "path": shown, "lines": lines, "shown": selected }),
+    ))
 }
 
 /// The lines of `text` that `read_file`'s offset and limit ask for, each with
@@ -94,7 +106,11 @@ pub(super) async fn read_file(input: &Value, context: &ToolContext) -> Result<To
 fn numbered(text: &str, input: &Value, shown: &str) -> (String, usize, usize) {
     let lines: Vec<&str> = text.lines().collect();
     let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
-    let limit = input["limit"].as_u64().map(|limit| limit as usize).unwrap_or(READ_LINE_LIMIT).clamp(1, READ_LINE_LIMIT);
+    let limit = input["limit"]
+        .as_u64()
+        .map(|limit| limit as usize)
+        .unwrap_or(READ_LINE_LIMIT)
+        .clamp(1, READ_LINE_LIMIT);
     let mut selected: Vec<String> = Vec::new();
     let mut chars = 0usize;
     let mut capped = false;
@@ -120,7 +136,10 @@ fn numbered(text: &str, input: &Value, shown: &str) -> (String, usize, usize) {
             last + 1
         ));
     } else if last < lines.len() {
-        content.push_str(&format!("\n[showing lines {offset}-{last} of {}; pass offset to read more]", lines.len()));
+        content.push_str(&format!(
+            "\n[showing lines {offset}-{last} of {}; pass offset to read more]",
+            lines.len()
+        ));
     }
     (content, lines.len(), selected.len())
 }
@@ -130,18 +149,27 @@ fn numbered(text: &str, input: &Value, shown: &str) -> (String, usize, usize) {
 fn whole_file(path: &Path, shown: &str, tool: &str) -> Result<Vec<u8>, ToolOutput> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(ToolOutput::error(format!("{shown} does not exist."))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ToolOutput::error(format!("{shown} does not exist.")));
+        }
         Err(error) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
     };
     if metadata.is_dir() {
-        return Err(ToolOutput::error(format!("{shown} is a folder; `{tool}` takes one file. Do the files in it one by one, or use run_command.")));
+        return Err(ToolOutput::error(format!(
+            "{shown} is a folder; `{tool}` takes one file. Do the files in it one by one, or use run_command."
+        )));
     }
     if metadata.file_type().is_symlink() {
-        return Err(ToolOutput::error(format!("{shown} is a link; `{tool}` takes a file. Use run_command for a link.")));
+        return Err(ToolOutput::error(format!(
+            "{shown} is a link; `{tool}` takes a file. Use run_command for a link."
+        )));
     }
     if metadata.len() > UNDO_FILE_BYTES {
         let megabytes = metadata.len().div_ceil(1024 * 1024);
-        return Err(ToolOutput::error(format!("{shown} is {megabytes} MB, too large to keep a copy of for undoing (at most {} MB). Use run_command if it must be done.", UNDO_FILE_BYTES / 1024 / 1024)));
+        return Err(ToolOutput::error(format!(
+            "{shown} is {megabytes} MB, too large to keep a copy of for undoing (at most {} MB). Use run_command if it must be done.",
+            UNDO_FILE_BYTES / 1024 / 1024
+        )));
     }
     std::fs::read(path).map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))
 }
@@ -149,7 +177,9 @@ fn whole_file(path: &Path, shown: &str, tool: &str) -> Result<Vec<u8>, ToolOutpu
 /// Keep `bytes` for undoing, when the session keeps snapshots: the snapshot's name.
 fn keep(context: &ToolContext, bytes: &[u8], shown: &str) -> Result<Option<String>, ToolOutput> {
     match &context.snapshots {
-        Some(directory) => crate::undo::save(directory, bytes).map(Some).map_err(|error| ToolOutput::error(format!("Cannot keep a copy of {shown} for undoing: {error}"))),
+        Some(directory) => crate::undo::save(directory, bytes)
+            .map(Some)
+            .map_err(|error| ToolOutput::error(format!("Cannot keep a copy of {shown} for undoing: {error}"))),
         None => Ok(None),
     }
 }
@@ -211,19 +241,23 @@ pub(super) fn move_file(input: &Value, context: &ToolContext) -> Result<ToolOutp
     let recased = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase() && same_file(&from, &to);
     match std::fs::symlink_metadata(&to) {
         Ok(_) if !recased => {
-            return Err(ToolOutput::error(format!("{shown_to} already exists. Delete it first with delete_file if it is to be replaced, or choose another name.")));
+            return Err(ToolOutput::error(format!(
+                "{shown_to} already exists. Delete it first with delete_file if it is to be replaced, or choose another name."
+            )));
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(ToolOutput::error(format!("Cannot look at {shown_to}: {error}"))),
     }
     if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot create {}: {error}", parent.display())))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| ToolOutput::error(format!("Cannot create {}: {error}", parent.display())))?;
     }
     let before = keep(context, &bytes, &shown_from)?;
     if std::fs::rename(&from, &to).is_err() {
         // Across volumes a file cannot be renamed: it is written there and taken away here.
-        crate::fsutil::write_atomically(&to, &bytes).map_err(|error| ToolOutput::error(format!("Cannot write {shown_to}: {error}")))?;
+        crate::fsutil::write_atomically(&to, &bytes)
+            .map_err(|error| ToolOutput::error(format!("Cannot write {shown_to}: {error}")))?;
         if let Err(error) = std::fs::remove_file(&from) {
             let _ = std::fs::remove_file(&to);
             return Err(ToolOutput::error(format!("Cannot move {shown_from}: {error}")));
@@ -233,7 +267,10 @@ pub(super) fn move_file(input: &Value, context: &ToolContext) -> Result<ToolOutp
     if context.snapshots.is_some() {
         // Where it is now, to be opened; and for undoing, the file that came and the file that went.
         meta["file"] = json!(to.to_string_lossy());
-        meta["changes"] = json!([change(&to, &shown_to, None, Some(&bytes)), change(&from, &shown_from, before, None)]);
+        meta["changes"] = json!([
+            change(&to, &shown_to, None, Some(&bytes)),
+            change(&from, &shown_from, before, None)
+        ]);
     }
     Ok(ToolOutput::ok(format!("Moved {shown_from} to {shown_to}."), meta))
 }
@@ -241,11 +278,28 @@ pub(super) fn move_file(input: &Value, context: &ToolContext) -> Result<ToolOutp
 /// What a picture's first bytes say it is, whatever its name says: its type and, where its header gives them,
 /// its width and height. `None` for anything but PNG, JPEG, GIF, and WebP.
 pub(super) fn picture(bytes: &[u8]) -> Option<(&'static str, Option<(u32, u32)>)> {
-    let u16_be = |at: usize| bytes.get(at..at + 2).map(|two| u32::from(u16::from_be_bytes([two[0], two[1]])));
-    let u16_le = |at: usize| bytes.get(at..at + 2).map(|two| u32::from(u16::from_le_bytes([two[0], two[1]])));
-    let u24_le = |at: usize| bytes.get(at..at + 3).map(|three| u32::from(three[0]) | u32::from(three[1]) << 8 | u32::from(three[2]) << 16);
+    let u16_be = |at: usize| {
+        bytes
+            .get(at..at + 2)
+            .map(|two| u32::from(u16::from_be_bytes([two[0], two[1]])))
+    };
+    let u16_le = |at: usize| {
+        bytes
+            .get(at..at + 2)
+            .map(|two| u32::from(u16::from_le_bytes([two[0], two[1]])))
+    };
+    let u24_le = |at: usize| {
+        bytes
+            .get(at..at + 3)
+            .map(|three| u32::from(three[0]) | u32::from(three[1]) << 8 | u32::from(three[2]) << 16)
+    };
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        let size = bytes.get(16..24).map(|header| (u32::from_be_bytes([header[0], header[1], header[2], header[3]]), u32::from_be_bytes([header[4], header[5], header[6], header[7]])));
+        let size = bytes.get(16..24).map(|header| {
+            (
+                u32::from_be_bytes([header[0], header[1], header[2], header[3]]),
+                u32::from_be_bytes([header[4], header[5], header[6], header[7]]),
+            )
+        });
         return Some(("image/png", size));
     }
     if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
@@ -253,12 +307,16 @@ pub(super) fn picture(bytes: &[u8]) -> Option<(&'static str, Option<(u32, u32)>)
     }
     if bytes.len() >= 16 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         let size = match &bytes[12..16] {
-            b"VP8 " => u16_le(26).zip(u16_le(28)).map(|(width, height)| (width & 0x3fff, height & 0x3fff)),
+            b"VP8 " => u16_le(26)
+                .zip(u16_le(28))
+                .map(|(width, height)| (width & 0x3fff, height & 0x3fff)),
             b"VP8L" => bytes.get(21..25).map(|bits| {
                 let [b0, b1, b2, b3] = [bits[0], bits[1], bits[2], bits[3]].map(u32::from);
                 (1 + (b0 | (b1 & 0x3f) << 8), 1 + (b1 >> 6 | b2 << 2 | (b3 & 0x0f) << 10))
             }),
-            b"VP8X" => u24_le(24).zip(u24_le(27)).map(|(width, height)| (width + 1, height + 1)),
+            b"VP8X" => u24_le(24)
+                .zip(u24_le(27))
+                .map(|(width, height)| (width + 1, height + 1)),
             _ => None,
         };
         return Some(("image/webp", size));
@@ -287,28 +345,51 @@ pub(super) fn picture(bytes: &[u8]) -> Option<(&'static str, Option<(u32, u32)>)
 /// A picture `read_file` was asked for: shown to the model, when it can see pictures, with what it is.
 fn read_picture(path: &Path, shown: &str, bytes: Vec<u8>, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let Some((media_type, size)) = picture(&bytes) else {
-        return Err(ToolOutput::error(format!("{shown} is named as a picture but is not a PNG, JPEG, GIF, or WebP one.")));
+        return Err(ToolOutput::error(format!(
+            "{shown} is named as a picture but is not a PNG, JPEG, GIF, or WebP one."
+        )));
     };
     let kind = media_type.trim_start_matches("image/").to_uppercase();
-    let dimensions = size.map(|(width, height)| format!(", {width}×{height}")).unwrap_or_default();
-    let described = format!("{shown} is a {kind} picture{dimensions}, {} KB", bytes.len().div_ceil(1024));
+    let dimensions = size
+        .map(|(width, height)| format!(", {width}×{height}"))
+        .unwrap_or_default();
+    let described = format!(
+        "{shown} is a {kind} picture{dimensions}, {} KB",
+        bytes.len().div_ceil(1024)
+    );
     if context.vision == Some(false) {
-        return Err(ToolOutput::error(format!("{described}. The model at work cannot see pictures: ask the user what it shows, or to switch to a model that can.")));
+        return Err(ToolOutput::error(format!(
+            "{described}. The model at work cannot see pictures: ask the user what it shows, or to switch to a model that can."
+        )));
     }
     if bytes.len() as u64 > crate::events::IMAGE_FILE_BYTES {
         let most = crate::events::IMAGE_FILE_BYTES as f64 / 1_000_000.0;
-        return Err(ToolOutput::error(format!("{described}: too large to be shown, which takes at most {most:.1} MB. Make a smaller copy first, for example with Pillow in the document runtime, and read that.")));
+        return Err(ToolOutput::error(format!(
+            "{described}: too large to be shown, which takes at most {most:.1} MB. Make a smaller copy first, for example with Pillow in the document runtime, and read that."
+        )));
     }
     let (width, height) = size.unzip();
     let meta = json!({ "path": shown, "file": path.to_string_lossy(), "picture": media_type, "bytes": bytes.len(), "width": width, "height": height });
-    let image = Image { media_type: media_type.to_string(), data: crate::events::base64(&bytes) };
-    Ok(ToolOutput { content: format!("{described}. It is shown to you here."), is_error: false, meta, images: vec![image] })
+    let image = Image {
+        media_type: media_type.to_string(),
+        data: crate::events::base64(&bytes),
+    };
+    Ok(ToolOutput {
+        content: format!("{described}. It is shown to you here."),
+        is_error: false,
+        meta,
+        images: vec![image],
+    })
 }
 
 /// A text file as it is on disk: `None` when it does not exist.
 fn read_existing(path: &Path, shown: &str) -> Result<Option<String>, ToolOutput> {
     match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(String::from_utf8(bytes).map_err(|_| ToolOutput::error(format!("{shown} is not UTF-8 text.")))?)),
+        Ok(bytes) => {
+            Ok(Some(String::from_utf8(bytes).map_err(|_| {
+                ToolOutput::error(format!("{shown} is not UTF-8 text."))
+            })?))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
     }
@@ -316,24 +397,37 @@ fn read_existing(path: &Path, shown: &str) -> Result<Option<String>, ToolOutput>
 
 /// Write `after` (LF text) over what the file held, after saving that for
 /// undo, and describe the change. A file that used CRLF gets CRLF back.
-fn write_change(context: &ToolContext, path: &Path, shown: &str, existing: Option<&str>, after: &str) -> Result<ToolOutput, ToolOutput> {
+fn write_change(
+    context: &ToolContext,
+    path: &Path,
+    shown: &str,
+    existing: Option<&str>,
+    after: &str,
+) -> Result<ToolOutput, ToolOutput> {
     let crlf = existing.is_some_and(|text| text.contains("\r\n"));
     let before = existing.map(|text| text.replace("\r\n", "\n"));
     if before.as_deref() == Some(after) {
         return Err(ToolOutput::error(format!("The change leaves {shown} as it is.")));
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| ToolOutput::error(format!("Cannot create {}: {error}", parent.display())))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| ToolOutput::error(format!("Cannot create {}: {error}", parent.display())))?;
     }
-    let written = if crlf { after.replace('\n', "\r\n") } else { after.to_string() };
+    let written = if crlf {
+        after.replace('\n', "\r\n")
+    } else {
+        after.to_string()
+    };
     // The snapshot comes first: a change that could not be undone is not made.
     let snapshot = match (&context.snapshots, existing) {
-        (Some(directory), Some(original)) => {
-            Some(crate::undo::save(directory, original.as_bytes()).map_err(|error| ToolOutput::error(format!("Cannot save {shown} before changing it: {error}")))?)
-        }
+        (Some(directory), Some(original)) => Some(
+            crate::undo::save(directory, original.as_bytes())
+                .map_err(|error| ToolOutput::error(format!("Cannot save {shown} before changing it: {error}")))?,
+        ),
         _ => None,
     };
-    crate::fsutil::write_atomically(path, written.as_bytes()).map_err(|error| ToolOutput::error(format!("Cannot write {shown}: {error}")))?;
+    crate::fsutil::write_atomically(path, written.as_bytes())
+        .map_err(|error| ToolOutput::error(format!("Cannot write {shown}: {error}")))?;
 
     let created = before.is_none();
     let diff = line_diff(before.as_deref().unwrap_or(""), after);
@@ -380,20 +474,42 @@ pub(super) fn edit_file(input: &Value, context: &ToolContext) -> Result<ToolOutp
     let mut text = existing.as_deref().map(|text| text.replace("\r\n", "\n"));
     for (index, edit) in edits.iter().enumerate() {
         // Which edit failed matters only when there are several.
-        let failed = |message: String| ToolOutput::error(if edits.len() > 1 { format!("Edit {} of {}: {message} Nothing was written.", index + 1, edits.len()) } else { message });
+        let failed = |message: String| {
+            ToolOutput::error(if edits.len() > 1 {
+                format!("Edit {} of {}: {message} Nothing was written.", index + 1, edits.len())
+            } else {
+                message
+            })
+        };
         let old = string_arg(edit, "old_string")?.replace("\r\n", "\n");
         let new = string_arg(edit, "new_string")?.replace("\r\n", "\n");
         let replace_all = edit["replace_all"].as_bool().unwrap_or(false);
         text = Some(match (&text, old.is_empty()) {
             (None, true) => new,
-            (None, false) => return Err(failed(format!("{shown} does not exist. To create it, pass an empty `old_string`."))),
+            (None, false) => {
+                return Err(failed(format!(
+                    "{shown} does not exist. To create it, pass an empty `old_string`."
+                )));
+            }
             (Some(current), true) if current.is_empty() => new,
-            (Some(_), true) => return Err(failed(format!("{shown} already exists. Pass the text to replace as `old_string`."))),
+            (Some(_), true) => {
+                return Err(failed(format!(
+                    "{shown} already exists. Pass the text to replace as `old_string`."
+                )));
+            }
             (Some(current), false) => match current.matches(old.as_str()).count() {
-                0 => return Err(failed(format!("`old_string` was not found in {shown}. Read the file again and copy the text exactly."))),
+                0 => {
+                    return Err(failed(format!(
+                        "`old_string` was not found in {shown}. Read the file again and copy the text exactly."
+                    )));
+                }
                 1 => current.replacen(old.as_str(), &new, 1),
                 _ if replace_all => current.replace(old.as_str(), &new),
-                count => return Err(failed(format!("`old_string` occurs {count} times in {shown}. Include more surrounding text to make it unique, or set `replace_all`."))),
+                count => {
+                    return Err(failed(format!(
+                        "`old_string` occurs {count} times in {shown}. Include more surrounding text to make it unique, or set `replace_all`."
+                    )));
+                }
             },
         });
     }
@@ -423,19 +539,37 @@ pub(super) async fn find_files(input: &Value, context: &ToolContext) -> Result<T
     }
     let Some(glob) = input["glob"].as_str() else {
         // One level, as it is on disk: what .gitignore excludes is listed too.
-        let entries = std::fs::read_dir(&root).map_err(|error| ToolOutput::error(format!("Cannot list {shown}: {error}")))?;
+        let entries =
+            std::fs::read_dir(&root).map_err(|error| ToolOutput::error(format!("Cannot list {shown}: {error}")))?;
         let mut names: Vec<String> = entries
             .filter_map(Result::ok)
-            .map(|entry| format!("{}{}", entry.file_name().to_string_lossy(), if entry.file_type().is_ok_and(|kind| kind.is_dir()) { "/" } else { "" }))
+            .map(|entry| {
+                format!(
+                    "{}{}",
+                    entry.file_name().to_string_lossy(),
+                    if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                        "/"
+                    } else {
+                        ""
+                    }
+                )
+            })
             .collect();
         names.sort_by_key(|name| name.to_lowercase());
         let total = names.len();
         names.truncate(FIND_RESULTS);
-        let mut content = if names.is_empty() { format!("{shown} is empty.") } else { names.join("\n") };
+        let mut content = if names.is_empty() {
+            format!("{shown} is empty.")
+        } else {
+            names.join("\n")
+        };
         if total > FIND_RESULTS {
             content.push_str(&format!("\n[showing {FIND_RESULTS} of {total} entries]"));
         }
-        return Ok(ToolOutput::ok(content, json!({ "path": shown, "entries": names.len(), "truncated": total > FIND_RESULTS })));
+        return Ok(ToolOutput::ok(
+            content,
+            json!({ "path": shown, "entries": names.len(), "truncated": total > FIND_RESULTS }),
+        ));
     };
     let matcher = globset::GlobBuilder::new(glob)
         .literal_separator(false)
@@ -448,7 +582,10 @@ pub(super) async fn find_files(input: &Value, context: &ToolContext) -> Result<T
         let mut found: Vec<String> = Vec::new();
         let mut truncated = false;
         // Dot files count (`.github/workflows/ci.yml` is a file one looks for); Git's own directory does not.
-        let walk = ignore::WalkBuilder::new(&root).hidden(false).filter_entry(|entry| entry.file_name() != ".git").build();
+        let walk = ignore::WalkBuilder::new(&root)
+            .hidden(false)
+            .filter_entry(|entry| entry.file_name() != ".git")
+            .build();
         for entry in walk.filter_map(Result::ok) {
             if cancel.is_cancelled() {
                 break;
@@ -468,12 +605,23 @@ pub(super) async fn find_files(input: &Value, context: &ToolContext) -> Result<T
         found.sort_by_key(|path| path.to_lowercase());
         (found, truncated)
     });
-    let (found, truncated) = task.await.map_err(|error| ToolOutput::error(format!("Finding files failed: {error}")))?;
-    let mut content = if found.is_empty() { format!("No file below {shown} matches `{glob}`.") } else { found.join("\n") };
+    let (found, truncated) = task
+        .await
+        .map_err(|error| ToolOutput::error(format!("Finding files failed: {error}")))?;
+    let mut content = if found.is_empty() {
+        format!("No file below {shown} matches `{glob}`.")
+    } else {
+        found.join("\n")
+    };
     if truncated {
-        content.push_str(&format!("\n[stopped at {FIND_RESULTS} files; narrow the glob or the path]"));
+        content.push_str(&format!(
+            "\n[stopped at {FIND_RESULTS} files; narrow the glob or the path]"
+        ));
     }
-    Ok(ToolOutput::ok(content, json!({ "path": shown, "glob": glob, "entries": found.len(), "truncated": truncated })))
+    Ok(ToolOutput::ok(
+        content,
+        json!({ "path": shown, "glob": glob, "entries": found.len(), "truncated": truncated }),
+    ))
 }
 
 pub(crate) struct LineDiff {
@@ -496,13 +644,26 @@ struct ChangeSpan {
 
 /// Myers shortest-edit-script line diff on `old` vs `new`, capped at `max_d` edits.
 /// Returns `None` when more than `max_d` line edits separate the two slices.
-fn myers_spans(old: &[&str], new: &[&str], offset_old: usize, offset_new: usize, max_d: usize) -> Option<Vec<ChangeSpan>> {
+fn myers_spans(
+    old: &[&str],
+    new: &[&str],
+    offset_old: usize,
+    offset_new: usize,
+    max_d: usize,
+) -> Option<Vec<ChangeSpan>> {
     let (n, m) = (old.len(), new.len());
     if n == 0 && m == 0 {
         return Some(Vec::new());
     }
     if n == 0 || m == 0 {
-        return (n + m <= max_d).then(|| vec![ChangeSpan { old_start: offset_old, old_end: offset_old + n, new_start: offset_new, new_end: offset_new + m }]);
+        return (n + m <= max_d).then(|| {
+            vec![ChangeSpan {
+                old_start: offset_old,
+                old_end: offset_old + n,
+                new_start: offset_new,
+                new_end: offset_new + m,
+            }]
+        });
     }
     let shift = max_d as isize;
     let mut v = vec![0usize; 2 * max_d + 1];
@@ -514,7 +675,11 @@ fn myers_spans(old: &[&str], new: &[&str], offset_old: usize, offset_new: usize,
         let mut k = -d_isize;
         while k <= d_isize {
             let down = k == -d_isize || (k != d_isize && v[(k - 1 + shift) as usize] < v[(k + 1 + shift) as usize]);
-            let mut x = if down { v[(k + 1 + shift) as usize] } else { v[(k - 1 + shift) as usize] + 1 };
+            let mut x = if down {
+                v[(k + 1 + shift) as usize]
+            } else {
+                v[(k - 1 + shift) as usize] + 1
+            };
             let mut y = (x as isize - k) as usize;
             while x < n && y < m && old[x] == new[y] {
                 x += 1;
@@ -543,7 +708,12 @@ fn myers_spans(old: &[&str], new: &[&str], offset_old: usize, offset_new: usize,
         let prev = &trace[d];
         let k = x as isize - y as isize;
         let d_isize = d as isize;
-        let prev_k = if k == -d_isize || (k != d_isize && prev[(k - 1 + shift) as usize] < prev[(k + 1 + shift) as usize]) { k + 1 } else { k - 1 };
+        let prev_k =
+            if k == -d_isize || (k != d_isize && prev[(k - 1 + shift) as usize] < prev[(k + 1 + shift) as usize]) {
+                k + 1
+            } else {
+                k - 1
+            };
         let prev_x = prev[(prev_k + shift) as usize];
         let prev_y = (prev_x as isize - prev_k) as usize;
         while x > prev_x && y > prev_y {
@@ -586,7 +756,12 @@ fn myers_spans(old: &[&str], new: &[&str], offset_old: usize, offset_new: usize,
             }
             at += 1;
         }
-        spans.push(ChangeSpan { old_start, old_end: oi, new_start, new_end: ni });
+        spans.push(ChangeSpan {
+            old_start,
+            old_end: oi,
+            new_start,
+            new_end: ni,
+        });
     }
     Some(spans)
 }
@@ -597,16 +772,31 @@ pub(crate) fn line_diff(before: &str, after: &str) -> LineDiff {
     let old: Vec<&str> = before.lines().collect();
     let new: Vec<&str> = after.lines().collect();
     let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-    let suffix = old[prefix..].iter().rev().zip(new[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
     let old_mid = &old[prefix..old.len() - suffix];
     let new_mid = &new[prefix..new.len() - suffix];
     let Some(spans) = myers_spans(old_mid, new_mid, prefix, prefix, DIFF_LINES) else {
-        return LineDiff { added: new_mid.len(), removed: old_mid.len(), hunk: Value::Null, hunks: Vec::new() };
+        return LineDiff {
+            added: new_mid.len(),
+            removed: old_mid.len(),
+            hunk: Value::Null,
+            hunks: Vec::new(),
+        };
     };
     let removed: usize = spans.iter().map(|span| span.old_end - span.old_start).sum();
     let added: usize = spans.iter().map(|span| span.new_end - span.new_start).sum();
     if spans.is_empty() || removed + added > DIFF_LINES {
-        return LineDiff { added, removed, hunk: Value::Null, hunks: Vec::new() };
+        return LineDiff {
+            added,
+            removed,
+            hunk: Value::Null,
+            hunks: Vec::new(),
+        };
     }
     // Group spans whose 2-line context windows touch or overlap into one hunk.
     let mut groups: Vec<Vec<ChangeSpan>> = Vec::new();
@@ -625,7 +815,10 @@ pub(crate) fn line_diff(before: &str, after: &str) -> LineDiff {
         let ctx_after = (last.old_end + 2).min(old.len());
         let old_start = ctx_before + 1;
         let new_start = first.new_start - (first.old_start - ctx_before) + 1;
-        let mut lines: Vec<Value> = old[ctx_before..first.old_start].iter().map(|text| line(" ", text)).collect();
+        let mut lines: Vec<Value> = old[ctx_before..first.old_start]
+            .iter()
+            .map(|text| line(" ", text))
+            .collect();
         for (at, span) in group.iter().enumerate() {
             if at > 0 {
                 let prev = group[at - 1];
@@ -639,7 +832,12 @@ pub(crate) fn line_diff(before: &str, after: &str) -> LineDiff {
     }
     let hunk = built.first().cloned().unwrap_or(Value::Null);
     let hunks = if built.len() > 1 { built } else { Vec::new() };
-    LineDiff { added, removed, hunk, hunks }
+    LineDiff {
+        added,
+        removed,
+        hunk,
+        hunks,
+    }
 }
 
 const SEARCH_CONTEXT_LIMIT: usize = 10;
@@ -648,7 +846,10 @@ pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolO
     let pattern = string_arg(input, "pattern")?.to_string();
     let case_insensitive = input["case_insensitive"].as_bool().unwrap_or(false);
     let files_only = input["files_only"].as_bool().unwrap_or(false);
-    let context_lines = input["context"].as_u64().map(|lines| (lines as usize).min(SEARCH_CONTEXT_LIMIT)).unwrap_or(0);
+    let context_lines = input["context"]
+        .as_u64()
+        .map(|lines| (lines as usize).min(SEARCH_CONTEXT_LIMIT))
+        .unwrap_or(0);
     let regex = regex::RegexBuilder::new(&pattern)
         .case_insensitive(case_insensitive)
         .build()
@@ -658,7 +859,10 @@ pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolO
         None => context.workspace.clone(),
     };
     if !root.exists() {
-        return Err(ToolOutput::error(format!("{} does not exist.", display(&context.workspace, &root))));
+        return Err(ToolOutput::error(format!(
+            "{} does not exist.",
+            display(&context.workspace, &root)
+        )));
     }
     let glob = match input["glob"].as_str() {
         Some(glob) => Some(
@@ -679,7 +883,10 @@ pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolO
         let mut chars = 0usize;
         let mut truncated = false;
         // Include dot files (such as `.github/workflows/ci.yml`), as `find_files` does, while skipping Git's own directory.
-        let walk = ignore::WalkBuilder::new(&root).hidden(false).filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git").build();
+        let walk = ignore::WalkBuilder::new(&root)
+            .hidden(false)
+            .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git")
+            .build();
         'walk: for entry in walk.filter_map(Result::ok) {
             if cancel.is_cancelled() {
                 break;
@@ -692,11 +899,17 @@ pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolO
             if glob.as_ref().is_some_and(|glob| !glob.is_match(&shown)) {
                 continue;
             }
-            if entry.metadata().map(|metadata| metadata.len() > SEARCH_FILE_BYTES).unwrap_or(true) {
+            if entry
+                .metadata()
+                .map(|metadata| metadata.len() > SEARCH_FILE_BYTES)
+                .unwrap_or(true)
+            {
                 continue;
             }
             // Files that are not UTF-8 text are skipped: they are binaries or use an encoding the model cannot read.
-            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
             if files_only {
                 if text.lines().any(|line| regex.is_match(line)) {
                     if output.len() == FIND_RESULTS {
@@ -781,15 +994,27 @@ pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolO
         }
         (output, match_count, files, truncated)
     });
-    let (output, match_count, files, truncated) = task.await.map_err(|error| ToolOutput::error(format!("Search failed: {error}")))?;
-    let mut content = if output.is_empty() { format!("No matches for `{pattern}`.") } else { output.join("\n") };
+    let (output, match_count, files, truncated) = task
+        .await
+        .map_err(|error| ToolOutput::error(format!("Search failed: {error}")))?;
+    let mut content = if output.is_empty() {
+        format!("No matches for `{pattern}`.")
+    } else {
+        output.join("\n")
+    };
     if truncated {
         if files_only {
-            content.push_str(&format!("\n[stopped at {FIND_RESULTS} files; narrow the pattern, path, or glob]"));
+            content.push_str(&format!(
+                "\n[stopped at {FIND_RESULTS} files; narrow the pattern, path, or glob]"
+            ));
         } else if match_count >= SEARCH_RESULTS {
-            content.push_str(&format!("\n[stopped at {SEARCH_RESULTS} matches; narrow the pattern, path, or glob]"));
+            content.push_str(&format!(
+                "\n[stopped at {SEARCH_RESULTS} matches; narrow the pattern, path, or glob]"
+            ));
         } else {
-            content.push_str(&format!("\n[stopped at {READ_OUTPUT_CHARS} characters; narrow the pattern, path, or glob]"));
+            content.push_str(&format!(
+                "\n[stopped at {READ_OUTPUT_CHARS} characters; narrow the pattern, path, or glob]"
+            ));
         }
     }
     let meta = if files_only {
@@ -897,7 +1122,9 @@ pub(super) async fn batch_inspect(input: &Value, context: &ToolContext) -> Resul
             if remaining > header.chars().count() + 60 {
                 let take = remaining - header.chars().count() - 48;
                 let partial: String = body.chars().take(take).collect();
-                sections.push(format!("{header}\n{partial}\n[... batch digest stopped at {max_total} total characters ...]"));
+                sections.push(format!(
+                    "{header}\n{partial}\n[... batch digest stopped at {max_total} total characters ...]"
+                ));
             } else {
                 sections.push(format!(
                     "[... batch digest stopped at {max_total} characters; {} remaining quer{} omitted ...]",
@@ -918,7 +1145,12 @@ pub(super) async fn batch_inspect(input: &Value, context: &ToolContext) -> Resul
         "truncated": any_truncated,
     });
     if errors == total {
-        Err(ToolOutput { content, is_error: true, meta, images: Vec::new() })
+        Err(ToolOutput {
+            content,
+            is_error: true,
+            meta,
+            images: Vec::new(),
+        })
     } else {
         Ok(ToolOutput::ok(content, meta))
     }
@@ -958,7 +1190,8 @@ mod size_gate_tests {
         assert!(t0.elapsed() < std::time::Duration::from_millis(200));
         assert!(err.is_error);
         assert!(
-            err.content.contains(&format!("over the {}-byte limit", crate::documents::DOCUMENT_BYTES)),
+            err.content
+                .contains(&format!("over the {}-byte limit", crate::documents::DOCUMENT_BYTES)),
             "{}",
             err.content
         );

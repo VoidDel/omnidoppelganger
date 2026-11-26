@@ -65,7 +65,12 @@ pub fn build_handoff_brief(events: &[crate::events::Envelope], current_turn: u64
                     exchanges.push(("助手", clip_text(&text, 600)));
                 }
             }
-            Event::ToolResult { tool, is_error: false, meta, .. } if crate::tools::edits_files(tool) => {
+            Event::ToolResult {
+                tool,
+                is_error: false,
+                meta,
+                ..
+            } if crate::tools::edits_files(tool) => {
                 if let Some(path) = meta["path"].as_str().filter(|p| !p.is_empty())
                     && !edited_files.iter().any(|existing| existing == path)
                 {
@@ -80,7 +85,9 @@ pub fn build_handoff_brief(events: &[crate::events::Envelope], current_turn: u64
         return None;
     }
 
-    let mut out = String::from("[会话交接上下文 / Cross-Engine Handoff]\n你正在接手同一个会话的后续任务。以下是此前由其他模型/引擎完成的对话与文件改动摘要，请在此基础上无缝继续：\n");
+    let mut out = String::from(
+        "[会话交接上下文 / Cross-Engine Handoff]\n你正在接手同一个会话的后续任务。以下是此前由其他模型/引擎完成的对话与文件改动摘要，请在此基础上无缝继续：\n",
+    );
     if let Some(summary) = latest_summary {
         out.push_str("\n前情摘要：\n");
         out.push_str(&summary);
@@ -144,7 +151,9 @@ pub fn build_skills_brief(skill_roots: &[PathBuf], user_text: &str, include_cata
     }
 
     if include_catalog {
-        let mut cat = String::from("[可用 odg 秘籍 / Skills]\n若任务匹配以下专项秘籍，请先读取对应的 SKILL.md 并按其中规范执行：\n");
+        let mut cat = String::from(
+            "[可用 odg 秘籍 / Skills]\n若任务匹配以下专项秘籍，请先读取对应的 SKILL.md 并按其中规范执行：\n",
+        );
         for skill in &skills {
             let md = skill.directory.join("SKILL.md");
             cat.push_str(&format!("- {}: {} ({})\n", skill.name, skill.description, md.display()));
@@ -152,7 +161,11 @@ pub fn build_skills_brief(skill_roots: &[PathBuf], user_text: &str, include_cata
         sections.push(cat);
     }
 
-    if sections.is_empty() { None } else { Some(sections.join("\n\n")) }
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
 }
 
 /// Build the prompt string passed to an external CLI, prepending any side-conversation briefing,
@@ -192,7 +205,8 @@ pub fn build_prompt(
         }
     }
     if !image_paths.is_empty() {
-        let mut list = String::from("Attached images (local files; please read/inspect them directly before answering):");
+        let mut list =
+            String::from("Attached images (local files; please read/inspect them directly before answering):");
         for path in image_paths {
             list.push_str("\n- ");
             list.push_str(&path.to_string_lossy());
@@ -228,7 +242,13 @@ pub(super) fn materialize_cli_images_in(
     turn: u64,
 ) -> Result<(Vec<PathBuf>, TempImagesGuard), String> {
     if images.is_empty() {
-        return Ok((Vec::new(), TempImagesGuard { files: Vec::new(), dir: None }));
+        return Ok((
+            Vec::new(),
+            TempImagesGuard {
+                files: Vec::new(),
+                dir: None,
+            },
+        ));
     }
     let dir = crate::fsutil::create_private_subdir_in(base_home, "images")
         .map_err(|error| format!("无法创建私有临时图片目录：{error}"))?;
@@ -244,7 +264,8 @@ pub(super) fn materialize_cli_images_in(
             "image/webp" => "webp",
             _ => "bin",
         };
-        let bytes = crate::imagegen::unbase64(&image.data).ok_or_else(|| "无法解码附带图片的 base64 数据".to_string())?;
+        let bytes =
+            crate::imagegen::unbase64(&image.data).ok_or_else(|| "无法解码附带图片的 base64 数据".to_string())?;
         let path = dir.join(format!("image-{turn}-{idx}.{ext}"));
         crate::fsutil::write_private_atomically(&path, &bytes)
             .map_err(|error| format!("无法写入临时图片文件：{error}"))?;
@@ -276,11 +297,17 @@ impl TempPromptGuard {
     }
 
     pub(super) fn file_only(file: PathBuf) -> Self {
-        Self { file: Some(file), dir: None }
+        Self {
+            file: Some(file),
+            dir: None,
+        }
     }
 
     pub(super) fn with_subdir(file: PathBuf, dir: PathBuf) -> Self {
-        Self { file: Some(file), dir: Some(dir) }
+        Self {
+            file: Some(file),
+            dir: Some(dir),
+        }
     }
 }
 

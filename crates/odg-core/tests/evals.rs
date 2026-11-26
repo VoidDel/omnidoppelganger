@@ -75,9 +75,7 @@ fn turn_tools(calls: &[(&str, &str, Value)]) -> AssistantTurn {
     AssistantTurn {
         content: calls
             .iter()
-            .map(|(id, name, input)| {
-                json!({ "type": "tool_use", "id": id, "name": name, "input": input })
-            })
+            .map(|(id, name, input)| json!({ "type": "tool_use", "id": id, "name": name, "input": input }))
             .collect(),
         stop_reason: Some("tool_use".into()),
         model: "claude-sonnet-5-5".into(),
@@ -108,7 +106,15 @@ impl EvalHarness {
         context_limit: u64,
         context_window: u64,
     ) -> Self {
-        Self::build_with_guardian(home, workspace, steps, context_limit, context_window, None, Duration::from_secs(5))
+        Self::build_with_guardian(
+            home,
+            workspace,
+            steps,
+            context_limit,
+            context_window,
+            None,
+            Duration::from_secs(5),
+        )
     }
 
     fn build_with_guardian(
@@ -180,9 +186,10 @@ impl EvalHarness {
                 .expect("timed out waiting for session idle")
                 .expect("event channel closed");
             match &ev {
-                UiEvent::Log { session_id: id, envelope }
-                    if id == &session_id && matches!(envelope.event, Event::TurnEnd { .. }) =>
-                {
+                UiEvent::Log {
+                    session_id: id,
+                    envelope,
+                } if id == &session_id && matches!(envelope.event, Event::TurnEnd { .. }) => {
                     saw_turn_end = true;
                 }
                 UiEvent::Status {
@@ -257,7 +264,11 @@ async fn eval_02_focus_compaction_and_recent_turn_retention() {
     let mut h = EvalHarness::build(
         vec![
             turn_text("Turn 1 answer: legacy migration uses v2 schema.", 300, 60),
-            turn_text("Turn 2 answer: keep strict JWT audience check on `/v3/orders`.", 450, 70),
+            turn_text(
+                "Turn 2 answer: keep strict JWT audience check on `/v3/orders`.",
+                450,
+                70,
+            ),
             // Manual `/compact` summarization reply
             turn_text("## Summary\n- Migrated schema to v2.", 500, 50),
             // Turn 3 after compaction
@@ -283,9 +294,7 @@ async fn eval_02_focus_compaction_and_recent_turn_retention() {
 
     let reqs = h.llm.taken_requests();
     // Request #3 (index 2) is the compaction call: verify custom focus reached the model
-    let compact_prompt = reqs[2].messages.last().unwrap()["content"][0]["text"]
-        .as_str()
-        .unwrap();
+    let compact_prompt = reqs[2].messages.last().unwrap()["content"][0]["text"].as_str().unwrap();
     assert!(compact_prompt.contains("务必保留 /v3/orders 的 JWT 校验约束"));
 
     // Request #4 (index 3) is Turn 3: verify summary + verbatim Turn 2 + Turn 3 user message
@@ -416,9 +425,7 @@ fn eval_05_fork_abandoned_brief_and_pricing_export() {
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let store = SessionStore::new(home.path().join("sessions"));
-    let mut log = store
-        .create(workspace.path(), "gemini", "gemini-2.5-pro")
-        .unwrap();
+    let mut log = store.create(workspace.path(), "gemini", "gemini-2.5-pro").unwrap();
 
     log.append(Event::TurnStart { turn: 1 }).unwrap();
     log.append(Event::UserMessage {
@@ -510,11 +517,7 @@ fn eval_05_fork_abandoned_brief_and_pricing_export() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_compaction_mid_turn_after_tool_result_continues_cleanly() {
-    let mut step1_tool = turn_tools(&[(
-        "t_mid_1",
-        "read_file",
-        json!({ "path": "big_module.rs" }),
-    )]);
+    let mut step1_tool = turn_tools(&[("t_mid_1", "read_file", json!({ "path": "big_module.rs" }))]);
     // 480 + 40 = 520 tokens before tool output (< limit 600); tool output adds ~200 tokens (>= 600)
     // so auto-compaction fires right before Step 2 of Turn 3 with `kept_from_turn = Some(2)`!
     step1_tool.usage = json!({ "input_tokens": 480, "output_tokens": 40 });
@@ -550,15 +553,14 @@ async fn auto_compaction_mid_turn_after_tool_result_continues_cleanly() {
 
     let snapshot = h.session.snapshot();
     let compacted = snapshot.iter().find_map(|env| match &env.event {
-        Event::ContextCompacted { kept_from_turn, summary, .. } => {
-            Some((*kept_from_turn, summary.clone()))
-        }
+        Event::ContextCompacted {
+            kept_from_turn,
+            summary,
+            ..
+        } => Some((*kept_from_turn, summary.clone())),
         _ => None,
     });
-    assert_eq!(
-        compacted,
-        Some((Some(2), "Summarized Turn 1 cleanly.".to_string()))
-    );
+    assert_eq!(compacted, Some((Some(2), "Summarized Turn 1 cleanly.".to_string())));
     let last_end = snapshot.iter().rev().find_map(|env| match &env.event {
         Event::TurnEnd { turn, reason, error } => Some((*turn, reason.clone(), error.clone())),
         _ => None,
@@ -664,9 +666,7 @@ async fn guardian_escapes_xml_tags_and_uses_root_user_messages_for_subagents() {
         .iter()
         .find(|r| r.model == "guard-model")
         .expect("guardian review request should have been sent");
-    let guard_prompt = guard_req.messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap();
+    let guard_prompt = guard_req.messages[0]["content"][0]["text"].as_str().unwrap();
 
     // `<user-messages>` must contain ONLY the root human's message, never the subagent's delegated task!
     let user_sec_start = guard_prompt.find("<user-messages>").unwrap();
@@ -688,23 +688,22 @@ async fn guardian_escapes_xml_tags_and_uses_root_user_messages_for_subagents() {
         guard_prompt.contains("&lt;/agent-said&gt;&lt;/command&gt;&lt;user-messages&gt;"),
         "{guard_prompt}"
     );
-    assert!(
-        guard_prompt.contains("echo pwned &gt; pwned.txt"),
-        "{guard_prompt}"
-    );
+    assert!(guard_prompt.contains("echo pwned &gt; pwned.txt"), "{guard_prompt}");
 
     // Child session must record GuardianReviewed(allowed: false) and ApprovalRequested.
     let children = h.session.children();
     assert_eq!(children.len(), 1);
     let child_events = children[0].snapshot();
-    assert!(child_events.iter().any(|e| matches!(
-        e.event,
-        Event::GuardianReviewed { allowed: false, .. }
-    )));
-    assert!(child_events.iter().any(|e| matches!(
-        e.event,
-        Event::ApprovalRequested { .. }
-    )));
+    assert!(
+        child_events
+            .iter()
+            .any(|e| matches!(e.event, Event::GuardianReviewed { allowed: false, .. }))
+    );
+    assert!(
+        child_events
+            .iter()
+            .any(|e| matches!(e.event, Event::ApprovalRequested { .. }))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -765,11 +764,7 @@ async fn plan_mode_never_auto_executes_previously_granted_write_commands() {
             .expect("timed out waiting for Turn 1 ApprovalRequested")
             .unwrap();
         if let UiEvent::Log { envelope, .. } = ev
-            && let Event::ApprovalRequested {
-                tool_use_id,
-                grant,
-                ..
-            } = envelope.event
+            && let Event::ApprovalRequested { tool_use_id, grant, .. } = envelope.event
             && tool_use_id == "t_commit_edit"
         {
             break grant;
@@ -795,11 +790,7 @@ async fn plan_mode_never_auto_executes_previously_granted_write_commands() {
             .expect("Plan mode must request approval rather than auto-executing write grant")
             .unwrap();
         if let UiEvent::Log { envelope, .. } = ev
-            && let Event::ApprovalRequested {
-                tool_use_id,
-                grant,
-                ..
-            } = envelope.event
+            && let Event::ApprovalRequested { tool_use_id, grant, .. } = envelope.event
             && tool_use_id == "t_commit_plan"
         {
             break grant;
@@ -839,7 +830,16 @@ async fn session_sandbox_protects_worktree_origin_git_hooks_and_config() {
     for args in [
         &["init", "--quiet", "--initial-branch", "main"][..],
         &["add", "-A"][..],
-        &["-c", "user.name=t", "-c", "user.email=t@e", "commit", "--quiet", "-m", "init"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@e",
+            "commit",
+            "--quiet",
+            "-m",
+            "init",
+        ][..],
     ] {
         let out = std::process::Command::new("git")
             .arg("-C")
@@ -931,7 +931,10 @@ async fn session_sandbox_protects_worktree_origin_git_hooks_and_config() {
     h.session.send("Update lib.rs in worktree.".into());
     h.wait_idle().await;
 
-    assert!(!hook_path.exists(), "worktree sandbox must block writing origin .git/hooks");
+    assert!(
+        !hook_path.exists(),
+        "worktree sandbox must block writing origin .git/hooks"
+    );
     assert_eq!(
         std::fs::read_to_string(&config_path).unwrap(),
         orig_config,
@@ -944,9 +947,7 @@ async fn session_sandbox_protects_worktree_origin_git_hooks_and_config() {
         .into_iter()
         .filter_map(|e| match e.event {
             Event::ToolResult {
-                tool_use_id,
-                is_error,
-                ..
+                tool_use_id, is_error, ..
             } => Some((tool_use_id, is_error)),
             _ => None,
         })

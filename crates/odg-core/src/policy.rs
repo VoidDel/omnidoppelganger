@@ -79,7 +79,11 @@ fn command_detail(command: &str, input: &Value, workspace: &Path) -> String {
             } else {
                 display(workspace, &dir)
             };
-            if shown.is_empty() { command.to_string() } else { format!("[in {shown}]\n{command}") }
+            if shown.is_empty() {
+                command.to_string()
+            } else {
+                format!("[in {shown}]\n{command}")
+            }
         }
         None => command.to_string(),
     }
@@ -97,7 +101,11 @@ pub fn check_in(mode: Mode, tool: &str, input: &Value, workspace: &Path, sandbox
     }
     if sandboxed && tool == "run_command" && input["unsandboxed"] == true {
         let command = input["command"].as_str().unwrap_or_default();
-        return Verdict::Ask { reason: "unsandboxed", detail: command_detail(command, input, workspace), grant: None };
+        return Verdict::Ask {
+            reason: "unsandboxed",
+            detail: command_detail(command, input, workspace),
+            grant: None,
+        };
     }
     check(mode, tool, input, workspace)
 }
@@ -110,8 +118,16 @@ pub fn check_in(mode: Mode, tool: &str, input: &Value, workspace: &Path, sandbox
 fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
     let detail = match tool {
         "install_skill" => {
-            let path = input["path"].as_str().filter(|path| !path.is_empty()).map(|path| format!("  ({path})")).unwrap_or_default();
-            let into = if input["scope"] == "user" { "~/.odg/skills" } else { ".odg/skills" };
+            let path = input["path"]
+                .as_str()
+                .filter(|path| !path.is_empty())
+                .map(|path| format!("  ({path})"))
+                .unwrap_or_default();
+            let into = if input["scope"] == "user" {
+                "~/.odg/skills"
+            } else {
+                ".odg/skills"
+            };
             format!("{}{path}\n→ {into}", input["source"].as_str().unwrap_or_default())
         }
         // Only a server the app can download is installed by it; for the others the tool only says how.
@@ -119,10 +135,16 @@ fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
             let language = crate::lsp::language_by_key(input["language"].as_str().unwrap_or_default())?;
             let download = language.download?;
             let megabytes = download.megabytes()?;
-            format!("下载 {} {}（约 {megabytes} MB，只下载一次）\n→ ~/.odg/lsp", download.name, download.version)
+            format!(
+                "下载 {} {}（约 {megabytes} MB，只下载一次）\n→ ~/.odg/lsp",
+                download.name, download.version
+            )
         }
         "document_runtime" if input["install"] == true => {
-            let modules: Vec<&str> = crate::runtime::MODULES.iter().map(|(_, what)| what.split(':').next().unwrap_or(what)).collect();
+            let modules: Vec<&str> = crate::runtime::MODULES
+                .iter()
+                .map(|(_, what)| what.split(':').next().unwrap_or(what))
+                .collect();
             format!(
                 "下载 Python {} 及 {}（约 {} MB，只下载一次）\n→ ~/.odg/runtime",
                 crate::runtime::PYTHON_VERSION,
@@ -131,15 +153,20 @@ fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
             )
         }
         "add_mcp_server" => {
-            let entry: serde_json::Map<String, Value> =
-                ["command", "args", "env", "url", "headers"].iter().filter(|field| !input[**field].is_null()).map(|field| (field.to_string(), input[*field].clone())).collect();
+            let entry: serde_json::Map<String, Value> = ["command", "args", "env", "url", "headers"]
+                .iter()
+                .filter(|field| !input[**field].is_null())
+                .map(|field| (field.to_string(), input[*field].clone()))
+                .collect();
             let name = input["name"].as_str().unwrap_or_default();
             serde_json::to_string_pretty(&serde_json::json!({ name: entry })).unwrap_or_default()
         }
         _ => return None,
     };
     if mode == Mode::Plan {
-        return Some(Verdict::Refuse("Nothing is installed in plan mode. Put the installation in the plan, for the user to carry out."));
+        return Some(Verdict::Refuse(
+            "Nothing is installed in plan mode. Put the installation in the plan, for the user to carry out.",
+        ));
     }
     let reason = match tool {
         "install_skill" => "install_skill",
@@ -147,7 +174,11 @@ fn installing(mode: Mode, tool: &str, input: &Value) -> Option<Verdict> {
         "language_server" => "install_lsp",
         _ => "add_mcp_server",
     };
-    Some(Verdict::Ask { reason, detail, grant: None })
+    Some(Verdict::Ask {
+        reason,
+        detail,
+        grant: None,
+    })
 }
 
 pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict {
@@ -162,7 +193,11 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
         let path = path(name);
         (!inside_workspace(workspace, &path)).then(|| path.to_string_lossy().into_owned())
     };
-    let ask = |reason: &'static str, detail: String| Verdict::Ask { reason, detail, grant: Some(reason.to_string()) };
+    let ask = |reason: &'static str, detail: String| Verdict::Ask {
+        reason,
+        detail,
+        grant: Some(reason.to_string()),
+    };
     match tool {
         "run_command" => {
             let command = input["command"].as_str().unwrap_or_default();
@@ -170,25 +205,52 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             if let Some(dir) = command_cwd(input, workspace)
                 && (!inside_workspace(workspace, &dir) || in_git_directory(workspace, &dir))
             {
-                return Verdict::Ask { reason: "outside_command", detail, grant: None };
+                return Verdict::Ask {
+                    reason: "outside_command",
+                    detail,
+                    grant: None,
+                };
             }
             if mode == Mode::Auto && safety::check(command, Dialect::of_this_machine(), workspace).is_ok() {
                 return Verdict::Allow;
             }
             if mode == Mode::Plan && safety::check_read_only(command, Dialect::of_this_machine(), workspace).is_err() {
-                return Verdict::Ask { reason: "command", detail, grant: None };
+                return Verdict::Ask {
+                    reason: "command",
+                    detail,
+                    grant: None,
+                };
             }
             // In auto mode only what the check does not pass needs approving, and so a standing grant.
-            let grant = safety::grants_needed(command, Dialect::of_this_machine(), workspace, mode == Mode::Auto).ok().filter(|grants| !grants.is_empty()).map(|grants| grants.join("\n"));
-            Verdict::Ask { reason: "command", detail, grant }
+            let grant = safety::grants_needed(command, Dialect::of_this_machine(), workspace, mode == Mode::Auto)
+                .ok()
+                .filter(|grants| !grants.is_empty())
+                .map(|grants| grants.join("\n"));
+            Verdict::Ask {
+                reason: "command",
+                detail,
+                grant,
+            }
         }
         tool if edits_files(tool) && mode == Mode::Plan => Verdict::Refuse(PLAN_REFUSAL),
         // An edit is judged by every file it changes: a move by where the file is and where it goes.
         tool if edits_files(tool) => {
-            let touched: Vec<PathBuf> = if tool == "move_file" { vec![path("path"), path("to")] } else { vec![path("path")] };
-            let detail = touched.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" → ");
+            let touched: Vec<PathBuf> = if tool == "move_file" {
+                vec![path("path"), path("to")]
+            } else {
+                vec![path("path")]
+            };
+            let detail = touched
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" → ");
             if touched.iter().any(|path| in_git_directory(workspace, path)) {
-                Verdict::Ask { reason: "git_write", detail, grant: None }
+                Verdict::Ask {
+                    reason: "git_write",
+                    detail,
+                    grant: None,
+                }
             } else if touched.iter().any(|path| !inside_workspace(workspace, path)) {
                 ask("outside_write", detail)
             } else if mode == Mode::Manual {
@@ -225,46 +287,78 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
         // Only where that server is on the `PATH`: the one downloaded in its place runs nothing of the project.
         "code_nav" => match (outside("path"), crate::lsp::language_for(&path("path"))) {
             (Some(path), _) => ask("outside_read", path),
-            (None, Some(language)) if language.runs_project_code && crate::lsp::installed(language.program).is_some() => Verdict::Ask {
-                reason: "lsp",
-                detail: format!("{} ({})", language.program, workspace.display()),
-                grant: Some(format!("lsp:{}", language.program)),
-            },
+            (None, Some(language))
+                if language.runs_project_code && crate::lsp::installed(language.program).is_some() =>
+            {
+                Verdict::Ask {
+                    reason: "lsp",
+                    detail: format!("{} ({})", language.program, workspace.display()),
+                    grant: Some(format!("lsp:{}", language.program)),
+                }
+            }
             (None, _) => Verdict::Allow,
         },
         // What is typed into a running program can make it do anything it does: each input is asked about, and
         // allowing it for the session covers that one job.
-        "command_input" => Verdict::Ask { reason: "input", detail: typed(input), grant: Some(format!("input:{}", input["job"].as_str().unwrap_or_default())) },
-        "web_search" => Verdict::Ask { reason: "search", detail: input["query"].as_str().unwrap_or_default().to_string(), grant: Some("search".to_string()) },
+        "command_input" => Verdict::Ask {
+            reason: "input",
+            detail: typed(input),
+            grant: Some(format!("input:{}", input["job"].as_str().unwrap_or_default())),
+        },
+        "web_search" => Verdict::Ask {
+            reason: "search",
+            detail: input["query"].as_str().unwrap_or_default().to_string(),
+            grant: Some("search".to_string()),
+        },
         // A picture writes a file and is paid for: what it shows, and where it goes, are put to the user.
-        "generate_image" if mode == Mode::Plan => Verdict::Refuse("Nothing is painted in plan mode: a picture writes a file and is paid for. Put it in the plan."),
-        "generate_image" if in_git_directory(workspace, &path("path")) => {
-            Verdict::Refuse("Pictures cannot be saved inside a .git directory. Choose a path elsewhere in the workspace.")
-        }
+        "generate_image" if mode == Mode::Plan => Verdict::Refuse(
+            "Nothing is painted in plan mode: a picture writes a file and is paid for. Put it in the plan.",
+        ),
+        "generate_image" if in_git_directory(workspace, &path("path")) => Verdict::Refuse(
+            "Pictures cannot be saved inside a .git directory. Choose a path elsewhere in the workspace.",
+        ),
         "generate_image" => Verdict::Ask {
             reason: "image",
-            detail: format!("{}\n→ {}", input["prompt"].as_str().unwrap_or_default().trim(), path("path").to_string_lossy()),
+            detail: format!(
+                "{}\n→ {}",
+                input["prompt"].as_str().unwrap_or_default().trim(),
+                path("path").to_string_lossy()
+            ),
             grant: Some("image".to_string()),
         },
         "fetch_url" => {
             let url = input["url"].as_str().unwrap_or_default();
             match crate::web::host(url) {
                 // The grant is the site, so its other pages do not ask again.
-                Some(host) => Verdict::Ask { reason: "web", detail: url.to_string(), grant: Some(format!("web:{host}")) },
-                None => Verdict::Refuse("Only valid http:// or https:// addresses without credentials or backslashes can be fetched."),
+                Some(host) => Verdict::Ask {
+                    reason: "web",
+                    detail: url.to_string(),
+                    grant: Some(format!("web:{host}")),
+                },
+                None => Verdict::Refuse(
+                    "Only valid http:// or https:// addresses without credentials or backslashes can be fetched.",
+                ),
             }
         }
         // Reading a server's resource sends the address to it, which may be on another machine: asked about, as
         // a call is, and allowed for that server for good if the user says so.
         "read_mcp_resource" => {
             let server = input["server"].as_str().unwrap_or_default();
-            Verdict::Ask { reason: "mcp_resource", detail: format!("{server} · {}", input["uri"].as_str().unwrap_or_default()), grant: Some(format!("mcp-resource:{server}")) }
+            Verdict::Ask {
+                reason: "mcp_resource",
+                detail: format!("{server} · {}", input["uri"].as_str().unwrap_or_default()),
+                grant: Some(format!("mcp-resource:{server}")),
+            }
         }
         tool if crate::mcp::split_name(tool).is_some() => {
             let (server, name) = crate::mcp::split_name(tool).unwrap_or_default();
             // What the user is shown: whose tool, which one, and with what, cut to a readable length.
             let arguments: String = input.to_string().chars().take(600).collect();
-            Verdict::Ask { reason: "mcp", detail: format!("{server} · {name}  {arguments}"), grant: Some(format!("mcp:{tool}")) }
+            Verdict::Ask {
+                reason: "mcp",
+                detail: format!("{server} · {name}  {arguments}"),
+                grant: Some(format!("mcp:{tool}")),
+            }
         }
         // Unknown tools reach the executor, which answers them with an error result.
         _ => Verdict::Allow,
@@ -274,7 +368,11 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
 /// What `command_input` types, as the user is shown it: the text, and whether its input is then closed.
 pub fn typed(input: &Value) -> String {
     let text = input["text"].as_str().unwrap_or_default();
-    let close = if input["close"] == true { "（然后结束输入）" } else { "" };
+    let close = if input["close"] == true {
+        "（然后结束输入）"
+    } else {
+        ""
+    };
     format!("← {}{close}", if text.is_empty() { "（不输入文字）" } else { text })
 }
 
@@ -283,7 +381,10 @@ pub fn typed(input: &Value) -> String {
 /// [`safety::grants_needed`]; [`check`] gives the same, as the grant of the request it makes.
 #[cfg(test)]
 fn command_grant(command: &str, workspace: &Path) -> Option<String> {
-    safety::grants_needed(command, Dialect::of_this_machine(), workspace, false).ok().filter(|grants| !grants.is_empty()).map(|grants| grants.join("\n"))
+    safety::grants_needed(command, Dialect::of_this_machine(), workspace, false)
+        .ok()
+        .filter(|grants| !grants.is_empty())
+        .map(|grants| grants.join("\n"))
 }
 
 #[cfg(test)]
@@ -308,16 +409,26 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
         for (tool, input) in [
-            ("run_command", json!({ "command": "Remove-Item -Recurse ../other; node -e 'x' > out.txt" })),
+            (
+                "run_command",
+                json!({ "command": "Remove-Item -Recurse ../other; node -e 'x' > out.txt" }),
+            ),
             ("run_command", json!({ "command": "rm -rf ~/x", "unsandboxed": true })),
-            ("edit_file", json!({ "path": "../outside.txt", "old_string": "", "new_string": "x" })),
+            (
+                "edit_file",
+                json!({ "path": "../outside.txt", "old_string": "", "new_string": "x" }),
+            ),
             ("write_file", json!({ "path": ".git/hooks/pre-commit", "content": "x" })),
             ("read_file", json!({ "path": "../secret.txt" })),
             ("fetch_url", json!({ "url": "https://example.com" })),
             ("web_search", json!({ "query": "x" })),
             ("mcp__notes__shout", json!({ "text": "x" })),
         ] {
-            assert_eq!(check_in(Mode::Bypass, tool, &input, workspace, true), Verdict::Allow, "{tool} {input}");
+            assert_eq!(
+                check_in(Mode::Bypass, tool, &input, workspace, true),
+                Verdict::Allow,
+                "{tool} {input}"
+            );
         }
     }
 
@@ -326,14 +437,37 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
         for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Bypass, Mode::Plan] {
-            assert_eq!(check_in(mode, "document_runtime", &json!({}), workspace, false), Verdict::Allow, "{mode:?}");
+            assert_eq!(
+                check_in(mode, "document_runtime", &json!({}), workspace, false),
+                Verdict::Allow,
+                "{mode:?}"
+            );
         }
         for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Bypass] {
-            let Verdict::Ask { reason, detail, grant } = check_in(mode, "document_runtime", &json!({ "install": true }), workspace, false) else { panic!("{mode:?} did not ask") };
+            let Verdict::Ask { reason, detail, grant } =
+                check_in(mode, "document_runtime", &json!({ "install": true }), workspace, false)
+            else {
+                panic!("{mode:?} did not ask")
+            };
             assert_eq!((reason, grant), ("install_runtime", None), "{mode:?}");
-            assert!(detail.contains("python-docx") && detail.contains("约 90 MB") && detail.contains("matplotlib") && detail.contains("~/.odg/runtime"), "{detail}");
+            assert!(
+                detail.contains("python-docx")
+                    && detail.contains("约 90 MB")
+                    && detail.contains("matplotlib")
+                    && detail.contains("~/.odg/runtime"),
+                "{detail}"
+            );
         }
-        assert_eq!(reason(check_in(Mode::Plan, "document_runtime", &json!({ "install": true }), workspace, false)), Some("refused"));
+        assert_eq!(
+            reason(check_in(
+                Mode::Plan,
+                "document_runtime",
+                &json!({ "install": true }),
+                workspace,
+                false
+            )),
+            Some("refused")
+        );
     }
 
     #[test]
@@ -342,16 +476,32 @@ mod tests {
         let workspace = directory.path();
         let input = json!({ "prompt": " 雪中的白鹤 ", "path": "images/crane.png" });
         for mode in [Mode::Manual, Mode::Edit, Mode::Auto] {
-            let Verdict::Ask { reason, detail, grant } = check_in(mode, "generate_image", &input, workspace, false) else { panic!("{mode:?} did not ask") };
+            let Verdict::Ask { reason, detail, grant } = check_in(mode, "generate_image", &input, workspace, false)
+            else {
+                panic!("{mode:?} did not ask")
+            };
             assert_eq!((reason, grant.as_deref()), ("image", Some("image")), "{mode:?}");
-            assert!(detail.starts_with("雪中的白鹤\n→ ") && detail.contains("crane.png"), "{detail}");
+            assert!(
+                detail.starts_with("雪中的白鹤\n→ ") && detail.contains("crane.png"),
+                "{detail}"
+            );
         }
-        assert_eq!(check_in(Mode::Bypass, "generate_image", &input, workspace, false), Verdict::Allow);
-        assert_eq!(reason(check_in(Mode::Plan, "generate_image", &input, workspace, false)), Some("refused"));
+        assert_eq!(
+            check_in(Mode::Bypass, "generate_image", &input, workspace, false),
+            Verdict::Allow
+        );
+        assert_eq!(
+            reason(check_in(Mode::Plan, "generate_image", &input, workspace, false)),
+            Some("refused")
+        );
         std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
         let into_git = json!({ "prompt": "x", "path": ".git/hooks/pre-commit.png" });
         for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Plan] {
-            assert_eq!(reason(check_in(mode, "generate_image", &into_git, workspace, false)), Some("refused"), "{mode:?}");
+            assert_eq!(
+                reason(check_in(mode, "generate_image", &into_git, workspace, false)),
+                Some("refused"),
+                "{mode:?}"
+            );
         }
     }
 
@@ -363,17 +513,52 @@ mod tests {
         let server = json!({ "name": "notes", "command": "npx", "args": ["-y", "notes-mcp"], "env": { "TOKEN": "abc" }, "replace": true });
         for mode in [Mode::Manual, Mode::Edit, Mode::Auto, Mode::Bypass] {
             let asked = check_in(mode, "install_skill", &skill, workspace, false);
-            assert_eq!(asked, Verdict::Ask { reason: "install_skill", detail: "https://github.com/anthropics/skills  (skills/pdf)\n→ ~/.odg/skills".into(), grant: None }, "{mode:?}");
-            let Verdict::Ask { reason, detail, grant } = check_in(mode, "add_mcp_server", &server, workspace, false) else { panic!("{mode:?} did not ask") };
+            assert_eq!(
+                asked,
+                Verdict::Ask {
+                    reason: "install_skill",
+                    detail: "https://github.com/anthropics/skills  (skills/pdf)\n→ ~/.odg/skills".into(),
+                    grant: None
+                },
+                "{mode:?}"
+            );
+            let Verdict::Ask { reason, detail, grant } = check_in(mode, "add_mcp_server", &server, workspace, false)
+            else {
+                panic!("{mode:?} did not ask")
+            };
             assert_eq!((reason, grant), ("add_mcp_server", None));
             // The entry as it will be written, its secrets too, for the user to see; not the flag that only says how.
             let shown: Value = serde_json::from_str(&detail).unwrap();
-            assert_eq!(shown, json!({ "notes": { "command": "npx", "args": ["-y", "notes-mcp"], "env": { "TOKEN": "abc" } } }));
+            assert_eq!(
+                shown,
+                json!({ "notes": { "command": "npx", "args": ["-y", "notes-mcp"], "env": { "TOKEN": "abc" } } })
+            );
         }
-        assert_eq!(reason(check_in(Mode::Plan, "install_skill", &json!({ "source": "./x" }), workspace, false)), Some("refused"));
-        assert_eq!(reason(check_in(Mode::Plan, "add_mcp_server", &server, workspace, false)), Some("refused"));
-        let project = check_in(Mode::Edit, "install_skill", &json!({ "source": "D:\\skills\\pdf" }), workspace, false);
-        assert!(matches!(project, Verdict::Ask { ref detail, .. } if detail == "D:\\skills\\pdf\n→ .odg/skills"), "{project:?}");
+        assert_eq!(
+            reason(check_in(
+                Mode::Plan,
+                "install_skill",
+                &json!({ "source": "./x" }),
+                workspace,
+                false
+            )),
+            Some("refused")
+        );
+        assert_eq!(
+            reason(check_in(Mode::Plan, "add_mcp_server", &server, workspace, false)),
+            Some("refused")
+        );
+        let project = check_in(
+            Mode::Edit,
+            "install_skill",
+            &json!({ "source": "D:\\skills\\pdf" }),
+            workspace,
+            false,
+        );
+        assert!(
+            matches!(project, Verdict::Ask { ref detail, .. } if detail == "D:\\skills\\pdf\n→ .odg/skills"),
+            "{project:?}"
+        );
     }
 
     #[test]
@@ -394,56 +579,142 @@ mod tests {
         ] {
             assert_eq!(decide(mode, "edit_file", &edit), edits, "{mode:?}");
             // Writing a whole file is decided like an edit; finding files like a read.
-            assert_eq!(decide(mode, "write_file", &json!({ "path": "src/a.rs", "content": "x" })), edits, "{mode:?}");
-            assert_eq!(decide(mode, "find_files", &json!({ "glob": "**/*.rs" })), None, "{mode:?}");
-            assert_eq!(decide(mode, "find_files", &json!({ "path": ".." })), Some("outside_read"), "{mode:?}");
+            assert_eq!(
+                decide(mode, "write_file", &json!({ "path": "src/a.rs", "content": "x" })),
+                edits,
+                "{mode:?}"
+            );
+            assert_eq!(
+                decide(mode, "find_files", &json!({ "glob": "**/*.rs" })),
+                None,
+                "{mode:?}"
+            );
+            assert_eq!(
+                decide(mode, "find_files", &json!({ "path": ".." })),
+                Some("outside_read"),
+                "{mode:?}"
+            );
             assert_eq!(decide(mode, "run_command", &safe), safe_command, "{mode:?}");
             assert_eq!(decide(mode, "run_command", &risky), risky_command, "{mode:?}");
             // Reading inside runs and reading outside asks, whatever the mode.
             assert_eq!(decide(mode, "read_file", &read), None, "{mode:?}");
-            assert_eq!(decide(mode, "read_file", &json!({ "path": "../x" })), Some("outside_read"), "{mode:?}");
+            assert_eq!(
+                decide(mode, "read_file", &json!({ "path": "../x" })),
+                Some("outside_read"),
+                "{mode:?}"
+            );
         }
         // Fetching a page asks whatever the mode, and its grant is the site.
         for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
-            let asked = super::check(mode, "fetch_url", &json!({ "url": "https://docs.rs/serde/latest/serde/" }), workspace);
-            assert_eq!(asked, Verdict::Ask { reason: "web", detail: "https://docs.rs/serde/latest/serde/".into(), grant: Some("web:docs.rs".into()) });
+            let asked = super::check(
+                mode,
+                "fetch_url",
+                &json!({ "url": "https://docs.rs/serde/latest/serde/" }),
+                workspace,
+            );
+            assert_eq!(
+                asked,
+                Verdict::Ask {
+                    reason: "web",
+                    detail: "https://docs.rs/serde/latest/serde/".into(),
+                    grant: Some("web:docs.rs".into())
+                }
+            );
         }
-        assert_eq!(reason(super::check(Mode::Edit, "fetch_url", &json!({ "url": "file:///etc/passwd" }), workspace)), Some("refused"));
+        assert_eq!(
+            reason(super::check(
+                Mode::Edit,
+                "fetch_url",
+                &json!({ "url": "file:///etc/passwd" }),
+                workspace
+            )),
+            Some("refused")
+        );
         for bad_url in ["https://evil.com\\@docs.rs/x", "https://user:pass@docs.rs/", ""] {
             for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
-                assert_eq!(reason(super::check(mode, "fetch_url", &json!({ "url": bad_url }), workspace)), Some("refused"), "{mode:?} {bad_url}");
+                assert_eq!(
+                    reason(super::check(mode, "fetch_url", &json!({ "url": bad_url }), workspace)),
+                    Some("refused"),
+                    "{mode:?} {bad_url}"
+                );
             }
         }
         // A search asks in every mode too, with one grant for all searches.
-        let searched = super::check(Mode::Auto, "web_search", &json!({ "query": "tokio release notes" }), workspace);
-        assert_eq!(searched, Verdict::Ask { reason: "search", detail: "tokio release notes".into(), grant: Some("search".into()) });
+        let searched = super::check(
+            Mode::Auto,
+            "web_search",
+            &json!({ "query": "tokio release notes" }),
+            workspace,
+        );
+        assert_eq!(
+            searched,
+            Verdict::Ask {
+                reason: "search",
+                detail: "tokio release notes".into(),
+                grant: Some("search".into())
+            }
+        );
         // A tool of an MCP server asks whatever the mode, and its grant names that one tool.
         for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
             let asked = super::check(mode, "mcp__files__read_file", &json!({ "path": "a" }), workspace);
-            assert_eq!(asked, Verdict::Ask { reason: "mcp", detail: "files · read_file  {\"path\":\"a\"}".into(), grant: Some("mcp:mcp__files__read_file".into()) });
+            assert_eq!(
+                asked,
+                Verdict::Ask {
+                    reason: "mcp",
+                    detail: "files · read_file  {\"path\":\"a\"}".into(),
+                    grant: Some("mcp:mcp__files__read_file".into())
+                }
+            );
         }
         // A session-wide approval of edits in manual mode covers every later edit.
-        assert!(matches!(super::check(Mode::Manual, "edit_file", &edit, workspace), Verdict::Ask { grant: Some(grant), .. } if grant == "edit"));
+        assert!(
+            matches!(super::check(Mode::Manual, "edit_file", &edit, workspace), Verdict::Ask { grant: Some(grant), .. } if grant == "edit")
+        );
         // Auto mode still asks before writing outside the workspace or into .git.
-        assert_eq!(decide(Mode::Auto, "edit_file", &json!({ "path": "../x.rs" })), Some("outside_write"));
+        assert_eq!(
+            decide(Mode::Auto, "edit_file", &json!({ "path": "../x.rs" })),
+            Some("outside_write")
+        );
         std::fs::create_dir_all(workspace.join(".git")).unwrap();
-        assert_eq!(decide(Mode::Auto, "edit_file", &json!({ "path": ".git/config" })), Some("git_write"));
+        assert_eq!(
+            decide(Mode::Auto, "edit_file", &json!({ "path": ".git/config" })),
+            Some("git_write")
+        );
     }
 
     #[test]
     fn allows_the_workspace_and_asks_for_commands_and_outside_paths() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
-        assert_eq!(check("read_file", &json!({ "path": "src/a.rs" }), workspace), Verdict::Allow);
+        assert_eq!(
+            check("read_file", &json!({ "path": "src/a.rs" }), workspace),
+            Verdict::Allow
+        );
         assert_eq!(check("search", &json!({ "pattern": "x" }), workspace), Verdict::Allow);
-        assert_eq!(check("edit_file", &json!({ "path": "new/dir/a.rs" }), workspace), Verdict::Allow);
+        assert_eq!(
+            check("edit_file", &json!({ "path": "new/dir/a.rs" }), workspace),
+            Verdict::Allow
+        );
         assert_eq!(
             check("run_command", &json!({ "command": "cargo test" }), workspace),
-            Verdict::Ask { reason: "command", detail: "cargo test".into(), grant: Some("command:cargo test".into()) }
+            Verdict::Ask {
+                reason: "command",
+                detail: "cargo test".into(),
+                grant: Some("command:cargo test".into())
+            }
         );
-        assert_eq!(reason(check("edit_file", &json!({ "path": "../x.rs" }), workspace)), Some("outside_write"));
-        assert_eq!(reason(check("read_file", &json!({ "path": "../x.rs" }), workspace)), Some("outside_read"));
-        assert_eq!(reason(check("search", &json!({ "pattern": "x", "path": ".." }), workspace)), Some("outside_read"));
+        assert_eq!(
+            reason(check("edit_file", &json!({ "path": "../x.rs" }), workspace)),
+            Some("outside_write")
+        );
+        assert_eq!(
+            reason(check("read_file", &json!({ "path": "../x.rs" }), workspace)),
+            Some("outside_read")
+        );
+        assert_eq!(
+            reason(check("search", &json!({ "pattern": "x", "path": ".." }), workspace)),
+            Some("outside_read")
+        );
         for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
             assert_eq!(
                 super::check(
@@ -476,11 +747,33 @@ mod tests {
         let listing = if cfg!(windows) { "Get-ChildItem" } else { "ls" };
         let inside = json!({ "command": listing });
         let outside = json!({ "command": listing, "unsandboxed": true });
-        assert_eq!(check_in(Mode::Auto, "run_command", &inside, workspace, true), Verdict::Allow);
-        assert_eq!(check_in(Mode::Auto, "run_command", &outside, workspace, true), Verdict::Ask { reason: "unsandboxed", detail: listing.to_string(), grant: None });
+        assert_eq!(
+            check_in(Mode::Auto, "run_command", &inside, workspace, true),
+            Verdict::Allow
+        );
+        assert_eq!(
+            check_in(Mode::Auto, "run_command", &outside, workspace, true),
+            Verdict::Ask {
+                reason: "unsandboxed",
+                detail: listing.to_string(),
+                grant: None
+            }
+        );
         // With no sandbox there is nothing to leave: the word changes nothing.
-        assert_eq!(check_in(Mode::Auto, "run_command", &outside, workspace, false), Verdict::Allow);
-        assert_eq!(check_in(Mode::Edit, "edit_file", &json!({ "path": "a.txt", "unsandboxed": true }), workspace, true), Verdict::Allow);
+        assert_eq!(
+            check_in(Mode::Auto, "run_command", &outside, workspace, false),
+            Verdict::Allow
+        );
+        assert_eq!(
+            check_in(
+                Mode::Edit,
+                "edit_file",
+                &json!({ "path": "a.txt", "unsandboxed": true }),
+                workspace,
+                true
+            ),
+            Verdict::Allow
+        );
     }
 
     #[test]
@@ -497,8 +790,14 @@ mod tests {
             assert_eq!(grant("Get-ChildItem -Name"), grant("get-childitem -Recurse"));
         }
         // Quotes in an argument are only an argument; a command of several is approved command by command.
-        assert_eq!(grant("git commit -m \"fix the parser\"").as_deref(), Some("command:git commit"));
-        assert_eq!(grant("cargo test 2>&1 | tail -n 20; git status").as_deref(), Some("command:cargo test\ncommand:tail\ncommand:git status"));
+        assert_eq!(
+            grant("git commit -m \"fix the parser\"").as_deref(),
+            Some("command:git commit")
+        );
+        assert_eq!(
+            grant("cargo test 2>&1 | tail -n 20; git status").as_deref(),
+            Some("command:cargo test\ncommand:tail\ncommand:git status")
+        );
         // Anything that writes a file, hides code, reaches outside, or runs anything is approved one at a time.
         for command in [
             "echo `id`",
@@ -541,10 +840,23 @@ mod tests {
         let workspace = directory.path();
         std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
         let hook = check("edit_file", &json!({ "path": ".git/hooks/pre-commit" }), workspace);
-        assert!(matches!(hook, Verdict::Ask { reason: "git_write", grant: None, .. }));
+        assert!(matches!(
+            hook,
+            Verdict::Ask {
+                reason: "git_write",
+                grant: None,
+                ..
+            }
+        ));
         // Reading Git's files changes nothing, so it needs no approval.
-        assert_eq!(check("read_file", &json!({ "path": ".git/config" }), workspace), Verdict::Allow);
-        assert_eq!(check("edit_file", &json!({ "path": ".gitignore" }), workspace), Verdict::Allow);
+        assert_eq!(
+            check("read_file", &json!({ "path": ".git/config" }), workspace),
+            Verdict::Allow
+        );
+        assert_eq!(
+            check("edit_file", &json!({ "path": ".gitignore" }), workspace),
+            Verdict::Allow
+        );
     }
 
     #[cfg(unix)]
@@ -554,38 +866,112 @@ mod tests {
         let workspace = directory.path();
         std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
         std::os::unix::fs::symlink(workspace.join(".git/hooks"), workspace.join("hooks")).unwrap();
-        assert_eq!(reason(check("edit_file", &json!({ "path": "hooks/pre-commit" }), workspace)), Some("git_write"));
+        assert_eq!(
+            reason(check("edit_file", &json!({ "path": "hooks/pre-commit" }), workspace)),
+            Some("git_write")
+        );
     }
 
     #[test]
     fn deleting_and_moving_are_decided_as_edits_of_every_file_they_touch() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
-        assert_eq!(check("delete_file", &json!({ "path": "a.txt" }), workspace), Verdict::Allow);
-        assert_eq!(check("move_file", &json!({ "path": "a.txt", "to": "b/a.txt" }), workspace), Verdict::Allow);
+        assert_eq!(
+            check("delete_file", &json!({ "path": "a.txt" }), workspace),
+            Verdict::Allow
+        );
+        assert_eq!(
+            check("move_file", &json!({ "path": "a.txt", "to": "b/a.txt" }), workspace),
+            Verdict::Allow
+        );
         // Out of the workspace at either end, or into .git, it asks; the request shows both ends.
         let out = check("move_file", &json!({ "path": "a.txt", "to": "../a.txt" }), workspace);
-        assert!(matches!(&out, Verdict::Ask { reason: "outside_write", detail, .. } if detail.ends_with(&(" → ".to_string() + &resolve(workspace, "../a.txt").to_string_lossy()))), "{out:?}");
-        assert_eq!(reason(check("move_file", &json!({ "path": "../a.txt", "to": "a.txt" }), workspace)), Some("outside_write"));
-        assert_eq!(reason(check("delete_file", &json!({ "path": ".git/config" }), workspace)), Some("git_write"));
-        assert_eq!(reason(check("move_file", &json!({ "path": "hook.sh", "to": ".git/hooks/pre-commit" }), workspace)), Some("git_write"));
+        assert!(
+            matches!(&out, Verdict::Ask { reason: "outside_write", detail, .. } if detail.ends_with(&(" → ".to_string() + &resolve(workspace, "../a.txt").to_string_lossy()))),
+            "{out:?}"
+        );
+        assert_eq!(
+            reason(check(
+                "move_file",
+                &json!({ "path": "../a.txt", "to": "a.txt" }),
+                workspace
+            )),
+            Some("outside_write")
+        );
+        assert_eq!(
+            reason(check("delete_file", &json!({ "path": ".git/config" }), workspace)),
+            Some("git_write")
+        );
+        assert_eq!(
+            reason(check(
+                "move_file",
+                &json!({ "path": "hook.sh", "to": ".git/hooks/pre-commit" }),
+                workspace
+            )),
+            Some("git_write")
+        );
         // Asked about every time in 步步请示, and not done at all in 先谋后动.
-        assert_eq!(reason(super::check(Mode::Manual, "delete_file", &json!({ "path": "a.txt" }), workspace)), Some("edit"));
-        assert_eq!(reason(super::check(Mode::Plan, "move_file", &json!({ "path": "a.txt", "to": "b.txt" }), workspace)), Some("refused"));
+        assert_eq!(
+            reason(super::check(
+                Mode::Manual,
+                "delete_file",
+                &json!({ "path": "a.txt" }),
+                workspace
+            )),
+            Some("edit")
+        );
+        assert_eq!(
+            reason(super::check(
+                Mode::Plan,
+                "move_file",
+                &json!({ "path": "a.txt", "to": "b.txt" }),
+                workspace
+            )),
+            Some("refused")
+        );
     }
 
     #[test]
     fn navigating_code_asks_only_outside_the_workspace_and_before_running_project_code() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
-        assert_eq!(check("code_nav", &json!({ "operation": "definition", "path": "src/a.rs" }), workspace), Verdict::Allow);
-        assert_eq!(super::check(Mode::Plan, "code_nav", &json!({ "operation": "symbols", "path": "a.py" }), workspace), Verdict::Allow);
-        assert_eq!(reason(check("code_nav", &json!({ "operation": "hover", "path": "../x.rs" }), workspace)), Some("outside_read"));
+        assert_eq!(
+            check(
+                "code_nav",
+                &json!({ "operation": "definition", "path": "src/a.rs" }),
+                workspace
+            ),
+            Verdict::Allow
+        );
+        assert_eq!(
+            super::check(
+                Mode::Plan,
+                "code_nav",
+                &json!({ "operation": "symbols", "path": "a.py" }),
+                workspace
+            ),
+            Verdict::Allow
+        );
+        assert_eq!(
+            reason(check(
+                "code_nav",
+                &json!({ "operation": "hover", "path": "../x.rs" }),
+                workspace
+            )),
+            Some("outside_read")
+        );
         // The TypeScript server on the `PATH` loads the project's own TypeScript: asked about, and allowed for good by
         // its grant. Where it is not there, the TypeScript downloaded in its place runs nothing of the project.
-        let typescript = check("code_nav", &json!({ "operation": "definition", "path": "src/a.ts" }), workspace);
+        let typescript = check(
+            "code_nav",
+            &json!({ "operation": "definition", "path": "src/a.ts" }),
+            workspace,
+        );
         if crate::lsp::installed("typescript-language-server").is_some() {
-            assert!(matches!(&typescript, Verdict::Ask { reason: "lsp", grant: Some(grant), .. } if grant == "lsp:typescript-language-server"), "{typescript:?}");
+            assert!(
+                matches!(&typescript, Verdict::Ask { reason: "lsp", grant: Some(grant), .. } if grant == "lsp:typescript-language-server"),
+                "{typescript:?}"
+            );
         } else {
             assert_eq!(typescript, Verdict::Allow);
         }
@@ -597,21 +983,61 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
         let install = json!({ "language": "rust", "install": true });
-        if crate::lsp::language_by_key("rust").and_then(|rust| rust.download).and_then(|download| download.megabytes()).is_some() {
+        if crate::lsp::language_by_key("rust")
+            .and_then(|rust| rust.download)
+            .and_then(|download| download.megabytes())
+            .is_some()
+        {
             let asked = super::check(Mode::Bypass, "language_server", &install, workspace);
-            assert!(matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 rust-analyzer 2026-11-16（约 ") && detail.ends_with("→ ~/.odg/lsp")), "{asked:?}");
-            assert_eq!(reason(super::check(Mode::Plan, "language_server", &install, workspace)), Some("refused"));
+            assert!(
+                matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 rust-analyzer 2026-11-16（约 ") && detail.ends_with("→ ~/.odg/lsp")),
+                "{asked:?}"
+            );
+            assert_eq!(
+                reason(super::check(Mode::Plan, "language_server", &install, workspace)),
+                Some("refused")
+            );
         }
         // What is downloaded in the place of a language's own server is named as itself.
-        if crate::lsp::language_by_key("python").and_then(|python| python.download).and_then(|download| download.megabytes()).is_some() {
-            let asked = super::check(Mode::Edit, "language_server", &json!({ "language": "python", "install": true }), workspace);
-            assert!(matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 ty 0.0.107（约 ")), "{asked:?}");
-            let asked = super::check(Mode::Edit, "language_server", &json!({ "language": "typescript", "install": true }), workspace);
-            assert!(matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 TypeScript 7.0.2（约 ")), "{asked:?}");
+        if crate::lsp::language_by_key("python")
+            .and_then(|python| python.download)
+            .and_then(|download| download.megabytes())
+            .is_some()
+        {
+            let asked = super::check(
+                Mode::Edit,
+                "language_server",
+                &json!({ "language": "python", "install": true }),
+                workspace,
+            );
+            assert!(
+                matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 ty 0.0.107（约 ")),
+                "{asked:?}"
+            );
+            let asked = super::check(
+                Mode::Edit,
+                "language_server",
+                &json!({ "language": "typescript", "install": true }),
+                workspace,
+            );
+            assert!(
+                matches!(&asked, Verdict::Ask { reason: "install_lsp", detail, grant: None } if detail.starts_with("下载 TypeScript 7.0.2（约 ")),
+                "{asked:?}"
+            );
         }
         // Only looking, or a server the app does not download, asks nothing.
-        assert_eq!(check("language_server", &json!({ "language": "rust" }), workspace), Verdict::Allow);
-        assert_eq!(check("language_server", &json!({ "language": "go", "install": true }), workspace), Verdict::Allow);
+        assert_eq!(
+            check("language_server", &json!({ "language": "rust" }), workspace),
+            Verdict::Allow
+        );
+        assert_eq!(
+            check(
+                "language_server",
+                &json!({ "language": "go", "install": true }),
+                workspace
+            ),
+            Verdict::Allow
+        );
     }
 
     #[test]
@@ -619,9 +1045,22 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
         let input = json!({ "job": "b2", "text": "y", "close": true });
-        assert_eq!(check("command_input", &input, workspace), Verdict::Ask { reason: "input", detail: "← y（然后结束输入）".into(), grant: Some("input:b2".into()) });
-        assert_eq!(reason(super::check(Mode::Auto, "command_input", &input, workspace)), Some("input"));
-        assert_eq!(super::check(Mode::Bypass, "command_input", &input, workspace), Verdict::Allow);
+        assert_eq!(
+            check("command_input", &input, workspace),
+            Verdict::Ask {
+                reason: "input",
+                detail: "← y（然后结束输入）".into(),
+                grant: Some("input:b2".into())
+            }
+        );
+        assert_eq!(
+            reason(super::check(Mode::Auto, "command_input", &input, workspace)),
+            Some("input")
+        );
+        assert_eq!(
+            super::check(Mode::Bypass, "command_input", &input, workspace),
+            Verdict::Allow
+        );
         // Allowed for the session, it covers that job only, and is never kept for good.
         assert!(!crate::grants::GrantStore::keeps("input:b2"));
     }
@@ -631,12 +1070,23 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
         assert_eq!(
-            check("read_mcp_resource", &json!({ "server": "notes", "uri": "notes://today" }), workspace),
-            Verdict::Ask { reason: "mcp_resource", detail: "notes · notes://today".into(), grant: Some("mcp-resource:notes".into()) }
+            check(
+                "read_mcp_resource",
+                &json!({ "server": "notes", "uri": "notes://today" }),
+                workspace
+            ),
+            Verdict::Ask {
+                reason: "mcp_resource",
+                detail: "notes · notes://today".into(),
+                grant: Some("mcp-resource:notes".into())
+            }
         );
         assert!(crate::grants::GrantStore::keeps("mcp-resource:notes"));
         assert_eq!(check("list_mcp_resources", &json!({}), workspace), Verdict::Allow);
-        assert_eq!(check("present_plan", &json!({ "plan": "x" }), workspace), Verdict::Allow);
+        assert_eq!(
+            check("present_plan", &json!({ "plan": "x" }), workspace),
+            Verdict::Allow
+        );
     }
 
     #[test]
@@ -650,27 +1100,74 @@ mod tests {
 
         let listing = if cfg!(windows) { "Get-ChildItem" } else { "ls" };
         // Inside workspace: auto mode allows safe commands; edit mode asks with `[in ...]` detail and standing grant.
-        assert_eq!(super::check(Mode::Auto, "run_command", &json!({ "command": listing, "cwd": "crates/sub" }), &workspace), Verdict::Allow);
-        let edit_sub = check("run_command", &json!({ "command": "cargo test", "cwd": "crates/sub" }), &workspace);
+        assert_eq!(
+            super::check(
+                Mode::Auto,
+                "run_command",
+                &json!({ "command": listing, "cwd": "crates/sub" }),
+                &workspace
+            ),
+            Verdict::Allow
+        );
+        let edit_sub = check(
+            "run_command",
+            &json!({ "command": "cargo test", "cwd": "crates/sub" }),
+            &workspace,
+        );
         assert_eq!(
             edit_sub,
-            Verdict::Ask { reason: "command", detail: "[in crates/sub]\ncargo test".into(), grant: Some("command:cargo test".into()) }
+            Verdict::Ask {
+                reason: "command",
+                detail: "[in crates/sub]\ncargo test".into(),
+                grant: Some("command:cargo test".into())
+            }
         );
         // Workspace root itself (`cwd: "."`) keeps the plain command detail.
         assert_eq!(
-            check("run_command", &json!({ "command": "cargo test", "cwd": "." }), &workspace),
-            Verdict::Ask { reason: "command", detail: "cargo test".into(), grant: Some("command:cargo test".into()) }
+            check(
+                "run_command",
+                &json!({ "command": "cargo test", "cwd": "." }),
+                &workspace
+            ),
+            Verdict::Ask {
+                reason: "command",
+                detail: "cargo test".into(),
+                grant: Some("command:cargo test".into())
+            }
         );
         // Outside workspace or inside `.git`: even auto mode asks with reason `outside_command` and no standing grant.
         for cwd in ["..", "../other", ".git", ".git/hooks"] {
-            let asked = super::check(Mode::Auto, "run_command", &json!({ "command": listing, "cwd": cwd }), &workspace);
-            assert!(matches!(&asked, Verdict::Ask { reason: "outside_command", grant: None, detail } if detail.starts_with("[in ") && detail.ends_with(listing)), "{cwd}: {asked:?}");
+            let asked = super::check(
+                Mode::Auto,
+                "run_command",
+                &json!({ "command": listing, "cwd": cwd }),
+                &workspace,
+            );
+            assert!(
+                matches!(&asked, Verdict::Ask { reason: "outside_command", grant: None, detail } if detail.starts_with("[in ") && detail.ends_with(listing)),
+                "{cwd}: {asked:?}"
+            );
         }
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
-            let escaped = super::check(Mode::Auto, "run_command", &json!({ "command": listing, "cwd": "escape" }), &workspace);
-            assert!(matches!(&escaped, Verdict::Ask { reason: "outside_command", grant: None, .. }), "{escaped:?}");
+            let escaped = super::check(
+                Mode::Auto,
+                "run_command",
+                &json!({ "command": listing, "cwd": "escape" }),
+                &workspace,
+            );
+            assert!(
+                matches!(
+                    &escaped,
+                    Verdict::Ask {
+                        reason: "outside_command",
+                        grant: None,
+                        ..
+                    }
+                ),
+                "{escaped:?}"
+            );
         }
     }
 
@@ -678,16 +1175,34 @@ mod tests {
     fn plan_mode_strips_standing_grant_from_non_read_only_commands() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
-        let read_only = super::check(Mode::Plan, "run_command", &json!({ "command": "git status" }), workspace);
+        let read_only = super::check(
+            Mode::Plan,
+            "run_command",
+            &json!({ "command": "git status" }),
+            workspace,
+        );
         assert_eq!(
             read_only,
-            Verdict::Ask { reason: "command", detail: "git status".into(), grant: Some("command:git status".into()) }
+            Verdict::Ask {
+                reason: "command",
+                detail: "git status".into(),
+                grant: Some("command:git status".into())
+            }
         );
         for write_or_build in ["git commit -m wip", "git push", "cargo fmt", "cargo test"] {
-            let verdict = super::check(Mode::Plan, "run_command", &json!({ "command": write_or_build }), workspace);
+            let verdict = super::check(
+                Mode::Plan,
+                "run_command",
+                &json!({ "command": write_or_build }),
+                workspace,
+            );
             assert_eq!(
                 verdict,
-                Verdict::Ask { reason: "command", detail: write_or_build.into(), grant: None },
+                Verdict::Ask {
+                    reason: "command",
+                    detail: write_or_build.into(),
+                    grant: None
+                },
                 "{write_or_build}"
             );
         }

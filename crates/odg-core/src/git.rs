@@ -230,12 +230,7 @@ fn git_bytes(directory: &Path, config: &[&str], args: &[&str]) -> Result<Vec<u8>
     git_bytes_with_trust(directory, true, config, args)
 }
 
-fn git_bytes_with_trust(
-    directory: &Path,
-    trusted: bool,
-    config: &[&str],
-    args: &[&str],
-) -> Result<Vec<u8>, String> {
+fn git_bytes_with_trust(directory: &Path, trusted: bool, config: &[&str], args: &[&str]) -> Result<Vec<u8>, String> {
     git_bytes_with_timeout(directory, trusted, config, args, GIT_CMD_TIMEOUT)
 }
 
@@ -341,7 +336,9 @@ fn git_bytes_with_timeout(
 
 fn git_text(directory: &Path, config: &[&str], args: &[&str]) -> Result<String, String> {
     let bytes = git_bytes(directory, config, args)?;
-    Ok(String::from_utf8_lossy(&bytes).trim_end_matches(['\r', '\n']).to_string())
+    Ok(String::from_utf8_lossy(&bytes)
+        .trim_end_matches(['\r', '\n'])
+        .to_string())
 }
 
 /// Resolve minimal writable Git subdirectories and `(git_dir, common_git_dir)` for `workspace`
@@ -351,10 +348,14 @@ pub fn sandbox_git_paths(workspace: &Path) -> (Vec<PathBuf>, Option<PathBuf>, Op
         .ok()
         .filter(|s| !s.trim().is_empty())
         .and_then(|s| PathBuf::from(s.trim()).canonicalize().ok());
-    let common_dir = git_text(workspace, &[], &["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .and_then(|s| PathBuf::from(s.trim()).canonicalize().ok());
+    let common_dir = git_text(
+        workspace,
+        &[],
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()
+    .filter(|s| !s.trim().is_empty())
+    .and_then(|s| PathBuf::from(s.trim()).canonicalize().ok());
     let (Some(git_dir), Some(common_dir)) = (git_dir, common_dir) else {
         return (Vec::new(), None, None);
     };
@@ -392,7 +393,10 @@ fn resolve_git_dir(top: &Path) -> Option<PathBuf> {
     }
     if dot_git.is_file()
         && let Ok(raw) = fs::read_to_string(&dot_git)
-        && let Some(target) = raw.lines().find_map(|l| l.trim().strip_prefix("gitdir:")).map(str::trim)
+        && let Some(target) = raw
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("gitdir:"))
+            .map(str::trim)
         && !target.is_empty()
     {
         let resolved = if Path::new(target).is_absolute() {
@@ -580,7 +584,9 @@ pub fn discover_repos(workspace: &Path) -> Vec<String> {
             if out.len() >= MAX_SUB_REPOS {
                 break;
             }
-            let Some(name) = sub.file_name().and_then(|n| n.to_str()) else { continue };
+            let Some(name) = sub.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
             if name.starts_with('.') || SKIP_SCAN_DIRS.contains(&name) {
                 continue;
             }
@@ -1075,7 +1081,8 @@ pub fn diff_with_trust(
     match stage {
         DiffStage::Unstaged => {
             // Check whether the file is untracked; if so, render its full contents as an added hunk.
-            let tracked = git_bytes_with_trust(&top, trusted, &[], &["ls-files", "--error-unmatch", "--", &repo_rel]).is_ok();
+            let tracked =
+                git_bytes_with_trust(&top, trusted, &[], &["ls-files", "--error-unmatch", "--", &repo_rel]).is_ok();
             if !tracked && disk_file.is_file() {
                 let meta = fs::metadata(&disk_file).map_err(|e| format!("无法读取文件：{e}"))?;
                 if meta.len() > MAX_TEXT_VIEW_BYTES {
@@ -1109,7 +1116,12 @@ pub fn diff_with_trust(
                 let lines: Vec<RichDiffLine> = text
                     .lines()
                     .enumerate()
-                    .map(|(i, l)| RichDiffLine { kind: "+", old_line: None, new_line: Some(i + 1), text: l.to_string() })
+                    .map(|(i, l)| RichDiffLine {
+                        kind: "+",
+                        old_line: None,
+                        new_line: Some(i + 1),
+                        text: l.to_string(),
+                    })
                     .collect();
                 let count = lines.len();
                 let hunks = if count == 0 {
@@ -1143,7 +1155,17 @@ pub fn diff_with_trust(
             args.extend(["--", &repo_rel]);
             let raw_bytes = git_bytes_with_trust(&top, trusted, &["-c", "core.quotepath=false"], &args)?;
             let (binary, added, removed, hunks) = parse_unified_diff(&String::from_utf8_lossy(&raw_bytes));
-            Ok(GitDiffView { path: clean_rel, name, language, stage, commit: None, binary, added, removed, hunks })
+            Ok(GitDiffView {
+                path: clean_rel,
+                name,
+                language,
+                stage,
+                commit: None,
+                binary,
+                added,
+                removed,
+                hunks,
+            })
         }
         DiffStage::Staged => {
             let mut args = vec!["diff", "--cached", "-U4", "--no-color", "--no-ext-diff"];
@@ -1153,7 +1175,17 @@ pub fn diff_with_trust(
             args.extend(["--", &repo_rel]);
             let raw_bytes = git_bytes_with_trust(&top, trusted, &["-c", "core.quotepath=false"], &args)?;
             let (binary, added, removed, hunks) = parse_unified_diff(&String::from_utf8_lossy(&raw_bytes));
-            Ok(GitDiffView { path: clean_rel, name, language, stage, commit: None, binary, added, removed, hunks })
+            Ok(GitDiffView {
+                path: clean_rel,
+                name,
+                language,
+                stage,
+                commit: None,
+                binary,
+                added,
+                removed,
+                hunks,
+            })
         }
         DiffStage::Commit => {
             let rev = validate_ref(commit.ok_or("缺少提交哈希。")?)?;
@@ -1192,7 +1224,10 @@ pub fn stage_with_trust(workspace: &Path, paths: &[String], trusted: bool) -> Re
         git_bytes_with_trust(&top, trusted, &[], &["add", "-A", "--", scope])?;
         return Ok(());
     }
-    let repo_paths: Vec<String> = paths.iter().map(|p| to_repo_rel(workspace, &ws_prefix, p)).collect::<Result<_, _>>()?;
+    let repo_paths: Vec<String> = paths
+        .iter()
+        .map(|p| to_repo_rel(workspace, &ws_prefix, p))
+        .collect::<Result<_, _>>()?;
     let mut args: Vec<&str> = vec!["add", "-A", "--"];
     args.extend(repo_paths.iter().map(String::as_str));
     git_bytes_with_trust(&top, trusted, &[], &args)?;
@@ -1217,8 +1252,15 @@ pub fn unstage_with_trust(workspace: &Path, paths: &[String], trusted: bool) -> 
         }
         return Ok(());
     }
-    let repo_paths: Vec<String> = paths.iter().map(|p| to_repo_rel(workspace, &ws_prefix, p)).collect::<Result<_, _>>()?;
-    let mut args: Vec<&str> = if head { vec!["reset", "-q", "HEAD", "--"] } else { vec!["rm", "-q", "--cached", "-r", "--"] };
+    let repo_paths: Vec<String> = paths
+        .iter()
+        .map(|p| to_repo_rel(workspace, &ws_prefix, p))
+        .collect::<Result<_, _>>()?;
+    let mut args: Vec<&str> = if head {
+        vec!["reset", "-q", "HEAD", "--"]
+    } else {
+        vec!["rm", "-q", "--cached", "-r", "--"]
+    };
     args.extend(repo_paths.iter().map(String::as_str));
     git_bytes_with_trust(&top, trusted, &[], &args)?;
     Ok(())
@@ -1270,11 +1312,19 @@ pub fn discard_all_with_trust(workspace: &Path, trusted: bool) -> Result<(), Str
     if has_head {
         git_bytes_with_trust(&top, trusted, &[], &["reset", "HEAD", "--", scope])?;
         // Only run checkout if any tracked files exist under `scope`.
-        if !git_bytes_with_trust(&top, trusted, &[], &["ls-files", "--", scope]).unwrap_or_default().is_empty() {
+        if !git_bytes_with_trust(&top, trusted, &[], &["ls-files", "--", scope])
+            .unwrap_or_default()
+            .is_empty()
+        {
             git_bytes_with_trust(&top, trusted, &[], &["checkout", "--", scope])?;
         }
     } else {
-        let _ = git_bytes_with_trust(&top, trusted, &[], &["rm", "-rf", "--cached", "--ignore-unmatch", "--", scope]);
+        let _ = git_bytes_with_trust(
+            &top,
+            trusted,
+            &[],
+            &["rm", "-rf", "--cached", "--ignore-unmatch", "--", scope],
+        );
     }
     git_bytes_with_trust(&top, trusted, &[], &["clean", "-fd", "--", scope])?;
     Ok(())
@@ -1312,7 +1362,9 @@ pub fn commit_with_trust(
     }
     git_bytes_with_trust(&top, trusted, identity(&top), &["commit", "-m", msg])?;
     let hash = git_text(&top, &[], &["rev-parse", "--short", "HEAD"])?;
-    let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"]).ok().filter(|b| b != "HEAD");
+    let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .filter(|b| b != "HEAD");
     Ok(GitCommitResult { hash, branch })
 }
 
@@ -1349,15 +1401,25 @@ pub fn branches(workspace: &Path) -> Result<Vec<GitBranch>, String> {
         let current = cols[2] == "*";
         let upstream = (!cols[3].is_empty()).then(|| cols[3].to_string());
         let wt = cols[4].trim();
-        let locked_elsewhere = !current
-            && !wt.is_empty()
-            && Path::new(wt).canonicalize().ok() != top_canon;
+        let locked_elsewhere = !current && !wt.is_empty() && Path::new(wt).canonicalize().ok() != top_canon;
 
         if full.starts_with("refs/heads/") {
             local_names.insert(short.to_string());
-            locals.push(GitBranch { name: short.to_string(), current, remote: false, upstream, locked_elsewhere });
+            locals.push(GitBranch {
+                name: short.to_string(),
+                current,
+                remote: false,
+                upstream,
+                locked_elsewhere,
+            });
         } else if full.starts_with("refs/remotes/") && !short.ends_with("/HEAD") && short.contains('/') {
-            remotes.push(GitBranch { name: short.to_string(), current: false, remote: true, upstream: None, locked_elsewhere: false });
+            remotes.push(GitBranch {
+                name: short.to_string(),
+                current: false,
+                remote: true,
+                upstream: None,
+                locked_elsewhere: false,
+            });
         }
     }
 
@@ -1368,7 +1430,12 @@ pub fn branches(workspace: &Path) -> Result<Vec<GitBranch>, String> {
             locals.push(rem);
         }
     }
-    locals.sort_by(|a, b| b.current.cmp(&a.current).then_with(|| a.remote.cmp(&b.remote)).then_with(|| a.name.cmp(&b.name)));
+    locals.sort_by(|a, b| {
+        b.current
+            .cmp(&a.current)
+            .then_with(|| a.remote.cmp(&b.remote))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     Ok(locals)
 }
 
@@ -1385,12 +1452,26 @@ pub fn checkout_with_trust(workspace: &Path, branch: &str, create: bool, trusted
         git_bytes_with_trust(&top, trusted, &[], &["checkout", "-b", name])?;
         return Ok(name.to_string());
     }
-    if git_bytes_with_trust(&top, trusted, &[], &["show-ref", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok() {
+    if git_bytes_with_trust(
+        &top,
+        trusted,
+        &[],
+        &["show-ref", "--verify", "--quiet", &format!("refs/heads/{name}")],
+    )
+    .is_ok()
+    {
         git_bytes_with_trust(&top, trusted, &[], &["checkout", name])?;
         return Ok(name.to_string());
     }
     // Remote branch like `origin/feature` -> create local tracking branch `feature`.
-    if git_bytes_with_trust(&top, trusted, &[], &["show-ref", "--verify", "--quiet", &format!("refs/remotes/{name}")]).is_ok() {
+    if git_bytes_with_trust(
+        &top,
+        trusted,
+        &[],
+        &["show-ref", "--verify", "--quiet", &format!("refs/remotes/{name}")],
+    )
+    .is_ok()
+    {
         git_bytes_with_trust(&top, trusted, &[], &["checkout", "--track", name])?;
         return git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"]);
     }
@@ -1412,7 +1493,13 @@ pub fn log_with_options(workspace: &Path, limit: usize, all_branches: bool) -> R
         return Ok(Vec::new());
     }
     let cap = limit.clamp(1, 200).to_string();
-    let mut args = vec!["log", "--topo-order", "-n", &cap, "--format=%H%x09%h%x09%P%x09%an%x09%at%x09%D%x09%s"];
+    let mut args = vec![
+        "log",
+        "--topo-order",
+        "-n",
+        &cap,
+        "--format=%H%x09%h%x09%P%x09%an%x09%at%x09%D%x09%s",
+    ];
     if all_branches {
         args.insert(1, "--all");
     }
@@ -1444,7 +1531,15 @@ pub fn commit_files(workspace: &Path, commit: &str) -> Result<Vec<GitFile>, Stri
     let bytes = git_bytes(
         &top,
         &["-c", "core.quotepath=false"],
-        &["diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-z", rev],
+        &[
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            "-z",
+            rev,
+        ],
     )?;
     Ok(parse_diff_tree_z(&bytes, &ws_prefix))
 }
@@ -1618,7 +1713,10 @@ pub async fn sync_with_trust(workspace: &Path, action: &str, trusted: bool) -> R
     let (status, out_bytes, err_bytes) = run_async_command_with_timeout(
         cmd,
         SYNC_TIMEOUT,
-        format!("git {action} 超时（超过 {} 秒），已终止进程，请检查网络或远端凭据。", SYNC_TIMEOUT.as_secs()),
+        format!(
+            "git {action} 超时（超过 {} 秒），已终止进程，请检查网络或远端凭据。",
+            SYNC_TIMEOUT.as_secs()
+        ),
         &format!("无法执行 git {action}"),
     )
     .await?;
@@ -1626,11 +1724,23 @@ pub async fn sync_with_trust(workspace: &Path, action: &str, trusted: bool) -> R
     let stdout = String::from_utf8_lossy(&out_bytes).trim().to_string();
     let stderr = String::from_utf8_lossy(&err_bytes).trim().to_string();
     if status.success() {
-        let note = [stdout, stderr].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+        let note = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
         Ok(note)
     } else {
-        let msg = [stderr, stdout].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
-        Err(if msg.is_empty() { format!("git {action} 失败") } else { msg })
+        let msg = [stderr, stdout]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(if msg.is_empty() {
+            format!("git {action} 失败")
+        } else {
+            msg
+        })
     }
 }
 
@@ -1654,7 +1764,9 @@ pub struct PullRequestResult {
 /// Inspect the current branch and commits ahead of the default base branch to prefill a PR form.
 pub fn pr_defaults(directory: &Path) -> Result<PrDefaults, String> {
     let (top, _) = repo_context(directory).ok_or_else(|| "当前洞府不是 Git 仓库".to_string())?;
-    let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
+    let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
     if branch.is_empty() || branch == "HEAD" {
         return Err("当前处于游离 HEAD 状态，请先切到具体分支再创建 PR。".to_string());
     }
@@ -1674,12 +1786,24 @@ pub fn pr_defaults(directory: &Path) -> Result<PrDefaults, String> {
     let range = format!("{base}..HEAD");
     let subjects: Vec<String> = git_text(&top, &[], &["log", &range, "--max-count=20", "--format=%s"])
         .ok()
-        .map(|out| out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
         .filter(|list: &Vec<String>| !list.is_empty())
         .unwrap_or_else(|| {
             git_text(&top, &[], &["log", "-n", "1", "--format=%s"])
                 .ok()
-                .map(|out| out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+                .map(|out| {
+                    out.lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
                 .unwrap_or_default()
         });
     let title = subjects.first().cloned().unwrap_or_else(|| branch.clone());
@@ -1693,11 +1817,23 @@ pub fn pr_defaults(directory: &Path) -> Result<PrDefaults, String> {
         lines.join("\n")
     };
     let has_gh = crate::cli_agents::find_named_binary("ODG_GH_BIN", "gh", &[]).is_some();
-    Ok(PrDefaults { branch, base, title, body, has_gh })
+    Ok(PrDefaults {
+        branch,
+        base,
+        title,
+        body,
+        has_gh,
+    })
 }
 
 /// Push the current branch if needed and create a GitHub Pull Request via `gh pr create`.
-pub async fn create_pr(directory: &Path, title: &str, body: &str, base: Option<&str>, draft: bool) -> Result<PullRequestResult, String> {
+pub async fn create_pr(
+    directory: &Path,
+    title: &str,
+    body: &str,
+    base: Option<&str>,
+    draft: bool,
+) -> Result<PullRequestResult, String> {
     create_pr_with_trust(directory, title, body, base, draft, false).await
 }
 
@@ -1717,7 +1853,9 @@ pub async fn create_pr_with_trust(
     let gh = crate::cli_agents::find_named_binary("ODG_GH_BIN", "gh", &[])
         .ok_or_else(|| "未找到 GitHub CLI (gh)，请先安装并运行 `gh auth login` 完成登录。".to_string())?;
     let (top, _) = repo_context(directory).ok_or_else(|| "当前洞府不是 Git 仓库".to_string())?;
-    let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
+    let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
     if branch.is_empty() || branch == "HEAD" {
         return Err("当前处于游离 HEAD 状态，请先切到具体分支再创建 PR。".to_string());
     }
@@ -1753,8 +1891,16 @@ pub async fn create_pr_with_trust(
     let stdout = String::from_utf8_lossy(&out_bytes).trim().to_string();
     let stderr = String::from_utf8_lossy(&err_bytes).trim().to_string();
     if !status.success() {
-        let msg = [stderr, stdout].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
-        return Err(if msg.is_empty() { "gh pr create 执行失败".to_string() } else { msg });
+        let msg = [stderr, stdout]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(if msg.is_empty() {
+            "gh pr create 执行失败".to_string()
+        } else {
+            msg
+        });
     }
     let url = stdout
         .lines()
@@ -1777,7 +1923,12 @@ mod tests {
         git_bytes(&root, &[], &["init", "--quiet", "--initial-branch", "main"]).unwrap();
         fs::write(root.join("src/hello.rs"), "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
         git_bytes(&root, &[], &["add", "-A"]).unwrap();
-        git_bytes(&root, &FALLBACK_IDENTITY, &["commit", "--quiet", "-m", "initial commit"]).unwrap();
+        git_bytes(
+            &root,
+            &FALLBACK_IDENTITY,
+            &["commit", "--quiet", "-m", "initial commit"],
+        )
+        .unwrap();
         (dir, root)
     }
 
@@ -1795,7 +1946,11 @@ mod tests {
         let (_dir, root) = init_repo();
 
         // Modify tracked file and add Chinese-named untracked file.
-        fs::write(root.join("src/hello.rs"), "fn main() {\n    println!(\"hello world\");\n}\n").unwrap();
+        fs::write(
+            root.join("src/hello.rs"),
+            "fn main() {\n    println!(\"hello world\");\n}\n",
+        )
+        .unwrap();
         fs::write(root.join("说明文档.md"), "# 标题\n内容第一行\n").unwrap();
 
         let st = status(&root).unwrap();
@@ -1846,7 +2001,10 @@ mod tests {
 
         // Create & switch branch, then discard a dirty edit.
         assert_eq!(checkout(&root, "feat/workbench", true).unwrap(), "feat/workbench");
-        assert_eq!(branches(&root).unwrap().iter().find(|b| b.current).unwrap().name, "feat/workbench");
+        assert_eq!(
+            branches(&root).unwrap().iter().find(|b| b.current).unwrap().name,
+            "feat/workbench"
+        );
 
         fs::write(root.join("src/hello.rs"), "dirty\n").unwrap();
         fs::write(root.join("temp.txt"), "throwaway\n").unwrap();
@@ -1878,7 +2036,14 @@ mod tests {
         fs::create_dir_all(&repo_b).unwrap();
 
         for (dir, file) in [(&repo_a, "a.txt"), (&repo_b, "b.txt")] {
-            assert!(Command::new("git").current_dir(dir).args(["init", "-b", "main"]).status().unwrap().success());
+            assert!(
+                Command::new("git")
+                    .current_dir(dir)
+                    .args(["init", "-b", "main"])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
             fs::write(dir.join(file), "v1\n").unwrap();
             stage(dir, &[file.to_string()]).unwrap();
             commit(dir, "init", false).unwrap();
@@ -1924,7 +2089,14 @@ mod tests {
         // Trigger a merge conflict on `main`.
         let merge_status = Command::new("git")
             .current_dir(&root)
-            .args(["-c", "user.name=Test", "-c", "user.email=test@localhost", "merge", "feat/conflict"])
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@localhost",
+                "merge",
+                "feat/conflict",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -1983,7 +2155,10 @@ mod tests {
         .unwrap();
 
         let discovered = discover_repos(&root);
-        assert_eq!(discovered, vec!["plugins/ext".to_string(), "vendor/third-party/sublib".to_string()]);
+        assert_eq!(
+            discovered,
+            vec!["plugins/ext".to_string(), "vendor/third-party/sublib".to_string()]
+        );
 
         // Default status on root repo keeps root active (`active_repo == None`) while listing root + submodules in `repos`.
         let root_st = status(&root).unwrap();
@@ -2020,7 +2195,10 @@ mod tests {
         assert!(parsed.rebase_head && !parsed.merge_head);
         assert_eq!(parsed.staged.len(), 2);
         assert!(!parsed.staged[0].unrepresentable_path);
-        assert!(parsed.staged[1].unrepresentable_path, "non-UTF-8 orig_path in rename must flag unrepresentable_path");
+        assert!(
+            parsed.staged[1].unrepresentable_path,
+            "non-UTF-8 orig_path in rename must flag unrepresentable_path"
+        );
         assert_eq!(parsed.unstaged.len(), 1);
         assert!(parsed.unstaged[0].unrepresentable_path);
         assert_eq!(parsed.untracked.len(), 1);
@@ -2044,7 +2222,10 @@ mod tests {
         assert_eq!(st1.untracked.len(), UNTRACKED_CAP);
 
         let st2 = status(&root).unwrap();
-        assert!(st2.untracked_truncated, "cached degraded mode must preserve untracked_truncated");
+        assert!(
+            st2.untracked_truncated,
+            "cached degraded mode must preserve untracked_truncated"
+        );
         assert!(
             st2.untracked.len() < UNTRACKED_CAP,
             "expected `--untracked-files=normal` directory folding on second call, got {} entries",
@@ -2065,7 +2246,11 @@ mod tests {
             Duration::from_millis(120),
         )
         .unwrap_err();
-        assert!(start.elapsed() < Duration::from_secs(3), "hung git alias was not killed promptly: {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "hung git alias was not killed promptly: {:?}",
+            start.elapsed()
+        );
         assert!(err.contains("执行超时"), "unexpected timeout message: {err}");
     }
 
@@ -2102,7 +2287,10 @@ mod tests {
 
         let st_trusted = status_for_with_trust(&root, None, true).unwrap();
         assert!(st_trusted.is_repo);
-        assert!(!marker.exists(), "core.fsmonitor must remain disabled even in trusted workspaces");
+        assert!(
+            !marker.exists(),
+            "core.fsmonitor must remain disabled even in trusted workspaces"
+        );
     }
 
     #[test]
@@ -2115,11 +2303,19 @@ mod tests {
 
         let pre_commit = hooks_dir.join("pre-commit");
         let pre_marker_slash = pre_commit_marker.to_string_lossy().replace('\\', "/");
-        fs::write(&pre_commit, format!("#!/bin/sh\necho pwn > \"{pre_marker_slash}\"\nexit 1\n")).unwrap();
+        fs::write(
+            &pre_commit,
+            format!("#!/bin/sh\necho pwn > \"{pre_marker_slash}\"\nexit 1\n"),
+        )
+        .unwrap();
 
         let post_checkout = hooks_dir.join("post-checkout");
         let post_marker_slash = post_checkout_marker.to_string_lossy().replace('\\', "/");
-        fs::write(&post_checkout, format!("#!/bin/sh\necho pwn > \"{post_marker_slash}\"\nexit 1\n")).unwrap();
+        fs::write(
+            &post_checkout,
+            format!("#!/bin/sh\necho pwn > \"{post_marker_slash}\"\nexit 1\n"),
+        )
+        .unwrap();
 
         #[cfg(unix)]
         {
@@ -2132,19 +2328,28 @@ mod tests {
         fs::write(root.join("src/hello.rs"), "fn main() { println!(\"safe\"); }\n").unwrap();
         let res = commit_with_trust(&root, "safe commit in untrusted repo", true, false).unwrap();
         assert!(!res.hash.is_empty());
-        assert!(!pre_commit_marker.exists(), "untrusted git commit must not execute pre-commit hook");
+        assert!(
+            !pre_commit_marker.exists(),
+            "untrusted git commit must not execute pre-commit hook"
+        );
 
         // Untrusted checkout (`trusted = false`) must succeed without running `.git/hooks/post-checkout`.
         let branch = checkout_with_trust(&root, "feat/isolated", true, false).unwrap();
         assert_eq!(branch, "feat/isolated");
-        assert!(!post_checkout_marker.exists(), "untrusted git checkout must not execute post-checkout hook");
+        assert!(
+            !post_checkout_marker.exists(),
+            "untrusted git checkout must not execute post-checkout hook"
+        );
 
         // Sanity check on Unix: when `trusted = true`, the armed `pre-commit` hook IS invoked and blocks the commit.
         #[cfg(unix)]
         {
             fs::write(root.join("src/hello.rs"), "fn main() { println!(\"trusted\"); }\n").unwrap();
             assert!(commit_with_trust(&root, "trusted commit runs hook", true, true).is_err());
-            assert!(pre_commit_marker.exists(), "trusted git commit should honour repository hooks");
+            assert!(
+                pre_commit_marker.exists(),
+                "trusted git commit should honour repository hooks"
+            );
         }
     }
 }

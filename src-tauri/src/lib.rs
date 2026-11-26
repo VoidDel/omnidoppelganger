@@ -48,9 +48,13 @@ pub fn run() {
 
             let settings = Arc::new(SettingsStore::at_home());
             let key_source = settings.clone();
-            let anthropic = AnthropicClient::new(anthropic_base_url(), Arc::new(move || key_source.api_key("anthropic")))?;
+            let anthropic =
+                AnthropicClient::new(anthropic_base_url(), Arc::new(move || key_source.api_key("anthropic")))?;
             let endpoint_source = settings.clone();
-            let llm = Arc::new(Router::new(anthropic, Arc::new(move |p: &str| endpoint_source.endpoint(p)))?);
+            let llm = Arc::new(Router::new(
+                anthropic,
+                Arc::new(move |p: &str| endpoint_source.endpoint(p)),
+            )?);
 
             let (events, receiver) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
             let emit_handle = app.handle().clone();
@@ -65,13 +69,18 @@ pub fn run() {
             let schedules = ScheduleStore::new(home.join("schedules.json"));
 
             let runtime_root = home.join("runtime");
-            if matches!(odg_core::runtime::status(&runtime_root), odg_core::runtime::Status::Stale { .. }) {
+            if matches!(
+                odg_core::runtime::status(&runtime_root),
+                odg_core::runtime::Status::Stale { .. }
+            ) {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let watch = move |step: odg_core::runtime::Progress| {
                         let _ = handle.emit(commands::runtime_lsp::RUNTIME_EVENT, step);
                     };
-                    let _ = odg_core::runtime::install(&runtime_root, &watch, &tokio_util::sync::CancellationToken::new()).await;
+                    let _ =
+                        odg_core::runtime::install(&runtime_root, &watch, &tokio_util::sync::CancellationToken::new())
+                            .await;
                 });
             }
 
@@ -79,7 +88,17 @@ pub fn run() {
             let pty = Arc::new(pty::PtyHub::new());
             let watcher = Arc::new(watcher::WorkspaceWatcher::new());
             let core = Arc::new(AppCore::new(
-                home, settings, grants, schedules, mcp, lsp, pty, watcher, llm, events, runtime_handle,
+                home,
+                settings,
+                grants,
+                schedules,
+                mcp,
+                lsp,
+                pty,
+                watcher,
+                llm,
+                events,
+                runtime_handle,
             ));
             app.manage(App(core));
 

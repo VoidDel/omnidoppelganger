@@ -39,7 +39,11 @@ pub fn sanitize_export_filename(title: &str) -> String {
         .chars()
         .take(60)
         .collect::<String>();
-    let stem = if cleaned.is_empty() { "session".to_string() } else { cleaned };
+    let stem = if cleaned.is_empty() {
+        "session".to_string()
+    } else {
+        cleaned
+    };
     format!("{stem}.md")
 }
 
@@ -238,9 +242,10 @@ pub async fn export_session_markdown(
     save: Option<bool>,
 ) -> Result<Option<String>, String> {
     let core = app.0.clone();
-    let (markdown, fallback_title) = tokio::task::spawn_blocking(move || export_session_markdown_with_title(&core, &id))
-        .await
-        .map_err(|e| e.to_string())??;
+    let (markdown, fallback_title) =
+        tokio::task::spawn_blocking(move || export_session_markdown_with_title(&core, &id))
+            .await
+            .map_err(|e| e.to_string())??;
     if save != Some(true) {
         return Ok(Some(markdown));
     }
@@ -445,11 +450,7 @@ pub async fn undo_turn(app: State<'_, App>, id: String, turn: u64) -> Result<Und
 }
 
 #[tauri::command]
-pub async fn set_workspace_trust(
-    app: State<'_, App>,
-    id: String,
-    trusted: bool,
-) -> Result<SessionItem, String> {
+pub async fn set_workspace_trust(app: State<'_, App>, id: String, trusted: bool) -> Result<SessionItem, String> {
     let core = app.0.clone();
     let session = core.live(&id).await?;
     tokio::task::spawn_blocking(move || {

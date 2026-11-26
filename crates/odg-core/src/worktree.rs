@@ -15,7 +15,12 @@ const FALLBACK_IDENTITY: [&str; 4] = ["-c", "user.name=OmniDoppelganger", "-c", 
 /// Run `git` in `directory`. Returns what it printed, or what it said went wrong.
 fn git(directory: &Path, config: &[&str], arguments: &[&str]) -> Result<String, String> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(directory).args(config).args(arguments).stdin(Stdio::null());
+    command
+        .arg("-C")
+        .arg(directory)
+        .args(config)
+        .args(arguments)
+        .stdin(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -27,19 +32,37 @@ fn git(directory: &Path, config: &[&str], arguments: &[&str]) -> Result<String, 
         return Ok(text(&output.stdout));
     }
     // A failed merge names the conflicts on standard output and little on standard error.
-    let said: Vec<String> = [text(&output.stdout), text(&output.stderr)].into_iter().filter(|part| !part.is_empty()).collect();
-    Err(if said.is_empty() { format!("git {} failed", arguments.first().copied().unwrap_or_default()) } else { said.join("\n") })
+    let said: Vec<String> = [text(&output.stdout), text(&output.stderr)]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect();
+    Err(if said.is_empty() {
+        format!("git {} failed", arguments.first().copied().unwrap_or_default())
+    } else {
+        said.join("\n")
+    })
 }
 
 /// What lets a commit be made in `directory`: nothing when the user has an identity set, a stand-in when not.
 fn identity(directory: &Path) -> &'static [&'static str] {
-    if git(directory, &[], &["config", "user.email"]).is_ok_and(|email| !email.is_empty()) { &[] } else { &FALLBACK_IDENTITY }
+    if git(directory, &[], &["config", "user.email"]).is_ok_and(|email| !email.is_empty()) {
+        &[]
+    } else {
+        &FALLBACK_IDENTITY
+    }
 }
 
 /// The directory Git keeps the repository `directory` is in: its `.git`. For
 /// a worktree's checkout that is the repository's own, somewhere else.
 pub fn git_directory(directory: &Path) -> Option<PathBuf> {
-    git(directory, &["-c", "core.fsmonitor=false"], &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().filter(|path| !path.is_empty()).map(PathBuf::from)
+    git(
+        directory,
+        &["-c", "core.fsmonitor=false"],
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()
+    .filter(|path| !path.is_empty())
+    .map(PathBuf::from)
 }
 
 /// Minimal Git paths that must be writable inside a sandbox for `git status`,
@@ -49,10 +72,19 @@ pub fn git_directory(directory: &Path) -> Option<PathBuf> {
 /// `<common_git_dir>/hooks` nor `<common_git_dir>/config` is exposed as writable.
 pub fn sandbox_writable_git_dirs(workspace: &Path) -> (Vec<PathBuf>, Option<PathBuf>) {
     let cfg = ["-c", "core.fsmonitor=false"];
-    let Some(common_raw) = git(workspace, &cfg, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().filter(|p| !p.is_empty()) else {
+    let Some(common_raw) = git(
+        workspace,
+        &cfg,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()
+    .filter(|p| !p.is_empty()) else {
         return (Vec::new(), None);
     };
-    let Some(gitdir_raw) = git(workspace, &cfg, &["rev-parse", "--path-format=absolute", "--git-dir"]).ok().filter(|p| !p.is_empty()) else {
+    let Some(gitdir_raw) = git(workspace, &cfg, &["rev-parse", "--path-format=absolute", "--git-dir"])
+        .ok()
+        .filter(|p| !p.is_empty())
+    else {
         return (Vec::new(), None);
     };
     let canon = |raw: String| {
@@ -82,7 +114,10 @@ pub fn sandbox_writable_git_dirs(workspace: &Path) -> (Vec<PathBuf>, Option<Path
 
 /// The top of the repository `directory` is in, if it is in one.
 pub fn repository(directory: &Path) -> Option<PathBuf> {
-    git(directory, &[], &["rev-parse", "--show-toplevel"]).ok().filter(|top| !top.is_empty()).map(|top| PathBuf::from(top).components().collect())
+    git(directory, &[], &["rev-parse", "--show-toplevel"])
+        .ok()
+        .filter(|top| !top.is_empty())
+        .map(|top| PathBuf::from(top).components().collect())
 }
 
 /// Make a worktree for a session that is to work on `workspace` without
@@ -92,20 +127,43 @@ pub fn repository(directory: &Path) -> Option<PathBuf> {
 ///
 /// Changes not yet committed in `workspace` are not in the worktree.
 pub fn create(workspace: &Path, root: &Path) -> Result<(PathBuf, Worktree), String> {
-    let top = repository(workspace).ok_or_else(|| format!("{} is not in a Git repository, so it cannot have a worktree", workspace.display()))?;
-    git(&top, &[], &["rev-parse", "--verify", "HEAD"]).map_err(|_| "the repository has no commit yet; a worktree starts from one".to_string())?;
+    let top = repository(workspace).ok_or_else(|| {
+        format!(
+            "{} is not in a Git repository, so it cannot have a worktree",
+            workspace.display()
+        )
+    })?;
+    git(&top, &[], &["rev-parse", "--verify", "HEAD"])
+        .map_err(|_| "the repository has no commit yet; a worktree starts from one".to_string())?;
     // Where the workspace sits inside the repository, to stand in the same place in the worktree.
-    let canonical = |path: &Path| path.canonicalize().map_err(|error| format!("cannot read {}: {error}", path.display()));
-    let within = canonical(workspace)?.strip_prefix(canonical(&top)?).map(Path::to_path_buf).unwrap_or_default();
+    let canonical = |path: &Path| {
+        path.canonicalize()
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))
+    };
+    let within = canonical(workspace)?
+        .strip_prefix(canonical(&top)?)
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
 
     let id = uuid::Uuid::now_v7().simple().to_string();
     let tag = &id[id.len() - 8..];
-    let name = top.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "repository".to_string());
+    let name = top
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repository".to_string());
     let checkout = root.join(format!("{name}-{tag}"));
     let branch = format!("odg/{tag}");
     std::fs::create_dir_all(root).map_err(|error| format!("cannot create {}: {error}", root.display()))?;
-    git(&top, &[], &["worktree", "add", "-b", &branch, &checkout.to_string_lossy(), "HEAD"])?;
-    let worktree = Worktree { origin: workspace.to_string_lossy().into_owned(), branch, checkout: checkout.to_string_lossy().into_owned() };
+    git(
+        &top,
+        &[],
+        &["worktree", "add", "-b", &branch, &checkout.to_string_lossy(), "HEAD"],
+    )?;
+    let worktree = Worktree {
+        origin: workspace.to_string_lossy().into_owned(),
+        branch,
+        checkout: checkout.to_string_lossy().into_owned(),
+    };
     Ok((checkout.join(within), worktree))
 }
 
@@ -124,21 +182,30 @@ pub struct Landed {
 /// worktree and its branch stay as they are either way, to go on from.
 pub fn land(worktree: &Worktree, message: &str) -> Result<Landed, String> {
     let checkout = Path::new(&worktree.checkout);
-    let top = repository(Path::new(&worktree.origin)).ok_or_else(|| format!("{} is no longer a Git repository", worktree.origin))?;
+    let top = repository(Path::new(&worktree.origin))
+        .ok_or_else(|| format!("{} is no longer a Git repository", worktree.origin))?;
     git(checkout, &[], &["add", "-A"])?;
     // `diff --quiet` fails when there is a difference: something is staged.
     if git(checkout, &[], &["diff", "--cached", "--quiet"]).is_err() {
         git(checkout, identity(checkout), &["commit", "-m", message])?;
     }
     let into = git(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let commits: usize = git(&top, &[], &["rev-list", "--count", &format!("HEAD..{}", worktree.branch)])?.parse().unwrap_or(0);
+    let commits: usize = git(
+        &top,
+        &[],
+        &["rev-list", "--count", &format!("HEAD..{}", worktree.branch)],
+    )?
+    .parse()
+    .unwrap_or(0);
     if commits == 0 {
         return Ok(Landed { commits, into });
     }
     if let Err(error) = git(&top, identity(&top), &["merge", "--no-edit", &worktree.branch]) {
         // Nothing is left half merged; a merge that never started has nothing to abort.
         let _ = git(&top, &[], &["merge", "--abort"]);
-        return Err(format!("the work could not be merged into {into}, and nothing was changed there:\n{error}"));
+        return Err(format!(
+            "the work could not be merged into {into}, and nothing was changed there:\n{error}"
+        ));
     }
     Ok(Landed { commits, into })
 }
@@ -150,7 +217,11 @@ pub fn remove(worktree: &Worktree) -> Result<(), String> {
     let checkout = Path::new(&worktree.checkout);
     let Some(top) = repository(Path::new(&worktree.origin)) else {
         // The repository is gone; what is left of the checkout is only a folder.
-        return if checkout.exists() { std::fs::remove_dir_all(checkout).map_err(|error| format!("cannot remove {}: {error}", checkout.display())) } else { Ok(()) };
+        return if checkout.exists() {
+            std::fs::remove_dir_all(checkout).map_err(|error| format!("cannot remove {}: {error}", checkout.display()))
+        } else {
+            Ok(())
+        };
     };
     if checkout.exists() {
         git(&top, &[], &["worktree", "remove", "--force", &worktree.checkout])?;
@@ -187,16 +258,28 @@ mod tests {
         let (_directory, top, root) = repository_with_a_commit();
         let (workspace, worktree) = create(&top, &root).unwrap();
         assert!(worktree.branch.starts_with("odg/") && workspace.starts_with(&root));
-        assert_eq!(crate::tools::git_branch(&workspace).as_deref(), Some(worktree.branch.as_str()));
+        assert_eq!(
+            crate::tools::git_branch(&workspace).as_deref(),
+            Some(worktree.branch.as_str())
+        );
         assert_eq!(read(workspace.join("src").join("a.txt")), "one\n");
         // Git keeps the worktree's history in the repository's own directory, not in the checkout.
-        assert_eq!(git_directory(&workspace).unwrap().canonicalize().unwrap(), top.join(".git").canonicalize().unwrap());
+        assert_eq!(
+            git_directory(&workspace).unwrap().canonicalize().unwrap(),
+            top.join(".git").canonicalize().unwrap()
+        );
 
         // Work in the worktree leaves the repository's own files alone until it is brought back.
         std::fs::write(workspace.join("src").join("a.txt"), "one\ntwo\n").unwrap();
         std::fs::write(workspace.join("new.txt"), "new\n").unwrap();
         assert_eq!(read(top.join("src").join("a.txt")), "one\n");
-        assert_eq!(land(&worktree, "odg: add two").unwrap(), Landed { commits: 1, into: "main".to_string() });
+        assert_eq!(
+            land(&worktree, "odg: add two").unwrap(),
+            Landed {
+                commits: 1,
+                into: "main".to_string()
+            }
+        );
         assert_eq!(read(top.join("src").join("a.txt")), "one\ntwo\n");
         assert_eq!(read(top.join("new.txt")), "new\n");
         // With nothing new there is nothing to bring back.
@@ -204,7 +287,10 @@ mod tests {
 
         remove(&worktree).unwrap();
         assert!(!Path::new(&worktree.checkout).exists());
-        assert!(git(&top, &[], &["rev-parse", "--verify", &worktree.branch]).is_err(), "a merged branch goes with its worktree");
+        assert!(
+            git(&top, &[], &["rev-parse", "--verify", &worktree.branch]).is_err(),
+            "a merged branch goes with its worktree"
+        );
     }
 
     #[test]
@@ -216,7 +302,10 @@ mod tests {
         git(&top, &FALLBACK_IDENTITY, &["commit", "--quiet", "-am", "ours"]).unwrap();
 
         let error = land(&worktree, "odg: theirs").unwrap_err();
-        assert!(error.contains("could not be merged into main") && error.contains("a.txt"), "{error}");
+        assert!(
+            error.contains("could not be merged into main") && error.contains("a.txt"),
+            "{error}"
+        );
         assert_eq!(read(top.join("src").join("a.txt")), "ours\n");
         assert_eq!(git(&top, &[], &["status", "--porcelain"]).unwrap(), "");
 
@@ -242,12 +331,20 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
         // A folder under a repository of the machine's own would count as inside it; this one is checked to be outside.
         if repository(&plain).is_none() {
-            assert!(create(&plain, &directory.path().join("worktrees")).unwrap_err().contains("not in a Git repository"));
+            assert!(
+                create(&plain, &directory.path().join("worktrees"))
+                    .unwrap_err()
+                    .contains("not in a Git repository")
+            );
         }
         let empty = directory.path().join("empty");
         std::fs::create_dir_all(&empty).unwrap();
         git(&empty, &[], &["init", "--quiet"]).unwrap();
-        assert!(create(&empty, &directory.path().join("worktrees")).unwrap_err().contains("no commit yet"));
+        assert!(
+            create(&empty, &directory.path().join("worktrees"))
+                .unwrap_err()
+                .contains("no commit yet")
+        );
     }
 
     #[test]
@@ -262,8 +359,15 @@ mod tests {
         assert!(writable.contains(&origin_git.join("refs").canonicalize().unwrap()));
         assert!(writable.contains(&origin_git.join("logs").canonicalize().unwrap()));
         assert!(writable.iter().any(|p| p.starts_with(origin_git.join("worktrees"))));
-        assert!(!writable.contains(&origin_git), "common .git root itself must not be writable: {writable:?}");
-        assert!(!writable.iter().any(|p| p.ends_with("hooks") || p.ends_with("config") || p.ends_with("info")));
+        assert!(
+            !writable.contains(&origin_git),
+            "common .git root itself must not be writable: {writable:?}"
+        );
+        assert!(
+            !writable
+                .iter()
+                .any(|p| p.ends_with("hooks") || p.ends_with("config") || p.ends_with("info"))
+        );
 
         remove(&worktree).unwrap();
     }

@@ -31,7 +31,10 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::sync::CancellationToken;
 
 fn fixture_bytes(rel: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(rel);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(rel);
     std::fs::read(&path).unwrap_or_else(|err| panic!("failed to read fixture {}: {err}", path.display()))
 }
 
@@ -147,8 +150,8 @@ fn replay_provider_sse(
                 if trimmed.is_empty() || trimmed == "[DONE]" {
                     continue;
                 }
-                let val: Value = serde_json::from_str(trimmed)
-                    .map_err(|e| LlmError::Protocol(format!("Gemini JSON error: {e}")))?;
+                let val: Value =
+                    serde_json::from_str(trimmed).map_err(|e| LlmError::Protocol(format!("Gemini JSON error: {e}")))?;
                 deltas.extend(acc.apply(&val)?);
             }
             if !acc.finished() {
@@ -166,8 +169,8 @@ fn replay_provider_sse(
                 if trimmed == "[DONE]" {
                     break;
                 }
-                let val: Value = serde_json::from_str(trimmed)
-                    .map_err(|e| LlmError::Protocol(format!("Chat JSON error: {e}")))?;
+                let val: Value =
+                    serde_json::from_str(trimmed).map_err(|e| LlmError::Protocol(format!("Chat JSON error: {e}")))?;
                 deltas.extend(acc.apply(&val)?);
             }
             if !acc.finished() {
@@ -202,7 +205,10 @@ fn assert_provider_invariant_across_chunkings(
     for plan in &plans[1..] {
         let (replayed, deltas) =
             replay_provider_sse(provider_id, protocol, &raw, *plan).expect("chunked replay must succeed");
-        assert_eq!(replayed, baseline, "turn/tokens mismatch under chunking for {fixture_rel}");
+        assert_eq!(
+            replayed, baseline,
+            "turn/tokens mismatch under chunking for {fixture_rel}"
+        );
         // Concatenated text & thinking deltas must be identical regardless of byte-chunk boundaries!
         let join_thinking = |ds: &[StreamDelta]| -> String {
             ds.iter()
@@ -235,7 +241,14 @@ fn replays_anthropic_golden_fixture_across_1_to_7_byte_utf8_boundaries() {
     );
     assert_eq!(out.turn.model, "claude-opus-5-5");
     assert_eq!(out.turn.stop_reason.as_deref(), Some("tool_use"));
-    assert_eq!(out.tokens, Some(Tokens { input: 2220, cached: 1800, output: 95 }));
+    assert_eq!(
+        out.tokens,
+        Some(Tokens {
+            input: 2220,
+            cached: 1800,
+            output: 95
+        })
+    );
     assert_eq!(out.turn.content.len(), 4);
     assert_eq!(
         out.turn.content[0],
@@ -245,7 +258,10 @@ fn replays_anthropic_golden_fixture_across_1_to_7_byte_utf8_boundaries() {
             "signature": "sig_anth_9f8e7d6c5b4a"
         })
     );
-    assert_eq!(out.turn.content[1], json!({ "type": "text", "text": "我来并行读取两个核心文件。" }));
+    assert_eq!(
+        out.turn.content[1],
+        json!({ "type": "text", "text": "我来并行读取两个核心文件。" })
+    );
     assert_eq!(
         out.turn.content[2],
         json!({ "type": "tool_use", "id": "toolu_01A", "name": "read_file", "input": { "path": "Cargo.toml" } })
@@ -265,11 +281,21 @@ fn replays_openai_responses_golden_fixture_across_1_to_7_byte_utf8_boundaries() 
     );
     assert_eq!(out.turn.model, "gpt-6.2-astra");
     assert_eq!(out.turn.stop_reason.as_deref(), Some("tool_use"));
-    assert_eq!(out.tokens, Some(Tokens { input: 3400, cached: 2048, output: 140 }));
+    assert_eq!(
+        out.tokens,
+        Some(Tokens {
+            input: 3400,
+            cached: 2048,
+            output: 140
+        })
+    );
     assert_eq!(out.turn.content.len(), 4);
     assert_eq!(out.turn.content[0]["type"], "thinking");
     assert_eq!(out.turn.content[0]["thinking"], "分析模块依赖关系 ⚙️");
-    assert_eq!(out.turn.content[0]["item"]["encrypted_content"], "enc_sig_openai_xyz123");
+    assert_eq!(
+        out.turn.content[0]["item"]["encrypted_content"],
+        "enc_sig_openai_xyz123"
+    );
     assert_eq!(out.turn.content[1]["text"], "正在并行检索两个文件。");
     assert_eq!(out.turn.content[2]["id"], "call_oa_1");
     assert_eq!(out.turn.content[2]["input"], json!({ "path": "Cargo.toml" }));
@@ -286,7 +312,14 @@ fn replays_gemini_golden_fixture_across_1_to_7_byte_utf8_boundaries() {
     );
     assert_eq!(out.turn.model, "gemini-2.5-pro");
     assert_eq!(out.turn.stop_reason.as_deref(), Some("tool_use"));
-    assert_eq!(out.tokens, Some(Tokens { input: 4096, cached: 3072, output: 130 }));
+    assert_eq!(
+        out.tokens,
+        Some(Tokens {
+            input: 4096,
+            cached: 3072,
+            output: 130
+        })
+    );
     assert_eq!(out.turn.content.len(), 4);
     assert_eq!(
         out.turn.content[0],
@@ -296,7 +329,10 @@ fn replays_gemini_golden_fixture_across_1_to_7_byte_utf8_boundaries() {
             "signature": "gem_thought_sig_v1"
         })
     );
-    assert_eq!(out.turn.content[1], json!({ "type": "text", "text": "我将并行调用两个工具。" }));
+    assert_eq!(
+        out.turn.content[1],
+        json!({ "type": "text", "text": "我将并行调用两个工具。" })
+    );
     assert_eq!(out.turn.content[2]["id"], "gem_fc_1");
     assert_eq!(out.turn.content[2]["thought_signature"], "gem_fc_sig_1");
     assert_eq!(out.turn.content[3]["id"], "gem_fc_2");
@@ -313,7 +349,14 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
     );
     assert_eq!(ds.turn.model, "deepseek-v4-pro");
     assert_eq!(ds.turn.stop_reason.as_deref(), Some("tool_use"));
-    assert_eq!(ds.tokens, Some(Tokens { input: 2500, cached: 1900, output: 110 }));
+    assert_eq!(
+        ds.tokens,
+        Some(Tokens {
+            input: 2500,
+            cached: 1900,
+            output: 110
+        })
+    );
     assert_eq!(ds.turn.content[0]["thinking"], "逐步推导缓存一致性 🧩");
     assert_eq!(ds.turn.content[2]["id"], "call_ds_0");
     assert_eq!(ds.turn.content[2]["input"], json!({ "path": "Cargo.toml" }));
@@ -326,7 +369,14 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
         "providers/kimi/turn_thinking_parallel_tools.sse",
     );
     assert_eq!(kimi.turn.model, "kimi-k3.1-pro");
-    assert_eq!(kimi.tokens, Some(Tokens { input: 1800, cached: 1200, output: 75 }));
+    assert_eq!(
+        kimi.tokens,
+        Some(Tokens {
+            input: 1800,
+            cached: 1200,
+            output: 75
+        })
+    );
     assert_eq!(kimi.turn.content[0]["thinking"], "月之暗面推理链 🌙");
     assert_eq!(kimi.turn.content[2]["id"], "functions.read_file:0");
     assert_eq!(kimi.turn.content[3]["id"], "functions.search:1");
@@ -359,7 +409,11 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
                 files: vec![],
             },
         },
-        Envelope { seq: 3, ts: "2026-11-26T00:00:02Z".into(), event: kimi.event.clone() },
+        Envelope {
+            seq: 3,
+            ts: "2026-11-26T00:00:02Z".into(),
+            event: kimi.event.clone(),
+        },
         Envelope {
             seq: 4,
             ts: "2026-11-26T00:00:03Z".into(),
@@ -404,7 +458,14 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
         "providers/glm/turn_object_args_parallel_tools.sse",
     );
     assert_eq!(glm.turn.model, "glm-5.3");
-    assert_eq!(glm.tokens, Some(Tokens { input: 1600, cached: 800, output: 64 }));
+    assert_eq!(
+        glm.tokens,
+        Some(Tokens {
+            input: 1600,
+            cached: 800,
+            output: 64
+        })
+    );
     assert_eq!(glm.turn.content[0]["thinking"], "智谱 GLM 思考过程 🔮");
     assert_eq!(glm.turn.content[2]["input"], json!({ "path": "README.md" }));
     assert_eq!(glm.turn.content[3]["input"], json!({ "glob": "*.toml" }));
@@ -416,7 +477,14 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
         "providers/openrouter/turn_gateway_parallel_tools.sse",
     );
     assert_eq!(or.turn.model, "anthropic/claude-sonnet-4.6");
-    assert_eq!(or.tokens, Some(Tokens { input: 3000, cached: 1500, output: 92 }));
+    assert_eq!(
+        or.tokens,
+        Some(Tokens {
+            input: 3000,
+            cached: 1500,
+            output: 92
+        })
+    );
     assert_eq!(or.turn.content[0]["thinking"], "跨网关推理校验 🌐");
     assert_eq!(or.turn.content[2]["input"], json!({ "path": "package.json" }));
     assert_eq!(or.turn.content[3]["input"], json!({ "path": "Cargo.toml" }));
@@ -426,10 +494,30 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
 fn replays_rate_limit_429_sse_fixtures_and_extracts_cooldown_deadlines() {
     let now = Utc::now();
     let cases = [
-        ("anthropic", CloudProtocol::Anthropic, "providers/anthropic/rate_limit_429.sse", 45i64),
-        ("openai", CloudProtocol::Responses, "providers/openai_responses/rate_limit_429.sse", 30i64),
-        ("gemini", CloudProtocol::Gemini("gemini-2.5-pro"), "providers/gemini/rate_limit_429.sse", 75i64),
-        ("openrouter", CloudProtocol::Chat, "providers/openrouter/rate_limit_429.sse", 20i64),
+        (
+            "anthropic",
+            CloudProtocol::Anthropic,
+            "providers/anthropic/rate_limit_429.sse",
+            45i64,
+        ),
+        (
+            "openai",
+            CloudProtocol::Responses,
+            "providers/openai_responses/rate_limit_429.sse",
+            30i64,
+        ),
+        (
+            "gemini",
+            CloudProtocol::Gemini("gemini-2.5-pro"),
+            "providers/gemini/rate_limit_429.sse",
+            75i64,
+        ),
+        (
+            "openrouter",
+            CloudProtocol::Chat,
+            "providers/openrouter/rate_limit_429.sse",
+            20i64,
+        ),
     ];
 
     for (provider_id, protocol, fixture_rel, expected_secs) in cases {
@@ -504,7 +592,11 @@ async fn end_to_end_http_clients_stream_dripped_golden_fixtures_and_surface_429(
         fixture_bytes("providers/openai_responses/turn_reasoning_parallel_tools.sse"),
     )
     .await;
-    let oa = ResponsesClient::new(Arc::new(move |_| Endpoint { base_url: oa_url.clone(), key: Some("sk-test".into()) })).unwrap();
+    let oa = ResponsesClient::new(Arc::new(move |_| Endpoint {
+        base_url: oa_url.clone(),
+        key: Some("sk-test".into()),
+    }))
+    .unwrap();
     let (tx, _rx) = unbounded_channel();
     let oa_turn = oa
         .stream(sample_req("openai", "gpt-6.2-astra"), tx, CancellationToken::new())
@@ -519,7 +611,11 @@ async fn end_to_end_http_clients_stream_dripped_golden_fixtures_and_surface_429(
         fixture_bytes("providers/gemini/turn_thought_signature_parallel_tools.sse"),
     )
     .await;
-    let gem = GeminiClient::new(Arc::new(move |_| Endpoint { base_url: gem_url.clone(), key: Some("sk-test".into()) })).unwrap();
+    let gem = GeminiClient::new(Arc::new(move |_| Endpoint {
+        base_url: gem_url.clone(),
+        key: Some("sk-test".into()),
+    }))
+    .unwrap();
     let (tx, _rx) = unbounded_channel();
     let gem_turn = gem
         .stream(sample_req("gemini", "gemini-2.5-pro"), tx, CancellationToken::new())
@@ -534,10 +630,19 @@ async fn end_to_end_http_clients_stream_dripped_golden_fixtures_and_surface_429(
         fixture_bytes("providers/deepseek/turn_reasoner_parallel_tools.sse"),
     )
     .await;
-    let chat = ChatClient::new(Arc::new(move |_| Endpoint { base_url: ds_url.clone(), key: Some("sk-test".into()) })).unwrap();
+    let chat = ChatClient::new(Arc::new(move |_| Endpoint {
+        base_url: ds_url.clone(),
+        key: Some("sk-test".into()),
+    }))
+    .unwrap();
     let (tx, _rx) = unbounded_channel();
     let ds_turn = chat
-        .stream(Flavor::DeepSeek, sample_req("deepseek", "deepseek-v4-pro"), tx, CancellationToken::new())
+        .stream(
+            Flavor::DeepSeek,
+            sample_req("deepseek", "deepseek-v4-pro"),
+            tx,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert_eq!(ds_turn.content.len(), 4);
@@ -591,12 +696,7 @@ fn replay_cli_ndjson(kind: CliKind, raw: &[u8], plan: ChunkPlan) -> CliReplaySum
     let mut completed_tools: Vec<(String, Value, String, Value, bool)> = Vec::new();
     let mut events: Vec<Event> = Vec::new();
 
-    fn record_conv(
-        backend: &str,
-        conv: Option<String>,
-        session_id: &mut Option<String>,
-        events: &mut Vec<Event>,
-    ) {
+    fn record_conv(backend: &str, conv: Option<String>, session_id: &mut Option<String>, events: &mut Vec<Event>) {
         if let Some(id) = conv
             && !id.is_empty()
             && session_id.as_deref() != Some(id.as_str())
@@ -613,7 +713,13 @@ fn replay_cli_ndjson(kind: CliKind, raw: &[u8], plan: ChunkPlan) -> CliReplaySum
     for ev in cli_events {
         match ev {
             CliEvent::Init { conversation_id } => record_conv(backend, conversation_id, &mut session_id, &mut events),
-            CliEvent::AgentText { conversation_id, delta, done, usage, tokens } => {
+            CliEvent::AgentText {
+                conversation_id,
+                delta,
+                done,
+                usage,
+                tokens,
+            } => {
                 record_conv(backend, conversation_id, &mut session_id, &mut events);
                 if !delta.is_empty() {
                     active_text.push_str(&delta);
@@ -651,7 +757,12 @@ fn replay_cli_ndjson(kind: CliKind, raw: &[u8], plan: ChunkPlan) -> CliReplaySum
                     pending_tokens = Some((usage, t));
                 }
             }
-            CliEvent::ToolStart { conversation_id, call_key, name, input } => {
+            CliEvent::ToolStart {
+                conversation_id,
+                call_key,
+                name,
+                input,
+            } => {
                 record_conv(backend, conversation_id, &mut session_id, &mut events);
                 let tool_tokens = pending_tokens.take().map(|(_, t)| {
                     accounted.input += t.input;
@@ -668,7 +779,14 @@ fn replay_cli_ndjson(kind: CliKind, raw: &[u8], plan: ChunkPlan) -> CliReplaySum
                 });
                 started_tools.insert(call_key, (name, input));
             }
-            CliEvent::ToolDone { conversation_id, call_key, name, input, output, is_error } => {
+            CliEvent::ToolDone {
+                conversation_id,
+                call_key,
+                name,
+                input,
+                output,
+                is_error,
+            } => {
                 record_conv(backend, conversation_id, &mut session_id, &mut events);
                 let (resolved_name, resolved_input) = started_tools
                     .remove(&call_key)
@@ -684,7 +802,13 @@ fn replay_cli_ndjson(kind: CliKind, raw: &[u8], plan: ChunkPlan) -> CliReplaySum
                 });
                 completed_tools.push((resolved_name, resolved_input, cleaned, meta, is_error));
             }
-            CliEvent::Result { conversation_id, response, usage, tokens, .. } => {
+            CliEvent::Result {
+                conversation_id,
+                response,
+                usage,
+                tokens,
+                ..
+            } => {
                 record_conv(backend, conversation_id, &mut session_id, &mut events);
                 let rem = match tokens {
                     Some(total) => {
@@ -764,7 +888,10 @@ fn assert_cli_invariant_across_chunkings(kind: CliKind, fixture_rel: &str) -> Cl
     let baseline = replay_cli_ndjson(kind, &raw, plans[0]);
     for plan in &plans[1..] {
         let got = replay_cli_ndjson(kind, &raw, *plan);
-        assert_eq!(got, baseline, "CLI NDJSON replay diverged under chunking for {fixture_rel}");
+        assert_eq!(
+            got, baseline,
+            "CLI NDJSON replay diverged under chunking for {fixture_rel}"
+        );
     }
     baseline
 }
@@ -775,7 +902,14 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
     let agy = assert_cli_invariant_across_chunkings(CliKind::Antigravity, "cli_agents/agy/session_turn.ndjson");
     assert_eq!(agy.session_id.as_deref(), Some("agy-conv-001"));
     assert_eq!(agy.text, "所有契约测试均已通过 🚀，零警告全绿。");
-    assert_eq!(agy.tokens, Tokens { input: 2100, cached: 1500, output: 60 });
+    assert_eq!(
+        agy.tokens,
+        Tokens {
+            input: 2100,
+            cached: 1500,
+            output: 60
+        }
+    );
     assert_eq!(agy.tools.len(), 2);
     assert_eq!(agy.tools[0].0, "update_todos");
     assert_eq!(agy.tools[0].3["todos"].as_array().unwrap().len(), 2);
@@ -787,7 +921,14 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
     let codex = assert_cli_invariant_across_chunkings(CliKind::Codex, "cli_agents/codex/session_turn.ndjson");
     assert_eq!(codex.session_id.as_deref(), Some("codex-thr-101"));
     assert_eq!(codex.text, "正在修改 session.rs ✅");
-    assert_eq!(codex.tokens, Tokens { input: 2400, cached: 1800, output: 88 });
+    assert_eq!(
+        codex.tokens,
+        Tokens {
+            input: 2400,
+            cached: 1800,
+            output: 88
+        }
+    );
     assert_eq!(codex.tools.len(), 2);
     assert_eq!(codex.tools[0].0, "run_command");
     assert_eq!(codex.tools[1].0, "edit_file");
@@ -796,7 +937,14 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
     let claude = assert_cli_invariant_across_chunkings(CliKind::ClaudeCode, "cli_agents/claude/session_turn.ndjson");
     assert_eq!(claude.session_id.as_deref(), Some("claude-ses-202"));
     assert_eq!(claude.text, "已完成审查 🎯。");
-    assert_eq!(claude.tokens, Tokens { input: 3150, cached: 2600, output: 60 });
+    assert_eq!(
+        claude.tokens,
+        Tokens {
+            input: 3150,
+            cached: 2600,
+            output: 60
+        }
+    );
     assert_eq!(claude.tools.len(), 2);
     assert_eq!(claude.tools[0].0, "read_file");
     assert_eq!(claude.tools[1].0, "run_command");
@@ -805,7 +953,14 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
     let cursor = assert_cli_invariant_across_chunkings(CliKind::Cursor, "cli_agents/cursor/session_turn.ndjson");
     assert_eq!(cursor.session_id.as_deref(), Some("cursor-chat-303"));
     assert_eq!(cursor.text, "Cursor 契约回放正常 ✨");
-    assert_eq!(cursor.tokens, Tokens { input: 3100, cached: 2400, output: 60 });
+    assert_eq!(
+        cursor.tokens,
+        Tokens {
+            input: 3100,
+            cached: 2400,
+            output: 60
+        }
+    );
     assert_eq!(cursor.tools.len(), 1);
     assert_eq!(cursor.tools[0].0, "read_file");
     assert_eq!(cursor.tools[0].3["lines"], 480);
@@ -814,7 +969,14 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
     let grok = assert_cli_invariant_across_chunkings(CliKind::Grok, "cli_agents/grok/session_turn.ndjson");
     assert_eq!(grok.session_id.as_deref(), Some("grok-ses-404"));
     assert_eq!(grok.text, "Grok 搜索完毕 ⚡");
-    assert_eq!(grok.tokens, Tokens { input: 1500, cached: 900, output: 48 });
+    assert_eq!(
+        grok.tokens,
+        Tokens {
+            input: 1500,
+            cached: 900,
+            output: 48
+        }
+    );
     assert_eq!(grok.tools.len(), 1);
     assert_eq!(grok.tools[0].0, "search");
 
@@ -822,7 +984,14 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
     let opencode = assert_cli_invariant_across_chunkings(CliKind::OpenCode, "cli_agents/opencode/session_turn.ndjson");
     assert_eq!(opencode.session_id.as_deref(), Some("oc-ses-505"));
     assert_eq!(opencode.text, "OpenCode 验证完成 🧩");
-    assert_eq!(opencode.tokens, Tokens { input: 2600, cached: 2000, output: 44 });
+    assert_eq!(
+        opencode.tokens,
+        Tokens {
+            input: 2600,
+            cached: 2000,
+            output: 44
+        }
+    );
     assert_eq!(opencode.tools.len(), 1);
     assert_eq!(opencode.tools[0].0, "read_file");
 }
@@ -849,11 +1018,19 @@ async fn live_smoke_providers_and_cli_agents_when_enabled() {
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY").map(|s| s.trim().to_string())
         && !key.is_empty()
     {
-        let client = AnthropicClient::new(odg_core::anthropic::DEFAULT_BASE_URL, Arc::new(move || Some(key.clone()))).unwrap();
+        let client = AnthropicClient::new(
+            odg_core::anthropic::DEFAULT_BASE_URL,
+            Arc::new(move || Some(key.clone())),
+        )
+        .unwrap();
         let (tx, _rx) = unbounded_channel();
         let turn = tokio::time::timeout(
             Duration::from_secs(30),
-            client.stream(request_for("anthropic", "claude-haiku-5-5"), tx, CancellationToken::new()),
+            client.stream(
+                request_for("anthropic", "claude-haiku-5-5"),
+                tx,
+                CancellationToken::new(),
+            ),
         )
         .await
         .expect("anthropic live smoke timed out")

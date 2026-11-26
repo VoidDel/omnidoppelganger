@@ -15,9 +15,8 @@ use crate::watcher;
 /// Explicit allowlist of static document, image, audio/video, and plain-text config extensions
 /// that may be opened directly with the OS default handler (provided the file carries no Unix `+x` bits).
 const SAFE_OPEN_EXTENSIONS: &[&str] = &[
-    "md", "txt", "log", "pdf", "docx", "doc", "xlsx", "xls", "pptx", "ppt", "csv", "tsv",
-    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "mp3", "wav", "mp4", "webm",
-    "json", "yaml", "yml", "toml",
+    "md", "txt", "log", "pdf", "docx", "doc", "xlsx", "xls", "pptx", "ppt", "csv", "tsv", "png", "jpg", "jpeg", "gif",
+    "webp", "bmp", "ico", "mp3", "wav", "mp4", "webm", "json", "yaml", "yml", "toml",
 ];
 
 /// Kinds of picture the conversation shows from what the 分身 wrote, and the media type each is shown as.
@@ -39,7 +38,13 @@ const MAX_PASTE_BYTES: usize = 10 * 1024 * 1024;
 fn versioned_filename(file: &Path, version: Option<u32>) -> String {
     let clean = |s: &str| -> String {
         s.chars()
-            .map(|c| if matches!(c, '/' | '\\' | '\0') || c.is_control() { '_' } else { c })
+            .map(|c| {
+                if matches!(c, '/' | '\\' | '\0') || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
             .collect()
     };
     let stem = file
@@ -231,8 +236,7 @@ pub fn open_attachment_blocking<L: Llm + 'static>(
     }
     if reveal || !safe_to_open_directly(&file) || file.is_dir() {
         if !dry {
-            tauri_plugin_opener::reveal_item_in_dir(&file)
-                .map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
+            tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
         }
         return Ok("revealed".to_string());
     }
@@ -299,7 +303,13 @@ pub fn save_pasted_file_in(pastes_root: &Path, name: &str, content: &str) -> Res
     let cleaned: String = name
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let safe_name = cleaned.trim_matches('.').to_string();
     let safe_name = if safe_name.is_empty() || safe_name.len() > 80 {
@@ -504,12 +514,7 @@ pub async fn save_artifact_copy(
 }
 
 #[tauri::command]
-pub async fn picture(
-    app: State<'_, App>,
-    id: String,
-    path: String,
-    snapshot: Option<String>,
-) -> Result<Image, String> {
+pub async fn picture(app: State<'_, App>, id: String, path: String, snapshot: Option<String>) -> Result<Image, String> {
     let session = app.0.live(&id).await?;
     tokio::task::spawn_blocking(move || picture_blocking(&session, &path, snapshot.as_deref()))
         .await
@@ -525,9 +530,11 @@ pub async fn list_workspace_dir(
     show_ignored: bool,
 ) -> Result<Vec<odg_core::explorer::TreeEntry>, String> {
     let workspace = app.0.session_workspace(&id).await?;
-    tokio::task::spawn_blocking(move || odg_core::explorer::list_directory(&workspace, &path, show_hidden, show_ignored))
-        .await
-        .map_err(|error| error.to_string())?
+    tokio::task::spawn_blocking(move || {
+        odg_core::explorer::list_directory(&workspace, &path, show_hidden, show_ignored)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -622,11 +629,7 @@ pub async fn open_workspace_entry(
 }
 
 #[tauri::command]
-pub async fn watch_workspace(
-    handle: tauri::AppHandle,
-    app: State<'_, App>,
-    id: Option<String>,
-) -> Result<(), String> {
+pub async fn watch_workspace(handle: tauri::AppHandle, app: State<'_, App>, id: Option<String>) -> Result<(), String> {
     let target = match id {
         Some(session_id) if !session_id.is_empty() => Some(app.0.session_workspace(&session_id).await?),
         _ => None,

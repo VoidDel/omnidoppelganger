@@ -107,7 +107,8 @@ impl Jobs {
                         // Not UTF-8 at all: take it as it is, lossily.
                         Err(_) => pending.len(),
                     };
-                    let text = crate::tools::strip_ansi(&String::from_utf8_lossy(&pending[..whole]).replace("\r\n", "\n"));
+                    let text =
+                        crate::tools::strip_ansi(&String::from_utf8_lossy(&pending[..whole]).replace("\r\n", "\n"));
                     pending.drain(..whole);
                     let mut output = output.lock().unwrap();
                     output.text.push_str(&text);
@@ -123,8 +124,18 @@ impl Jobs {
             })
         };
         let streams = [
-            follow(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn tokio::io::AsyncRead + Send + Unpin>)),
-            follow(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn tokio::io::AsyncRead + Send + Unpin>)),
+            follow(
+                child
+                    .stdout
+                    .take()
+                    .map(|pipe| Box::new(pipe) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
+            ),
+            follow(
+                child
+                    .stderr
+                    .take()
+                    .map(|pipe| Box::new(pipe) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
+            ),
         ];
 
         let (watched, stopping) = (output.clone(), stop.clone());
@@ -147,7 +158,17 @@ impl Jobs {
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        self.jobs.lock().unwrap().insert(id.clone(), Job { command: line.to_string(), pid, started_at, stop, output, input });
+        self.jobs.lock().unwrap().insert(
+            id.clone(),
+            Job {
+                command: line.to_string(),
+                pid,
+                started_at,
+                stop,
+                output,
+                input,
+            },
+        );
         Ok(id)
     }
 
@@ -205,7 +226,17 @@ impl Jobs {
     pub async fn stop_from_ui(&self, id: &str) -> Option<JobSnapshot> {
         self.jobs.lock().unwrap().get(id)?.stop.cancel();
         for _ in 0..50 {
-            if self.jobs.lock().unwrap().get(id)?.output.lock().unwrap().ended.is_some() {
+            if self
+                .jobs
+                .lock()
+                .unwrap()
+                .get(id)?
+                .output
+                .lock()
+                .unwrap()
+                .ended
+                .is_some()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -217,7 +248,9 @@ impl Jobs {
     /// Remove an already-ended job from the panel; refuses if it is still running.
     pub fn remove_ended(&self, id: &str) -> bool {
         let mut jobs = self.jobs.lock().unwrap();
-        let ended = jobs.get(id).is_some_and(|job| job.output.lock().unwrap().ended.is_some());
+        let ended = jobs
+            .get(id)
+            .is_some_and(|job| job.output.lock().unwrap().ended.is_some());
         if ended {
             jobs.remove(id);
             true
@@ -230,7 +263,11 @@ impl Jobs {
         let mut output = job.output.lock().unwrap();
         let fresh = output.text[output.read..].to_string();
         output.read = output.text.len();
-        Report { command: job.command.clone(), output: fresh, ended: output.ended }
+        Report {
+            command: job.command.clone(),
+            output: fresh,
+            ended: output.ended,
+        }
     }
 
     /// What the job printed since it was last read. Waits up to `wait` for it
@@ -264,7 +301,9 @@ impl Jobs {
     pub async fn write(&self, id: &str, text: &str, close: bool) -> Result<(), String> {
         let (input, ended) = {
             let jobs = self.jobs.lock().unwrap();
-            let job = jobs.get(id).ok_or_else(|| format!("There is no background command `{id}`."))?;
+            let job = jobs
+                .get(id)
+                .ok_or_else(|| format!("There is no background command `{id}`."))?;
             let ended = job.output.lock().unwrap().ended.is_some();
             (job.input.clone(), ended)
         };
@@ -274,8 +313,12 @@ impl Jobs {
         let mut input = input.lock().await;
         let pipe = input.as_mut().ok_or_else(|| format!("Job {id}'s input was closed."))?;
         if !text.is_empty() {
-            pipe.write_all(text.as_bytes()).await.map_err(|error| format!("Job {id} took no input: {error}"))?;
-            pipe.flush().await.map_err(|error| format!("Job {id} took no input: {error}"))?;
+            pipe.write_all(text.as_bytes())
+                .await
+                .map_err(|error| format!("Job {id} took no input: {error}"))?;
+            pipe.flush()
+                .await
+                .map_err(|error| format!("Job {id} took no input: {error}"))?;
         }
         if close {
             // Dropped, the pipe closes, and the program reads the end of its input.
@@ -289,7 +332,17 @@ impl Jobs {
         self.jobs.lock().unwrap().get(id)?.stop.cancel();
         // Killing a process tree takes a moment; the report waits for it, within reason.
         for _ in 0..50 {
-            if self.jobs.lock().unwrap().get(id)?.output.lock().unwrap().ended.is_some() {
+            if self
+                .jobs
+                .lock()
+                .unwrap()
+                .get(id)?
+                .output
+                .lock()
+                .unwrap()
+                .ended
+                .is_some()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -300,8 +353,11 @@ impl Jobs {
     /// The ids and command lines of the jobs still running.
     pub fn running(&self) -> Vec<(String, String)> {
         let jobs = self.jobs.lock().unwrap();
-        let mut running: Vec<(String, String)> =
-            jobs.iter().filter(|(_, job)| job.output.lock().unwrap().ended.is_none()).map(|(id, job)| (id.clone(), job.command.clone())).collect();
+        let mut running: Vec<(String, String)> = jobs
+            .iter()
+            .filter(|(_, job)| job.output.lock().unwrap().ended.is_none())
+            .map(|(id, job)| (id.clone(), job.command.clone()))
+            .collect();
         running.sort();
         running
     }
@@ -319,12 +375,17 @@ impl Jobs {
             {
                 use std::os::windows::process::CommandExt;
                 // /T takes the processes the shell started with it.
-                let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).output();
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .creation_flags(0x0800_0000)
+                    .output();
             }
             #[cfg(not(windows))]
             {
                 // The negative id names the process group the shell leads.
-                let _ = std::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).output();
+                let _ = std::process::Command::new("kill")
+                    .args(["-KILL", "--", &format!("-{pid}")])
+                    .output();
             }
         }
     }

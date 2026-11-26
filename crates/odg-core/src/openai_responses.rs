@@ -18,7 +18,9 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::{AssistantTurn, Attempt, EndpointSource, LlmError, LlmRequest, StreamDelta, http_failure, with_retries};
+use crate::llm::{
+    AssistantTurn, Attempt, EndpointSource, LlmError, LlmRequest, StreamDelta, http_failure, with_retries,
+};
 use crate::providers::{Protocol, effort_for};
 use crate::sse::SseParser;
 
@@ -53,7 +55,10 @@ pub fn input_items(messages: &[Value]) -> Vec<Value> {
                     let source = &block["source"];
                     json!({ "type": "input_image", "image_url": format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default()) })
                 });
-                let content: Vec<Value> = std::iter::once(json!({ "type": "input_text", "text": crate::llm::TOOL_PICTURES })).chain(pictures).collect();
+                let content: Vec<Value> =
+                    std::iter::once(json!({ "type": "input_text", "text": crate::llm::TOOL_PICTURES }))
+                        .chain(pictures)
+                        .collect();
                 items.push(json!({ "role": "user", "content": content }));
             };
             for block in blocks {
@@ -63,14 +68,20 @@ pub fn input_items(messages: &[Value]) -> Vec<Value> {
                 match block["type"].as_str() {
                     Some("tool_result") => {
                         let (words, pictures) = crate::llm::tool_result_parts(block);
-                        items.push(json!({ "type": "function_call_output", "call_id": block["tool_use_id"], "output": words }));
+                        items.push(
+                            json!({ "type": "function_call_output", "call_id": block["tool_use_id"], "output": words }),
+                        );
                         returned.extend(pictures);
                     }
                     Some("text") => items.push(json!({ "role": "user", "content": block["text"] })),
                     // A picture is a message of its own, a list of one part; the text about it follows as the next.
                     Some("image") => {
                         let source = &block["source"];
-                        let url = format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default());
+                        let url = format!(
+                            "data:{};base64,{}",
+                            source["media_type"].as_str().unwrap_or_default(),
+                            source["data"].as_str().unwrap_or_default()
+                        );
                         items.push(json!({ "role": "user", "content": [{ "type": "input_image", "image_url": url }] }));
                     }
                     _ => {}
@@ -144,9 +155,18 @@ impl ResponsesAccumulator {
                     name: item["name"].as_str().unwrap_or_default().to_string(),
                 });
             }
-            "response.output_text.delta" => deltas.push(StreamDelta::TextDelta { index, text: text("delta") }),
-            "response.reasoning_summary_text.delta" => deltas.push(StreamDelta::ThinkingDelta { index, text: text("delta") }),
-            "response.function_call_arguments.delta" => deltas.push(StreamDelta::ToolInputDelta { index, partial: text("delta") }),
+            "response.output_text.delta" => deltas.push(StreamDelta::TextDelta {
+                index,
+                text: text("delta"),
+            }),
+            "response.reasoning_summary_text.delta" => deltas.push(StreamDelta::ThinkingDelta {
+                index,
+                text: text("delta"),
+            }),
+            "response.function_call_arguments.delta" => deltas.push(StreamDelta::ToolInputDelta {
+                index,
+                partial: text("delta"),
+            }),
             "response.output_item.done" => {
                 self.items.push((index, data["item"].clone()));
                 deltas.push(StreamDelta::BlockStop { index });
@@ -180,7 +200,12 @@ impl ResponsesAccumulator {
         for item in output {
             let block = match item["type"].as_str().unwrap_or_default() {
                 "reasoning" => {
-                    let summary: Vec<&str> = item["summary"].as_array().into_iter().flatten().filter_map(|part| part["text"].as_str()).collect();
+                    let summary: Vec<&str> = item["summary"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|part| part["text"].as_str())
+                        .collect();
                     json!({ "type": "thinking", "thinking": summary.join("\n\n") })
                 }
                 "message" => {
@@ -213,7 +238,10 @@ impl ResponsesAccumulator {
             block["item"] = item;
             content.push(block);
         }
-        let stop_reason = match (response["status"].as_str(), response["incomplete_details"]["reason"].as_str()) {
+        let stop_reason = match (
+            response["status"].as_str(),
+            response["incomplete_details"]["reason"].as_str(),
+        ) {
             (Some("incomplete"), Some("max_output_tokens")) => "max_tokens",
             (Some("incomplete"), Some("content_filter")) => "refusal",
             _ if calls => "tool_use",
@@ -223,7 +251,11 @@ impl ResponsesAccumulator {
             content,
             stop_reason: Some(stop_reason.to_string()),
             model: response["model"].as_str().map(str::to_string).unwrap_or(self.model),
-            usage: if response["usage"].is_object() { response["usage"].clone() } else { json!({}) },
+            usage: if response["usage"].is_object() {
+                response["usage"].clone()
+            } else {
+                json!({})
+            },
             invalid_tool_inputs: invalid,
         }
     }
@@ -231,9 +263,21 @@ impl ResponsesAccumulator {
 
 /// An error object from the stream, `{"code": ..., "message": ...}`.
 fn failure(error: &Value) -> LlmError {
-    let kind = error["code"].as_str().or_else(|| error["type"].as_str()).unwrap_or("response_failed").to_string();
-    let retryable = matches!(kind.as_str(), "server_error" | "rate_limit_exceeded" | "server_is_overloaded" | "slow_down");
-    LlmError::Api { status: None, kind, message: error["message"].as_str().unwrap_or("no message").to_string(), retryable }
+    let kind = error["code"]
+        .as_str()
+        .or_else(|| error["type"].as_str())
+        .unwrap_or("response_failed")
+        .to_string();
+    let retryable = matches!(
+        kind.as_str(),
+        "server_error" | "rate_limit_exceeded" | "server_is_overloaded" | "slow_down"
+    );
+    LlmError::Api {
+        status: None,
+        kind,
+        message: error["message"].as_str().unwrap_or("no message").to_string(),
+        retryable,
+    }
 }
 
 pub struct ResponsesClient {
@@ -243,11 +287,19 @@ pub struct ResponsesClient {
 
 impl ResponsesClient {
     pub fn new(endpoints: EndpointSource) -> Result<Self, LlmError> {
-        let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).build().map_err(|error| LlmError::Network(error.to_string()))?;
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| LlmError::Network(error.to_string()))?;
         Ok(Self { http, endpoints })
     }
 
-    pub async fn stream(&self, request: LlmRequest, deltas: UnboundedSender<StreamDelta>, cancel: CancellationToken) -> Result<AssistantTurn, LlmError> {
+    pub async fn stream(
+        &self,
+        request: LlmRequest,
+        deltas: UnboundedSender<StreamDelta>,
+        cancel: CancellationToken,
+    ) -> Result<AssistantTurn, LlmError> {
         with_retries(&deltas, &cancel, || {
             let (request, deltas, cancel) = (&request, &deltas, &cancel);
             async move {
@@ -259,9 +311,18 @@ impl ResponsesClient {
         .await
     }
 
-    async fn attempt(&self, request: &LlmRequest, deltas: &UnboundedSender<StreamDelta>, cancel: &CancellationToken, forwarded: &mut bool) -> Attempt {
+    async fn attempt(
+        &self,
+        request: &LlmRequest,
+        deltas: &UnboundedSender<StreamDelta>,
+        cancel: &CancellationToken,
+        forwarded: &mut bool,
+    ) -> Attempt {
         let endpoint = (self.endpoints)(&request.provider);
-        let key = endpoint.key.filter(|key| !key.trim().is_empty()).ok_or((LlmError::MissingKey, None))?;
+        let key = endpoint
+            .key
+            .filter(|key| !key.trim().is_empty())
+            .ok_or((LlmError::MissingKey, None))?;
         let send = self
             .http
             .post(format!("{}/responses", endpoint.base_url.trim_end_matches('/')))
@@ -295,7 +356,12 @@ impl ResponsesClient {
                 if raw.is_empty() || raw == "[DONE]" {
                     continue;
                 }
-                let data: Value = serde_json::from_str(raw).map_err(|error| (LlmError::Protocol(format!("event {} is not JSON: {error}", event.event)), None))?;
+                let data: Value = serde_json::from_str(raw).map_err(|error| {
+                    (
+                        LlmError::Protocol(format!("event {} is not JSON: {error}", event.event)),
+                        None,
+                    )
+                })?;
                 for delta in accumulator.apply(&data).map_err(|error| (error, None))? {
                     *forwarded = true;
                     let _ = deltas.send(delta);
@@ -303,7 +369,10 @@ impl ResponsesClient {
             }
         }
         if !accumulator.finished() {
-            return Err((LlmError::Network("the stream ended before the response was complete".to_string()), None));
+            return Err((
+                LlmError::Network("the stream ended before the response was complete".to_string()),
+                None,
+            ));
         }
         Ok(accumulator.finish())
     }
@@ -345,33 +414,52 @@ mod tests {
             deltas.extend(accumulator.apply(event).unwrap());
         }
         assert!(accumulator.finished());
-        assert!(deltas.contains(&StreamDelta::ToolUseStart { index: 1, id: "call_1".into(), name: "read_file".into() }));
+        assert!(deltas.contains(&StreamDelta::ToolUseStart {
+            index: 1,
+            id: "call_1".into(),
+            name: "read_file".into()
+        }));
         let turn = accumulator.finish();
         assert_eq!(turn.stop_reason.as_deref(), Some("tool_use"));
         assert_eq!(turn.usage["input_tokens"], 10);
-        assert_eq!(turn.content, vec![
-            json!({ "type": "thinking", "thinking": "", "item": reasoning() }),
-            json!({ "type": "tool_use", "id": "call_1", "name": "read_file", "input": { "path": "a" }, "item": call("{\"path\":\"a\"}") }),
-        ]);
+        assert_eq!(
+            turn.content,
+            vec![
+                json!({ "type": "thinking", "thinking": "", "item": reasoning() }),
+                json!({ "type": "tool_use", "id": "call_1", "name": "read_file", "input": { "path": "a" }, "item": call("{\"path\":\"a\"}") }),
+            ]
+        );
     }
 
     #[test]
     fn reports_cut_off_responses_failures_and_bad_arguments() {
         let finish = |response: Value| {
             let mut accumulator = ResponsesAccumulator::default();
-            accumulator.apply(&json!({ "type": "response.incomplete", "response": response })).unwrap();
+            accumulator
+                .apply(&json!({ "type": "response.incomplete", "response": response }))
+                .unwrap();
             accumulator.finish()
         };
-        let cut = finish(json!({ "status": "incomplete", "incomplete_details": { "reason": "max_output_tokens" }, "output": [call("{\"path\": \"a")] }));
+        let cut = finish(
+            json!({ "status": "incomplete", "incomplete_details": { "reason": "max_output_tokens" }, "output": [call("{\"path\": \"a")] }),
+        );
         assert_eq!(cut.stop_reason.as_deref(), Some("max_tokens"));
-        assert_eq!(cut.invalid_tool_inputs.get("call_1").map(String::as_str), Some("{\"path\": \"a"));
+        assert_eq!(
+            cut.invalid_tool_inputs.get("call_1").map(String::as_str),
+            Some("{\"path\": \"a")
+        );
         let said = finish(json!({ "status": "completed", "output": [message("好的。")] }));
-        assert_eq!((said.stop_reason.as_deref(), said.content[0]["text"].as_str()), (Some("end_turn"), Some("好的。")));
+        assert_eq!(
+            (said.stop_reason.as_deref(), said.content[0]["text"].as_str()),
+            (Some("end_turn"), Some("好的。"))
+        );
 
         let mut accumulator = ResponsesAccumulator::default();
         let failed = accumulator.apply(&json!({ "type": "response.failed", "response": { "error": { "code": "server_error", "message": "oops" } } })).unwrap_err();
         assert!(failed.retryable());
-        let invalid = accumulator.apply(&json!({ "type": "error", "code": "invalid_prompt", "message": "no" })).unwrap_err();
+        let invalid = accumulator
+            .apply(&json!({ "type": "error", "code": "invalid_prompt", "message": "no" }))
+            .unwrap_err();
         assert!(!invalid.retryable());
     }
 
@@ -387,7 +475,11 @@ mod tests {
         )])
         .await;
         let base_url = format!("{address}/v1");
-        let client = ResponsesClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: base_url.clone(), key: Some("sk-openai".into()) })).unwrap();
+        let client = ResponsesClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint {
+            base_url: base_url.clone(),
+            key: Some("sk-openai".into()),
+        }))
+        .unwrap();
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let request = LlmRequest {
             provider: "openai".into(),
@@ -399,10 +491,21 @@ mod tests {
             effort: "high".into(),
         };
         let turn = client.stream(request, sender, CancellationToken::new()).await.unwrap();
-        assert_eq!((turn.model.as_str(), turn.content[0]["text"].as_str()), ("gpt-6.2-sol", Some("好")));
+        assert_eq!(
+            (turn.model.as_str(), turn.content[0]["text"].as_str()),
+            ("gpt-6.2-sol", Some("好"))
+        );
         let requests = server.await.unwrap();
-        assert!(requests[0].starts_with("POST /v1/responses HTTP/1.1"), "{}", requests[0]);
-        assert!(requests[0].to_ascii_lowercase().contains("authorization: bearer sk-openai"));
+        assert!(
+            requests[0].starts_with("POST /v1/responses HTTP/1.1"),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            requests[0]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer sk-openai")
+        );
     }
 
     #[test]
@@ -418,13 +521,16 @@ mod tests {
                 { "type": "text", "text": "also b" },
             ] }),
         ];
-        assert_eq!(input_items(&messages), vec![
-            json!({ "role": "user", "content": "read a" }),
-            reasoning(),
-            call("{\"path\":\"a\"}"),
-            json!({ "type": "function_call_output", "call_id": "call_1", "output": "1\thi" }),
-            json!({ "role": "user", "content": "also b" }),
-        ]);
+        assert_eq!(
+            input_items(&messages),
+            vec![
+                json!({ "role": "user", "content": "read a" }),
+                reasoning(),
+                call("{\"path\":\"a\"}"),
+                json!({ "type": "function_call_output", "call_id": "call_1", "output": "1\thi" }),
+                json!({ "role": "user", "content": "also b" }),
+            ]
+        );
 
         let request = LlmRequest {
             provider: "openai".into(),
@@ -436,36 +542,54 @@ mod tests {
             effort: "xhigh".into(),
         };
         let body = request_body(&request);
-        assert_eq!((body["store"].as_bool(), body["instructions"].as_str()), (Some(false), Some("sys")));
+        assert_eq!(
+            (body["store"].as_bool(), body["instructions"].as_str()),
+            (Some(false), Some("sys"))
+        );
         assert_eq!(body["reasoning"], json!({ "effort": "xhigh" }));
-        assert_eq!(body["tools"][0], json!({ "type": "function", "name": "read_file", "description": "d", "parameters": { "type": "object" }, "strict": false }));
+        assert_eq!(
+            body["tools"][0],
+            json!({ "type": "function", "name": "read_file", "description": "d", "parameters": { "type": "object" }, "strict": false })
+        );
         assert_eq!(body["input"].as_array().unwrap().len(), 5);
     }
 
     #[test]
     fn sends_an_image_as_an_input_image_ahead_of_the_text() {
-        let image = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/jpeg", "data": "aGk=" } });
-        let items = input_items(&[json!({ "role": "user", "content": [image, { "type": "text", "text": "what is this?" }] })]);
-        assert_eq!(items, [
-            json!({ "role": "user", "content": [{ "type": "input_image", "image_url": "data:image/jpeg;base64,aGk=" }] }),
-            json!({ "role": "user", "content": "what is this?" }),
-        ]);
+        let image =
+            json!({ "type": "image", "source": { "type": "base64", "media_type": "image/jpeg", "data": "aGk=" } });
+        let items =
+            input_items(&[json!({ "role": "user", "content": [image, { "type": "text", "text": "what is this?" }] })]);
+        assert_eq!(
+            items,
+            [
+                json!({ "role": "user", "content": [{ "type": "input_image", "image_url": "data:image/jpeg;base64,aGk=" }] }),
+                json!({ "role": "user", "content": "what is this?" }),
+            ]
+        );
     }
 
     #[test]
     fn a_picture_a_tool_returned_follows_the_outputs_as_the_users() {
-        let picture = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
+        let picture =
+            json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
         let read = json!({ "type": "tool_result", "tool_use_id": "c1", "content": [{ "type": "text", "text": "a.png is a PNG picture." }, picture], "is_error": false });
         let plain = json!({ "type": "tool_result", "tool_use_id": "c2", "content": "ok", "is_error": false });
-        let items = input_items(&[json!({ "role": "user", "content": [read, plain, { "type": "text", "text": "and this" }] })]);
-        assert_eq!(items, [
-            json!({ "type": "function_call_output", "call_id": "c1", "output": "a.png is a PNG picture." }),
-            json!({ "type": "function_call_output", "call_id": "c2", "output": "ok" }),
-            json!({ "role": "user", "content": [{ "type": "input_text", "text": crate::llm::TOOL_PICTURES }, { "type": "input_image", "image_url": "data:image/png;base64,aGk=" }] }),
-            json!({ "role": "user", "content": "and this" }),
-        ]);
+        let items =
+            input_items(&[json!({ "role": "user", "content": [read, plain, { "type": "text", "text": "and this" }] })]);
+        assert_eq!(
+            items,
+            [
+                json!({ "type": "function_call_output", "call_id": "c1", "output": "a.png is a PNG picture." }),
+                json!({ "type": "function_call_output", "call_id": "c2", "output": "ok" }),
+                json!({ "role": "user", "content": [{ "type": "input_text", "text": crate::llm::TOOL_PICTURES }, { "type": "input_image", "image_url": "data:image/png;base64,aGk=" }] }),
+                json!({ "role": "user", "content": "and this" }),
+            ]
+        );
         // With nothing after the outputs, the pictures still follow them.
-        let alone = input_items(&[json!({ "role": "user", "content": [json!({ "type": "tool_result", "tool_use_id": "c1", "content": [{ "type": "text", "text": "x" }, { "type": "image", "source": { "type": "base64", "media_type": "image/gif", "data": "aGk=" } }], "is_error": false })] })]);
+        let alone = input_items(&[
+            json!({ "role": "user", "content": [json!({ "type": "tool_result", "tool_use_id": "c1", "content": [{ "type": "text", "text": "x" }, { "type": "image", "source": { "type": "base64", "media_type": "image/gif", "data": "aGk=" } }], "is_error": false })] }),
+        ]);
         assert_eq!(alone.len(), 2);
         assert_eq!(alone[1]["content"][1]["image_url"], "data:image/gif;base64,aGk=");
     }
@@ -478,7 +602,10 @@ mod tests {
             model: "gpt-6.2-sol".into(),
             system: "sys".into(),
             messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })],
-            tools: vec![json!({ "type": "web_search" }), json!({ "name": "read_file", "description": "d", "input_schema": { "type": "object" } })],
+            tools: vec![
+                json!({ "type": "web_search" }),
+                json!({ "name": "read_file", "description": "d", "input_schema": { "type": "object" } }),
+            ],
             effort: "low".into(),
         };
         let body = request_body(&request);
@@ -498,10 +625,15 @@ mod tests {
             json!({ "type": "response.output_text.delta", "output_index": 0, "delta": "心如止水" }),
             completed
         );
-        let raw_http = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
+        let raw_http =
+            format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
         let (address, _server) = serve(vec![raw_http]).await;
         let base_url = format!("{address}/v1");
-        let client = ResponsesClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: base_url.clone(), key: Some("sk-openai".into()) })).unwrap();
+        let client = ResponsesClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint {
+            base_url: base_url.clone(),
+            key: Some("sk-openai".into()),
+        }))
+        .unwrap();
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let request = LlmRequest {
             provider: "openai".into(),
@@ -513,6 +645,9 @@ mod tests {
             effort: "high".into(),
         };
         let turn = client.stream(request, sender, CancellationToken::new()).await.unwrap();
-        assert_eq!((turn.model.as_str(), turn.content[0]["text"].as_str()), ("gpt-6.2-sol", Some("心如止水")));
+        assert_eq!(
+            (turn.model.as_str(), turn.content[0]["text"].as_str()),
+            ("gpt-6.2-sol", Some("心如止水"))
+        );
     }
 }

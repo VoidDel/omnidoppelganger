@@ -5,9 +5,12 @@ use crate::llm::{StreamDelta, Tokens};
 use crate::policy::Mode;
 
 use super::args::{build_turn_args, detect_untrusted_cli_configs};
-use super::mcp_bridge::{apply_mcp_bridge_args_in, build_agy_mcp_add_args, sync_antigravity_mcp_in, sync_cursor_mcp_in};
+use super::mcp_bridge::{
+    apply_mcp_bridge_args_in, build_agy_mcp_add_args, sync_antigravity_mcp_in, sync_cursor_mcp_in,
+};
 use super::models::{
-    cursor_effort_rank, parse_cursor_models_output, parse_opencode_api_models, parse_opencode_models_output, pick_cursor_variant,
+    cursor_effort_rank, parse_cursor_models_output, parse_opencode_api_models, parse_opencode_models_output,
+    pick_cursor_variant,
 };
 use super::parser::openai_like_tokens;
 use super::prompt::{
@@ -19,96 +22,477 @@ use super::*;
 #[test]
 fn builds_codex_claude_cursor_grok_and_opencode_cli_arguments() {
     // Codex: Manual & Plan are read-only; Edit uses workspace-write; Auto adds --approve-for-me; Bypass without sandbox uses full bypass.
-    let codex_manual = build_args(CliKind::Codex, "inspect", None, None, "gpt-5.4", "high", Mode::Manual, false, false);
+    let codex_manual = build_args(
+        CliKind::Codex,
+        "inspect",
+        None,
+        None,
+        "gpt-5.4",
+        "high",
+        Mode::Manual,
+        false,
+        false,
+    );
     assert_eq!(
         codex_manual,
-        ["exec", "--json", "--skip-git-repo-check", "--model", "gpt-5.4", "-c", "model_reasoning_effort=\"high\"", "--sandbox", "read-only", "--", "inspect"]
+        [
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--model",
+            "gpt-5.4",
+            "-c",
+            "model_reasoning_effort=\"high\"",
+            "--sandbox",
+            "read-only",
+            "--",
+            "inspect"
+        ]
     );
-    let codex_edit = build_args(CliKind::Codex, "fix bug", None, None, "gpt-5.4", "max", Mode::Edit, false, false);
+    let codex_edit = build_args(
+        CliKind::Codex,
+        "fix bug",
+        None,
+        None,
+        "gpt-5.4",
+        "max",
+        Mode::Edit,
+        false,
+        false,
+    );
     assert_eq!(
         codex_edit,
-        ["exec", "--json", "--skip-git-repo-check", "--model", "gpt-5.4", "-c", "model_reasoning_effort=\"xhigh\"", "--sandbox", "workspace-write", "--", "fix bug"]
+        [
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--model",
+            "gpt-5.4",
+            "-c",
+            "model_reasoning_effort=\"xhigh\"",
+            "--sandbox",
+            "workspace-write",
+            "--",
+            "fix bug"
+        ]
     );
-    let codex_auto = build_args(CliKind::Codex, "test", None, None, "gpt-5.4", "high", Mode::Auto, false, false);
+    let codex_auto = build_args(
+        CliKind::Codex,
+        "test",
+        None,
+        None,
+        "gpt-5.4",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     assert_eq!(
         codex_auto,
-        ["exec", "--json", "--skip-git-repo-check", "--model", "gpt-5.4", "-c", "model_reasoning_effort=\"high\"", "--sandbox", "workspace-write", "--approve-for-me", "--", "test"]
+        [
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--model",
+            "gpt-5.4",
+            "-c",
+            "model_reasoning_effort=\"high\"",
+            "--sandbox",
+            "workspace-write",
+            "--approve-for-me",
+            "--",
+            "test"
+        ]
     );
-    let codex_resume = build_args(CliKind::Codex, "next", None, Some("thr-1"), "gpt-5.4", "high", Mode::Edit, false, false);
+    let codex_resume = build_args(
+        CliKind::Codex,
+        "next",
+        None,
+        Some("thr-1"),
+        "gpt-5.4",
+        "high",
+        Mode::Edit,
+        false,
+        false,
+    );
     assert_eq!(
         codex_resume,
-        ["exec", "resume", "thr-1", "--json", "--skip-git-repo-check", "--model", "gpt-5.4", "-c", "model_reasoning_effort=\"high\"", "--", "next"]
+        [
+            "exec",
+            "resume",
+            "thr-1",
+            "--json",
+            "--skip-git-repo-check",
+            "--model",
+            "gpt-5.4",
+            "-c",
+            "model_reasoning_effort=\"high\"",
+            "--",
+            "next"
+        ]
     );
 
     // Claude Code: Manual -> manual (never acceptEdits), Edit -> acceptEdits, Auto -> auto, Bypass -> bypassPermissions + --dangerously-skip-permissions.
-    let claude_manual = build_args(CliKind::ClaudeCode, "check", None, None, "sonnet", "medium", Mode::Manual, false, false);
+    let claude_manual = build_args(
+        CliKind::ClaudeCode,
+        "check",
+        None,
+        None,
+        "sonnet",
+        "medium",
+        Mode::Manual,
+        false,
+        false,
+    );
     assert_eq!(
         claude_manual,
-        ["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", "sonnet", "--effort", "medium", "--permission-mode", "manual", "--", "check"]
+        [
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model",
+            "sonnet",
+            "--effort",
+            "medium",
+            "--permission-mode",
+            "manual",
+            "--",
+            "check"
+        ]
     );
-    let claude_edit = build_args(CliKind::ClaudeCode, "patch", None, None, "sonnet", "high", Mode::Edit, false, false);
-    assert!(claude_edit.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]));
+    let claude_edit = build_args(
+        CliKind::ClaudeCode,
+        "patch",
+        None,
+        None,
+        "sonnet",
+        "high",
+        Mode::Edit,
+        false,
+        false,
+    );
+    assert!(
+        claude_edit
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "acceptEdits"])
+    );
     assert!(!claude_edit.iter().any(|a| a == "--dangerously-skip-permissions"));
-    let claude_bypass = build_args(CliKind::ClaudeCode, "review", None, Some("ses-9"), "opus", "xhigh", Mode::Bypass, false, false);
+    let claude_bypass = build_args(
+        CliKind::ClaudeCode,
+        "review",
+        None,
+        Some("ses-9"),
+        "opus",
+        "xhigh",
+        Mode::Bypass,
+        false,
+        false,
+    );
     assert_eq!(
         claude_bypass,
-        ["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--resume", "ses-9", "--model", "opus", "--effort", "xhigh", "--permission-mode", "bypassPermissions", "--dangerously-skip-permissions", "--", "review"]
+        [
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--resume",
+            "ses-9",
+            "--model",
+            "opus",
+            "--effort",
+            "xhigh",
+            "--permission-mode",
+            "bypassPermissions",
+            "--dangerously-skip-permissions",
+            "--",
+            "review"
+        ]
     );
 
     // Cursor: Plan -> --mode plan (no --approve-mcps, no --force); Manual -> --mode ask; Edit -> no --force; Auto -> --auto-review + --approve-mcps; Bypass -> --force; sandboxed -> --sandbox enabled; untrusted -> no --trust.
-    let cursor_plan = build_args(CliKind::Cursor, "explain", Some(Path::new("/tmp/proj")), Some("chat-2"), "auto", "high", Mode::Plan, false, false);
+    let cursor_plan = build_args(
+        CliKind::Cursor,
+        "explain",
+        Some(Path::new("/tmp/proj")),
+        Some("chat-2"),
+        "auto",
+        "high",
+        Mode::Plan,
+        false,
+        false,
+    );
     assert_eq!(
         cursor_plan,
-        ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--workspace", "/tmp/proj", "--resume", "chat-2", "--model", "auto", "--mode", "plan", "--", "explain"]
+        [
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--stream-partial-output",
+            "--trust",
+            "--workspace",
+            "/tmp/proj",
+            "--resume",
+            "chat-2",
+            "--model",
+            "auto",
+            "--mode",
+            "plan",
+            "--",
+            "explain"
+        ]
     );
-    let cursor_untrusted_manual = build_turn_args(CliKind::Cursor, "read", Some(Path::new("/tmp/proj")), None, "auto", "high", Mode::Manual, true, false, false);
+    let cursor_untrusted_manual = build_turn_args(
+        CliKind::Cursor,
+        "read",
+        Some(Path::new("/tmp/proj")),
+        None,
+        "auto",
+        "high",
+        Mode::Manual,
+        true,
+        false,
+        false,
+    );
     assert_eq!(
         cursor_untrusted_manual,
-        ["--print", "--output-format", "stream-json", "--stream-partial-output", "--workspace", "/tmp/proj", "--model", "auto", "--sandbox", "enabled", "--mode", "ask", "--", "read"]
+        [
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--stream-partial-output",
+            "--workspace",
+            "/tmp/proj",
+            "--model",
+            "auto",
+            "--sandbox",
+            "enabled",
+            "--mode",
+            "ask",
+            "--",
+            "read"
+        ]
     );
-    let cursor_edit = build_args(CliKind::Cursor, "edit only", None, None, "grok-4.7-medium", "high", Mode::Edit, false, false);
+    let cursor_edit = build_args(
+        CliKind::Cursor,
+        "edit only",
+        None,
+        None,
+        "grok-4.7-medium",
+        "high",
+        Mode::Edit,
+        false,
+        false,
+    );
     assert_eq!(
         cursor_edit,
-        ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--model", "grok-4.7-medium", "--", "edit only"]
+        [
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--stream-partial-output",
+            "--trust",
+            "--model",
+            "grok-4.7-medium",
+            "--",
+            "edit only"
+        ]
     );
-    let cursor_auto = build_args(CliKind::Cursor, "fix", None, None, "grok-4.7-medium", "high", Mode::Auto, false, false);
+    let cursor_auto = build_args(
+        CliKind::Cursor,
+        "fix",
+        None,
+        None,
+        "grok-4.7-medium",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     assert_eq!(
         cursor_auto,
-        ["--print", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--approve-mcps", "--model", "grok-4.7-medium", "--auto-review", "--", "fix"]
+        [
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--stream-partial-output",
+            "--trust",
+            "--approve-mcps",
+            "--model",
+            "grok-4.7-medium",
+            "--auto-review",
+            "--",
+            "fix"
+        ]
     );
-    let cursor_bypass = build_args(CliKind::Cursor, "ship", None, None, "auto", "high", Mode::Bypass, false, false);
+    let cursor_bypass = build_args(
+        CliKind::Cursor,
+        "ship",
+        None,
+        None,
+        "auto",
+        "high",
+        Mode::Bypass,
+        false,
+        false,
+    );
     assert!(cursor_bypass.iter().any(|a| a == "--force"));
 
     // Grok: Manual -> default, Edit -> acceptEdits (no --always-approve), Auto -> auto (no --always-approve), Bypass -> bypassPermissions + --always-approve.
-    let grok_edit = build_args(CliKind::Grok, "edit", Some(Path::new("/tmp/proj")), None, "grok-4.7", "high", Mode::Edit, false, false);
+    let grok_edit = build_args(
+        CliKind::Grok,
+        "edit",
+        Some(Path::new("/tmp/proj")),
+        None,
+        "grok-4.7",
+        "high",
+        Mode::Edit,
+        false,
+        false,
+    );
     assert_eq!(
         grok_edit,
-        ["--output-format", "streaming-json", "--cwd", "/tmp/proj", "--model", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "acceptEdits", "-p", "edit"]
+        [
+            "--output-format",
+            "streaming-json",
+            "--cwd",
+            "/tmp/proj",
+            "--model",
+            "grok-4.7",
+            "--reasoning-effort",
+            "high",
+            "--permission-mode",
+            "acceptEdits",
+            "-p",
+            "edit"
+        ]
     );
-    let grok_auto = build_args(CliKind::Grok, "hello", Some(Path::new("/tmp/proj")), Some("g-1"), "grok-4.7", "high", Mode::Auto, true, false);
+    let grok_auto = build_args(
+        CliKind::Grok,
+        "hello",
+        Some(Path::new("/tmp/proj")),
+        Some("g-1"),
+        "grok-4.7",
+        "high",
+        Mode::Auto,
+        true,
+        false,
+    );
     assert_eq!(
         grok_auto,
-        ["--output-format", "streaming-json", "--cwd", "/tmp/proj", "--resume", "g-1", "--model", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "auto", "--sandbox", "workspace-write", "-p", "hello"]
+        [
+            "--output-format",
+            "streaming-json",
+            "--cwd",
+            "/tmp/proj",
+            "--resume",
+            "g-1",
+            "--model",
+            "grok-4.7",
+            "--reasoning-effort",
+            "high",
+            "--permission-mode",
+            "auto",
+            "--sandbox",
+            "workspace-write",
+            "-p",
+            "hello"
+        ]
     );
-    let grok_bypass = build_args(CliKind::Grok, "yolo", None, None, "grok-4.7", "high", Mode::Bypass, false, false);
-    assert!(grok_bypass.windows(2).any(|w| w == ["--permission-mode", "bypassPermissions"]));
+    let grok_bypass = build_args(
+        CliKind::Grok,
+        "yolo",
+        None,
+        None,
+        "grok-4.7",
+        "high",
+        Mode::Bypass,
+        false,
+        false,
+    );
+    assert!(
+        grok_bypass
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "bypassPermissions"])
+    );
     assert!(grok_bypass.iter().any(|a| a == "--always-approve"));
 
     // OpenCode: Plan & Manual -> --agent plan; Edit -> default; Auto & Bypass -> --auto.
-    let opencode_manual = build_args(CliKind::OpenCode, "inspect", None, None, "anthropic/claude-sonnet-4-6", "high", Mode::Manual, false, false);
+    let opencode_manual = build_args(
+        CliKind::OpenCode,
+        "inspect",
+        None,
+        None,
+        "anthropic/claude-sonnet-4-6",
+        "high",
+        Mode::Manual,
+        false,
+        false,
+    );
     assert_eq!(
         opencode_manual,
-        ["run", "--format", "json", "--model", "anthropic/claude-sonnet-4-6", "--agent", "plan", "--", "inspect"]
+        [
+            "run",
+            "--format",
+            "json",
+            "--model",
+            "anthropic/claude-sonnet-4-6",
+            "--agent",
+            "plan",
+            "--",
+            "inspect"
+        ]
     );
-    let opencode_edit = build_args(CliKind::OpenCode, "refactor", None, Some("ses_7"), "anthropic/claude-sonnet-4-6", "high", Mode::Edit, false, false);
+    let opencode_edit = build_args(
+        CliKind::OpenCode,
+        "refactor",
+        None,
+        Some("ses_7"),
+        "anthropic/claude-sonnet-4-6",
+        "high",
+        Mode::Edit,
+        false,
+        false,
+    );
     assert_eq!(
         opencode_edit,
-        ["run", "--format", "json", "--session", "ses_7", "--model", "anthropic/claude-sonnet-4-6", "--", "refactor"]
+        [
+            "run",
+            "--format",
+            "json",
+            "--session",
+            "ses_7",
+            "--model",
+            "anthropic/claude-sonnet-4-6",
+            "--",
+            "refactor"
+        ]
     );
-    let opencode_auto = build_args(CliKind::OpenCode, "fix", None, None, "opencode/big-pickle", "high", Mode::Auto, false, false);
+    let opencode_auto = build_args(
+        CliKind::OpenCode,
+        "fix",
+        None,
+        None,
+        "opencode/big-pickle",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     assert_eq!(
         opencode_auto,
-        ["run", "--format", "json", "--model", "opencode/big-pickle", "--auto", "--", "fix"]
+        [
+            "run",
+            "--format",
+            "json",
+            "--model",
+            "opencode/big-pickle",
+            "--auto",
+            "--",
+            "fix"
+        ]
     );
     assert_eq!(serde_json::to_value(CliKind::OpenCode).unwrap(), "opencode");
 }
@@ -136,10 +520,20 @@ fn parses_opencode_v2_stream_events_and_models() {
     );
     assert!(matches!(
         ev4.as_slice(),
-        [CliEvent::AgentText { done: true, tokens: Some(Tokens { input: 18044, cached: 17256, output: 11 }), .. }]
+        [CliEvent::AgentText {
+            done: true,
+            tokens: Some(Tokens {
+                input: 18044,
+                cached: 17256,
+                output: 11
+            }),
+            ..
+        }]
     ));
 
-    let listed = parse_opencode_models_output("opencode/big-pickle\nopencode/claude-sonnet-5-5\nopencode/big-pickle\nnot a model\n");
+    let listed = parse_opencode_models_output(
+        "opencode/big-pickle\nopencode/claude-sonnet-5-5\nopencode/big-pickle\nnot a model\n",
+    );
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].id, "opencode/big-pickle");
     assert_eq!(listed[0].name, "big-pickle · 免费");
@@ -151,7 +545,10 @@ fn parses_opencode_v2_stream_events_and_models() {
         {"id":"big-pickle","providerID":"opencode","name":"Big Pickle","cost":[{"input":0,"output":0}],"limit":{"context":200000}}
     ]}"#;
     let all = parse_opencode_api_models(api_json, false);
-    assert_eq!(all.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["opencode/big-pickle", "opencode-go/glm-5.3", "opencode/gemini-4-neon"]);
+    assert_eq!(
+        all.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        vec!["opencode/big-pickle", "opencode-go/glm-5.3", "opencode/gemini-4-neon"]
+    );
     assert_eq!(all[0].name, "Big Pickle · 免费");
     assert_eq!(all[1].name, "GLM-5.3 · Go");
     assert_eq!(all[2].name, "Gemini 4 Neon");
@@ -165,11 +562,21 @@ fn parses_opencode_v2_stream_events_and_models() {
 #[test]
 fn builds_cross_engine_handoff_brief_from_prior_turns() {
     let events = vec![
-        crate::events::Envelope { seq: 1, ts: "2026-11-24T00:00:00Z".into(), event: Event::TurnStart { turn: 1 } },
+        crate::events::Envelope {
+            seq: 1,
+            ts: "2026-11-24T00:00:00Z".into(),
+            event: Event::TurnStart { turn: 1 },
+        },
         crate::events::Envelope {
             seq: 2,
             ts: "2026-11-24T00:00:01Z".into(),
-            event: Event::UserMessage { text: "修一下 motor.c 的重锁逻辑".into(), steering: false, mode: Mode::Auto, images: vec![], files: vec![] },
+            event: Event::UserMessage {
+                text: "修一下 motor.c 的重锁逻辑".into(),
+                steering: false,
+                mode: Mode::Auto,
+                images: vec![],
+                files: vec![],
+            },
         },
         crate::events::Envelope {
             seq: 3,
@@ -194,7 +601,11 @@ fn builds_cross_engine_handoff_brief_from_prior_turns() {
                 tokens: None,
             },
         },
-        crate::events::Envelope { seq: 5, ts: "2026-11-24T00:00:04Z".into(), event: Event::TurnStart { turn: 2 } },
+        crate::events::Envelope {
+            seq: 5,
+            ts: "2026-11-24T00:00:04Z".into(),
+            event: Event::TurnStart { turn: 2 },
+        },
     ];
     assert!(build_handoff_brief(&events, 1).is_none());
     let brief = build_handoff_brief(&events, 2).expect("handoff brief");
@@ -216,7 +627,12 @@ fn normalizes_update_steps_and_synthesizes_tool_result_meta() {
         }),
     );
     assert_eq!(name, "update_todos");
-    let (_, todo_meta) = clean_tool_result(&name, &input, "Created At: 2026-11-24T14:00:00+08:00\nCompleted At: 2026-11-24T14:00:01+08:00\nOK", false);
+    let (_, todo_meta) = clean_tool_result(
+        &name,
+        &input,
+        "Created At: 2026-11-24T14:00:00+08:00\nCompleted At: 2026-11-24T14:00:01+08:00\nOK",
+        false,
+    );
     assert_eq!(
         todo_meta["todos"],
         json!([
@@ -235,11 +651,24 @@ fn normalizes_update_steps_and_synthesizes_tool_result_meta() {
     assert_eq!(cmd_out, "hi\n");
     assert_eq!(cmd_meta["exit_code"], 0);
 
-    let (_, read_meta) = clean_tool_result("read_file", &json!({ "path": "a.py" }), "1413 lines, 79900 bytes", false);
+    let (_, read_meta) = clean_tool_result(
+        "read_file",
+        &json!({ "path": "a.py" }),
+        "1413 lines, 79900 bytes",
+        false,
+    );
     assert_eq!(read_meta["lines"], 1413);
 
-    let (_, edit_meta) = clean_tool_result("edit_file", &json!({ "path": "a.py" }), "Made 1 replacement in a.py starting at line 10 (+23/-7 lines).", false);
-    assert_eq!((edit_meta["added"].as_u64(), edit_meta["removed"].as_u64()), (Some(23), Some(7)));
+    let (_, edit_meta) = clean_tool_result(
+        "edit_file",
+        &json!({ "path": "a.py" }),
+        "Made 1 replacement in a.py starting at line 10 (+23/-7 lines).",
+        false,
+    );
+    assert_eq!(
+        (edit_meta["added"].as_u64(), edit_meta["removed"].as_u64()),
+        (Some(23), Some(7))
+    );
 }
 
 #[test]
@@ -247,25 +676,55 @@ fn parses_codex_ndjson_stream_with_incremental_agent_message() {
     let mut p = StreamParser::default();
     assert_eq!(
         p.parse_line(CliKind::Codex, r#"{"type":"thread.started","thread_id":"t-42"}"#),
-        vec![CliEvent::Init { conversation_id: Some("t-42".into()) }]
+        vec![CliEvent::Init {
+            conversation_id: Some("t-42".into())
+        }]
     );
     assert_eq!(
-        p.parse_line(CliKind::Codex, r#"{"type":"item.updated","item":{"id":"m1","type":"agent_message","text":"Hel"}}"#),
-        vec![CliEvent::AgentText { conversation_id: None, delta: "Hel".into(), done: false, usage: Value::Null, tokens: None }]
+        p.parse_line(
+            CliKind::Codex,
+            r#"{"type":"item.updated","item":{"id":"m1","type":"agent_message","text":"Hel"}}"#
+        ),
+        vec![CliEvent::AgentText {
+            conversation_id: None,
+            delta: "Hel".into(),
+            done: false,
+            usage: Value::Null,
+            tokens: None
+        }]
     );
     assert_eq!(
-        p.parse_line(CliKind::Codex, r#"{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"Hello!"}}"#),
-        vec![CliEvent::AgentText { conversation_id: None, delta: "lo!".into(), done: true, usage: Value::Null, tokens: None }]
+        p.parse_line(
+            CliKind::Codex,
+            r#"{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"Hello!"}}"#
+        ),
+        vec![CliEvent::AgentText {
+            conversation_id: None,
+            delta: "lo!".into(),
+            done: true,
+            usage: Value::Null,
+            tokens: None
+        }]
     );
-    let done = p.parse_line(CliKind::Codex, r#"{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":12}}"#);
-    assert_eq!(done[0], CliEvent::Result {
-        conversation_id: None,
-        success: true,
-        response: String::new(),
-        error: None,
-        usage: json!({"input_tokens":200,"cached_input_tokens":50,"output_tokens":12}),
-        tokens: Some(Tokens { input: 200, cached: 50, output: 12 }),
-    });
+    let done = p.parse_line(
+        CliKind::Codex,
+        r#"{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":12}}"#,
+    );
+    assert_eq!(
+        done[0],
+        CliEvent::Result {
+            conversation_id: None,
+            success: true,
+            response: String::new(),
+            error: None,
+            usage: json!({"input_tokens":200,"cached_input_tokens":50,"output_tokens":12}),
+            tokens: Some(Tokens {
+                input: 200,
+                cached: 50,
+                output: 12
+            }),
+        }
+    );
 }
 
 #[test]
@@ -278,19 +737,29 @@ fn parses_claude_cursor_and_grok_ndjson_events() {
     // Subsequent full `assistant` message does not duplicate the already-streamed `"Hi"` text!
     let msg = claude.parse_line(CliKind::ClaudeCode, r#"{"type":"assistant","session_id":"s1","message":{"content":[{"type":"text","text":"Hi"},{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":10,"output_tokens":4}}}"#);
     assert_eq!(msg.len(), 2);
-    assert_eq!(msg[0], CliEvent::AgentText {
-        conversation_id: Some("s1".into()),
-        delta: String::new(),
-        done: true,
-        usage: json!({"input_tokens":10,"output_tokens":4}),
-        tokens: Some(Tokens { input: 10, cached: 0, output: 4 }),
-    });
-    assert_eq!(msg[1], CliEvent::ToolStart {
-        conversation_id: Some("s1".into()),
-        call_key: "tu1".into(),
-        name: "run_command".into(),
-        input: json!({"command": "ls"}),
-    });
+    assert_eq!(
+        msg[0],
+        CliEvent::AgentText {
+            conversation_id: Some("s1".into()),
+            delta: String::new(),
+            done: true,
+            usage: json!({"input_tokens":10,"output_tokens":4}),
+            tokens: Some(Tokens {
+                input: 10,
+                cached: 0,
+                output: 4
+            }),
+        }
+    );
+    assert_eq!(
+        msg[1],
+        CliEvent::ToolStart {
+            conversation_id: Some("s1".into()),
+            call_key: "tu1".into(),
+            name: "run_command".into(),
+            input: json!({"command": "ls"}),
+        }
+    );
 
     let mut cursor = StreamParser::default();
     let c1 = cursor.parse_line(CliKind::Cursor, r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"0."}]},"session_id":"ch1","timestamp_ms":1}"#);
@@ -307,7 +776,11 @@ fn parses_claude_cursor_and_grok_ndjson_events() {
         &c_res[0],
         CliEvent::Result {
             success: true,
-            tokens: Some(Tokens { input: 14453, cached: 13568, output: 61 }),
+            tokens: Some(Tokens {
+                input: 14453,
+                cached: 13568,
+                output: 61
+            }),
             ..
         }
     ));
@@ -338,20 +811,44 @@ fn parses_claude_cursor_and_grok_ndjson_events() {
     assert_eq!(parsed_models[3].id, "gpt-5.3-codex");
     assert_eq!(parsed_models[3].name, "Codex 5.3");
     assert_eq!(parsed_models[4].id, "claude-4.6-opus-thinking");
-    assert_eq!(pick_cursor_variant(cursor_effort_rank("medium"), &variants["gpt-5.3-codex"]), Some("gpt-5.3-codex"));
-    assert_eq!(pick_cursor_variant(cursor_effort_rank("high"), &variants["grok-4.7"]), Some("grok-4.7-high"));
-    assert_eq!(pick_cursor_variant(cursor_effort_rank("max"), &variants["grok-4.7-fast"]), Some("grok-4.7-xhigh-fast"));
-    assert_eq!(pick_cursor_variant(cursor_effort_rank("max"), &variants["claude-4.6-opus-thinking"]), Some("claude-4.6-opus-max-thinking"));
-    assert_eq!(tc, vec![CliEvent::ToolStart {
-        conversation_id: Some("ch1".into()),
-        call_key: "c1".into(),
-        name: "read_file".into(),
-        input: json!({"path": "README.md"}),
-    }]);
+    assert_eq!(
+        pick_cursor_variant(cursor_effort_rank("medium"), &variants["gpt-5.3-codex"]),
+        Some("gpt-5.3-codex")
+    );
+    assert_eq!(
+        pick_cursor_variant(cursor_effort_rank("high"), &variants["grok-4.7"]),
+        Some("grok-4.7-high")
+    );
+    assert_eq!(
+        pick_cursor_variant(cursor_effort_rank("max"), &variants["grok-4.7-fast"]),
+        Some("grok-4.7-xhigh-fast")
+    );
+    assert_eq!(
+        pick_cursor_variant(cursor_effort_rank("max"), &variants["claude-4.6-opus-thinking"]),
+        Some("claude-4.6-opus-max-thinking")
+    );
+    assert_eq!(
+        tc,
+        vec![CliEvent::ToolStart {
+            conversation_id: Some("ch1".into()),
+            call_key: "c1".into(),
+            name: "read_file".into(),
+            input: json!({"path": "README.md"}),
+        }]
+    );
 
     let mut grok = StreamParser::default();
     let gt = grok.parse_line(CliKind::Grok, r#"{"type":"text","session_id":"g9","text":"Done"}"#);
-    assert_eq!(gt, vec![CliEvent::AgentText { conversation_id: Some("g9".into()), delta: "Done".into(), done: false, usage: Value::Null, tokens: None }]);
+    assert_eq!(
+        gt,
+        vec![CliEvent::AgentText {
+            conversation_id: Some("g9".into()),
+            delta: "Done".into(),
+            done: false,
+            usage: Value::Null,
+            tokens: None
+        }]
+    );
 }
 
 #[test]
@@ -480,8 +977,14 @@ fn turn_recorder_computes_agy_edit_diffs_relativizes_paths_and_records_undo_snap
     let plan = crate::undo::plan(&events, 1);
     assert_eq!(plan.len(), 2);
     let outcome = crate::undo::apply(&plan, &snap_dir, &workspace);
-    assert_eq!(outcome.restored, vec!["peripheral/src/motor.c", "scripts/test_io_park_host.py"]);
-    assert_eq!(std::fs::read_to_string(&motor_c).unwrap(), "int a = 1;\nint b = 2;\nint c = 3;\n");
+    assert_eq!(
+        outcome.restored,
+        vec!["peripheral/src/motor.c", "scripts/test_io_park_host.py"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&motor_c).unwrap(),
+        "int a = 1;\nint b = 2;\nint c = 3;\n"
+    );
     assert!(!new_test.exists());
 }
 
@@ -581,10 +1084,33 @@ fn tracks_codex_multifile_patch_claude_multiedit_cursor_nested_result_and_grok_c
         })
         .collect();
     assert_eq!(codex_results.len(), 3);
-    assert_eq!((codex_results[0].0.as_str(), codex_results[0].1["path"].as_str(), codex_results[0].1["added"].as_u64(), codex_results[0].1["removed"].as_u64()), ("edit_file", Some("src/lib.rs"), Some(2), Some(1)));
+    assert_eq!(
+        (
+            codex_results[0].0.as_str(),
+            codex_results[0].1["path"].as_str(),
+            codex_results[0].1["added"].as_u64(),
+            codex_results[0].1["removed"].as_u64()
+        ),
+        ("edit_file", Some("src/lib.rs"), Some(2), Some(1))
+    );
     assert!(codex_results[0].1["hunk"].is_object());
-    assert_eq!((codex_results[1].0.as_str(), codex_results[1].1["path"].as_str(), codex_results[1].1["created"].as_bool(), codex_results[1].1["added"].as_u64()), ("write_file", Some("src/new_mod.rs"), Some(true), Some(2)));
-    assert_eq!((codex_results[2].0.as_str(), codex_results[2].1["deleted"].as_bool(), codex_results[2].1["removed"].as_u64()), ("delete_file", Some(true), Some(2)));
+    assert_eq!(
+        (
+            codex_results[1].0.as_str(),
+            codex_results[1].1["path"].as_str(),
+            codex_results[1].1["created"].as_bool(),
+            codex_results[1].1["added"].as_u64()
+        ),
+        ("write_file", Some("src/new_mod.rs"), Some(true), Some(2))
+    );
+    assert_eq!(
+        (
+            codex_results[2].0.as_str(),
+            codex_results[2].1["deleted"].as_bool(),
+            codex_results[2].1["removed"].as_u64()
+        ),
+        ("delete_file", Some(true), Some(2))
+    );
 
     // 2) Claude Code `MultiEdit` fallback estimation on `edits` array.
     let (_, multi_in) = normalize_tool(
@@ -598,7 +1124,10 @@ fn tracks_codex_multifile_patch_claude_multiedit_cursor_nested_result_and_grok_c
         }),
     );
     let (_, multi_meta) = clean_tool_result("edit_file", &multi_in, "", false);
-    assert_eq!((multi_meta["added"].as_u64(), multi_meta["removed"].as_u64()), (Some(3), Some(3)));
+    assert_eq!(
+        (multi_meta["added"].as_u64(), multi_meta["removed"].as_u64()),
+        (Some(3), Some(3))
+    );
 
     // 3) Cursor `strReplaceToolCall` + nested `result.success`.
     let mut cursor_parser = StreamParser::default();
@@ -606,12 +1135,15 @@ fn tracks_codex_multifile_patch_claude_multiedit_cursor_nested_result_and_grok_c
         CliKind::Cursor,
         r#"{"type":"tool_call","subtype":"started","call_id":"c9","tool_call":{"strReplaceToolCall":{"args":{"path":"src/main.rs"}}}}"#,
     );
-    assert_eq!(cur_start[0], CliEvent::ToolStart {
-        conversation_id: None,
-        call_key: "c9".into(),
-        name: "edit_file".into(),
-        input: json!({ "path": "src/main.rs" }),
-    });
+    assert_eq!(
+        cur_start[0],
+        CliEvent::ToolStart {
+            conversation_id: None,
+            call_key: "c9".into(),
+            name: "edit_file".into(),
+            input: json!({ "path": "src/main.rs" }),
+        }
+    );
     let cur_read_done = cursor_parser.parse_line(
         CliKind::Cursor,
         r#"{"type":"tool_call","subtype":"completed","call_id":"c10","tool_call":{"readToolCall":{"args":{"path":"src/main.rs"},"result":{"success":{"totalLines":88}}}}}"#,
@@ -670,7 +1202,10 @@ fn tracks_codex_multifile_patch_claude_multiedit_cursor_nested_result_and_grok_c
         })
         .expect("Grok edit_file paired via call_id");
     assert_eq!(grok_meta["path"], "src/grok.rs");
-    assert_eq!((grok_meta["added"].as_u64(), grok_meta["removed"].as_u64()), (Some(2), Some(1)));
+    assert_eq!(
+        (grok_meta["added"].as_u64(), grok_meta["removed"].as_u64()),
+        (Some(2), Some(1))
+    );
 }
 
 #[test]
@@ -682,7 +1217,17 @@ fn spills_oversized_prompts_to_stdin_or_temp_file() {
     // Codex switches to `exec ... -` + stdin.
     let codex_prep = prepare_prompt_delivery_in(&home, CliKind::Codex, &huge, 2, 64, false).unwrap();
     assert_eq!(codex_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
-    let mut codex_args = build_args(CliKind::Codex, &codex_prep.cli_prompt, None, None, "gpt-5.4", "high", Mode::Auto, false, false);
+    let mut codex_args = build_args(
+        CliKind::Codex,
+        &codex_prep.cli_prompt,
+        None,
+        None,
+        "gpt-5.4",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     apply_prompt_delivery_args(CliKind::Codex, &mut codex_args, &codex_prep);
     assert_eq!(codex_args.last().map(String::as_str), Some("-"));
     assert!(!codex_args.iter().any(|a| a == "--"));
@@ -690,22 +1235,56 @@ fn spills_oversized_prompts_to_stdin_or_temp_file() {
     // Claude Code omits positional prompt and pipes via stdin.
     let claude_prep = prepare_prompt_delivery_in(&home, CliKind::ClaudeCode, &huge, 2, 64, false).unwrap();
     assert_eq!(claude_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
-    let mut claude_args = build_args(CliKind::ClaudeCode, &claude_prep.cli_prompt, None, None, "opus", "high", Mode::Auto, false, false);
+    let mut claude_args = build_args(
+        CliKind::ClaudeCode,
+        &claude_prep.cli_prompt,
+        None,
+        None,
+        "opus",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     apply_prompt_delivery_args(CliKind::ClaudeCode, &mut claude_args, &claude_prep);
     assert!(!claude_args.iter().any(|a| a == "--"));
 
     // Cursor omits positional prompt and pipes via stdin (both for huge prompts and Windows .cmd/.bat shims).
     let cursor_prep = prepare_prompt_delivery_in(&home, CliKind::Cursor, &huge, 2, 64, false).unwrap();
     assert_eq!(cursor_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
-    let mut cursor_args = build_args(CliKind::Cursor, &cursor_prep.cli_prompt, None, None, "auto", "high", Mode::Auto, false, false);
+    let mut cursor_args = build_args(
+        CliKind::Cursor,
+        &cursor_prep.cli_prompt,
+        None,
+        None,
+        "auto",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     apply_prompt_delivery_args(CliKind::Cursor, &mut cursor_args, &cursor_prep);
     assert!(!cursor_args.iter().any(|a| a == "--"));
 
     let cursor_batch = prepare_prompt_delivery_in(&home, CliKind::Cursor, "第一行\n你好", 1, 6_000, true).unwrap();
     assert_eq!(cursor_batch.stdin_bytes.as_deref(), Some("第一行\n你好".as_bytes()));
-    let mut cursor_batch_args = build_args(CliKind::Cursor, &cursor_batch.cli_prompt, None, None, "auto", "high", Mode::Auto, false, false);
+    let mut cursor_batch_args = build_args(
+        CliKind::Cursor,
+        &cursor_batch.cli_prompt,
+        None,
+        None,
+        "auto",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     apply_prompt_delivery_args(CliKind::Cursor, &mut cursor_batch_args, &cursor_batch);
-    assert!(!cursor_batch_args.iter().any(|a| a == "--" || a.contains('\n') || a.contains('\r')));
+    assert!(
+        !cursor_batch_args
+            .iter()
+            .any(|a| a == "--" || a.contains('\n') || a.contains('\r'))
+    );
 
     // Antigravity spills to an isolated private per-turn directory `<ODG_HOME>/tmp/prompts/<uuid>/prompt.txt`,
     // adds `--add-dir` pointing only to that per-turn subdir, and cleans up both file and subdir on drop.
@@ -717,9 +1296,23 @@ fn spills_oversized_prompts_to_stdin_or_temp_file() {
     assert_eq!(spilled_path, spilled_dir.join("prompt.txt"));
     assert_eq!(spilled_dir.parent(), Some(home.join("tmp").join("prompts").as_path()));
     assert_eq!(std::fs::read_to_string(&spilled_path).unwrap(), huge);
-    let mut agy_args = build_args(CliKind::Antigravity, &agy_prep.cli_prompt, None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
+    let mut agy_args = build_args(
+        CliKind::Antigravity,
+        &agy_prep.cli_prompt,
+        None,
+        None,
+        "gemini-4-neon",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     apply_prompt_delivery_args(CliKind::Antigravity, &mut agy_args, &agy_prep);
-    assert!(agy_args.windows(2).any(|w| w[0] == "--add-dir" && Path::new(&w[1]) == spilled_dir));
+    assert!(
+        agy_args
+            .windows(2)
+            .any(|w| w[0] == "--add-dir" && Path::new(&w[1]) == spilled_dir)
+    );
     drop(agy_prep);
     assert!(!spilled_path.exists());
     assert!(!spilled_dir.exists());
@@ -752,7 +1345,8 @@ fn bridges_odg_skills_and_mcp_servers_to_cli_turns() {
     .unwrap();
 
     let roots = vec![tmp.path().to_path_buf()];
-    let triggered = build_skills_brief(&roots, "按秘籍「demo-skill」（skill）办：处理这份数据", false).expect("triggered skill brief");
+    let triggered = build_skills_brief(&roots, "按秘籍「demo-skill」（skill）办：处理这份数据", false)
+        .expect("triggered skill brief");
     assert!(triggered.contains("第一步：先检查输入"));
     assert!(!triggered.contains("[可用 odg 秘籍"));
 
@@ -778,9 +1372,23 @@ fn bridges_odg_skills_and_mcp_servers_to_cli_turns() {
         },
     );
 
-    let mut claude_args = build_args(CliKind::ClaudeCode, "hi", None, None, "opus", "high", Mode::Auto, false, false);
-    let claude_guard = apply_mcp_bridge_args_in(&home, CliKind::ClaudeCode, &mut claude_args, &servers, 1).expect("claude mcp temp file");
-    let cfg_idx = claude_args.iter().position(|a| a == "--mcp-config").expect("--mcp-config flag");
+    let mut claude_args = build_args(
+        CliKind::ClaudeCode,
+        "hi",
+        None,
+        None,
+        "opus",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
+    let claude_guard = apply_mcp_bridge_args_in(&home, CliKind::ClaudeCode, &mut claude_args, &servers, 1)
+        .expect("claude mcp temp file");
+    let cfg_idx = claude_args
+        .iter()
+        .position(|a| a == "--mcp-config")
+        .expect("--mcp-config flag");
     let sep_idx = claude_args.iter().position(|a| a == "--").expect("-- separator");
     assert!(cfg_idx < sep_idx);
     let cfg_path = PathBuf::from(&claude_args[cfg_idx + 1]);
@@ -790,12 +1398,36 @@ fn bridges_odg_skills_and_mcp_servers_to_cli_turns() {
     drop(claude_guard);
     assert!(!cfg_path.exists());
 
-    let mut codex_args = build_args(CliKind::Codex, "hi", None, None, "gpt-5.4", "high", Mode::Auto, false, false);
+    let mut codex_args = build_args(
+        CliKind::Codex,
+        "hi",
+        None,
+        None,
+        "gpt-5.4",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     assert!(apply_mcp_bridge_args_in(&home, CliKind::Codex, &mut codex_args, &servers, 1).is_none());
     assert!(codex_args.iter().any(|a| a == "mcp_servers.docs.command=\"npx\""));
-    assert!(codex_args.iter().any(|a| a == "mcp_servers.remote.url=\"https://mcp.example.com\""));
+    assert!(
+        codex_args
+            .iter()
+            .any(|a| a == "mcp_servers.remote.url=\"https://mcp.example.com\"")
+    );
 
-    let mut agy_args = build_args(CliKind::Antigravity, "hi", None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
+    let mut agy_args = build_args(
+        CliKind::Antigravity,
+        "hi",
+        None,
+        None,
+        "gemini-4-neon",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
     assert!(apply_mcp_bridge_args_in(&home, CliKind::Antigravity, &mut agy_args, &servers, 1).is_none());
     assert!(!agy_args.iter().any(|a| a == "--settings"));
     assert_eq!(
@@ -934,8 +1566,19 @@ async fn temp_files_live_under_private_odg_home_with_0600_mode() {
     assert!(build_agy_mcp_add_args("secret-stdio", &servers["secret-stdio"]).is_none());
     assert!(build_agy_mcp_add_args("secret-http", &servers["secret-http"]).is_none());
 
-    let mut claude_args = build_args(CliKind::ClaudeCode, "hi", None, None, "opus", "high", Mode::Auto, false, false);
-    let mcp_guard = apply_mcp_bridge_args_in(&odg_home, CliKind::ClaudeCode, &mut claude_args, &servers, 3).expect("mcp guard");
+    let mut claude_args = build_args(
+        CliKind::ClaudeCode,
+        "hi",
+        None,
+        None,
+        "opus",
+        "high",
+        Mode::Auto,
+        false,
+        false,
+    );
+    let mcp_guard =
+        apply_mcp_bridge_args_in(&odg_home, CliKind::ClaudeCode, &mut claude_args, &servers, 3).expect("mcp guard");
     let mcp_path = mcp_guard.file.clone().expect("mcp path");
     assert!(mcp_path.starts_with(odg_home.join("tmp").join("mcp")));
     assert!(!mcp_path.to_string_lossy().contains("odg-mcp"));
@@ -945,13 +1588,18 @@ async fn temp_files_live_under_private_odg_home_with_0600_mode() {
     let prep2 = prepare_prompt_delivery_in(&odg_home, CliKind::Antigravity, &"b".repeat(128), 2, 32, false).unwrap();
     let p1_file = prep1._guard.file.as_ref().unwrap();
     let p2_file = prep2._guard.file.as_ref().unwrap();
-    assert_ne!(p1_file.parent(), p2_file.parent(), "each turn gets an isolated --add-dir subdirectory");
+    assert_ne!(
+        p1_file.parent(),
+        p2_file.parent(),
+        "each turn gets an isolated --add-dir subdirectory"
+    );
     assert!(p1_file.starts_with(odg_home.join("tmp").join("prompts")));
 
     // 3) Materialized CLI images live under `<ODG_HOME>/tmp/images/<uuid>/`.
     let img = crate::events::Image {
         media_type: "image/png".to_string(),
-        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=".to_string(),
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            .to_string(),
     };
     let (img_paths, img_guard) = materialize_cli_images_in(&odg_home, &[img], 1).unwrap();
     assert_eq!(img_paths.len(), 1);
@@ -963,10 +1611,19 @@ async fn temp_files_live_under_private_odg_home_with_0600_mode() {
     assert!(cursor_mcp.is_file());
 
     assert!(sync_antigravity_mcp_in(Some(&fake_user_home), Path::new("/nonexistent/agy"), &servers).await);
-    let agy_mcp = fake_user_home.join(".gemini").join("antigravity").join("mcp_config.json");
+    let agy_mcp = fake_user_home
+        .join(".gemini")
+        .join("antigravity")
+        .join("mcp_config.json");
     let agy_json: Value = serde_json::from_str(&std::fs::read_to_string(&agy_mcp).unwrap()).unwrap();
-    assert_eq!(agy_json["mcpServers"]["secret-stdio"]["env"]["API_TOKEN"], "super-secret-env");
-    assert_eq!(agy_json["mcpServers"]["secret-http"]["headers"]["Authorization"], "Bearer super-secret-bearer");
+    assert_eq!(
+        agy_json["mcpServers"]["secret-stdio"]["env"]["API_TOKEN"],
+        "super-secret-env"
+    );
+    assert_eq!(
+        agy_json["mcpServers"]["secret-http"]["headers"]["Authorization"],
+        "Bearer super-secret-bearer"
+    );
 
     #[cfg(unix)]
     {
@@ -1016,7 +1673,10 @@ async fn untrusted_workspace_detects_claude_mcp_codex_cursor_configs_and_isolate
 
     let detected = detect_untrusted_cli_configs(ws.path());
     for expected in [".claude", ".mcp.json", ".codex", ".gemini", ".opencode", ".grok"] {
-        assert!(detected.iter().any(|item| item == expected), "missing {expected} in {detected:?}");
+        assert!(
+            detected.iter().any(|item| item == expected),
+            "missing {expected} in {detected:?}"
+        );
     }
 
     // Claude Code isolates untrusted repos via `--setting-sources user`.
@@ -1068,7 +1728,10 @@ async fn untrusted_workspace_detects_claude_mcp_codex_cursor_configs_and_isolate
             mcp_servers: BTreeMap::new(),
         };
         let err = run_turn(params, &NoopSink, &cancel).await.unwrap_err();
-        assert!(err.contains("尚未授信") && err.contains("信任此洞府"), "unexpected error for {kind:?}: {err}");
+        assert!(
+            err.contains("尚未授信") && err.contains("信任此洞府"),
+            "unexpected error for {kind:?}: {err}"
+        );
     }
 
     // Env var minimization keeps only the target CLI's own auth keys.
@@ -1153,12 +1816,22 @@ async fn antigravity_mcp_sync_is_skipped_in_plan_manual_and_edit_modes() {
                 image_paths: Vec::new(),
                 mcp_servers: servers.clone(),
             };
-            run_turn_with_limits(params, Some(&fake_agy), CLI_IDLE_TIMEOUT, MAX_CLI_LINE_BYTES, &NoopSink, &cancel)
-                .await
-                .unwrap();
+            run_turn_with_limits(
+                params,
+                Some(&fake_agy),
+                CLI_IDLE_TIMEOUT,
+                MAX_CLI_LINE_BYTES,
+                &NoopSink,
+                &cancel,
+            )
+            .await
+            .unwrap();
         }
         let logged = std::fs::read_to_string(&log_file).unwrap_or_default();
-        assert!(!logged.contains("mcp add"), "MCP sync must be skipped in Plan/Manual/Edit/read_only: {logged}");
+        assert!(
+            !logged.contains("mcp add"),
+            "MCP sync must be skipped in Plan/Manual/Edit/read_only: {logged}"
+        );
     }
 }
 
@@ -1234,7 +1907,14 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
     codex_rec.finish().unwrap();
     let (codex_total, codex_texts) = sum_tokens(&codex_sink.0.lock().unwrap());
     assert_eq!(codex_texts, vec!["Hello!"]);
-    assert_eq!(codex_total, Tokens { input: 200, cached: 50, output: 12 });
+    assert_eq!(
+        codex_total,
+        Tokens {
+            input: 200,
+            cached: 50,
+            output: 12
+        }
+    );
 
     // 2) Cursor: `--stream-partial-output` flushes text on the final `assistant` event, then `result` settles usage without repeating `result`.
     let cursor_params = make_params(CliKind::Cursor);
@@ -1254,7 +1934,14 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
     cursor_rec.finish().unwrap();
     let (cursor_total, cursor_texts) = sum_tokens(&cursor_sink.0.lock().unwrap());
     assert_eq!(cursor_texts, vec!["0.7.16"]);
-    assert_eq!(cursor_total, Tokens { input: 14453, cached: 13568, output: 61 });
+    assert_eq!(
+        cursor_total,
+        Tokens {
+            input: 14453,
+            cached: 13568,
+            output: 61
+        }
+    );
 
     // 3) Claude Code: step 1 pure tool_use `assistant` with cache_creation + cache_read, step 2 streamed text + `result(cumulative)`.
     let claude_params = make_params(CliKind::ClaudeCode);
@@ -1276,7 +1963,14 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
     let (claude_total, claude_texts) = sum_tokens(&claude_sink.0.lock().unwrap());
     assert_eq!(claude_texts, vec!["All set."]);
     // Step 1 input = 550 (cached 400), Step 2 input = 570 (cached 450), cumulative result input = 230 + 850 + 50 = 1130 (cached 850), output = 40.
-    assert_eq!(claude_total, Tokens { input: 1130, cached: 850, output: 40 });
+    assert_eq!(
+        claude_total,
+        Tokens {
+            input: 1130,
+            cached: 850,
+            output: 40
+        }
+    );
 
     // 4) OpenAI-style `prompt_tokens` already includes `cached_tokens` (never doubled!).
     assert_eq!(
@@ -1285,7 +1979,11 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
             "prompt_tokens_details": { "cached_tokens": 800 },
             "completion_tokens": 45
         })),
-        Some(Tokens { input: 1000, cached: 800, output: 45 })
+        Some(Tokens {
+            input: 1000,
+            cached: 800,
+            output: 45
+        })
     );
     let mut grok_parser = StreamParser::default();
     let grok_res = grok_parser.parse_line(
@@ -1294,7 +1992,14 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
     );
     assert!(matches!(
         grok_res.as_slice(),
-        [CliEvent::Result { tokens: Some(Tokens { input: 1000, cached: 800, output: 45 }), .. }]
+        [CliEvent::Result {
+            tokens: Some(Tokens {
+                input: 1000,
+                cached: 800,
+                output: 45
+            }),
+            ..
+        }]
     ));
 }
 
@@ -1362,10 +2067,7 @@ async fn non_utf8_stdout_and_idle_timeout_are_handled_gracefully() {
     // 2) Hung process with zero output triggers idle timeout and kills its entire process group.
     let pid_file = tmp.path().join("grandchild.pid");
     let hang_bin = tmp.path().join("hang-codex.sh");
-    let hang_script = format!(
-        "#!/bin/sh\nsleep 60 &\necho $! > \"{}\"\nwait\n",
-        pid_file.display()
-    );
+    let hang_script = format!("#!/bin/sh\nsleep 60 &\necho $! > \"{}\"\nwait\n", pid_file.display());
     std::fs::write(&hang_bin, hang_script).unwrap();
     std::fs::set_permissions(&hang_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -1419,7 +2121,10 @@ async fn non_utf8_stdout_and_idle_timeout_are_handled_gracefully() {
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|s| s.success());
-        assert!(!still_alive, "grandchild sleep process {gpid} should have been killed on idle timeout");
+        assert!(
+            !still_alive,
+            "grandchild sleep process {gpid} should have been killed on idle timeout"
+        );
     }
 }
 

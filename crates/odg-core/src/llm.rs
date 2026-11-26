@@ -30,11 +30,26 @@ pub struct LlmRequest {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamDelta {
-    TextDelta { index: usize, text: String },
-    ThinkingDelta { index: usize, text: String },
-    ToolUseStart { index: usize, id: String, name: String },
-    ToolInputDelta { index: usize, partial: String },
-    BlockStop { index: usize },
+    TextDelta {
+        index: usize,
+        text: String,
+    },
+    ThinkingDelta {
+        index: usize,
+        text: String,
+    },
+    ToolUseStart {
+        index: usize,
+        id: String,
+        name: String,
+    },
+    ToolInputDelta {
+        index: usize,
+        partial: String,
+    },
+    BlockStop {
+        index: usize,
+    },
     /// The request is being retried: discard every fragment received so far.
     Reset,
 }
@@ -71,7 +86,12 @@ pub enum LlmError {
     #[error("the request was cancelled")]
     Cancelled,
     #[error("{kind}: {message}")]
-    Api { status: Option<u16>, kind: String, message: String, retryable: bool },
+    Api {
+        status: Option<u16>,
+        kind: String,
+        message: String,
+        retryable: bool,
+    },
     #[error("network error: {0}")]
     Network(String),
     #[error("unexpected response: {0}")]
@@ -92,11 +112,22 @@ impl LlmError {
     /// longer fits the model's context window. Providers word this each their
     /// own way and few document it, so this goes by what the message says.
     pub fn context_overflow(&self) -> bool {
-        let LlmError::Api { kind, message, .. } = self else { return false };
+        let LlmError::Api { kind, message, .. } = self else {
+            return false;
+        };
         let text = format!("{kind} {message}").to_lowercase();
-        ["context window", "context length", "context_length", "maximum context", "prompt is too long", "input is too long", "too many tokens", "token limit"]
-            .iter()
-            .any(|phrase| text.contains(phrase))
+        [
+            "context window",
+            "context length",
+            "context_length",
+            "maximum context",
+            "prompt is too long",
+            "input is too long",
+            "too many tokens",
+            "token limit",
+        ]
+        .iter()
+        .any(|phrase| text.contains(phrase))
     }
 }
 
@@ -110,7 +141,11 @@ const MAX_ATTEMPTS: u32 = 4;
 /// [`MAX_ATTEMPTS`] times, waiting between tries. Each attempt returns its
 /// outcome and whether it sent any fragment, so the client can be told to
 /// discard them before the next try.
-pub async fn with_retries<F, Fut>(deltas: &UnboundedSender<StreamDelta>, cancel: &CancellationToken, mut attempt: F) -> Result<AssistantTurn, LlmError>
+pub async fn with_retries<F, Fut>(
+    deltas: &UnboundedSender<StreamDelta>,
+    cancel: &CancellationToken,
+    mut attempt: F,
+) -> Result<AssistantTurn, LlmError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = (Attempt, bool)>,
@@ -129,7 +164,9 @@ where
         if forwarded {
             let _ = deltas.send(StreamDelta::Reset);
         }
-        let wait = retry_after.unwrap_or(Duration::from_secs(1 << (tries - 1))).min(Duration::from_secs(60));
+        let wait = retry_after
+            .unwrap_or(Duration::from_secs(1 << (tries - 1)))
+            .min(Duration::from_secs(60));
         tokio::select! {
             () = tokio::time::sleep(wait) => {}
             () = cancel.cancelled() => return Err(LlmError::Cancelled),
@@ -142,8 +179,17 @@ where
 /// 408, 409, 429, and 5xx are retryable unless `x-should-retry` says otherwise.
 pub async fn http_failure(response: reqwest::Response) -> (LlmError, Option<Duration>) {
     let status = response.status().as_u16();
-    let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
-    let retry_after = header("retry-after").and_then(|value| value.parse::<f64>().ok()).filter(|seconds| seconds.is_finite() && *seconds >= 0.0).map(Duration::from_secs_f64);
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let retry_after = header("retry-after")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .map(Duration::from_secs_f64);
     let should_retry = header("x-should-retry");
     let body = response.text().await.unwrap_or_default();
     let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
@@ -153,13 +199,29 @@ pub async fn http_failure(response: reqwest::Response) -> (LlmError, Option<Dura
         Value::Number(number) => Some(number.to_string()),
         _ => None,
     };
-    let kind = text(&error["type"]).or_else(|| text(&error["code"])).unwrap_or_else(|| "http_error".to_string());
-    let message = text(&error["message"]).unwrap_or_else(|| if body.trim().is_empty() { format!("HTTP {status}") } else { body.chars().take(500).collect() });
+    let kind = text(&error["type"])
+        .or_else(|| text(&error["code"]))
+        .unwrap_or_else(|| "http_error".to_string());
+    let message = text(&error["message"]).unwrap_or_else(|| {
+        if body.trim().is_empty() {
+            format!("HTTP {status}")
+        } else {
+            body.chars().take(500).collect()
+        }
+    });
     let retryable = match should_retry.as_deref() {
         Some(value) => value == "true",
         None => matches!(status, 408 | 409 | 429) || status >= 500,
     };
-    (LlmError::Api { status: Some(status), kind, message, retryable }, retry_after)
+    (
+        LlmError::Api {
+            status: Some(status),
+            kind,
+            message,
+            retryable,
+        },
+        retry_after,
+    )
 }
 
 /// Where requests for one provider go, read fresh for every request so a
@@ -189,8 +251,15 @@ pub trait Llm: Send + Sync + 'static {
 pub fn tool_result_parts(block: &Value) -> (String, Vec<Value>) {
     match block["content"].as_array() {
         Some(parts) => {
-            let words: Vec<&str> = parts.iter().filter(|part| part["type"] == "text").filter_map(|part| part["text"].as_str()).collect();
-            (words.join("\n"), parts.iter().filter(|part| part["type"] == "image").cloned().collect())
+            let words: Vec<&str> = parts
+                .iter()
+                .filter(|part| part["type"] == "text")
+                .filter_map(|part| part["text"].as_str())
+                .collect();
+            (
+                words.join("\n"),
+                parts.iter().filter(|part| part["type"] == "image").cloned().collect(),
+            )
         }
         None => (block["content"].as_str().unwrap_or_default().to_string(), Vec::new()),
     }

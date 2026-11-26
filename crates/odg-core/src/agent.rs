@@ -26,14 +26,17 @@ use crate::llm::{Llm, LlmError, LlmRequest, StreamDelta};
 use crate::mcp::McpHub;
 use crate::policy::{self, Mode, Verdict};
 use crate::providers;
-use crate::session::{SessionLog, SessionStore, SessionSummary, context_estimate, derive_messages, instructions, read_instructions, skills, summarize, unanswered_tool_uses};
+use crate::session::{
+    SessionLog, SessionStore, SessionSummary, context_estimate, derive_messages, instructions, read_instructions,
+    skills, summarize, unanswered_tool_uses,
+};
 use crate::tools::{self, ToolContext, ToolOutput};
 use crate::undo;
 
-pub use prompts::{GUARDIAN, Origin, SUMMARIZE, system_prompt};
 use prompts::same_folder;
 #[cfg(test)]
 use prompts::verdict;
+pub use prompts::{GUARDIAN, Origin, SUMMARIZE, system_prompt};
 
 /// A turn that needs more model requests than this is stopped: it is looping.
 const MAX_STEPS: usize = 200;
@@ -211,7 +214,9 @@ pub struct Session<L: Llm> {
 
 impl<L: Llm> Clone for Session<L> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -281,9 +286,21 @@ impl<L: Llm> Session<L> {
         // A side conversation only looks: the main agent is at work on the same files.
         let read_only = read_only || aside.is_some();
         let worktree = crate::session::worktree(log.events()).cloned();
-        let granted_in = worktree.as_ref().map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
+        let granted_in = worktree
+            .as_ref()
+            .map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
         let store = SessionStore::of(&log);
-        let Services { grants: kept, mcp, skills: user_skills, search, sandbox, chat, runtime: documents, painter, lsp } = services.clone();
+        let Services {
+            grants: kept,
+            mcp,
+            skills: user_skills,
+            search,
+            sandbox,
+            chat,
+            runtime: documents,
+            painter,
+            lsp,
+        } = services.clone();
         let chatting = chat.is_some_and(|folder| same_folder(&folder, &workspace));
         Ok(Self {
             inner: Arc::new(Inner {
@@ -368,7 +385,10 @@ impl<L: Llm> Session<L> {
 
     /// Grant or revoke project trust for this workspace in `~/.odg/grants.json`.
     pub fn set_project_trust(&self, trusted: bool) -> Result<(), String> {
-        self.inner.kept.set_trusted_workspace(&self.inner.granted_in, trusted).map_err(|e| e.to_string())
+        self.inner
+            .kept
+            .set_trusted_workspace(&self.inner.granted_in, trusted)
+            .map_err(|e| e.to_string())
     }
 
     /// Where this side conversation's briefings on the session it is beside come from. Each message the user
@@ -391,7 +411,12 @@ impl<L: Llm> Session<L> {
     /// Returns once no turn is running: at once when none is.
     pub async fn wait_idle(&self) {
         // The sender lives as long as the session, so this cannot fail.
-        let _ = self.inner.watch.subscribe().wait_for(|status| *status == Status::Idle).await;
+        let _ = self
+            .inner
+            .watch
+            .subscribe()
+            .wait_for(|status| *status == Status::Idle)
+            .await;
     }
 
     /// Every event logged so far.
@@ -402,7 +427,10 @@ impl<L: Llm> Session<L> {
     /// The log's summary, with the mode as it is now rather than as the last message recorded it.
     pub fn summary(&self) -> SessionSummary {
         let summary = summarize(self.inner.log.lock().unwrap().events());
-        SessionSummary { mode: self.mode(), ..summary }
+        SessionSummary {
+            mode: self.mode(),
+            ..summary
+        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -428,7 +456,10 @@ impl<L: Llm> Session<L> {
         }
         let moved = *self.inner.provider.lock().unwrap() != provider;
         if moved || *self.inner.model.lock().unwrap() != model {
-            self.inner.append(Event::ModelChanged { model: model.to_string(), provider: moved.then(|| provider.to_string()) })?;
+            self.inner.append(Event::ModelChanged {
+                model: model.to_string(),
+                provider: moved.then(|| provider.to_string()),
+            })?;
             *self.inner.provider.lock().unwrap() = provider.to_string();
             *self.inner.model.lock().unwrap() = model.to_string();
         }
@@ -439,10 +470,15 @@ impl<L: Llm> Session<L> {
     /// Set how hard the model works on this session's requests, from the next one on, in place of the settings' default.
     pub fn set_effort(&self, effort: &str) -> Result<(), String> {
         if !crate::settings::EFFORTS.contains(&effort) {
-            return Err(format!("`{effort}` is not one of {}", crate::settings::EFFORTS.join(", ")));
+            return Err(format!(
+                "`{effort}` is not one of {}",
+                crate::settings::EFFORTS.join(", ")
+            ));
         }
         if self.inner.effort.lock().unwrap().as_deref() != Some(effort) {
-            self.inner.append(Event::EffortChanged { effort: effort.to_string() })?;
+            self.inner.append(Event::EffortChanged {
+                effort: effort.to_string(),
+            })?;
             *self.inner.effort.lock().unwrap() = Some(effort.to_string());
         }
         Ok(())
@@ -450,7 +486,13 @@ impl<L: Llm> Session<L> {
 
     /// Name the session. An empty name gives it its first message back as title.
     pub fn rename(&self, title: &str) -> Result<(), String> {
-        let title: String = title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+        let title: String = title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(80)
+            .collect();
         self.inner.append(Event::SessionRenamed { title })
     }
 
@@ -482,7 +524,9 @@ impl<L: Llm> Session<L> {
         drop(state);
         self.inner.emit_status(Status::Running);
         let inner = self.inner.clone();
-        self.inner.runtime.spawn(async move { inner.run_turns((text, images, files), cancel).await });
+        self.inner
+            .runtime
+            .spawn(async move { inner.run_turns((text, images, files), cancel).await });
         false
     }
 
@@ -513,7 +557,11 @@ impl<L: Llm> Session<L> {
             return Err(format!("turn {turn} and those after it have no edits to undo"));
         }
         let outcome = undo::apply(&plan, &self.inner.snapshots, &self.inner.workspace);
-        self.inner.append(Event::FilesRestored { turn, restored: outcome.restored.clone(), skipped: outcome.skipped.clone() })?;
+        self.inner.append(Event::FilesRestored {
+            turn,
+            restored: outcome.restored.clone(),
+            skipped: outcome.skipped.clone(),
+        })?;
         drop(state);
         Ok(outcome)
     }
@@ -522,18 +570,31 @@ impl<L: Llm> Session<L> {
     /// message, written/painted/moved/delivered by a successful tool call, read as a picture,
     /// discovered at turn end (`FilesMade`), or restored (`ArtifactRestored`).
     pub fn has_session_file(&self, path: &str) -> bool {
-        self.inner.log.lock().unwrap().events().iter().any(|envelope| match &envelope.event {
-            Event::UserMessage { files, .. } => files.iter().any(|file| file.path == path),
-            Event::ToolResult { tool, is_error: false, meta, .. } => match tool.as_str() {
-                "edit_file" | "write_file" | "generate_image" | "move_file" => meta["file"].as_str() == Some(path),
-                "read_file" => meta["picture"].is_string() && meta["file"].as_str() == Some(path),
-                "deliver_files" => meta["files"].as_array().is_some_and(|files| files.iter().any(|file| file.as_str() == Some(path))),
+        self.inner
+            .log
+            .lock()
+            .unwrap()
+            .events()
+            .iter()
+            .any(|envelope| match &envelope.event {
+                Event::UserMessage { files, .. } => files.iter().any(|file| file.path == path),
+                Event::ToolResult {
+                    tool,
+                    is_error: false,
+                    meta,
+                    ..
+                } => match tool.as_str() {
+                    "edit_file" | "write_file" | "generate_image" | "move_file" => meta["file"].as_str() == Some(path),
+                    "read_file" => meta["picture"].is_string() && meta["file"].as_str() == Some(path),
+                    "deliver_files" => meta["files"]
+                        .as_array()
+                        .is_some_and(|files| files.iter().any(|file| file.as_str() == Some(path))),
+                    _ => false,
+                },
+                Event::FilesMade { files, .. } => files.iter().any(|file| file == path),
+                Event::ArtifactRestored { file, .. } => file == path,
                 _ => false,
-            },
-            Event::FilesMade { files, .. } => files.iter().any(|file| file == path),
-            Event::ArtifactRestored { file, .. } => file == path,
-            _ => false,
-        })
+            })
     }
 
     /// Whether `(path, snapshot)` is a recorded deliverable snapshot of this session.
@@ -541,18 +602,40 @@ impl<L: Llm> Session<L> {
         if !undo::valid_snapshot_name(snapshot) {
             return false;
         }
-        self.inner.log.lock().unwrap().events().iter().any(|envelope| match &envelope.event {
-            Event::ToolResult { tool, is_error: false, meta, .. } => match tool.as_str() {
-                "deliver_files" => meta["snapshots"].as_object().and_then(|map| map.get(path)).and_then(Value::as_str) == Some(snapshot),
-                "generate_image" | "write_file" | "edit_file" => meta["file"].as_str() == Some(path) && meta["snapshot"].as_str() == Some(snapshot),
+        self.inner
+            .log
+            .lock()
+            .unwrap()
+            .events()
+            .iter()
+            .any(|envelope| match &envelope.event {
+                Event::ToolResult {
+                    tool,
+                    is_error: false,
+                    meta,
+                    ..
+                } => match tool.as_str() {
+                    "deliver_files" => {
+                        meta["snapshots"]
+                            .as_object()
+                            .and_then(|map| map.get(path))
+                            .and_then(Value::as_str)
+                            == Some(snapshot)
+                    }
+                    "generate_image" | "write_file" | "edit_file" => {
+                        meta["file"].as_str() == Some(path) && meta["snapshot"].as_str() == Some(snapshot)
+                    }
+                    _ => false,
+                },
+                Event::FilesMade { snapshots, .. } => snapshots.get(path).map(String::as_str) == Some(snapshot),
+                Event::ArtifactRestored {
+                    file,
+                    snapshot: restored,
+                    previous,
+                    ..
+                } => file == path && (restored == snapshot || previous.as_deref() == Some(snapshot)),
                 _ => false,
-            },
-            Event::FilesMade { snapshots, .. } => snapshots.get(path).map(String::as_str) == Some(snapshot),
-            Event::ArtifactRestored { file, snapshot: restored, previous, .. } => {
-                file == path && (restored == snapshot || previous.as_deref() == Some(snapshot))
-            }
-            _ => false,
-        })
+            })
     }
 
     /// Read the raw bytes of a snapshot belonging to this session (or to an ancestor session when forked).
@@ -562,7 +645,9 @@ impl<L: Llm> Session<L> {
         }
         match undo::read_snapshot(&self.inner.snapshots, snapshot) {
             Ok(bytes) => return Ok(bytes),
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("cannot read snapshot: {error}")),
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("cannot read snapshot: {error}"));
+            }
             Err(_) => {}
         }
         // Forked sessions reference snapshots kept by the session they were forked from.
@@ -575,7 +660,9 @@ impl<L: Llm> Session<L> {
             if let Some(dir) = self.inner.store.snapshots_dir(&id) {
                 match undo::read_snapshot(&dir, snapshot) {
                     Ok(bytes) => return Ok(bytes),
-                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("cannot read snapshot: {error}")),
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(format!("cannot read snapshot: {error}"));
+                    }
                     Err(_) => {}
                 }
             }
@@ -595,15 +682,22 @@ impl<L: Llm> Session<L> {
             return Err("这个历史版本不属于当前会话，不能恢复。".to_string());
         }
         let target = PathBuf::from(path);
-        if !tools::inside_workspace(&self.inner.workspace, &target) || tools::in_git_directory(&self.inner.workspace, &target) {
+        if !tools::inside_workspace(&self.inner.workspace, &target)
+            || tools::in_git_directory(&self.inner.workspace, &target)
+        {
             return Err("只能恢复当前洞府内的交付物（且不能写入 .git 目录）。".to_string());
         }
         let bytes = self.snapshot_bytes(snapshot)?;
         // Snapshot the current live file when it differs from the target and is not already in history.
-        let (previous, previous_bytes) = match undo::save_file(&self.inner.snapshots, &target, undo::ARTIFACT_SNAPSHOT_BYTES) {
-            Ok(Some((live_snap, live_len))) if live_snap != snapshot && !self.has_artifact_snapshot(path, &live_snap) => (Some(live_snap), Some(live_len)),
-            _ => (None, None),
-        };
+        let (previous, previous_bytes) =
+            match undo::save_file(&self.inner.snapshots, &target, undo::ARTIFACT_SNAPSHOT_BYTES) {
+                Ok(Some((live_snap, live_len)))
+                    if live_snap != snapshot && !self.has_artifact_snapshot(path, &live_snap) =>
+                {
+                    (Some(live_snap), Some(live_len))
+                }
+                _ => (None, None),
+            };
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|error| format!("无法创建目录： {error}"))?;
         }
@@ -620,7 +714,13 @@ impl<L: Llm> Session<L> {
             previous_bytes,
         })?;
         drop(state);
-        Ok(RestoredArtifact { path: shown, file: path.to_string(), version, bytes: bytes.len() as u64, backed_up })
+        Ok(RestoredArtifact {
+            path: shown,
+            file: path.to_string(),
+            version,
+            bytes: bytes.len() as u64,
+            backed_up,
+        })
     }
 
     /// Save a historical deliverable version as a sibling copy in the workspace (e.g. `report.v1.docx`),
@@ -630,20 +730,31 @@ impl<L: Llm> Session<L> {
             return Err("这个历史版本不属于当前会话，不能另存。".to_string());
         }
         let target = PathBuf::from(path);
-        if !tools::inside_workspace(&self.inner.workspace, &target) || tools::in_git_directory(&self.inner.workspace, &target) {
+        if !tools::inside_workspace(&self.inner.workspace, &target)
+            || tools::in_git_directory(&self.inner.workspace, &target)
+        {
             return Err("只能将当前洞府内的交付物另存为副本。".to_string());
         }
         let bytes = self.snapshot_bytes(snapshot)?;
         let parent = target.parent().unwrap_or(&self.inner.workspace);
-        let stem = target.file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| "file".to_string());
-        let ext = target.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        let stem = target
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "file".to_string());
+        let ext = target
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
         let mut copy = parent.join(format!("{stem}.v{version}{ext}"));
         let mut attempt = 2u32;
         while copy.exists() {
             copy = parent.join(format!("{stem}.v{version}-{attempt}{ext}"));
             attempt += 1;
         }
-        if !tools::inside_workspace(&self.inner.workspace, &copy) || tools::in_git_directory(&self.inner.workspace, &copy) {
+        if !tools::inside_workspace(&self.inner.workspace, &copy)
+            || tools::in_git_directory(&self.inner.workspace, &copy)
+        {
             return Err("副本路径超出了当前洞府范围。".to_string());
         }
         std::fs::create_dir_all(parent).map_err(|error| format!("无法创建目录：{error}"))?;
@@ -683,8 +794,13 @@ impl<L: Llm> Session<L> {
     /// Like [`Session::compact_now`], with an optional `focus` instruction telling the model what
     /// details must be preserved in the summary.
     pub async fn compact_now_with(&self, focus: Option<String>) -> Result<u64, String> {
-        if let Some(providers::Protocol::Cli(kind)) = providers::provider(&self.inner.provider()).map(|known| known.protocol) {
-            return Err(format!("{} 由本机 CLI 自行管理会话上下文，无需手动凝练。", kind.display_name()));
+        if let Some(providers::Protocol::Cli(kind)) =
+            providers::provider(&self.inner.provider()).map(|known| known.protocol)
+        {
+            return Err(format!(
+                "{} 由本机 CLI 自行管理会话上下文，无需手动凝练。",
+                kind.display_name()
+            ));
         }
         let cancel = {
             let mut state = self.inner.state.lock().unwrap();
@@ -703,7 +819,10 @@ impl<L: Llm> Session<L> {
         let estimate = context_estimate(self.inner.log.lock().unwrap().events());
         // Near the window, the conversation itself would not fit beside the question: summarize a transcript of it.
         let near_window = estimate >= tuning.context_window / 10 * 9;
-        let outcome = self.inner.compact(&tuning, estimate, near_window, focus.as_deref(), &cancel).await;
+        let outcome = self
+            .inner
+            .compact(&tuning, estimate, near_window, focus.as_deref(), &cancel)
+            .await;
         // What was sent meanwhile is answered now; otherwise the session is idle again.
         let next = {
             let mut state = self.inner.state.lock().unwrap();
@@ -718,14 +837,20 @@ impl<L: Llm> Session<L> {
         match next {
             Some((message, cancel)) => {
                 let inner = self.inner.clone();
-                self.inner.runtime.spawn(async move { inner.run_turns(message, cancel).await });
+                self.inner
+                    .runtime
+                    .spawn(async move { inner.run_turns(message, cancel).await });
             }
             None => self.inner.emit_status(Status::Idle),
         }
         match outcome {
             Ok(()) => Ok(estimate),
-            Err(LlmError::Cancelled) => Err("stopped before the summary was written; the conversation is as it was".to_string()),
-            Err(error) => Err(format!("the conversation could not be summarized, and is as it was: {error}")),
+            Err(LlmError::Cancelled) => {
+                Err("stopped before the summary was written; the conversation is as it was".to_string())
+            }
+            Err(error) => Err(format!(
+                "the conversation could not be summarized, and is as it was: {error}"
+            )),
         }
     }
 
@@ -754,7 +879,11 @@ pub fn record_event_model_usage(
     event: &Event,
 ) {
     match event {
-        Event::AssistantMessage { model, tokens: Some(tokens), .. } => {
+        Event::AssistantMessage {
+            model,
+            tokens: Some(tokens),
+            ..
+        } => {
             let effective_model = if model.trim().is_empty() {
                 configured_model.to_string()
             } else {
@@ -765,10 +894,16 @@ pub fn record_event_model_usage(
                 store.clear_cooldown(configured_provider, providers::AUTO_MODEL);
             }
         }
-        Event::ContextCompacted { tokens: Some(tokens), .. } => {
+        Event::ContextCompacted {
+            tokens: Some(tokens), ..
+        } => {
             store.record_usage(configured_provider, configured_model, tokens);
         }
-        Event::GuardianReviewed { model, tokens: Some(tokens), .. } => {
+        Event::GuardianReviewed {
+            model,
+            tokens: Some(tokens),
+            ..
+        } => {
             let effective_model = if model.trim().is_empty() {
                 configured_model
             } else {
@@ -798,7 +933,10 @@ impl<L: Llm> Inner<L> {
 
     fn emit_status(&self, status: Status) {
         self.watch.send_replace(status);
-        self.emit(UiEvent::Status { session_id: self.id.clone(), status });
+        self.emit(UiEvent::Status {
+            session_id: self.id.clone(),
+            status,
+        });
     }
 
     fn set_status(&self, status: Status) {
@@ -815,8 +953,16 @@ impl<L: Llm> Inner<L> {
             &self.model(),
             &event,
         );
-        let envelope = self.log.lock().unwrap().append(event).map_err(|error| format!("cannot write the session log: {error}"))?;
-        self.emit(UiEvent::Log { session_id: self.id.clone(), envelope });
+        let envelope = self
+            .log
+            .lock()
+            .unwrap()
+            .append(event)
+            .map_err(|error| format!("cannot write the session log: {error}"))?;
+        self.emit(UiEvent::Log {
+            session_id: self.id.clone(),
+            envelope,
+        });
         Ok(())
     }
 
@@ -850,14 +996,22 @@ impl<L: Llm> Inner<L> {
     fn system(&self) -> String {
         let log = self.log.lock().unwrap();
         // A fork of a session a schedule started is the user's: they are there, having just made it.
-        let scheduled = crate::session::schedule(log.events()).is_some() && crate::session::forked_from(log.events()).is_none();
+        let scheduled =
+            crate::session::schedule(log.events()).is_some() && crate::session::forked_from(log.events()).is_none();
         let origin = match (&self.parent, scheduled) {
             _ if self.aside.is_some() => Origin::Aside,
             (Some(_), _) => Origin::Agent,
             (None, true) => Origin::Schedule,
             (None, false) => Origin::User,
         };
-        prompts::build_system_prompt(&self.workspace, instructions(log.events()), skills(log.events()), origin, self.chatting, self.read_only)
+        prompts::build_system_prompt(
+            &self.workspace,
+            instructions(log.events()),
+            skills(log.events()),
+            origin,
+            self.chatting,
+            self.read_only,
+        )
     }
 
     /// In a side conversation, log how the session it is beside stands, ahead of the user's message about to be
@@ -867,9 +1021,15 @@ impl<L: Llm> Inner<L> {
             return Ok(());
         }
         let source = self.brief.lock().unwrap().clone();
-        let Some(brief) = source.and_then(|source| source()) else { return Ok(()) };
+        let Some(brief) = source.and_then(|source| source()) else {
+            return Ok(());
+        };
         let same = crate::session::last_brief(self.log.lock().unwrap().events()) == Some(brief.as_str());
-        if same { Ok(()) } else { self.append(Event::AsideBriefed { brief }) }
+        if same {
+            Ok(())
+        } else {
+            self.append(Event::AsideBriefed { brief })
+        }
     }
 
     fn is_project_trusted(&self) -> bool {
@@ -889,13 +1049,25 @@ impl<L: Llm> Inner<L> {
     /// file takes effect at the next turn, not in the middle of one.
     /// Untrusted workspaces do not load project instructions until trusted.
     fn refresh_instructions(&self) -> Result<(), String> {
-        let found = if self.is_project_trusted() { read_instructions(&self.workspace) } else { None };
+        let found = if self.is_project_trusted() {
+            read_instructions(&self.workspace)
+        } else {
+            None
+        };
         let event = {
             let log = self.log.lock().unwrap();
             let logged = instructions(log.events());
             match (&found, logged) {
-                (Some((path, content)), logged) if logged != Some((path.as_str(), content.as_str())) => Some(Event::InstructionsLoaded { path: path.clone(), content: content.clone() }),
-                (None, Some((path, _))) => Some(Event::InstructionsLoaded { path: path.to_string(), content: String::new() }),
+                (Some((path, content)), logged) if logged != Some((path.as_str(), content.as_str())) => {
+                    Some(Event::InstructionsLoaded {
+                        path: path.clone(),
+                        content: content.clone(),
+                    })
+                }
+                (None, Some((path, _))) => Some(Event::InstructionsLoaded {
+                    path: path.to_string(),
+                    content: String::new(),
+                }),
                 _ => None,
             }
         };
@@ -907,7 +1079,11 @@ impl<L: Llm> Inner<L> {
         let roots = self.active_skill_roots();
         let found = crate::skills::listing(&crate::skills::discover(&roots));
         let changed = skills(self.log.lock().unwrap().events()) != found.as_slice();
-        if changed { self.append(Event::SkillsListed { skills: found }) } else { Ok(()) }
+        if changed {
+            self.append(Event::SkillsListed { skills: found })
+        } else {
+            Ok(())
+        }
     }
 
     fn tool_context(&self, cancel: &CancellationToken) -> ToolContext {
@@ -954,7 +1130,9 @@ impl<L: Llm> Inner<L> {
                 extra.push(packed);
             }
         }
-        Some(crate::sandbox::Sandbox { writable: crate::sandbox::roots(&self.workspace, &extra) })
+        Some(crate::sandbox::Sandbox {
+            writable: crate::sandbox::roots(&self.workspace, &extra),
+        })
     }
 
     /// Where a web search would go right now; `None` when searching is not set up.
@@ -993,7 +1171,11 @@ impl<L: Llm> Inner<L> {
     /// Built-in tools withheld from a `read_only` subagent: anything that writes files,
     /// paints pictures, or manages interactive background processes.
     fn withheld_from_read_only(name: &str) -> bool {
-        tools::edits_files(name) || matches!(name, "generate_image" | "command_input" | "command_output" | "stop_command")
+        tools::edits_files(name)
+            || matches!(
+                name,
+                "generate_image" | "command_input" | "command_output" | "stop_command"
+            )
     }
 
     /// Why a `read_only` subagent is refused a tool call, if it is. Runs before `policy::check_in`
@@ -1003,10 +1185,14 @@ impl<L: Llm> Inner<L> {
             return None;
         }
         if Self::withheld_from_read_only(name) {
-            return Some(format!("This session is read-only and cannot use `{name}`. Inspect files and say what you find instead."));
+            return Some(format!(
+                "This session is read-only and cannot use `{name}`. Inspect files and say what you find instead."
+            ));
         }
         if crate::mcp::split_name(name).is_some() {
-            return Some(format!("This session is read-only and cannot call external MCP tool `{name}`."));
+            return Some(format!(
+                "This session is read-only and cannot call external MCP tool `{name}`."
+            ));
         }
         if name == "run_command" {
             if input["background"] == true {
@@ -1018,11 +1204,18 @@ impl<L: Llm> Inner<L> {
             if let Some(dir) = tools::command_cwd(input, &self.workspace)
                 && (!tools::inside_workspace(&self.workspace, &dir) || tools::in_git_directory(&self.workspace, &dir))
             {
-                return Some("This session is read-only and cannot run commands outside the workspace or inside .git.".to_string());
+                return Some(
+                    "This session is read-only and cannot run commands outside the workspace or inside .git."
+                        .to_string(),
+                );
             }
             let command = input["command"].as_str().unwrap_or_default();
-            if let Err(why) = crate::safety::check_read_only(command, crate::safety::Dialect::of_this_machine(), &self.workspace) {
-                return Some(format!("This session is read-only and cannot run this command ({why}). Use read_file, search, find_files, code_nav, or read-only inspection commands."));
+            if let Err(why) =
+                crate::safety::check_read_only(command, crate::safety::Dialect::of_this_machine(), &self.workspace)
+            {
+                return Some(format!(
+                    "This session is read-only and cannot run this command ({why}). Use read_file, search, find_files, code_nav, or read-only inspection commands."
+                ));
             }
         }
         None
@@ -1074,23 +1267,58 @@ impl<L: Llm> Inner<L> {
 
     /// Log what a tool returned, pictures included.
     fn tool_output(&self, tool_use_id: &str, tool: &str, output: ToolOutput) -> Result<(), String> {
-        let ToolOutput { content, is_error, meta, images } = output;
-        self.append(Event::ToolResult { tool_use_id: tool_use_id.to_string(), tool: tool.to_string(), content, is_error, meta, images })
+        let ToolOutput {
+            content,
+            is_error,
+            meta,
+            images,
+        } = output;
+        self.append(Event::ToolResult {
+            tool_use_id: tool_use_id.to_string(),
+            tool: tool.to_string(),
+            content,
+            is_error,
+            meta,
+            images,
+        })
     }
 
-    fn tool_result(&self, tool_use_id: &str, tool: &str, content: String, is_error: bool, meta: Value) -> Result<(), String> {
-        self.append(Event::ToolResult { tool_use_id: tool_use_id.to_string(), tool: tool.to_string(), content, is_error, meta, images: Vec::new() })
+    fn tool_result(
+        &self,
+        tool_use_id: &str,
+        tool: &str,
+        content: String,
+        is_error: bool,
+        meta: Value,
+    ) -> Result<(), String> {
+        self.append(Event::ToolResult {
+            tool_use_id: tool_use_id.to_string(),
+            tool: tool.to_string(),
+            content,
+            is_error,
+            meta,
+            images: Vec::new(),
+        })
     }
 
     /// Whether the user attached the file at `path` to a message of this conversation.
     fn attached(&self, path: &str) -> bool {
         // As the system names each, so that two spellings of one path are one file.
-        let real = |path: &str| std::path::Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+        let real = |path: &str| {
+            std::path::Path::new(path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(path))
+        };
         let wanted = real(path);
-        self.log.lock().unwrap().events().iter().any(|envelope| match &envelope.event {
-            Event::UserMessage { files, .. } => files.iter().any(|file| real(&file.path) == wanted),
-            _ => false,
-        })
+        self.log
+            .lock()
+            .unwrap()
+            .events()
+            .iter()
+            .any(|envelope| match &envelope.event {
+                Event::UserMessage { files, .. } => files.iter().any(|file| real(&file.path) == wanted),
+                _ => false,
+            })
     }
 
     /// Run turns until no message is waiting. A message that arrives after the
@@ -1122,7 +1350,14 @@ impl<L: Llm> Inner<L> {
     }
 
     async fn run_turn(self: &Arc<Self>, (text, images, files): Said, cancel: &CancellationToken) {
-        let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
+        let turn = 1 + self
+            .log
+            .lock()
+            .unwrap()
+            .events()
+            .iter()
+            .filter(|envelope| matches!(envelope.event, Event::TurnStart { .. }))
+            .count() as u64;
         let started = std::time::SystemTime::now();
         let cli_kind = match providers::provider(&self.provider()).map(|known| known.protocol) {
             Some(providers::Protocol::Cli(kind)) => Some(kind),
@@ -1134,7 +1369,15 @@ impl<L: Llm> Inner<L> {
         let opened = self
             .append(Event::TurnStart { turn })
             .and_then(|()| self.brief_before_message())
-            .and_then(|()| self.append(Event::UserMessage { text, steering: false, mode: self.mode(), images, files }))
+            .and_then(|()| {
+                self.append(Event::UserMessage {
+                    text,
+                    steering: false,
+                    mode: self.mode(),
+                    images,
+                    files,
+                })
+            })
             .and_then(|()| self.refresh_instructions())
             .and_then(|()| self.refresh_skills());
         let mut extra_artifacts: Vec<PathBuf> = Vec::new();
@@ -1143,7 +1386,11 @@ impl<L: Llm> Inner<L> {
                 let (conversation_id, briefing) = {
                     let log = self.log.lock().unwrap();
                     let conv = crate::session::external_session(log.events(), kind.backend_key()).map(str::to_string);
-                    let aside_brief = self.aside.is_some().then(|| crate::session::last_brief(log.events()).map(str::to_string)).flatten();
+                    let aside_brief = self
+                        .aside
+                        .is_some()
+                        .then(|| crate::session::last_brief(log.events()).map(str::to_string))
+                        .flatten();
                     let handoff_brief = if conv.is_none() {
                         crate::cli_agents::build_handoff_brief(log.events(), turn)
                     } else {
@@ -1155,7 +1402,10 @@ impl<L: Llm> Inner<L> {
                         cli_text.as_deref().unwrap_or(""),
                         conv.is_none(),
                     );
-                    let parts: Vec<String> = [aside_brief, handoff_brief, skills_brief].into_iter().flatten().collect();
+                    let parts: Vec<String> = [aside_brief, handoff_brief, skills_brief]
+                        .into_iter()
+                        .flatten()
+                        .collect();
                     let combined = (!parts.is_empty()).then(|| parts.join("\n\n"));
                     (conv, combined)
                 };
@@ -1170,7 +1420,8 @@ impl<L: Llm> Inner<L> {
                             briefing.as_deref(),
                         );
                         let tuning = self.tuning();
-                        let mut extra_dirs: Vec<PathBuf> = self.active_skill_roots().into_iter().filter(|d| d.is_dir()).collect();
+                        let mut extra_dirs: Vec<PathBuf> =
+                            self.active_skill_roots().into_iter().filter(|d| d.is_dir()).collect();
                         for file in &cli_files {
                             let p = std::path::Path::new(&file.path);
                             if !p.starts_with(&self.workspace)
@@ -1211,7 +1462,10 @@ impl<L: Llm> Inner<L> {
                                 self.0.append(event)
                             }
                             fn stream(&self, delta: StreamDelta) {
-                                self.0.emit(UiEvent::Stream { session_id: self.0.id.clone(), delta });
+                                self.0.emit(UiEvent::Stream {
+                                    session_id: self.0.id.clone(),
+                                    delta,
+                                });
                             }
                         }
                         match crate::cli_agents::run_turn(params, &CliSink(self), cancel).await {
@@ -1233,7 +1487,13 @@ impl<L: Llm> Inner<L> {
         // The API rejects a conversation in which a tool call has no result, whatever stopped the turn.
         let unanswered = unanswered_tool_uses(self.log.lock().unwrap().events());
         for (tool_use_id, tool) in unanswered {
-            let _ = self.tool_result(&tool_use_id, &tool, "The turn stopped before this tool ran.".to_string(), true, Value::Null);
+            let _ = self.tool_result(
+                &tool_use_id,
+                &tool,
+                "The turn stopped before this tool ran.".to_string(),
+                true,
+                Value::Null,
+            );
         }
         // What the turn left for the user that no tool told of, such as a document a script wrote: looked for once,
         // off the async threads, since a workspace can be large. Snapshot each found file for deliverable history.
@@ -1242,7 +1502,11 @@ impl<L: Llm> Inner<L> {
         let snapshot_dir = self.snapshots.clone();
         let read_only = self.read_only;
         let (files, snapshots, sizes) = tokio::task::spawn_blocking(move || {
-            let mut made = if read_only { Vec::new() } else { crate::made::since(&root, started) };
+            let mut made = if read_only {
+                Vec::new()
+            } else {
+                crate::made::since(&root, started)
+            };
             for extra in extra_artifacts {
                 if extra.is_file() && !made.contains(&extra) {
                     made.push(extra);
@@ -1264,9 +1528,18 @@ impl<L: Llm> Inner<L> {
         .await
         .unwrap_or_default();
         if !files.is_empty() {
-            let _ = self.append(Event::FilesMade { turn, files, snapshots, sizes });
+            let _ = self.append(Event::FilesMade {
+                turn,
+                files,
+                snapshots,
+                sizes,
+            });
         }
-        let _ = self.append(Event::TurnEnd { turn, reason: reason.to_string(), error });
+        let _ = self.append(Event::TurnEnd {
+            turn,
+            reason: reason.to_string(),
+            error,
+        });
     }
 
     /// Run steps until the turn is over. Returns the reason it ended, or what went wrong.
@@ -1281,7 +1554,13 @@ impl<L: Llm> Inner<L> {
             let queued: Vec<Said> = self.state.lock().unwrap().inbox.drain(..).collect();
             for (text, images, files) in queued {
                 self.brief_before_message()?;
-                self.append(Event::UserMessage { text, steering: true, mode: self.mode(), images, files })?;
+                self.append(Event::UserMessage {
+                    text,
+                    steering: true,
+                    mode: self.mode(),
+                    images,
+                    files,
+                })?;
             }
 
             let tuning = self.tuning();
@@ -1300,8 +1579,8 @@ impl<L: Llm> Inner<L> {
                 if let Some(pinned) = &pinned_auto_model {
                     pinned.clone()
                 } else {
-                    let resolved = providers::resolve_auto_model(&self.provider(), &tuning.effort)
-                        .unwrap_or(configured_model);
+                    let resolved =
+                        providers::resolve_auto_model(&self.provider(), &tuning.effort).unwrap_or(configured_model);
                     pinned_auto_model = Some(resolved.clone());
                     resolved
                 }
@@ -1321,7 +1600,10 @@ impl<L: Llm> Inner<L> {
             let (sender, mut receiver) = unbounded_channel::<StreamDelta>();
             let forward = async {
                 while let Some(delta) = receiver.recv().await {
-                    self.emit(UiEvent::Stream { session_id: self.id.clone(), delta });
+                    self.emit(UiEvent::Stream {
+                        session_id: self.id.clone(),
+                        delta,
+                    });
                 }
             };
             // `stream` owns the sender, so `forward` ends once the request is over and every fragment is out.
@@ -1335,7 +1617,11 @@ impl<L: Llm> Inner<L> {
                     match self.compact(&tuning, estimate, true, None, cancel).await {
                         Ok(()) => continue,
                         Err(LlmError::Cancelled) => return Ok("cancelled"),
-                        Err(failure) => return Err(format!("{error}; and the conversation could not be summarized to fit: {failure}")),
+                        Err(failure) => {
+                            return Err(format!(
+                                "{error}; and the conversation could not be summarized to fit: {failure}"
+                            ));
+                        }
                     }
                 }
                 Err(error) => return Err(error.to_string()),
@@ -1346,7 +1632,13 @@ impl<L: Llm> Inner<L> {
                 .content
                 .iter()
                 .filter(|block| block["type"] == "tool_use")
-                .map(|block| (block["id"].as_str().unwrap_or_default().to_string(), block["name"].as_str().unwrap_or_default().to_string(), block["input"].clone()))
+                .map(|block| {
+                    (
+                        block["id"].as_str().unwrap_or_default().to_string(),
+                        block["name"].as_str().unwrap_or_default().to_string(),
+                        block["input"].clone(),
+                    )
+                })
                 .collect();
             self.append(Event::AssistantMessage {
                 content: message.content.clone(),
@@ -1382,7 +1674,13 @@ impl<L: Llm> Inner<L> {
                     return Ok("cancelled");
                 }
                 if let Some(raw) = message.invalid_tool_inputs.get(&id) {
-                    self.tool_result(&id, &name, json!({ "INVALID_JSON": raw }).to_string(), true, Value::Null)?;
+                    self.tool_result(
+                        &id,
+                        &name,
+                        json!({ "INVALID_JSON": raw }).to_string(),
+                        true,
+                        Value::Null,
+                    )?;
                     continue;
                 }
                 if self.parent.is_some() && Self::withheld_from_subagent(&name) {
@@ -1391,17 +1689,33 @@ impl<L: Llm> Inner<L> {
                         tools::ASK_USER => "A subagent cannot ask the user. Decide yourself, and say in your report what you decided and why.".to_string(),
                         _ => format!("A subagent cannot use `{name}`. Report back to the main agent if it is needed."),
                     };
-                    self.tool_result(&id, &name, message, true, json!({ "refused": true, "refusal": "subagent" }))?;
+                    self.tool_result(
+                        &id,
+                        &name,
+                        message,
+                        true,
+                        json!({ "refused": true, "refusal": "subagent" }),
+                    )?;
                     continue;
                 }
                 if let Some(message) = self.read_only_refusal(&name, &input) {
-                    self.tool_result(&id, &name, message, true, json!({ "refused": true, "refusal": "read_only" }))?;
+                    self.tool_result(
+                        &id,
+                        &name,
+                        message,
+                        true,
+                        json!({ "refused": true, "refusal": "read_only" }),
+                    )?;
                     continue;
                 }
                 let mode = self.mode();
                 let mut verdict = policy::check_in(mode, &name, &input, &self.workspace, self.sandboxed());
                 // Input to a job is shown with the command it goes to, which only the session's jobs know.
-                if let Verdict::Ask { reason: "input", detail, .. } = &mut verdict
+                if let Verdict::Ask {
+                    reason: "input",
+                    detail,
+                    ..
+                } = &mut verdict
                     && let Some(command) = self.jobs.command(input["job"].as_str().unwrap_or_default())
                 {
                     *detail = format!("{command}\n{detail}");
@@ -1412,7 +1726,9 @@ impl<L: Llm> Inner<L> {
                 }
                 // A grant of several commands, one per line, holds when each of them is granted.
                 let granted = |grant: &String| {
-                    grant.lines().all(|part| self.state.lock().unwrap().grants.contains(part) || self.kept.allows(&self.granted_in, part))
+                    grant.lines().all(|part| {
+                        self.state.lock().unwrap().grants.contains(part) || self.kept.allows(&self.granted_in, part)
+                    })
                 };
                 // In plan mode, standing or session grants may never auto-allow non-read-only commands.
                 let can_use_grant = mode != Mode::Plan
@@ -1427,14 +1743,28 @@ impl<L: Llm> Inner<L> {
                 // In auto mode a command the rules cannot pass goes to the guardian first, when there is one.
                 let auto = mode == Mode::Auto;
                 let verdict = match verdict {
-                    Verdict::Ask { grant, .. } if can_use_grant && grant.as_ref().is_some_and(granted) => Verdict::Allow,
+                    Verdict::Ask { grant, .. } if can_use_grant && grant.as_ref().is_some_and(granted) => {
+                        Verdict::Allow
+                    }
                     // A file the user attached is read without asking, wherever it is: attaching it said so.
-                    Verdict::Ask { reason: "outside_read", ref detail, .. } if name == "read_file" && self.attached(detail) => Verdict::Allow,
-                    Verdict::Ask { reason: "command", detail, grant } if auto && tuning.guardian.is_some() => {
+                    Verdict::Ask {
+                        reason: "outside_read",
+                        ref detail,
+                        ..
+                    } if name == "read_file" && self.attached(detail) => Verdict::Allow,
+                    Verdict::Ask {
+                        reason: "command",
+                        detail,
+                        grant,
+                    } if auto && tuning.guardian.is_some() => {
                         let guardian = tuning.guardian.clone().unwrap_or_default();
                         match self.review(&id, &detail, &message.content, &guardian, cancel).await {
                             Ok(true) => Verdict::Allow,
-                            Ok(false) => Verdict::Ask { reason: "command", detail, grant },
+                            Ok(false) => Verdict::Ask {
+                                reason: "command",
+                                detail,
+                                grant,
+                            },
                             Err(()) => return Ok("cancelled"),
                         }
                     }
@@ -1445,7 +1775,8 @@ impl<L: Llm> Inner<L> {
                     self.state.lock().unwrap().approvals.insert(id.clone(), sender);
                     // In auto mode nobody may be there to answer: the request is declined by itself in time.
                     let wait = tuning.approval_wait.filter(|_| auto);
-                    let expires_at = wait.map(|wait| (chrono::Utc::now() + wait).to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+                    let expires_at = wait
+                        .map(|wait| (chrono::Utc::now() + wait).to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
                     self.append(Event::ApprovalRequested {
                         tool_use_id: id.clone(),
                         tool: name.clone(),
@@ -1462,8 +1793,13 @@ impl<L: Llm> Inner<L> {
                         if tools::edits_files(later_name) {
                             break;
                         }
-                        let reads = matches!(later_name.as_str(), "read_file" | "search" | "find_files" | "batch_inspect") && !message.invalid_tool_inputs.contains_key(later_id);
-                        if !reads || policy::check(self.mode(), later_name, later_input, &self.workspace) != Verdict::Allow {
+                        let reads = matches!(
+                            later_name.as_str(),
+                            "read_file" | "search" | "find_files" | "batch_inspect"
+                        ) && !message.invalid_tool_inputs.contains_key(later_id);
+                        if !reads
+                            || policy::check(self.mode(), later_name, later_input, &self.workspace) != Verdict::Allow
+                        {
                             continue;
                         }
                         let output = tools::execute(later_name, later_input, &self.tool_context(cancel)).await;
@@ -1480,16 +1816,28 @@ impl<L: Llm> Inner<L> {
                         self.state.lock().unwrap().approvals.remove(&id);
                     }
                     self.set_status(Status::Running);
-                    self.append(Event::ApprovalResolved { tool_use_id: id.clone(), decision, timed_out })?;
+                    self.append(Event::ApprovalResolved {
+                        tool_use_id: id.clone(),
+                        decision,
+                        timed_out,
+                    })?;
                     match decision {
                         Decision::Deny if timed_out => {
                             let seconds = wait.map_or(0, |wait| wait.as_secs());
-                            let content = format!("Nobody answered within {seconds} seconds, so this was declined. Do not try to get around it: carry on without it, and say in your reply what you need the user to approve.");
+                            let content = format!(
+                                "Nobody answered within {seconds} seconds, so this was declined. Do not try to get around it: carry on without it, and say in your reply what you need the user to approve."
+                            );
                             self.tool_result(&id, &name, content, true, Value::Null)?;
                             continue;
                         }
                         Decision::Deny => {
-                            self.tool_result(&id, &name, "The user declined this action.".to_string(), true, Value::Null)?;
+                            self.tool_result(
+                                &id,
+                                &name,
+                                "The user declined this action.".to_string(),
+                                true,
+                                Value::Null,
+                            )?;
                             continue;
                         }
                         Decision::AllowSession | Decision::AllowAlways => {
@@ -1515,19 +1863,26 @@ impl<L: Llm> Inner<L> {
                     tools::PRESENT_PLAN => {
                         let plan = input["plan"].as_str().map(str::trim).unwrap_or_default();
                         if self.mode() != Mode::Plan {
-                            ToolOutput::error("Plan mode is off, so there is no plan to present: carry out the work, or say what you propose in your reply.")
+                            ToolOutput::error(
+                                "Plan mode is off, so there is no plan to present: carry out the work, or say what you propose in your reply.",
+                            )
                         } else if plan.is_empty() {
                             ToolOutput::error("`plan` is empty: give the whole plan.")
                         } else {
                             presented = true;
-                            ToolOutput::ok("The plan is shown to the user, who decides whether to have it carried out.", json!({ "presented": true }))
+                            ToolOutput::ok(
+                                "The plan is shown to the user, who decides whether to have it carried out.",
+                                json!({ "presented": true }),
+                            )
                         }
                     }
                     // Without Zhipu's search, the session's own provider searches, in a request of its own.
-                    "web_search" if self.search_config().is_none() => match self.search_with_provider(&input, cancel).await {
-                        Some(output) => output,
-                        None => return Ok("cancelled"),
-                    },
+                    "web_search" if self.search_config().is_none() => {
+                        match self.search_with_provider(&input, cancel).await {
+                            Some(output) => output,
+                            None => return Ok("cancelled"),
+                        }
+                    }
                     _ => tools::execute(&name, &input, &self.tool_context(cancel)).await,
                 };
                 self.tool_output(&id, &name, output)?;
@@ -1584,10 +1939,20 @@ mod session_file_ownership_tests {
             ("t2", "write_file", json!({ "file": "/ws/written.rs" }), false),
             ("t3", "generate_image", json!({ "file": "/ws/painted.png" }), false),
             ("t4", "move_file", json!({ "file": "/ws/moved.txt" }), false),
-            ("t5", "read_file", json!({ "file": "/ws/viewed.png", "picture": "image/png" }), false),
+            (
+                "t5",
+                "read_file",
+                json!({ "file": "/ws/viewed.png", "picture": "image/png" }),
+                false,
+            ),
             ("t6", "read_file", json!({ "file": "/ws/plain_read.txt" }), false),
             ("t7", "write_file", json!({ "file": "/ws/errored.rs" }), true),
-            ("t8", "deliver_files", json!({ "files": ["/ws/delivered_a.docx", "/ws/delivered_b.xlsx"] }), false),
+            (
+                "t8",
+                "deliver_files",
+                json!({ "files": ["/ws/delivered_a.docx", "/ws/delivered_b.xlsx"] }),
+                false,
+            ),
         ] {
             log.append(Event::ToolResult {
                 tool_use_id: id.into(),
@@ -1636,7 +2001,15 @@ mod session_file_ownership_tests {
             painter: None,
             lsp: None,
         };
-        let session = Session::new(log, Arc::new(NoopLlm), tuning, services, tx, tokio::runtime::Handle::current()).unwrap();
+        let session = Session::new(
+            log,
+            Arc::new(NoopLlm),
+            tuning,
+            services,
+            tx,
+            tokio::runtime::Handle::current(),
+        )
+        .unwrap();
 
         for expected in [
             "/ws/attached.pdf",
@@ -1650,10 +2023,16 @@ mod session_file_ownership_tests {
             "/ws/made_by_script.png",
             "/ws/restored.pdf",
         ] {
-            assert!(session.has_session_file(expected), "expected {expected} to belong to session");
+            assert!(
+                session.has_session_file(expected),
+                "expected {expected} to belong to session"
+            );
         }
         for rejected in ["/ws/plain_read.txt", "/ws/errored.rs", "/etc/passwd", ""] {
-            assert!(!session.has_session_file(rejected), "{rejected} must not belong to session");
+            assert!(
+                !session.has_session_file(rejected),
+                "{rejected} must not belong to session"
+            );
         }
     }
 }

@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime};
 
 /// The kinds of file a 分身 makes for the user, as against the code and build output a turn also leaves.
 pub const KINDS: &[&str] = &[
-    "docx", "doc", "xlsx", "xls", "csv", "pptx", "ppt", "pdf", "odt", "ods", "odp", "rtf", "epub", "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "mp3", "wav",
-    "mp4", "mov", "zip", "7z",
+    "docx", "doc", "xlsx", "xls", "csv", "pptx", "ppt", "pdf", "odt", "ods", "odp", "rtf", "epub", "png", "jpg",
+    "jpeg", "gif", "webp", "svg", "bmp", "mp3", "wav", "mp4", "mov", "zip", "7z",
 ];
 
 /// How many entries are looked at, at most: a workspace bigger than that is looked at only so far.
@@ -34,7 +34,12 @@ pub fn since(root: &Path, since: SystemTime) -> Vec<PathBuf> {
         .git_exclude(true)
         .require_git(false)
         .parents(false)
-        .filter_entry(|entry| !matches!(entry.file_name().to_str(), Some("node_modules" | "target" | "__pycache__" | "venv")))
+        .filter_entry(|entry| {
+            !matches!(
+                entry.file_name().to_str(),
+                Some("node_modules" | "target" | "__pycache__" | "venv")
+            )
+        })
         .build();
     for entry in walk.take(LOOKED_AT).flatten() {
         let path = entry.path();
@@ -42,7 +47,11 @@ pub fn since(root: &Path, since: SystemTime) -> Vec<PathBuf> {
             continue;
         }
         // Office's own lock files beside an open document (`~$report.docx`) are not made for anyone.
-        if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("~$")) {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("~$"))
+        {
             continue;
         }
         if let Some(changed) = entry.metadata().ok().and_then(|metadata| metadata.modified().ok())
@@ -56,7 +65,9 @@ pub fn since(root: &Path, since: SystemTime) -> Vec<PathBuf> {
 }
 
 fn of_a_kind(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| KINDS.contains(&extension.to_ascii_lowercase().as_str()))
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| KINDS.contains(&extension.to_ascii_lowercase().as_str()))
 }
 
 #[cfg(test)]
@@ -69,21 +80,39 @@ mod tests {
         let old = root.path().join("old.pdf");
         std::fs::write(&old, "old").unwrap();
         let long_ago = SystemTime::now() - Duration::from_secs(3600);
-        std::fs::File::options().write(true).open(&old).unwrap().set_modified(long_ago).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
         // Not a repository, and its .gitignore counts all the same.
         std::fs::write(root.path().join(".gitignore"), "out/\n").unwrap();
         let started = SystemTime::now();
         std::fs::create_dir_all(root.path().join("docs")).unwrap();
         std::fs::create_dir_all(root.path().join("out")).unwrap();
         std::fs::create_dir_all(root.path().join("node_modules").join("pkg")).unwrap();
-        std::fs::write(root.path().join("node_modules").join("pkg").join("logo.png"), "a package's").unwrap();
+        std::fs::write(
+            root.path().join("node_modules").join("pkg").join("logo.png"),
+            "a package's",
+        )
+        .unwrap();
         std::fs::write(root.path().join("docs").join("手册.DOCX"), "made").unwrap();
         std::fs::write(root.path().join("chart.png"), "made").unwrap();
         std::fs::write(root.path().join("build.py"), "code").unwrap();
         std::fs::write(root.path().join("~$手册.docx"), "lock").unwrap();
         std::fs::write(root.path().join("out").join("ignored.pdf"), "ignored").unwrap();
         let found = since(root.path(), started);
-        let names: Vec<String> = found.iter().map(|path| path.strip_prefix(root.path()).unwrap().display().to_string().replace('\\', "/")).collect();
+        let names: Vec<String> = found
+            .iter()
+            .map(|path| {
+                path.strip_prefix(root.path())
+                    .unwrap()
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+            })
+            .collect();
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(sorted, ["chart.png", "docs/手册.DOCX"]);

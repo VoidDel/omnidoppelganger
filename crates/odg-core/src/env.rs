@@ -15,13 +15,17 @@ use std::path::{Path, PathBuf};
 /// Widen this process's `PATH` with the folders programs are usually installed in, keeping what it had. Called once,
 /// at start, before anything is started that is looked for on the `PATH`.
 pub fn adopt_shell_path() {
-    let current: Vec<PathBuf> = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
+    let current: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
     let home = dirs::home_dir().unwrap_or_default();
     let widened = widened(&current, usual_folders(&home));
     if widened == current {
         return; // Started from a terminal, which gave it a shell's own `PATH`: there is nothing to add.
     }
-    let Ok(joined) = std::env::join_paths(&widened) else { return };
+    let Ok(joined) = std::env::join_paths(&widened) else {
+        return;
+    };
     // SAFETY: this is called once, at start, before any thread of the app's own is started that reads the environment.
     // A program started before this call would see the old `PATH`, which is what it would have had anyway.
     unsafe { std::env::set_var("PATH", joined) };
@@ -60,10 +64,27 @@ fn usual_folders(home: &Path) -> Vec<PathBuf> {
         folders.push(PathBuf::from(gobin));
     }
     if let Some(gopath) = std::env::var_os("GOPATH").filter(|value| !value.is_empty()) {
-        folders.extend(std::env::split_paths(&gopath).filter(|path| !path.as_os_str().is_empty()).map(|path| path.join("bin")));
+        folders.extend(
+            std::env::split_paths(&gopath)
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|path| path.join("bin")),
+        );
     }
     // The user's own, as each installer puts them: go, pipx and uv, cargo, and the version managers' shims.
-    for folder in ["go/bin", ".local/bin", ".cargo/bin", ".local/share/mise/shims", ".asdf/shims", ".pyenv/shims", ".bun/bin", ".volta/bin", ".deno/bin", ".npm-global/bin", ".local/share/pnpm", "Library/pnpm"] {
+    for folder in [
+        "go/bin",
+        ".local/bin",
+        ".cargo/bin",
+        ".local/share/mise/shims",
+        ".asdf/shims",
+        ".pyenv/shims",
+        ".bun/bin",
+        ".volta/bin",
+        ".deno/bin",
+        ".npm-global/bin",
+        ".local/share/pnpm",
+        "Library/pnpm",
+    ] {
         folders.push(home.join(folder));
     }
     folders.extend(node_folders(home));
@@ -74,9 +95,18 @@ fn usual_folders(home: &Path) -> Vec<PathBuf> {
 /// named as they are. A version whose folder is there but holds no `bin` yet is left out, as one being installed is.
 fn node_folders(home: &Path) -> Vec<PathBuf> {
     let mut folders = Vec::new();
-    for (parent, rest) in [(".nvm/versions/node", "bin"), ("Library/Application Support/fnm/node-versions", "installation/bin"), (".local/share/fnm/node-versions", "installation/bin")] {
-        let Ok(entries) = std::fs::read_dir(home.join(parent)) else { continue };
-        let mut versions: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path().join(rest))).filter(|folder| folder.is_dir()).collect();
+    for (parent, rest) in [
+        (".nvm/versions/node", "bin"),
+        ("Library/Application Support/fnm/node-versions", "installation/bin"),
+        (".local/share/fnm/node-versions", "installation/bin"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(home.join(parent)) else {
+            continue;
+        };
+        let mut versions: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path().join(rest)))
+            .filter(|folder| folder.is_dir())
+            .collect();
         versions.sort();
         folders.extend(versions);
     }
@@ -96,13 +126,22 @@ mod tests {
     #[test]
     fn keeps_the_order_drops_repeats_and_leaves_out_folders_that_are_not_there() {
         let directory = tempfile::tempdir().unwrap();
-        let (first, second) = (folder_in(directory.path(), "first"), folder_in(directory.path(), "second"));
+        let (first, second) = (
+            folder_in(directory.path(), "first"),
+            folder_in(directory.path(), "second"),
+        );
         let absent = directory.path().join("absent");
         // A folder of the app's own that is not there yet is kept: a program may make it later.
         let later = directory.path().join("later");
         let current = [PathBuf::from("/usr/bin"), later.clone(), PathBuf::from("/bin")];
-        let kept = widened(&current, vec![first.clone(), absent, second.clone(), PathBuf::from("/usr/bin")]);
-        assert_eq!(kept, [first, second, PathBuf::from("/usr/bin"), later, PathBuf::from("/bin")]);
+        let kept = widened(
+            &current,
+            vec![first.clone(), absent, second.clone(), PathBuf::from("/usr/bin")],
+        );
+        assert_eq!(
+            kept,
+            [first, second, PathBuf::from("/usr/bin"), later, PathBuf::from("/bin")]
+        );
         // Nothing new to add is told apart from a `PATH` that already had them all.
         assert_eq!(widened(&kept, vec![kept[0].clone()]), kept);
     }
@@ -117,14 +156,27 @@ mod tests {
         for path in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/local/go/bin"] {
             assert!(folders.contains(&PathBuf::from(path)), "{path} is missing");
         }
-        for path in ["go/bin", ".local/bin", ".cargo/bin", ".local/share/mise/shims", ".asdf/shims"] {
+        for path in [
+            "go/bin",
+            ".local/bin",
+            ".cargo/bin",
+            ".local/share/mise/shims",
+            ".asdf/shims",
+        ] {
             assert!(folders.contains(&home.join(path)), "{path} is missing");
         }
         // Every Node nvm keeps, and only the folder holding its `bin`.
-        assert!(folders.contains(&home.join(".nvm/versions/node/v20.11.0/bin")) && folders.contains(&home.join(".nvm/versions/node/v26.13.1/bin")));
+        assert!(
+            folders.contains(&home.join(".nvm/versions/node/v20.11.0/bin"))
+                && folders.contains(&home.join(".nvm/versions/node/v26.13.1/bin"))
+        );
         assert!(!folders.contains(&home.join(".nvm/versions/node/v20.11.0")));
         // A home with none of them costs nothing: the folders it would name are left out.
         let empty = tempfile::tempdir().unwrap();
-        assert!(!widened(&[], usual_folders(empty.path())).iter().any(|folder| folder.starts_with(empty.path())));
+        assert!(
+            !widened(&[], usual_folders(empty.path()))
+                .iter()
+                .any(|folder| folder.starts_with(empty.path()))
+        );
     }
 }

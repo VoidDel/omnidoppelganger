@@ -33,7 +33,11 @@ pub fn support() -> Result<&'static str, String> {
     #[cfg(target_os = "linux")]
     return linux::abi().map(|_| "Landlock");
     #[cfg(target_os = "macos")]
-    return if Path::new(macos::SANDBOX_EXEC).is_file() { Ok("sandbox-exec") } else { Err(format!("{} is missing", macos::SANDBOX_EXEC)) };
+    return if Path::new(macos::SANDBOX_EXEC).is_file() {
+        Ok("sandbox-exec")
+    } else {
+        Err(format!("{} is missing", macos::SANDBOX_EXEC))
+    };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     return Err("commands cannot be confined on this system yet; only on Linux and macOS".to_string());
 }
@@ -43,9 +47,17 @@ pub fn support() -> Result<&'static str, String> {
 /// with links followed, which is how the rules match; those that do not
 /// exist are left out.
 pub fn roots(workspace: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
-    let temporary = [std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/var/tmp"), PathBuf::from("/dev/shm")];
+    let temporary = [
+        std::env::temp_dir(),
+        PathBuf::from("/tmp"),
+        PathBuf::from("/var/tmp"),
+        PathBuf::from("/dev/shm"),
+    ];
     let mut roots: Vec<PathBuf> = Vec::new();
-    for path in std::iter::once(workspace.to_path_buf()).chain(temporary).chain(extra.iter().cloned()) {
+    for path in std::iter::once(workspace.to_path_buf())
+        .chain(temporary)
+        .chain(extra.iter().cloned())
+    {
         if let Ok(real) = path.canonicalize()
             && !roots.contains(&real)
         {
@@ -63,7 +75,14 @@ fn push_unique_path(out: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn push_git_sensitive_paths(out: &mut Vec<PathBuf>, git_dir: &Path) {
-    for entry in ["hooks", "info", "config", "config.lock", "config.worktree", "config.worktree.lock"] {
+    for entry in [
+        "hooks",
+        "info",
+        "config",
+        "config.lock",
+        "config.worktree",
+        "config.worktree.lock",
+    ] {
         push_unique_path(out, git_dir.join(entry));
     }
 }
@@ -153,7 +172,10 @@ pub fn command_with_deny(
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (program, sandbox, extra_deny_write);
-        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, support().unwrap_err()))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            support().unwrap_err(),
+        ))
     }
 }
 
@@ -198,13 +220,36 @@ mod linux {
     /// The version of Landlock the running kernel has, or why it has none.
     pub fn abi() -> Result<i64, String> {
         // SAFETY: with this flag the call reads nothing and returns a number.
-        let version = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<RulesetAttr>(), 0usize, CREATE_RULESET_VERSION) };
-        if version >= 1 { Ok(version) } else { Err(format!("this kernel has no Landlock to confine commands with ({})", io::Error::last_os_error())) }
+        let version = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                std::ptr::null::<RulesetAttr>(),
+                0usize,
+                CREATE_RULESET_VERSION,
+            )
+        };
+        if version >= 1 {
+            Ok(version)
+        } else {
+            Err(format!(
+                "this kernel has no Landlock to confine commands with ({})",
+                io::Error::last_os_error()
+            ))
+        }
     }
 
     /// Every kind of write the kernel at hand can confine.
     fn writes(abi: i64) -> u64 {
-        let first = WRITE_FILE | REMOVE_DIR | REMOVE_FILE | MAKE_CHAR | MAKE_DIR | MAKE_REG | MAKE_SOCK | MAKE_FIFO | MAKE_BLOCK | MAKE_SYM;
+        let first = WRITE_FILE
+            | REMOVE_DIR
+            | REMOVE_FILE
+            | MAKE_CHAR
+            | MAKE_DIR
+            | MAKE_REG
+            | MAKE_SOCK
+            | MAKE_FIFO
+            | MAKE_BLOCK
+            | MAKE_SYM;
         first | if abi >= 2 { REFER } else { 0 } | if abi >= 3 { TRUNCATE } else { 0 }
     }
 
@@ -213,9 +258,18 @@ mod linux {
     /// confines nothing yet: see [`confine`].
     pub fn ruleset(writable: &[PathBuf]) -> io::Result<OwnedFd> {
         let handled = writes(abi().map_err(io::Error::other)?);
-        let attributes = RulesetAttr { handled_access_fs: handled };
+        let attributes = RulesetAttr {
+            handled_access_fs: handled,
+        };
         // SAFETY: the pointer and size describe `attributes`, which outlives the call.
-        let made = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &attributes, std::mem::size_of::<RulesetAttr>(), 0u32) };
+        let made = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                &attributes,
+                std::mem::size_of::<RulesetAttr>(),
+                0u32,
+            )
+        };
         if made < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -223,13 +277,38 @@ mod linux {
         let ruleset = unsafe { OwnedFd::from_raw_fd(made as libc::c_int) };
         let allow = |path: &Path, access: u64| -> io::Result<()> {
             // A directory that is not there has nothing to be written under.
-            let Ok(place) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_CLOEXEC).open(path) else { return Ok(()) };
+            let Ok(place) = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+                .open(path)
+            else {
+                return Ok(());
+            };
             // Only a directory can hold the rights to make and remove things.
-            let access = if place.metadata()?.is_dir() { access } else { access & (WRITE_FILE | TRUNCATE) };
-            let rule = PathBeneathAttr { allowed_access: access & handled, parent_fd: place.as_raw_fd() };
+            let access = if place.metadata()?.is_dir() {
+                access
+            } else {
+                access & (WRITE_FILE | TRUNCATE)
+            };
+            let rule = PathBeneathAttr {
+                allowed_access: access & handled,
+                parent_fd: place.as_raw_fd(),
+            };
             // SAFETY: the pointer describes `rule`, and both descriptors are open for the length of the call.
-            let added = unsafe { libc::syscall(libc::SYS_landlock_add_rule, ruleset.as_raw_fd(), RULE_PATH_BENEATH, &rule, 0u32) };
-            if added < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+            let added = unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_add_rule,
+                    ruleset.as_raw_fd(),
+                    RULE_PATH_BENEATH,
+                    &rule,
+                    0u32,
+                )
+            };
+            if added < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
         };
         for root in writable {
             allow(root, handled)?;
@@ -248,7 +327,9 @@ mod linux {
             command.pre_exec(move || {
                 // Required before a process without privileges may confine itself. It also stops
                 // setuid programs such as `sudo` from gaining privileges inside.
-                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 || libc::syscall(libc::SYS_landlock_restrict_self, ruleset.as_raw_fd(), 0u32) != 0 {
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                    || libc::syscall(libc::SYS_landlock_restrict_self, ruleset.as_raw_fd(), 0u32) != 0
+                {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -277,7 +358,9 @@ mod macos {
     /// the given directories and shell devices, then denied again on sensitive `.git`/`.odg` paths
     /// (in Seatbelt, later rules win).
     fn profile(roots: usize, deny_kinds: &[bool]) -> String {
-        let allowed: String = (0..roots).map(|index| format!(" (subpath (param \"ROOT_{index}\"))")).collect();
+        let allowed: String = (0..roots)
+            .map(|index| format!(" (subpath (param \"ROOT_{index}\"))"))
+            .collect();
         let denied_clause = if deny_kinds.is_empty() {
             String::new()
         } else {
@@ -338,9 +421,15 @@ mod tests {
         let (workspace, extra) = (directory.path().join("work"), directory.path().join("cache"));
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&extra).unwrap();
-        let roots = roots(&workspace, &[extra.clone(), directory.path().join("gone"), workspace.clone()]);
+        let roots = roots(
+            &workspace,
+            &[extra.clone(), directory.path().join("gone"), workspace.clone()],
+        );
         assert_eq!(roots[0], workspace.canonicalize().unwrap());
-        assert!(roots.contains(&std::env::temp_dir().canonicalize().unwrap()) && roots.contains(&extra.canonicalize().unwrap()));
+        assert!(
+            roots.contains(&std::env::temp_dir().canonicalize().unwrap())
+                && roots.contains(&extra.canonicalize().unwrap())
+        );
         // Named once each, and only when they exist.
         assert_eq!(roots.iter().filter(|root| **root == roots[0]).count(), 1);
         assert!(!roots.iter().any(|root| root.ends_with("gone")));
@@ -368,7 +457,9 @@ mod tests {
             std::fs::create_dir_all(path.join("sub")).unwrap();
             std::fs::write(path.join("kept.txt"), "kept\n").unwrap();
         }
-        let sandbox = Sandbox { writable: vec![inside.clone()] };
+        let sandbox = Sandbox {
+            writable: vec![inside.clone()],
+        };
         let run = |script: String| {
             let sandbox = sandbox.clone();
             let inside = inside.clone();
@@ -382,7 +473,10 @@ mod tests {
                     .output()
                     .await
                     .unwrap();
-                (output.status.success(), String::from_utf8_lossy(&output.stderr).into_owned())
+                (
+                    output.status.success(),
+                    String::from_utf8_lossy(&output.stderr).into_owned(),
+                )
             }
         };
         let out = outside.display();
@@ -390,7 +484,11 @@ mod tests {
         // Inside: make, change, move between directories, and remove; and read what is outside.
         let (ok, said) = run(format!("echo new > a.txt && echo more >> kept.txt && mv a.txt sub/a.txt && rm kept.txt && mkdir made && cat {out}/kept.txt > /dev/null")).await;
         assert!(ok, "{said}");
-        assert!(inside.join("sub").join("a.txt").is_file() && inside.join("made").is_dir() && !inside.join("kept.txt").exists());
+        assert!(
+            inside.join("sub").join("a.txt").is_file()
+                && inside.join("made").is_dir()
+                && !inside.join("kept.txt").exists()
+        );
 
         // Outside: none of that, whichever way it is tried. What the command starts is confined with it.
         for script in [
@@ -405,12 +503,23 @@ mod tests {
             assert!(!ok, "`{script}` wrote outside the sandbox");
         }
         assert_eq!(std::fs::read_to_string(outside.join("kept.txt")).unwrap(), "kept\n");
-        let left: Vec<String> = std::fs::read_dir(&outside).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let left: Vec<String> = std::fs::read_dir(&outside)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         assert_eq!(left.len(), 2, "{left:?}");
-        assert!(inside.join("sub").join("a.txt").is_file(), "a move that was refused left the file where it was");
+        assert!(
+            inside.join("sub").join("a.txt").is_file(),
+            "a move that was refused left the file where it was"
+        );
 
         // The same commands run unconfined, so it was the sandbox that stopped them.
-        let free = tokio::process::Command::new("sh").arg("-c").arg(format!("echo new > {out}/a.txt")).output().await.unwrap();
+        let free = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("echo new > {out}/a.txt"))
+            .output()
+            .await
+            .unwrap();
         assert!(free.status.success() && outside.join("a.txt").is_file());
     }
 
@@ -436,7 +545,9 @@ mod tests {
             .unwrap();
         assert!(init.status.success());
 
-        let sandbox = Sandbox { writable: vec![repo.clone(), tmp_scratch.clone()] };
+        let sandbox = Sandbox {
+            writable: vec![repo.clone(), tmp_scratch.clone()],
+        };
         let run = |script: &str| {
             let sandbox = sandbox.clone();
             let repo = repo.clone();
@@ -475,7 +586,9 @@ mod tests {
             assert!(!ok, "`{blocked}` unexpectedly succeeded: {said}");
             let lower = said.to_lowercase();
             assert!(
-                lower.contains("operation not permitted") || lower.contains("permission denied") || lower.contains("could not lock"),
+                lower.contains("operation not permitted")
+                    || lower.contains("permission denied")
+                    || lower.contains("could not lock"),
                 "unexpected error for `{blocked}`: {said}"
             );
         }
@@ -508,9 +621,24 @@ mod tests {
         for args in [
             &["init", "--quiet", "--initial-branch", "main"][..],
             &["add", "-A"][..],
-            &["-c", "user.name=t", "-c", "user.email=t@e", "commit", "--quiet", "-m", "init"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@e",
+                "commit",
+                "--quiet",
+                "-m",
+                "init",
+            ][..],
         ] {
-            let out = tokio::process::Command::new("git").arg("-C").arg(&origin).args(args).output().await.unwrap();
+            let out = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&origin)
+                .args(args)
+                .output()
+                .await
+                .unwrap();
             assert!(out.status.success());
         }
 

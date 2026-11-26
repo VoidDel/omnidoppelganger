@@ -57,9 +57,7 @@ fn parse_frontmatter(text: &str) -> (Option<String>, Option<String>, Option<Stri
         return (None, None, None, text);
     };
     let header = &rest[..end];
-    let body = rest[end + 4..]
-        .trim_start_matches('-')
-        .trim_start_matches(['\r', '\n']);
+    let body = rest[end + 4..].trim_start_matches('-').trim_start_matches(['\r', '\n']);
 
     let field = |keys: &[&str]| -> Option<String> {
         header.lines().find_map(|line| {
@@ -174,19 +172,11 @@ pub fn discover(user_dir: &Path, project_dir: Option<&Path>) -> Vec<PromptTempla
 
 /// Metadata listing for UI / slash menu.
 pub fn listing(user_dir: &Path, project_dir: Option<&Path>) -> Vec<PromptTemplateInfo> {
-    discover(user_dir, project_dir)
-        .into_iter()
-        .map(|t| t.info)
-        .collect()
+    discover(user_dir, project_dir).into_iter().map(|t| t.info).collect()
 }
 
 /// Find and expand a named template with `raw_args`.
-pub fn expand_named(
-    user_dir: &Path,
-    project_dir: Option<&Path>,
-    name: &str,
-    raw_args: &str,
-) -> Result<String, String> {
+pub fn expand_named(user_dir: &Path, project_dir: Option<&Path>, name: &str, raw_args: &str) -> Result<String, String> {
     let all = discover(user_dir, project_dir);
     let tpl = all
         .into_iter()
@@ -343,10 +333,7 @@ fn eval_brace_expr(expr: &str, args: &[String], all_joined: &str) -> Option<Stri
     if expr == "@" || expr == "ARGUMENTS" {
         return Some(all_joined.to_string());
     }
-    if let Some(default) = expr
-        .strip_prefix("@:-")
-        .or_else(|| expr.strip_prefix("ARGUMENTS:-"))
-    {
+    if let Some(default) = expr.strip_prefix("@:-").or_else(|| expr.strip_prefix("ARGUMENTS:-")) {
         return Some(if all_joined.is_empty() {
             default.to_string()
         } else {

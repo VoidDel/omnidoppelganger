@@ -28,9 +28,14 @@ fn stream(reply: &Reply, index: usize) -> String {
         events.push(json!({ "type": "content_block_stop", "index": 1 }));
     }
     let stop_reason = if reply.tool.is_some() { "tool_use" } else { "end_turn" };
-    events.push(json!({ "type": "message_delta", "delta": { "stop_reason": stop_reason }, "usage": { "output_tokens": 5 } }));
+    events.push(
+        json!({ "type": "message_delta", "delta": { "stop_reason": stop_reason }, "usage": { "output_tokens": 5 } }),
+    );
     events.push(json!({ "type": "message_stop" }));
-    let body: String = events.iter().map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap())).collect();
+    let body: String = events
+        .iter()
+        .map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap()))
+        .collect();
     format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{body}")
 }
 
@@ -53,7 +58,14 @@ fn serve(replies: Vec<Reply>) -> (String, JoinHandle<Vec<Value>>) {
                 received.extend_from_slice(&buffer[..read]);
                 let text = String::from_utf8_lossy(&received).to_string();
                 if let Some(end) = text.find("\r\n\r\n") {
-                    let length: usize = text[..end].lines().find_map(|line| line.to_lowercase().strip_prefix("content-length:").map(|value| value.trim().parse().unwrap())).unwrap_or(0);
+                    let length: usize = text[..end]
+                        .lines()
+                        .find_map(|line| {
+                            line.to_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|value| value.trim().parse().unwrap())
+                        })
+                        .unwrap_or(0);
                     if received.len() >= end + 4 + length || read == 0 {
                         break received[end + 4..].to_vec();
                     }
@@ -62,12 +74,15 @@ fn serve(replies: Vec<Reply>) -> (String, JoinHandle<Vec<Value>>) {
             bodies.push(serde_json::from_slice(&body).unwrap());
             let response = if reply.text == REFUSED {
                 let body = json!({ "type": "error", "error": { "type": "invalid_request_error", "message": "the model is not available" } }).to_string();
-                format!("HTTP/1.1 400 Bad Request
+                format!(
+                    "HTTP/1.1 400 Bad Request
 content-type: application/json
 content-length: {}
 connection: close
 
-{body}", body.len())
+{body}",
+                    body.len()
+                )
             } else {
                 stream(reply, index)
             };
@@ -109,19 +124,41 @@ fn odg(arguments: &[&str], replies: Vec<Reply>) -> Run {
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    Run { output, requests: server.join().unwrap(), home, _workspace: workspace }
+    Run {
+        output,
+        requests: server.join().unwrap(),
+        home,
+        _workspace: workspace,
+    }
 }
 
 /// The tool results the model was sent back in a request's last message.
 fn results(request: &Value) -> Vec<(String, bool)> {
     let last = request["messages"].as_array().unwrap().last().unwrap();
-    let blocks = last["content"].as_array().unwrap().iter().filter(|block| block["type"] == "tool_result");
-    blocks.map(|block| (block["content"].as_str().unwrap().to_string(), block["is_error"].as_bool().unwrap())).collect()
+    let blocks = last["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|block| block["type"] == "tool_result");
+    blocks
+        .map(|block| {
+            (
+                block["content"].as_str().unwrap().to_string(),
+                block["is_error"].as_bool().unwrap(),
+            )
+        })
+        .collect()
 }
 
 #[test]
 fn prints_what_the_model_says_and_keeps_the_session() {
-    let run = odg(&["say", "hello"], vec![Reply { text: "Hello from the model.", tool: None }]);
+    let run = odg(
+        &["say", "hello"],
+        vec![Reply {
+            text: "Hello from the model.",
+            tool: None,
+        }],
+    );
     assert!(run.output.status.success(), "{}", run.stderr());
     assert_eq!(run.stdout(), "Hello from the model.\n");
     assert_eq!(run.requests[0]["messages"][0]["content"][0]["text"], "say hello");
@@ -129,73 +166,155 @@ fn prints_what_the_model_says_and_keeps_the_session() {
     // The session is in the home directory, where the desktop app lists it.
     let sessions: Vec<_> = std::fs::read_dir(run.home.path().join("sessions")).unwrap().collect();
     assert_eq!(sessions.len(), 1);
-    assert!(run.stderr().starts_with("odg: anthropic claude-opus-5-5, in "), "{}", run.stderr());
+    assert!(
+        run.stderr().starts_with("odg: anthropic claude-opus-5-5, in "),
+        "{}",
+        run.stderr()
+    );
 }
 
 #[test]
 fn approves_or_declines_what_the_agent_asks_as_told() {
-    let command = || vec![Reply { text: "Running it.", tool: Some(("run_command", json!({ "command": "echo cli-ok" }))) }, Reply { text: "Done.", tool: None }];
+    let command = || {
+        vec![
+            Reply {
+                text: "Running it.",
+                tool: Some(("run_command", json!({ "command": "echo cli-ok" }))),
+            },
+            Reply {
+                text: "Done.",
+                tool: None,
+            },
+        ]
+    };
 
     let approved = odg(&["--yes", "run", "it"], command());
     assert!(approved.output.status.success(), "{}", approved.stderr());
     assert_eq!(approved.stdout(), "Running it.\nDone.\n");
     let ran = results(&approved.requests[1]);
     assert!(ran[0].0.trim() == "cli-ok" && !ran[0].1, "{ran:?}");
-    assert!(approved.stderr().contains("> run_command  echo cli-ok\n  approved (--yes)\n  ✓ cli-ok"), "{}", approved.stderr());
+    assert!(
+        approved
+            .stderr()
+            .contains("> run_command  echo cli-ok\n  approved (--yes)\n  ✓ cli-ok"),
+        "{}",
+        approved.stderr()
+    );
 
     // Without a terminal to ask on, the default is to decline; the model is told and goes on.
     let declined = odg(&["run", "it"], command());
     assert!(declined.output.status.success(), "{}", declined.stderr());
-    assert_eq!(results(&declined.requests[1]), [("The user declined this action.".to_string(), true)]);
+    assert_eq!(
+        results(&declined.requests[1]),
+        [("The user declined this action.".to_string(), true)]
+    );
     assert!(declined.stderr().contains("declined (--no)"), "{}", declined.stderr());
 }
 
 #[test]
 fn leaves_the_agent_s_questions_to_it_when_nobody_can_answer() {
     let questions = json!({ "questions": [{ "header": "方案", "question": "用哪个方案？", "options": [{ "label": "一" }, { "label": "二" }] }] });
-    let replies = vec![Reply { text: "Asking.", tool: Some(("ask_user", questions)) }, Reply { text: "I chose one.", tool: None }];
+    let replies = vec![
+        Reply {
+            text: "Asking.",
+            tool: Some(("ask_user", questions)),
+        },
+        Reply {
+            text: "I chose one.",
+            tool: None,
+        },
+    ];
     let run = odg(&["pick", "one"], replies);
     assert!(run.output.status.success(), "{}", run.stderr());
-    assert!(run.stderr().contains("> ask_user  用哪个方案？\n  nobody to answer (--no); the agent decides\n"), "{}", run.stderr());
+    assert!(
+        run.stderr()
+            .contains("> ask_user  用哪个方案？\n  nobody to answer (--no); the agent decides\n"),
+        "{}",
+        run.stderr()
+    );
     let told = results(&run.requests[1]);
-    assert!(told[0].0.starts_with("The user chose not to answer") && !told[0].1, "{told:?}");
+    assert!(
+        told[0].0.starts_with("The user chose not to answer") && !told[0].1,
+        "{told:?}"
+    );
 }
 
 #[test]
 fn prints_a_plan_presented_in_plan_mode_as_its_answer() {
     let plan = json!({ "title": "Faster parser", "plan": "1. Cache the tokens.\n2. Run the tests." });
     // One reply only: the plan ends the turn, and nothing more is asked of the model.
-    let run = odg(&["--mode", "plan", "plan", "it"], vec![Reply { text: "Here is the plan.", tool: Some(("present_plan", plan)) }]);
+    let run = odg(
+        &["--mode", "plan", "plan", "it"],
+        vec![Reply {
+            text: "Here is the plan.",
+            tool: Some(("present_plan", plan)),
+        }],
+    );
     assert!(run.output.status.success(), "{}", run.stderr());
-    assert_eq!(run.stdout(), "Here is the plan.\n1. Cache the tokens.\n2. Run the tests.\n");
+    assert_eq!(
+        run.stdout(),
+        "Here is the plan.\n1. Cache the tokens.\n2. Run the tests.\n"
+    );
     assert_eq!(run.requests.len(), 1);
 }
 
 #[test]
 fn runs_a_subagent_and_answers_what_it_asks() {
     let replies = vec![
-        Reply { text: "Splitting it.", tool: Some(("delegate", json!({ "tasks": [{ "name": "runner", "task": "Run the command." }] }))) },
+        Reply {
+            text: "Splitting it.",
+            tool: Some((
+                "delegate",
+                json!({ "tasks": [{ "name": "runner", "task": "Run the command." }] }),
+            )),
+        },
         // The subagent's two requests come while the agent waits for it.
-        Reply { text: "Running it.", tool: Some(("run_command", json!({ "command": "echo sub-ok" }))) },
-        Reply { text: "It printed sub-ok.", tool: None },
-        Reply { text: "All done.", tool: None },
+        Reply {
+            text: "Running it.",
+            tool: Some(("run_command", json!({ "command": "echo sub-ok" }))),
+        },
+        Reply {
+            text: "It printed sub-ok.",
+            tool: None,
+        },
+        Reply {
+            text: "All done.",
+            tool: None,
+        },
     ];
     let run = odg(&["--yes", "split", "it"], replies);
     assert!(run.output.status.success(), "{}", run.stderr());
     // Only the agent's own words are the output; the subagent's work shows on standard error, under its name.
     assert_eq!(run.stdout(), "Splitting it.\nAll done.\n");
     assert!(run.stderr().contains("  [runner] set off\n"), "{}", run.stderr());
-    assert!(run.stderr().contains("  [runner] > run_command  echo sub-ok\n"), "{}", run.stderr());
+    assert!(
+        run.stderr().contains("  [runner] > run_command  echo sub-ok\n"),
+        "{}",
+        run.stderr()
+    );
     assert_eq!(run.requests[1]["messages"][0]["content"][0]["text"], "Run the command.");
     assert!(results(&run.requests[2])[0].0.trim() == "sub-ok");
-    assert_eq!(results(&run.requests[3]), [("<subagent name=\"runner\">\nIt printed sub-ok.\n</subagent>".to_string(), false)]);
+    assert_eq!(
+        results(&run.requests[3]),
+        [(
+            "<subagent name=\"runner\">\nIt printed sub-ok.\n</subagent>".to_string(),
+            false
+        )]
+    );
     assert_eq!(std::fs::read_dir(run.home.path().join("sessions")).unwrap().count(), 2);
 }
 
 #[test]
 fn says_what_is_wrong_with_its_arguments_or_the_run() {
     let unused_home = tempfile::tempdir().unwrap();
-    let run = |arguments: &[&str]| Command::new(env!("CARGO_BIN_EXE_odg")).args(arguments).env("ODG_HOME", unused_home.path()).stdin(Stdio::null()).output().unwrap();
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_odg"))
+            .args(arguments)
+            .env("ODG_HOME", unused_home.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
     let none = run(&[]);
     assert_eq!(none.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&none.stderr).contains("give the task"));
@@ -203,20 +322,47 @@ fn says_what_is_wrong_with_its_arguments_or_the_run() {
     assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).starts_with("odg: run tasks"));
     for flag in ["--version", "-V"] {
         let ver = run(&[flag]);
-        assert!(ver.status.success(), "{flag} failed: {}", String::from_utf8_lossy(&ver.stderr));
+        assert!(
+            ver.status.success(),
+            "{flag} failed: {}",
+            String::from_utf8_lossy(&ver.stderr)
+        );
         let text = String::from_utf8_lossy(&ver.stdout).replace("\r\n", "\n");
         assert_eq!(text, format!("odg {}\n", env!("CARGO_PKG_VERSION")));
-        let parts: Vec<&str> = text.trim().strip_prefix("odg ").expect("starts with odg ").split('.').collect();
-        assert!(parts.len() >= 3 && parts[..3].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())), "unexpected version output: {text}");
+        let parts: Vec<&str> = text
+            .trim()
+            .strip_prefix("odg ")
+            .expect("starts with odg ")
+            .split('.')
+            .collect();
+        assert!(
+            parts.len() >= 3
+                && parts[..3]
+                    .iter()
+                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
+            "unexpected version output: {text}"
+        );
     }
     let unknown = run(&["--provider", "nobody", "hello"]);
     assert_eq!(unknown.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("there is no provider `nobody`"));
 
     // A turn that fails ends with status 1 and the reason on standard error.
-    let failed = odg(&["hello"], vec![Reply { text: REFUSED, tool: None }]);
+    let failed = odg(
+        &["hello"],
+        vec![Reply {
+            text: REFUSED,
+            tool: None,
+        }],
+    );
     assert_eq!(failed.output.status.code(), Some(1));
-    assert!(failed.stderr().contains("! the turn ended: invalid_request_error: the model is not available"), "{}", failed.stderr());
+    assert!(
+        failed
+            .stderr()
+            .contains("! the turn ended: invalid_request_error: the model is not available"),
+        "{}",
+        failed.stderr()
+    );
     assert_eq!(failed.stdout(), "");
 }
 
@@ -225,7 +371,10 @@ fn continues_resumes_streams_json_and_exports_markdown() {
     let (home, workspace) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
 
     // 1. First turn in workspace
-    let (addr1, srv1) = serve(vec![Reply { text: "First reply.", tool: None }]);
+    let (addr1, srv1) = serve(vec![Reply {
+        text: "First reply.",
+        tool: None,
+    }]);
     let out1 = Command::new(env!("CARGO_BIN_EXE_odg"))
         .args(["-C", &workspace.path().to_string_lossy(), "first", "question"])
         .env("ODG_HOME", home.path())
@@ -238,9 +387,19 @@ fn continues_resumes_streams_json_and_exports_markdown() {
     let _ = srv1.join().unwrap();
 
     // 2. Continue latest session in workspace with `--continue` and `--json`
-    let (addr2, srv2) = serve(vec![Reply { text: "Second reply.", tool: None }]);
+    let (addr2, srv2) = serve(vec![Reply {
+        text: "Second reply.",
+        tool: None,
+    }]);
     let out2 = Command::new(env!("CARGO_BIN_EXE_odg"))
-        .args(["-C", &workspace.path().to_string_lossy(), "-c", "--json", "second", "question"])
+        .args([
+            "-C",
+            &workspace.path().to_string_lossy(),
+            "-c",
+            "--json",
+            "second",
+            "question",
+        ])
         .env("ODG_HOME", home.path())
         .env("ANTHROPIC_BASE_URL", &addr2)
         .env("ANTHROPIC_API_KEY", "test-key")
@@ -292,7 +451,10 @@ fn validates_bypass_mode_and_promotes_external_cli_with_yes() {
     assert!(String::from_utf8_lossy(&no_wt.stderr).contains("--worktree"));
 
     // 2. Resuming a non-worktree session with `--mode bypass` also fails with exit code 2.
-    let (addr1, srv1) = serve(vec![Reply { text: "Initial.", tool: None }]);
+    let (addr1, srv1) = serve(vec![Reply {
+        text: "Initial.",
+        tool: None,
+    }]);
     let first = Command::new(env!("CARGO_BIN_EXE_odg"))
         .args(["-C", &workspace.path().to_string_lossy(), "--json", "init"])
         .env("ODG_HOME", home.path())
@@ -303,11 +465,20 @@ fn validates_bypass_mode_and_promotes_external_cli_with_yes() {
         .unwrap();
     assert!(first.status.success());
     let _ = srv1.join().unwrap();
-    let first_line: Value = serde_json::from_str(String::from_utf8_lossy(&first.stdout).lines().next().unwrap()).unwrap();
+    let first_line: Value =
+        serde_json::from_str(String::from_utf8_lossy(&first.stdout).lines().next().unwrap()).unwrap();
     let non_wt_id = first_line["session_id"].as_str().unwrap();
 
     let resume_bypass = Command::new(env!("CARGO_BIN_EXE_odg"))
-        .args(["-C", &workspace.path().to_string_lossy(), "-r", non_wt_id, "--mode", "bypass", "next"])
+        .args([
+            "-C",
+            &workspace.path().to_string_lossy(),
+            "-r",
+            non_wt_id,
+            "--mode",
+            "bypass",
+            "next",
+        ])
         .env("ODG_HOME", home.path())
         .stdin(Stdio::null())
         .output()
@@ -317,12 +488,36 @@ fn validates_bypass_mode_and_promotes_external_cli_with_yes() {
 
     // 3. `-w --mode bypass` inside a Git repository succeeds.
     let repo = tempfile::tempdir().unwrap();
-    assert!(Command::new("git").args(["init"]).current_dir(repo.path()).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success());
-    std::fs::write(repo.path().join("README.md"), "hello\n").unwrap();
-    assert!(Command::new("git").args(["add", "README.md"]).current_dir(repo.path()).status().unwrap().success());
     assert!(
         Command::new("git")
-            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"])
+            .args(["init"])
+            .current_dir(repo.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(repo.path().join("README.md"), "hello\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "init"
+            ])
             .current_dir(repo.path())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -331,7 +526,10 @@ fn validates_bypass_mode_and_promotes_external_cli_with_yes() {
             .success()
     );
 
-    let (addr2, srv2) = serve(vec![Reply { text: "Bypass ok.", tool: None }]);
+    let (addr2, srv2) = serve(vec![Reply {
+        text: "Bypass ok.",
+        tool: None,
+    }]);
     let wt_bypass = Command::new(env!("CARGO_BIN_EXE_odg"))
         .args(["-C", &repo.path().to_string_lossy(), "-w", "--mode", "bypass", "ship"])
         .env("ODG_HOME", home.path())
@@ -340,7 +538,11 @@ fn validates_bypass_mode_and_promotes_external_cli_with_yes() {
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    assert!(wt_bypass.status.success(), "{}", String::from_utf8_lossy(&wt_bypass.stderr));
+    assert!(
+        wt_bypass.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wt_bypass.stderr)
+    );
     let _ = srv2.join().unwrap();
 
     // 4. `--yes` without `--mode` promotes external CLI providers to Auto (no worktree) and Bypass (with `-w`).
@@ -358,27 +560,60 @@ fn validates_bypass_mode_and_promotes_external_cli_with_yes() {
         std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let auto_out = Command::new(env!("CARGO_BIN_EXE_odg"))
-            .args(["-C", &workspace.path().to_string_lossy(), "--provider", "codex", "--model", "gpt-5.4", "--yes", "run", "tests"])
+            .args([
+                "-C",
+                &workspace.path().to_string_lossy(),
+                "--provider",
+                "codex",
+                "--model",
+                "gpt-5.4",
+                "--yes",
+                "run",
+                "tests",
+            ])
             .env("ODG_HOME", home.path())
             .env("ODG_CODEX_BIN", &fake_codex)
             .stdin(Stdio::null())
             .output()
             .unwrap();
-        assert!(auto_out.status.success(), "{}", String::from_utf8_lossy(&auto_out.stderr));
+        assert!(
+            auto_out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&auto_out.stderr)
+        );
 
         let bypass_out = Command::new(env!("CARGO_BIN_EXE_odg"))
-            .args(["-C", &repo.path().to_string_lossy(), "-w", "--provider", "codex", "--model", "gpt-5.4", "--yes", "run", "tests"])
+            .args([
+                "-C",
+                &repo.path().to_string_lossy(),
+                "-w",
+                "--provider",
+                "codex",
+                "--model",
+                "gpt-5.4",
+                "--yes",
+                "run",
+                "tests",
+            ])
             .env("ODG_HOME", home.path())
             .env("ODG_CODEX_BIN", &fake_codex)
             .stdin(Stdio::null())
             .output()
             .unwrap();
-        assert!(bypass_out.status.success(), "{}", String::from_utf8_lossy(&bypass_out.stderr));
+        assert!(
+            bypass_out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&bypass_out.stderr)
+        );
 
         let recorded = std::fs::read_to_string(&args_log).unwrap();
         let lines: Vec<&str> = recorded.lines().collect();
         assert_eq!(lines.len(), 2, "{recorded}");
-        assert!(lines[0].contains("--approve-for-me"), "expected Auto mode for --yes without -w: {}", lines[0]);
+        assert!(
+            lines[0].contains("--approve-for-me"),
+            "expected Auto mode for --yes without -w: {}",
+            lines[0]
+        );
         assert!(
             lines[1].contains("--dangerously-bypass-approvals-and-sandbox"),
             "expected Bypass mode for -w --yes: {}",
@@ -424,7 +659,10 @@ fn odg_cli_sigint_cancels_turn_kills_child_group_and_closes_session_log() {
         {
             break pid;
         }
-        assert!(wait_start.elapsed() < Duration::from_secs(10), "timed out waiting for grandchild pid file");
+        assert!(
+            wait_start.elapsed() < Duration::from_secs(10),
+            "timed out waiting for grandchild pid file"
+        );
         std::thread::sleep(Duration::from_millis(25));
     };
 
@@ -461,8 +699,15 @@ fn odg_cli_sigint_cancels_turn_kills_child_group_and_closes_session_log() {
     }
     let rc = unsafe { kill(grandchild_pid, 0) };
     let errno = std::io::Error::last_os_error().raw_os_error();
-    assert_eq!(rc, -1, "grandchild process {grandchild_pid} should be dead after SIGINT");
-    assert_eq!(errno, Some(3), "expected ESRCH (3) for dead grandchild {grandchild_pid}, got {errno:?}");
+    assert_eq!(
+        rc, -1,
+        "grandchild process {grandchild_pid} should be dead after SIGINT"
+    );
+    assert_eq!(
+        errno,
+        Some(3),
+        "expected ESRCH (3) for dead grandchild {grandchild_pid}, got {errno:?}"
+    );
 
     // Assert `session.v1.jsonl` closed cleanly with `turn/end` (`reason == "cancelled"`).
     let session_entry = std::fs::read_dir(home.path().join("sessions"))
@@ -478,6 +723,12 @@ fn odg_cli_sigint_cancels_turn_kills_child_group_and_closes_session_log() {
         .map(|l| serde_json::from_str(l).expect("valid jsonl event"))
         .collect();
     let last = events.last().expect("non-empty session log");
-    assert_eq!(last["type"], "turn/end", "expected final event to be turn/end, got: {last}");
-    assert_eq!(last["data"]["reason"], "cancelled", "expected cancelled reason, got: {last}");
+    assert_eq!(
+        last["type"], "turn/end",
+        "expected final event to be turn/end, got: {last}"
+    );
+    assert_eq!(
+        last["data"]["reason"], "cancelled",
+        "expected cancelled reason, got: {last}"
+    );
 }

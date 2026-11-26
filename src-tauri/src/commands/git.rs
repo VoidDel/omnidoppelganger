@@ -29,9 +29,7 @@ pub async fn git_checkout_core<L: Llm + 'static>(
 ) -> Result<SessionItem, String> {
     let session = core.live(id).await?;
     if session.summary().worktree.is_some() && repo.as_deref().is_none_or(|r| r.trim().is_empty()) {
-        return Err(
-            "独立工作树分身绑定在专属分支上，不能直接切换分支；请在主洞府的分身里切换分支。".to_string(),
-        );
+        return Err("独立工作树分身绑定在专属分支上，不能直接切换分支；请在主洞府的分身里切换分支。".to_string());
     }
     let trusted = session.is_project_trusted();
     let workspace = PathBuf::from(session.summary().workspace);
@@ -206,12 +204,7 @@ pub async fn git_commit_files(
 }
 
 #[tauri::command]
-pub async fn git_sync(
-    app: State<'_, App>,
-    id: String,
-    action: String,
-    repo: Option<String>,
-) -> Result<String, String> {
+pub async fn git_sync(app: State<'_, App>, id: String, action: String, repo: Option<String>) -> Result<String, String> {
     let (_, repo_dir, trusted) = session_git_workspace(&app.0, &id, repo.as_deref()).await?;
     odg_core::git::sync_with_trust(&repo_dir, &action, trusted).await
 }

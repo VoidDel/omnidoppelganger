@@ -92,7 +92,18 @@ pub fn build_args(
     sandboxed: bool,
     read_only: bool,
 ) -> Vec<String> {
-    build_turn_args(kind, prompt, workspace, conversation_id, model, effort, mode, sandboxed, read_only, true)
+    build_turn_args(
+        kind,
+        prompt,
+        workspace,
+        conversation_id,
+        model,
+        effort,
+        mode,
+        sandboxed,
+        read_only,
+        true,
+    )
 }
 
 /// Build the CLI argument vector for one headless turn of `kind`, honoring workspace trust.
@@ -113,7 +124,9 @@ pub fn build_turn_args(
     let model = model.trim();
     let effort = effort.trim();
     match kind {
-        CliKind::Antigravity => crate::antigravity::build_args(prompt, workspace, resume, model, effort, mode, sandboxed, read_only),
+        CliKind::Antigravity => {
+            crate::antigravity::build_args(prompt, workspace, resume, model, effort, mode, sandboxed, read_only)
+        }
         CliKind::Codex => {
             let mut args = vec!["exec".to_string()];
             if let Some(thread_id) = resume {

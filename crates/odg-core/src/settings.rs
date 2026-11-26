@@ -17,7 +17,10 @@ use crate::anthropic::DEFAULT_MODEL;
 use crate::fsutil::write_atomically;
 use crate::llm::Endpoint;
 use crate::policy::Mode;
-use crate::providers::{DEFAULT_PROVIDER, Instance, Listed, PROVIDERS, Provider, UNKNOWN_CONTEXT_WINDOW, documented_window, instance, is_added, provider};
+use crate::providers::{
+    DEFAULT_PROVIDER, Instance, Listed, PROVIDERS, Provider, UNKNOWN_CONTEXT_WINDOW, documented_window, instance,
+    is_added, provider,
+};
 use crate::web::{INTERNATIONAL_ENGINE, SEARCH_ENGINES, SearchConfig};
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -193,7 +196,9 @@ impl Settings {
         // A model another provider offers, left over from switching provider, is replaced too; but a compatible
         // service, which lists no models of its own, may well serve another provider's.
         let belongs_elsewhere = !chosen.models.is_empty()
-            && PROVIDERS.iter().any(|other| other.id != chosen.id && other.models.iter().any(|(id, _)| *id == self.model))
+            && PROVIDERS
+                .iter()
+                .any(|other| other.id != chosen.id && other.models.iter().any(|(id, _)| *id == self.model))
             && !chosen.models.iter().any(|(id, _)| *id == self.model);
         if self.model.is_empty() || belongs_elsewhere {
             self.model = chosen.models.first().map(|(id, _)| id.to_string()).unwrap_or_default();
@@ -211,9 +216,16 @@ impl Settings {
         self.disabled_providers = std::mem::take(&mut self.disabled_providers)
             .into_iter()
             .map(|id| id.trim().to_string())
-            .filter(|id| !id.is_empty() && id != &active_provider && listed(id) && provider(id).is_some() && seen_disabled.insert(id.clone()))
+            .filter(|id| {
+                !id.is_empty()
+                    && id != &active_provider
+                    && listed(id)
+                    && provider(id).is_some()
+                    && seen_disabled.insert(id.clone())
+            })
             .collect();
-        self.guardian_models.retain(|provider, model| !provider.is_empty() && !model.trim().is_empty() && listed(provider));
+        self.guardian_models
+            .retain(|provider, model| !provider.is_empty() && !model.trim().is_empty() && listed(provider));
         for model in self.guardian_models.values_mut() {
             *model = model.trim().to_string();
         }
@@ -223,7 +235,12 @@ impl Settings {
         }
         self.context_limit = self.context_limit.max(MIN_CONTEXT_LIMIT);
         // A window of nothing is one that was cleared; one too small to work in is raised to the smallest that does.
-        self.context_windows.retain(|key, tokens| *tokens > 0 && key.split_once('/').is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty()));
+        self.context_windows.retain(|key, tokens| {
+            *tokens > 0
+                && key
+                    .split_once('/')
+                    .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty())
+        });
         for tokens in self.context_windows.values_mut() {
             *tokens = (*tokens).max(MIN_CONTEXT_WINDOW);
         }
@@ -245,11 +262,19 @@ impl Settings {
     /// Every provider there is to choose from: the first of each kind, then
     /// those the user added, each kind's together, by the order they were added.
     pub fn instances(&self) -> Vec<Instance> {
-        let number = |id: &str| id.rsplit_once('-').and_then(|(_, n)| n.parse::<u32>().ok()).unwrap_or(0);
+        let number = |id: &str| {
+            id.rsplit_once('-')
+                .and_then(|(_, n)| n.parse::<u32>().ok())
+                .unwrap_or(0)
+        };
         PROVIDERS
             .iter()
             .flat_map(|kind| {
-                let mut added: Vec<&String> = self.provider_names.keys().filter(|id| is_added(id) && provider(id).is_some_and(|of| of.id == kind.id)).collect();
+                let mut added: Vec<&String> = self
+                    .provider_names
+                    .keys()
+                    .filter(|id| is_added(id) && provider(id).is_some_and(|of| of.id == kind.id))
+                    .collect();
                 added.sort_by_key(|id| number(id));
                 std::iter::once(kind.id.to_string()).chain(added.into_iter().cloned())
             })
@@ -264,7 +289,12 @@ impl Settings {
     /// leaves room for the answer and for what the next tools return.
     /// The model the guardian is for a session on `model` of `provider`; `None` while the guardian is off.
     pub fn guardian_model(&self, provider: &str, model: &str) -> Option<String> {
-        self.guardian.then(|| self.guardian_models.get(provider).cloned().unwrap_or_else(|| model.to_string()))
+        self.guardian.then(|| {
+            self.guardian_models
+                .get(provider)
+                .cloned()
+                .unwrap_or_else(|| model.to_string())
+        })
     }
 
     /// How long a request for approval waits in auto mode; `None` for good.
@@ -274,7 +304,11 @@ impl Settings {
 
     pub fn context_limit_within(&self, window: u64) -> u64 {
         let ceiling = window / 5 * 4;
-        if self.context_auto { ceiling } else { self.context_limit.min(ceiling) }
+        if self.context_auto {
+            ceiling
+        } else {
+            self.context_limit.min(ceiling)
+        }
     }
 }
 
@@ -319,7 +353,9 @@ impl Vault for SystemVault {
     }
 
     fn set(&self, name: &str, secret: &str) -> Result<(), String> {
-        Self::entry(name)?.set_password(secret).map_err(|error| error.to_string())
+        Self::entry(name)?
+            .set_password(secret)
+            .map_err(|error| error.to_string())
     }
 
     fn delete(&self, name: &str) -> Result<(), String> {
@@ -380,7 +416,12 @@ pub struct SettingsStore {
 impl SettingsStore {
     /// A store that keeps keys in `credentials.json` under `directory`.
     pub fn new(directory: impl Into<PathBuf>) -> Self {
-        Self { directory: directory.into(), vault: None, vault_cache: Mutex::new(VaultCache::Unloaded), windows: Mutex::new(None) }
+        Self {
+            directory: directory.into(),
+            vault: None,
+            vault_cache: Mutex::new(VaultCache::Unloaded),
+            windows: Mutex::new(None),
+        }
     }
 
     /// The store for this run's home directory, as the desktop app and the
@@ -390,14 +431,23 @@ impl SettingsStore {
     /// the user's everyday home. Keys still in the file are moved over.
     pub fn at_home() -> Self {
         let custom = std::env::var_os("ODG_HOME").is_some_and(|value| !value.is_empty());
-        let store = if custom { Self::new(home()) } else { Self::with_vault(home(), Arc::new(SystemVault)) };
+        let store = if custom {
+            Self::new(home())
+        } else {
+            Self::with_vault(home(), Arc::new(SystemVault))
+        };
         store.migrate_keys();
         store
     }
 
     /// A store that keeps keys in `vault`, and in `credentials.json` only when the vault fails.
     pub fn with_vault(directory: impl Into<PathBuf>, vault: Arc<dyn Vault>) -> Self {
-        Self { directory: directory.into(), vault: Some(vault), vault_cache: Mutex::new(VaultCache::Unloaded), windows: Mutex::new(None) }
+        Self {
+            directory: directory.into(),
+            vault: Some(vault),
+            vault_cache: Mutex::new(VaultCache::Unloaded),
+            windows: Mutex::new(None),
+        }
     }
 
     fn parse_bundle(raw: &str) -> BTreeMap<String, String> {
@@ -459,7 +509,9 @@ impl SettingsStore {
 
         let needs_write = !legacy_names.is_empty() || !from_file.is_empty();
         if needs_write {
-            let Ok(encoded) = serde_json::to_string(&bundle) else { return };
+            let Ok(encoded) = serde_json::to_string(&bundle) else {
+                return;
+            };
             if vault.set(BUNDLE_KEY, &encoded).is_err() {
                 *cache = VaultCache::Unavailable;
                 return;
@@ -496,7 +548,11 @@ impl SettingsStore {
         let mut changed = false;
         for model in models {
             if let Some(tokens) = model.context_window
-                && windows.entry(provider.to_string()).or_default().insert(model.id.clone(), tokens) != Some(tokens)
+                && windows
+                    .entry(provider.to_string())
+                    .or_default()
+                    .insert(model.id.clone(), tokens)
+                    != Some(tokens)
             {
                 changed = true;
             }
@@ -505,11 +561,17 @@ impl SettingsStore {
             return Ok(());
         }
         std::fs::create_dir_all(&self.directory)?;
-        write_atomically(&self.models_path(), &serde_json::to_vec_pretty(&*windows).map_err(std::io::Error::other)?)
+        write_atomically(
+            &self.models_path(),
+            &serde_json::to_vec_pretty(&*windows).map_err(std::io::Error::other)?,
+        )
     }
 
     fn read_windows(&self) -> Windows {
-        std::fs::read_to_string(self.models_path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+        std::fs::read_to_string(self.models_path())
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
     }
 
     /// How many tokens a model's context window holds: what the user set for
@@ -518,14 +580,30 @@ impl SettingsStore {
     /// a size small enough to be safe.
     pub fn context_window(&self, settings: &Settings, provider: &str, model: &str) -> Window {
         if let Some(tokens) = settings.context_windows.get(&format!("{provider}/{model}")) {
-            return Window { tokens: *tokens, source: WindowSource::Set };
+            return Window {
+                tokens: *tokens,
+                source: WindowSource::Set,
+            };
         }
         let mut held = self.windows.lock().unwrap();
-        let reported = held.get_or_insert_with(|| self.read_windows()).get(provider).and_then(|models| models.get(model)).copied();
+        let reported = held
+            .get_or_insert_with(|| self.read_windows())
+            .get(provider)
+            .and_then(|models| models.get(model))
+            .copied();
         match (reported, documented_window(provider, model)) {
-            (Some(tokens), _) => Window { tokens, source: WindowSource::Provider },
-            (None, Some(tokens)) => Window { tokens, source: WindowSource::Documented },
-            (None, None) => Window { tokens: UNKNOWN_CONTEXT_WINDOW, source: WindowSource::Unknown },
+            (Some(tokens), _) => Window {
+                tokens,
+                source: WindowSource::Provider,
+            },
+            (None, Some(tokens)) => Window {
+                tokens,
+                source: WindowSource::Documented,
+            },
+            (None, None) => Window {
+                tokens: UNKNOWN_CONTEXT_WINDOW,
+                source: WindowSource::Unknown,
+            },
         }
     }
 
@@ -547,7 +625,10 @@ impl SettingsStore {
     pub fn save(&self, settings: Settings) -> std::io::Result<Settings> {
         let settings = settings.valid();
         std::fs::create_dir_all(&self.directory)?;
-        write_atomically(&self.settings_path(), &serde_json::to_vec_pretty(&settings).map_err(std::io::Error::other)?)?;
+        write_atomically(
+            &self.settings_path(),
+            &serde_json::to_vec_pretty(&settings).map_err(std::io::Error::other)?,
+        )?;
         Ok(settings)
     }
 
@@ -581,7 +662,11 @@ impl SettingsStore {
         let variable = provider(provider_id).filter(|kind| kind.id == provider_id)?.key_env?;
         std::env::var(variable)
             .ok()
-            .or_else(|| (provider_id == "gemini").then(|| std::env::var("GOOGLE_API_KEY").ok()).flatten())
+            .or_else(|| {
+                (provider_id == "gemini")
+                    .then(|| std::env::var("GOOGLE_API_KEY").ok())
+                    .flatten()
+            })
             .map(|key| key.trim().to_string())
             .filter(|key| !key.is_empty())
     }
@@ -592,19 +677,38 @@ impl SettingsStore {
         let name = format!("{provider}_api_key");
         let usable = |key: String| Some(key.trim().to_string()).filter(|key| !key.is_empty());
         let vaulted = self.vaulted_key(&name).and_then(usable);
-        vaulted.map(|key| (key, false)).or_else(|| self.credentials().get(&name)?.as_str().map(str::to_string).and_then(usable).map(|key| (key, true)))
+        vaulted.map(|key| (key, false)).or_else(|| {
+            self.credentials()
+                .get(&name)?
+                .as_str()
+                .map(str::to_string)
+                .and_then(usable)
+                .map(|key| (key, true))
+        })
     }
 
     /// The key a provider's requests use: the saved one, else, for the first of its kind, the kind's environment variable.
     pub fn api_key(&self, provider_id: &str) -> Option<String> {
-        self.saved_key(provider_id).map(|(key, _)| key).or_else(|| Self::env_key(provider_id))
+        self.saved_key(provider_id)
+            .map(|(key, _)| key)
+            .or_else(|| Self::env_key(provider_id))
     }
 
     pub fn key_status(&self, provider: &str) -> KeyStatus {
-        if let Some(crate::providers::Protocol::Cli(kind)) = crate::providers::provider(provider).map(|known| known.protocol) {
+        if let Some(crate::providers::Protocol::Cli(kind)) =
+            crate::providers::provider(provider).map(|known| known.protocol)
+        {
             return match kind.find_binary() {
-                Some(path) => KeyStatus { source: "cli".to_string(), preview: Some(path.display().to_string()), plaintext: false },
-                None => KeyStatus { source: "none".to_string(), preview: None, plaintext: false },
+                Some(path) => KeyStatus {
+                    source: "cli".to_string(),
+                    preview: Some(path.display().to_string()),
+                    plaintext: false,
+                },
+                None => KeyStatus {
+                    source: "none".to_string(),
+                    preview: None,
+                    plaintext: false,
+                },
             };
         }
         let (key, source, plaintext) = match self.saved_key(provider) {
@@ -614,12 +718,20 @@ impl SettingsStore {
                 None => (None, "none", false),
             },
         };
-        KeyStatus { source: source.to_string(), preview: key.as_deref().map(mask), plaintext }
+        KeyStatus {
+            source: source.to_string(),
+            preview: key.as_deref().map(mask),
+            plaintext,
+        }
     }
 
     /// Every provider's key status, by provider id.
     pub fn key_statuses(&self) -> BTreeMap<String, KeyStatus> {
-        self.load().instances().iter().map(|provider| (provider.id.clone(), self.key_status(&provider.id))).collect()
+        self.load()
+            .instances()
+            .iter()
+            .map(|provider| (provider.id.clone(), self.key_status(&provider.id)))
+            .collect()
     }
 
     /// Put a provider of `kind` in the list, under `name`, and return its id:
@@ -627,13 +739,21 @@ impl SettingsStore {
     /// its own, not the default), else a new one beside it, with a key and an
     /// address of its own.
     pub fn add_provider(&self, kind: &str, name: &str) -> std::io::Result<String> {
-        let known = PROVIDERS.iter().find(|known| known.id == kind).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("unknown provider `{kind}`")))?;
+        let known = PROVIDERS.iter().find(|known| known.id == kind).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("unknown provider `{kind}`"))
+        })?;
         let mut settings = self.load();
-        let unused = self.key_status(known.id).source == "none" && !settings.base_urls.contains_key(known.id) && settings.provider != known.id && !settings.provider_names.contains_key(known.id);
+        let unused = self.key_status(known.id).source == "none"
+            && !settings.base_urls.contains_key(known.id)
+            && settings.provider != known.id
+            && !settings.provider_names.contains_key(known.id);
         let id = if unused {
             known.id.to_string()
         } else {
-            (2..).map(|n| format!("{}-{n}", known.id)).find(|id| !settings.provider_names.contains_key(id) && self.saved_key(id).is_none()).expect("there is always a free number")
+            (2..)
+                .map(|n| format!("{}-{n}", known.id))
+                .find(|id| !settings.provider_names.contains_key(id) && self.saved_key(id).is_none())
+                .expect("there is always a free number")
         };
         let name = name.trim();
         if !name.is_empty() && name != known.name {
@@ -641,7 +761,9 @@ impl SettingsStore {
         } else if id != known.id {
             // One added must be named to stay in the list; its kind's name, numbered, tells it apart.
             let n = id.rsplit_once('-').map_or("", |(_, n)| n);
-            settings.provider_names.insert(id.clone(), format!("{} {n}", known.name));
+            settings
+                .provider_names
+                .insert(id.clone(), format!("{} {n}", known.name));
         }
         self.save(settings)?;
         Ok(id)
@@ -659,7 +781,9 @@ impl SettingsStore {
         settings.provider_names.remove(id);
         settings.disabled_providers.retain(|disabled| disabled != id);
         settings.guardian_models.remove(id);
-        settings.context_windows.retain(|key, _| !key.starts_with(&format!("{id}/")));
+        settings
+            .context_windows
+            .retain(|key, _| !key.starts_with(&format!("{id}/")));
         if settings.provider == id {
             settings.provider = DEFAULT_PROVIDER.to_string();
             settings.model = String::new();
@@ -669,7 +793,13 @@ impl SettingsStore {
 
     /// Where a provider's next request goes and with which key.
     pub fn endpoint(&self, provider_id: &str) -> Endpoint {
-        let base_url = self.load().base_urls.get(provider_id).cloned().or_else(|| provider(provider_id).map(|known| known.base_url.to_string())).unwrap_or_default();
+        let base_url = self
+            .load()
+            .base_urls
+            .get(provider_id)
+            .cloned()
+            .or_else(|| provider(provider_id).map(|known| known.base_url.to_string()))
+            .unwrap_or_default();
         let key = self.api_key(provider_id).or_else(|| {
             matches!(crate::providers::kind_id(provider_id), "magpie" | "ollama").then(|| provider_id.to_string())
         });
@@ -683,8 +813,16 @@ impl SettingsStore {
     pub fn search(&self) -> Option<SearchConfig> {
         let Endpoint { base_url, key } = self.endpoint("zhipu");
         let key = key?;
-        let engine = if base_url.contains("z.ai") { INTERNATIONAL_ENGINE.to_string() } else { self.load().search_engine };
-        Some(SearchConfig { url: format!("{}/web_search", base_url.trim_end_matches('/')), key, engine })
+        let engine = if base_url.contains("z.ai") {
+            INTERNATIONAL_ENGINE.to_string()
+        } else {
+            self.load().search_engine
+        };
+        Some(SearchConfig {
+            url: format!("{}/web_search", base_url.trim_end_matches('/')),
+            key,
+            engine,
+        })
     }
 
     /// Where `generate_image` paints: the painter the user chose, while its provider has a key; else the first of
@@ -695,16 +833,30 @@ impl SettingsStore {
         let reachable = |painter: &'static crate::imagegen::Painter| {
             let Endpoint { base_url, key } = self.endpoint(painter.provider);
             let key = key?;
-            (!base_url.is_empty()).then(|| crate::imagegen::ImageConfig { painter, url: format!("{}/images/generations", base_url.trim_end_matches('/')), key })
+            (!base_url.is_empty()).then(|| crate::imagegen::ImageConfig {
+                painter,
+                url: format!("{}/images/generations", base_url.trim_end_matches('/')),
+                key,
+            })
         };
-        crate::imagegen::painter(&chosen).and_then(reachable).or_else(|| crate::imagegen::PAINTERS.iter().find_map(reachable))
+        crate::imagegen::painter(&chosen)
+            .and_then(reachable)
+            .or_else(|| crate::imagegen::PAINTERS.iter().find_map(reachable))
     }
 
     /// The directories the user added for confined commands to write under,
     /// or `None` when commands are not to be confined; see [`crate::sandbox::SandboxSource`].
     pub fn sandbox(&self) -> Option<Vec<PathBuf>> {
         let settings = self.load();
-        settings.sandbox.then(|| settings.sandbox_paths.iter().map(|path| path.trim()).filter(|path| !path.is_empty()).map(PathBuf::from).collect())
+        settings.sandbox.then(|| {
+            settings
+                .sandbox_paths
+                .iter()
+                .map(|path| path.trim())
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .collect()
+        })
     }
 
     /// Store a provider's key: in the single `api_keys` vault bundle, or, when there is no vault
@@ -712,7 +864,10 @@ impl SettingsStore {
     pub fn save_api_key(&self, provider_id: &str, key: &str) -> std::io::Result<()> {
         let key = key.trim();
         if key.is_empty() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the key is empty"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the key is empty",
+            ));
         }
         known(provider_id)?;
         let name = format!("{provider_id}_api_key");
@@ -721,7 +876,9 @@ impl SettingsStore {
             let mut cache = self.vault_cache.lock().unwrap();
             let current = match &*cache {
                 VaultCache::Loaded(map) => Ok(map.clone()),
-                VaultCache::Unloaded | VaultCache::Unavailable => vault.get(BUNDLE_KEY).map(|raw| raw.as_deref().map(Self::parse_bundle).unwrap_or_default()),
+                VaultCache::Unloaded | VaultCache::Unavailable => vault
+                    .get(BUNDLE_KEY)
+                    .map(|raw| raw.as_deref().map(Self::parse_bundle).unwrap_or_default()),
             };
             if let Ok(mut map) = current {
                 map.insert(name.clone(), key.to_string());
@@ -732,7 +889,11 @@ impl SettingsStore {
                     drop(cache);
                     // Clean up any stale legacy single entry and plain-text file entry.
                     let _ = vault.delete(&name);
-                    return if credentials.remove(&name).is_some() { self.write_credentials(credentials) } else { Ok(()) };
+                    return if credentials.remove(&name).is_some() {
+                        self.write_credentials(credentials)
+                    } else {
+                        Ok(())
+                    };
                 }
             }
             *cache = VaultCache::Unavailable;
@@ -749,9 +910,12 @@ impl SettingsStore {
             let mut cache = self.vault_cache.lock().unwrap();
             let mut map = match &*cache {
                 VaultCache::Loaded(map) => map.clone(),
-                VaultCache::Unloaded | VaultCache::Unavailable => {
-                    vault.get(BUNDLE_KEY).map_err(std::io::Error::other)?.as_deref().map(Self::parse_bundle).unwrap_or_default()
-                }
+                VaultCache::Unloaded | VaultCache::Unavailable => vault
+                    .get(BUNDLE_KEY)
+                    .map_err(std::io::Error::other)?
+                    .as_deref()
+                    .map(Self::parse_bundle)
+                    .unwrap_or_default(),
             };
             if map.remove(&name).is_some() {
                 if map.is_empty() {
@@ -782,13 +946,21 @@ impl SettingsStore {
         }
         std::fs::create_dir_all(&self.directory)?;
         let path = self.credentials_path();
-        write_atomically(&path, &serde_json::to_vec_pretty(&credentials).map_err(std::io::Error::other)?)?;
+        write_atomically(
+            &path,
+            &serde_json::to_vec_pretty(&credentials).map_err(std::io::Error::other)?,
+        )?;
         restrict(&path)
     }
 }
 
 fn known(provider_id: &str) -> std::io::Result<&'static Provider> {
-    provider(provider_id).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("unknown provider `{provider_id}`")))
+    provider(provider_id).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unknown provider `{provider_id}`"),
+        )
+    })
 }
 
 #[cfg(unix)]
@@ -818,7 +990,11 @@ mod tests {
     use super::*;
 
     fn settings(provider: &str, model: &str) -> Settings {
-        Settings { provider: provider.into(), model: model.into(), ..Settings::default() }
+        Settings {
+            provider: provider.into(),
+            model: model.into(),
+            ..Settings::default()
+        }
     }
 
     #[test]
@@ -826,8 +1002,20 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(directory.path().join("home"));
         assert_eq!(store.load(), Settings::default());
-        let saved = store.save(Settings { effort: "turbo".into(), theme: "dark".into(), ..settings("anthropic", "claude-sonnet-5-5") }).unwrap();
-        assert_eq!(saved, Settings { theme: "dark".into(), ..settings("anthropic", "claude-sonnet-5-5") });
+        let saved = store
+            .save(Settings {
+                effort: "turbo".into(),
+                theme: "dark".into(),
+                ..settings("anthropic", "claude-sonnet-5-5")
+            })
+            .unwrap();
+        assert_eq!(
+            saved,
+            Settings {
+                theme: "dark".into(),
+                ..settings("anthropic", "claude-sonnet-5-5")
+            }
+        );
         assert_eq!(store.load(), saved);
         std::fs::write(directory.path().join("home/settings.json"), "{ not json").unwrap();
         assert_eq!(store.load(), Settings::default());
@@ -836,14 +1024,24 @@ mod tests {
     #[test]
     fn reads_settings_saved_before_providers_existed() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("settings.json"), r#"{"model":"claude-sonnet-5-5","effort":"max","theme":"light"}"#).unwrap();
+        std::fs::write(
+            directory.path().join("settings.json"),
+            r#"{"model":"claude-sonnet-5-5","effort":"max","theme":"light"}"#,
+        )
+        .unwrap();
         let loaded = SettingsStore::new(directory.path()).load();
-        assert_eq!((loaded.provider.as_str(), loaded.model.as_str(), loaded.effort.as_str()), ("anthropic", "claude-sonnet-5-5", "max"));
+        assert_eq!(
+            (loaded.provider.as_str(), loaded.model.as_str(), loaded.effort.as_str()),
+            ("anthropic", "claude-sonnet-5-5", "max")
+        );
     }
 
     #[test]
     fn keeps_any_model_id_but_fixes_one_left_from_another_provider() {
-        assert_eq!(settings("deepseek", "deepseek-v4-pro-0101").valid().model, "deepseek-v4-pro-0101");
+        assert_eq!(
+            settings("deepseek", "deepseek-v4-pro-0101").valid().model,
+            "deepseek-v4-pro-0101"
+        );
         assert_eq!(settings("deepseek", "claude-opus-5-5").valid().model, "deepseek-v4-pro");
         assert_eq!(settings("moonshot", " ").valid().model, "kimi-k3.1-pro");
         assert_eq!(settings("custom", "").valid().model, "");
@@ -856,9 +1054,18 @@ mod tests {
             ("anthropic".into(), "https://gateway".into()),
             ("nobody".into(), "https://x".into()),
         ]);
-        urls.disabled_providers = vec![" claude_code ".into(), "claude_code".into(), "zhipu".into(), "nobody".into(), "custom-9".into()];
+        urls.disabled_providers = vec![
+            " claude_code ".into(),
+            "claude_code".into(),
+            "zhipu".into(),
+            "nobody".into(),
+            "custom-9".into(),
+        ];
         let validated = urls.valid();
-        assert_eq!(validated.base_urls, BTreeMap::from([("zhipu".into(), "https://api.z.ai/api/paas/v4".into())]));
+        assert_eq!(
+            validated.base_urls,
+            BTreeMap::from([("zhipu".into(), "https://api.z.ai/api/paas/v4".into())])
+        );
         assert_eq!(validated.disabled_providers, vec!["claude_code"]);
     }
 
@@ -868,17 +1075,26 @@ mod tests {
         let store = SettingsStore::new(directory.path());
         assert!(store.save_api_key("anthropic", "   ").is_err());
         assert!(store.save_api_key("nobody", "sk-x").is_err());
-        store.save_api_key("anthropic", "  sk-ant-api03-abcdefghijklmnop-a41f \n").unwrap();
+        store
+            .save_api_key("anthropic", "  sk-ant-api03-abcdefghijklmnop-a41f \n")
+            .unwrap();
         store.save_api_key("deepseek", "sk-deepseek-0123456789abcdef").unwrap();
-        assert_eq!(store.api_key("anthropic").as_deref(), Some("sk-ant-api03-abcdefghijklmnop-a41f"));
-        assert_eq!(store.api_key("deepseek").as_deref(), Some("sk-deepseek-0123456789abcdef"));
+        assert_eq!(
+            store.api_key("anthropic").as_deref(),
+            Some("sk-ant-api03-abcdefghijklmnop-a41f")
+        );
+        assert_eq!(
+            store.api_key("deepseek").as_deref(),
+            Some("sk-deepseek-0123456789abcdef")
+        );
         let status = store.key_status("anthropic");
         assert_eq!(status.source, "saved");
         assert_eq!(status.preview.as_deref(), Some("sk-ant-••••••••••••a41f"));
         assert_eq!(mask("short-key"), "••••••••••••");
 
         // A file written when only Anthropic existed reads unchanged.
-        let file: Value = serde_json::from_str(&std::fs::read_to_string(directory.path().join("credentials.json")).unwrap()).unwrap();
+        let file: Value =
+            serde_json::from_str(&std::fs::read_to_string(directory.path().join("credentials.json")).unwrap()).unwrap();
         assert_eq!(file["anthropic_api_key"], "sk-ant-api03-abcdefghijklmnop-a41f");
 
         store.delete_api_key("anthropic").unwrap();
@@ -901,20 +1117,49 @@ mod tests {
         assert_eq!(store.add_provider("custom", "").unwrap(), "custom-3");
         assert!(store.add_provider("nobody", "x").is_err() && store.add_provider("custom-2", "x").is_err());
         let mut settings = store.load();
-        settings.base_urls.insert("custom".into(), "http://127.0.0.1:1/v1".into());
-        settings.base_urls.insert("custom-2".into(), "http://127.0.0.1:2/v1/".into());
+        settings
+            .base_urls
+            .insert("custom".into(), "http://127.0.0.1:1/v1".into());
+        settings
+            .base_urls
+            .insert("custom-2".into(), "http://127.0.0.1:2/v1/".into());
         settings.provider = "custom-2".into();
         settings.model = "my-model".into();
         let settings = store.save(settings).unwrap();
-        let listed: Vec<(String, String)> = settings.instances().iter().filter(|one| one.kind == "custom").map(|one| (one.id.clone(), one.name.clone())).collect();
-        assert_eq!(listed, [("custom".into(), "OpenAI 兼容服务".into()), ("custom-2".into(), "本地中转".into()), ("custom-3".into(), "OpenAI 兼容服务 3".into())]);
-        assert_eq!((settings.provider.as_str(), settings.model.as_str()), ("custom-2", "my-model"));
+        let listed: Vec<(String, String)> = settings
+            .instances()
+            .iter()
+            .filter(|one| one.kind == "custom")
+            .map(|one| (one.id.clone(), one.name.clone()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("custom".into(), "OpenAI 兼容服务".into()),
+                ("custom-2".into(), "本地中转".into()),
+                ("custom-3".into(), "OpenAI 兼容服务 3".into())
+            ]
+        );
+        assert_eq!(
+            (settings.provider.as_str(), settings.model.as_str()),
+            ("custom-2", "my-model")
+        );
 
         // Each its own address and key; the one added has none until one is saved for it.
         store.save_api_key("custom-2", "key-of-the-second-00000").unwrap();
-        let (first, second, third) = (store.endpoint("custom"), store.endpoint("custom-2"), store.endpoint("custom-3"));
-        assert_eq!((first.base_url.as_str(), first.key.as_deref()), ("http://127.0.0.1:1/v1", Some("key-of-the-first-000000")));
-        assert_eq!((second.base_url.as_str(), second.key.as_deref()), ("http://127.0.0.1:2/v1", Some("key-of-the-second-00000")));
+        let (first, second, third) = (
+            store.endpoint("custom"),
+            store.endpoint("custom-2"),
+            store.endpoint("custom-3"),
+        );
+        assert_eq!(
+            (first.base_url.as_str(), first.key.as_deref()),
+            ("http://127.0.0.1:1/v1", Some("key-of-the-first-000000"))
+        );
+        assert_eq!(
+            (second.base_url.as_str(), second.key.as_deref()),
+            ("http://127.0.0.1:2/v1", Some("key-of-the-second-00000"))
+        );
         assert_eq!((third.base_url.as_str(), third.key), ("", None));
         assert!(store.key_statuses().contains_key("custom-3"));
         // A compatible service may serve another provider's model, which is kept as chosen.
@@ -939,7 +1184,10 @@ mod tests {
         (first.provider, first.model) = ("custom".into(), "my-model".into());
         store.save(first).unwrap();
         let after = store.remove_provider("custom").unwrap();
-        assert_eq!((after.provider.as_str(), after.model.as_str()), (DEFAULT_PROVIDER, DEFAULT_MODEL));
+        assert_eq!(
+            (after.provider.as_str(), after.model.as_str()),
+            (DEFAULT_PROVIDER, DEFAULT_MODEL)
+        );
         assert!(!after.base_urls.contains_key("custom") && store.api_key("custom").is_none());
     }
 
@@ -950,16 +1198,35 @@ mod tests {
         // SAFETY: no other test reads this variable, which is set only here.
         unsafe { std::env::set_var("MOONSHOT_API_KEY", "moonshot-from-the-environment") };
         let added = store.add_provider("moonshot", "国际站").unwrap();
-        assert_eq!(added, "moonshot-2", "the first is set up by the environment's key, so another is added beside it");
-        assert_eq!(store.api_key("moonshot").as_deref(), Some("moonshot-from-the-environment"));
-        assert_eq!((store.api_key("moonshot-2"), store.key_status("moonshot-2").source.as_str()), (None, "none"));
+        assert_eq!(
+            added, "moonshot-2",
+            "the first is set up by the environment's key, so another is added beside it"
+        );
+        assert_eq!(
+            store.api_key("moonshot").as_deref(),
+            Some("moonshot-from-the-environment")
+        );
+        assert_eq!(
+            (
+                store.api_key("moonshot-2"),
+                store.key_status("moonshot-2").source.as_str()
+            ),
+            (None, "none")
+        );
         // An Anthropic provider other than the first takes an address of its own; the first's comes from the environment.
         let compatible = store.add_provider("custom_anthropic", "").unwrap();
         let mut settings = store.load();
-        settings.base_urls.insert(compatible.clone(), "https://gateway.example.com/anthropic".into());
-        settings.base_urls.insert("anthropic".into(), "https://ignored.example.com".into());
+        settings
+            .base_urls
+            .insert(compatible.clone(), "https://gateway.example.com/anthropic".into());
+        settings
+            .base_urls
+            .insert("anthropic".into(), "https://ignored.example.com".into());
         let settings = store.save(settings).unwrap();
-        assert_eq!(settings.base_urls.get(&compatible).map(String::as_str), Some("https://gateway.example.com/anthropic"));
+        assert_eq!(
+            settings.base_urls.get(&compatible).map(String::as_str),
+            Some("https://gateway.example.com/anthropic")
+        );
         assert!(!settings.base_urls.contains_key("anthropic"));
         unsafe { std::env::remove_var("MOONSHOT_API_KEY") };
     }
@@ -974,7 +1241,11 @@ mod tests {
 
     impl MemoryVault {
         fn check(&self) -> Result<(), String> {
-            if self.broken.load(std::sync::atomic::Ordering::SeqCst) { Err("the vault is locked".to_string()) } else { Ok(()) }
+            if self.broken.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("the vault is locked".to_string())
+            } else {
+                Ok(())
+            }
         }
 
         fn get_count(&self) -> usize {
@@ -989,7 +1260,14 @@ mod tests {
         }
 
         fn set(&self, name: &str, secret: &str) -> Result<(), String> {
-            self.check().map(|()| drop(self.secrets.lock().unwrap().insert(name.to_string(), secret.to_string())))
+            self.check().map(|()| {
+                drop(
+                    self.secrets
+                        .lock()
+                        .unwrap()
+                        .insert(name.to_string(), secret.to_string()),
+                )
+            })
         }
 
         fn delete(&self, name: &str) -> Result<(), String> {
@@ -1002,12 +1280,23 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("credentials.json");
         // Two keys saved by a build from before the vault.
-        SettingsStore::new(directory.path()).save_api_key("anthropic", "sk-ant-old-key-0000000000").unwrap();
-        SettingsStore::new(directory.path()).save_api_key("zhipu", "glm-old-key-000000000000").unwrap();
+        SettingsStore::new(directory.path())
+            .save_api_key("anthropic", "sk-ant-old-key-0000000000")
+            .unwrap();
+        SettingsStore::new(directory.path())
+            .save_api_key("zhipu", "glm-old-key-000000000000")
+            .unwrap();
         let vault = Arc::new(MemoryVault::default());
         let store = SettingsStore::with_vault(directory.path(), vault.clone());
         // Until moved they still work, and are reported as plain text.
-        assert_eq!(store.key_status("zhipu"), KeyStatus { source: "saved".into(), preview: Some(mask("glm-old-key-000000000000")), plaintext: true });
+        assert_eq!(
+            store.key_status("zhipu"),
+            KeyStatus {
+                source: "saved".into(),
+                preview: Some(mask("glm-old-key-000000000000")),
+                plaintext: true
+            }
+        );
 
         store.migrate_keys();
         assert!(!file.exists());
@@ -1035,8 +1324,16 @@ mod tests {
     fn migrates_legacy_per_provider_vault_entries_and_caches_reads_in_memory() {
         let directory = tempfile::tempdir().unwrap();
         let vault = Arc::new(MemoryVault::default());
-        vault.secrets.lock().unwrap().insert("anthropic_api_key".into(), "sk-ant-legacy-0000000000".into());
-        vault.secrets.lock().unwrap().insert("zhipu_api_key".into(), "glm-legacy-000000000000".into());
+        vault
+            .secrets
+            .lock()
+            .unwrap()
+            .insert("anthropic_api_key".into(), "sk-ant-legacy-0000000000".into());
+        vault
+            .secrets
+            .lock()
+            .unwrap()
+            .insert("zhipu_api_key".into(), "glm-legacy-000000000000".into());
 
         let store = SettingsStore::with_vault(directory.path(), vault.clone());
         store.migrate_keys();
@@ -1071,7 +1368,14 @@ mod tests {
         let store = SettingsStore::with_vault(directory.path(), vault.clone());
         vault.broken.store(true, std::sync::atomic::Ordering::SeqCst);
         store.save_api_key("zhipu", "glm-key-0000000000000000").unwrap();
-        assert_eq!(store.key_status("zhipu"), KeyStatus { source: "saved".into(), preview: Some(mask("glm-key-0000000000000000")), plaintext: true });
+        assert_eq!(
+            store.key_status("zhipu"),
+            KeyStatus {
+                source: "saved".into(),
+                preview: Some(mask("glm-key-0000000000000000")),
+                plaintext: true
+            }
+        );
         // Moving fails too, and loses nothing.
         store.migrate_keys();
         assert_eq!(store.api_key("zhipu").as_deref(), Some("glm-key-0000000000000000"));
@@ -1086,44 +1390,124 @@ mod tests {
     fn a_models_context_window_is_what_its_provider_reported_then_what_is_documented() {
         let directory = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(directory.path().join("home"));
-        let listed = |id: &str, context_window: Option<u64>| Listed { id: id.to_string(), name: id.to_string(), context_window };
+        let listed = |id: &str, context_window: Option<u64>| Listed {
+            id: id.to_string(),
+            name: id.to_string(),
+            context_window,
+        };
         let window = |tokens, source| Window { tokens, source };
         let plain = Settings::default();
         // Before anything is reported: the documentation, or the safe size for a model it does not list.
-        assert_eq!(store.context_window(&plain, "zhipu", "glm-4.7"), window(200_000, WindowSource::Documented));
-        assert_eq!(store.context_window(&plain, "zhipu", "glm-9"), window(UNKNOWN_CONTEXT_WINDOW, WindowSource::Unknown));
+        assert_eq!(
+            store.context_window(&plain, "zhipu", "glm-4.7"),
+            window(200_000, WindowSource::Documented)
+        );
+        assert_eq!(
+            store.context_window(&plain, "zhipu", "glm-9"),
+            window(UNKNOWN_CONTEXT_WINDOW, WindowSource::Unknown)
+        );
 
         // What the provider says comes first, and is kept for the next run. A model it gave no size for keeps what was known.
-        store.record_models("zhipu", &[listed("glm-5.3-flash", Some(256_000)), listed("glm-4.7", Some(128_000)), listed("glm-5.3", None)]).unwrap();
-        assert_eq!(store.context_window(&plain, "zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
-        assert_eq!(store.context_window(&plain, "zhipu", "glm-4.7"), window(128_000, WindowSource::Provider));
-        assert_eq!(store.context_window(&plain, "zhipu", "glm-5.3"), window(1_000_000, WindowSource::Documented));
+        store
+            .record_models(
+                "zhipu",
+                &[
+                    listed("glm-5.3-flash", Some(256_000)),
+                    listed("glm-4.7", Some(128_000)),
+                    listed("glm-5.3", None),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            store.context_window(&plain, "zhipu", "glm-5.3-flash"),
+            window(256_000, WindowSource::Provider)
+        );
+        assert_eq!(
+            store.context_window(&plain, "zhipu", "glm-4.7"),
+            window(128_000, WindowSource::Provider)
+        );
+        assert_eq!(
+            store.context_window(&plain, "zhipu", "glm-5.3"),
+            window(1_000_000, WindowSource::Documented)
+        );
         // Another provider's model of the same name is another model.
-        assert_eq!(store.context_window(&plain, "custom", "glm-5.3-flash").source, WindowSource::Unknown);
+        assert_eq!(
+            store.context_window(&plain, "custom", "glm-5.3-flash").source,
+            WindowSource::Unknown
+        );
         let again = SettingsStore::new(directory.path().join("home"));
-        assert_eq!(again.context_window(&plain, "zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
+        assert_eq!(
+            again.context_window(&plain, "zhipu", "glm-5.3-flash"),
+            window(256_000, WindowSource::Provider)
+        );
         again.record_models("zhipu", &[listed("glm-5.3-flash", None)]).unwrap();
         assert_eq!(again.context_window(&plain, "zhipu", "glm-5.3-flash").tokens, 256_000);
 
         // What the user sets for a model comes before all of it, for that model of that provider alone; cleared, the rest decides again.
-        let set = again.save(Settings { context_windows: [("zhipu/glm-5.3-flash".to_string(), 500_000), ("zhipu/tiny".to_string(), 1_000), ("zhipu/cleared".to_string(), 0), ("nowhere".to_string(), 9)].into(), ..Settings::default() }).unwrap();
-        assert_eq!(set.context_windows, [("zhipu/glm-5.3-flash".to_string(), 500_000), ("zhipu/tiny".to_string(), MIN_CONTEXT_WINDOW)].into());
-        assert_eq!(again.context_window(&set, "zhipu", "glm-5.3-flash"), window(500_000, WindowSource::Set));
-        assert_eq!(again.context_window(&set, "zhipu", "glm-4.7"), window(128_000, WindowSource::Provider));
-        assert_eq!(again.context_window(&plain, "zhipu", "glm-5.3-flash"), window(256_000, WindowSource::Provider));
+        let set = again
+            .save(Settings {
+                context_windows: [
+                    ("zhipu/glm-5.3-flash".to_string(), 500_000),
+                    ("zhipu/tiny".to_string(), 1_000),
+                    ("zhipu/cleared".to_string(), 0),
+                    ("nowhere".to_string(), 9),
+                ]
+                .into(),
+                ..Settings::default()
+            })
+            .unwrap();
+        assert_eq!(
+            set.context_windows,
+            [
+                ("zhipu/glm-5.3-flash".to_string(), 500_000),
+                ("zhipu/tiny".to_string(), MIN_CONTEXT_WINDOW)
+            ]
+            .into()
+        );
+        assert_eq!(
+            again.context_window(&set, "zhipu", "glm-5.3-flash"),
+            window(500_000, WindowSource::Set)
+        );
+        assert_eq!(
+            again.context_window(&set, "zhipu", "glm-4.7"),
+            window(128_000, WindowSource::Provider)
+        );
+        assert_eq!(
+            again.context_window(&plain, "zhipu", "glm-5.3-flash"),
+            window(256_000, WindowSource::Provider)
+        );
 
         // The limit a session compacts at is the one set, or four fifths of the window when that is less.
-        let settings = Settings { context_limit: 200_000, context_auto: false, ..Settings::default() };
-        assert_eq!((settings.context_limit_within(1_000_000), settings.context_limit_within(128_000)), (200_000, 102_400));
+        let settings = Settings {
+            context_limit: 200_000,
+            context_auto: false,
+            ..Settings::default()
+        };
+        assert_eq!(
+            (
+                settings.context_limit_within(1_000_000),
+                settings.context_limit_within(128_000)
+            ),
+            (200_000, 102_400)
+        );
         // Set to follow the model, it is four fifths of the window whatever limit is set.
-        let auto = Settings { context_auto: true, ..settings };
-        assert_eq!((auto.context_limit_within(1_000_000), auto.context_limit_within(128_000)), (800_000, 102_400));
+        let auto = Settings {
+            context_auto: true,
+            ..settings
+        };
+        assert_eq!(
+            (auto.context_limit_within(1_000_000), auto.context_limit_within(128_000)),
+            (800_000, 102_400)
+        );
         // Which is how it starts, with the guardian on; a file saved before either was on by default keeps what it says.
         let fresh = Settings::default();
         assert!(fresh.context_auto && fresh.guardian);
         let missing: Settings = serde_json::from_str(r#"{"model": "m", "effort": "high", "theme": "system"}"#).unwrap();
         assert!(missing.context_auto && missing.guardian);
-        let kept: Settings = serde_json::from_str(r#"{"model": "m", "effort": "high", "theme": "system", "context_auto": false, "guardian": false}"#).unwrap();
+        let kept: Settings = serde_json::from_str(
+            r#"{"model": "m", "effort": "high", "theme": "system", "context_auto": false, "guardian": false}"#,
+        )
+        .unwrap();
         assert!(!kept.context_auto && !kept.guardian);
     }
 
@@ -1139,15 +1523,39 @@ mod tests {
         store.save_api_key("zhipu", "glm-key-0000000000000000").unwrap();
         // Nothing chosen: the first painter whose provider has a key.
         let config = store.painter().unwrap();
-        assert_eq!((config.painter.id, config.url.as_str(), config.key.as_str()), ("glm-image", "https://open.bigmodel.cn/api/paas/v4/images/generations", "glm-key-0000000000000000"));
+        assert_eq!(
+            (config.painter.id, config.url.as_str(), config.key.as_str()),
+            (
+                "glm-image",
+                "https://open.bigmodel.cn/api/paas/v4/images/generations",
+                "glm-key-0000000000000000"
+            )
+        );
         // Chosen, and its provider has no key: one that has is used instead.
-        store.save(Settings { painter: "gpt-image-2".into(), ..Settings::default() }).unwrap();
+        store
+            .save(Settings {
+                painter: "gpt-image-2".into(),
+                ..Settings::default()
+            })
+            .unwrap();
         assert_eq!(store.painter().unwrap().painter.id, "glm-image");
         store.save_api_key("openai", "sk-test-0000000000000000").unwrap();
         let config = store.painter().unwrap();
-        assert_eq!((config.painter.id, config.url.as_str()), ("gpt-image-2", "https://api.openai.com/v1/images/generations"));
+        assert_eq!(
+            (config.painter.id, config.url.as_str()),
+            ("gpt-image-2", "https://api.openai.com/v1/images/generations")
+        );
         // One this build does not know is forgotten.
-        assert_eq!(store.save(Settings { painter: "midjourney".into(), ..Settings::default() }).unwrap().painter, "");
+        assert_eq!(
+            store
+                .save(Settings {
+                    painter: "midjourney".into(),
+                    ..Settings::default()
+                })
+                .unwrap()
+                .painter,
+            ""
+        );
     }
 
     #[test]
@@ -1160,18 +1568,41 @@ mod tests {
         }
         store.save_api_key("zhipu", "glm-key-0000000000000000").unwrap();
         let search = store.search().unwrap();
-        assert_eq!((search.url.as_str(), search.engine.as_str()), ("https://open.bigmodel.cn/api/paas/v4/web_search", "search_std"));
+        assert_eq!(
+            (search.url.as_str(), search.engine.as_str()),
+            ("https://open.bigmodel.cn/api/paas/v4/web_search", "search_std")
+        );
         assert_eq!(search.key, "glm-key-0000000000000000");
 
         // The chosen engine is used; one this build does not know falls back to the cheapest.
-        store.save(Settings { search_engine: "search_pro".into(), ..Settings::default() }).unwrap();
+        store
+            .save(Settings {
+                search_engine: "search_pro".into(),
+                ..Settings::default()
+            })
+            .unwrap();
         assert_eq!(store.search().unwrap().engine, "search_pro");
-        assert_eq!(store.save(Settings { search_engine: "bing".into(), ..Settings::default() }).unwrap().search_engine, "search_std");
+        assert_eq!(
+            store
+                .save(Settings {
+                    search_engine: "bing".into(),
+                    ..Settings::default()
+                })
+                .unwrap()
+                .search_engine,
+            "search_std"
+        );
         // The international site has one engine of its own.
-        let abroad = Settings { base_urls: [("zhipu".to_string(), "https://api.z.ai/api/paas/v4/".to_string())].into(), ..Settings::default() };
+        let abroad = Settings {
+            base_urls: [("zhipu".to_string(), "https://api.z.ai/api/paas/v4/".to_string())].into(),
+            ..Settings::default()
+        };
         store.save(abroad).unwrap();
         let search = store.search().unwrap();
-        assert_eq!((search.url.as_str(), search.engine.as_str()), ("https://api.z.ai/api/paas/v4/web_search", "search-prime"));
+        assert_eq!(
+            (search.url.as_str(), search.engine.as_str()),
+            ("https://api.z.ai/api/paas/v4/web_search", "search-prime")
+        );
     }
 
     #[test]
@@ -1181,9 +1612,17 @@ mod tests {
         assert_eq!(store.endpoint("moonshot").base_url, "https://api.moonshot.cn/v1");
         assert_eq!(store.endpoint("custom").base_url, "");
         let mut chosen = settings("moonshot", "kimi-k3");
-        chosen.base_urls.insert("moonshot".into(), "https://api.moonshot.ai/v1".into());
+        chosen
+            .base_urls
+            .insert("moonshot".into(), "https://api.moonshot.ai/v1".into());
         store.save(chosen).unwrap();
         store.save_api_key("moonshot", "sk-kimi").unwrap();
-        assert_eq!(store.endpoint("moonshot"), Endpoint { base_url: "https://api.moonshot.ai/v1".into(), key: Some("sk-kimi".into()) });
+        assert_eq!(
+            store.endpoint("moonshot"),
+            Endpoint {
+                base_url: "https://api.moonshot.ai/v1".into(),
+                key: Some("sk-kimi".into())
+            }
+        );
     }
 }

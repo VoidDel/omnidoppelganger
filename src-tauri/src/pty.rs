@@ -88,7 +88,11 @@ fn detect_shell() -> (String, String, Vec<&'static str>) {
         for candidate in ["pwsh.exe", "powershell.exe", "cmd.exe"] {
             if on_path(candidate) {
                 let label = candidate.trim_end_matches(".exe").to_string();
-                let args = if candidate == "cmd.exe" { Vec::new() } else { vec!["-NoLogo"] };
+                let args = if candidate == "cmd.exe" {
+                    Vec::new()
+                } else {
+                    vec!["-NoLogo"]
+                };
                 return (candidate.to_string(), label, args);
             }
         }
@@ -189,7 +193,9 @@ impl PtyHandle {
 
 impl PtyHub {
     pub fn new() -> Self {
-        Self { instances: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            instances: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn spawn<FOut, FExit>(
@@ -215,7 +221,12 @@ impl PtyHub {
 
         let pty_system = NativePtySystem::default();
         let pair = pty_system
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|error| format!("无法开启终端伪设备：{error}"))?;
 
         let (shell_prog, shell_name, shell_args) = detect_shell();
@@ -380,7 +391,9 @@ impl PtyHub {
             .ok_or("这个终端已经关闭了。")?;
         let mut guard = handle.writer.lock().unwrap();
         let writer = guard.as_mut().ok_or("这个终端已经结束运行了。")?;
-        writer.write_all(data.as_bytes()).map_err(|e| format!("写入终端失败：{e}"))?;
+        writer
+            .write_all(data.as_bytes())
+            .map_err(|e| format!("写入终端失败：{e}"))?;
         writer.flush().map_err(|e| format!("刷新终端输入失败：{e}"))
     }
 
@@ -395,7 +408,12 @@ impl PtyHub {
             return Ok(());
         };
         master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("调整终端尺寸失败：{e}"))
     }
 
@@ -575,7 +593,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(*exited_flag.lock().unwrap(), "expected shell exit callback");
-        assert_eq!(hub.handles_released(&info.id), Some(true), "master/writer/child must be released on exit");
+        assert_eq!(
+            hub.handles_released(&info.id),
+            Some(true),
+            "master/writer/child must be released on exit"
+        );
         let after_exit = &hub.list("sess-1")[0];
         assert!(after_exit.exited.is_some());
         assert!(after_exit.backlog_end_offset > 0);

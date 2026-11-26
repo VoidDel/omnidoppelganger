@@ -20,12 +20,19 @@ pub fn to_markdown(events: &[Envelope], title_override: Option<&str>) -> String 
     let title = title_override
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(if summary.title.trim().is_empty() { "未命名会话" } else { summary.title.as_str() });
+        .unwrap_or(if summary.title.trim().is_empty() {
+            "未命名会话"
+        } else {
+            summary.title.as_str()
+        });
 
     let mut out = String::new();
     out.push_str(&format!("# {title}\n\n"));
     out.push_str(&format!("- **洞府**：`{}`\n", summary.workspace));
-    out.push_str(&format!("- **宗门 / 心法**：`{}` / `{}`\n", summary.provider, summary.model));
+    out.push_str(&format!(
+        "- **宗门 / 心法**：`{}` / `{}`\n",
+        summary.provider, summary.model
+    ));
     if !summary.created_at.is_empty() {
         out.push_str(&format!("- **创建时间**：{}\n", summary.created_at));
     }
@@ -33,13 +40,17 @@ pub fn to_markdown(events: &[Envelope], title_override: Option<&str>) -> String 
     let mut total_in = 0u64;
     let mut total_out = 0u64;
     for env in events {
-        if let Event::AssistantMessage { tokens: Some(t), .. } | Event::ContextCompacted { tokens: Some(t), .. } = &env.event {
+        if let Event::AssistantMessage { tokens: Some(t), .. } | Event::ContextCompacted { tokens: Some(t), .. } =
+            &env.event
+        {
             total_in += t.input;
             total_out += t.output;
         }
     }
     if total_in > 0 || total_out > 0 {
-        out.push_str(&format!("- **累计消耗**：输入 {total_in} tokens · 输出 {total_out} tokens\n"));
+        out.push_str(&format!(
+            "- **累计消耗**：输入 {total_in} tokens · 输出 {total_out} tokens\n"
+        ));
     }
     out.push_str("\n---\n");
 
@@ -50,8 +61,18 @@ pub fn to_markdown(events: &[Envelope], title_override: Option<&str>) -> String 
             Event::TurnStart { turn } => {
                 out.push_str(&format!("\n## 第 {turn} 轮\n\n"));
             }
-            Event::UserMessage { text, steering, images, files, .. } => {
-                let heading = if *steering { "### 本尊（中途传音）" } else { "### 本尊" };
+            Event::UserMessage {
+                text,
+                steering,
+                images,
+                files,
+                ..
+            } => {
+                let heading = if *steering {
+                    "### 本尊（中途传音）"
+                } else {
+                    "### 本尊"
+                };
                 out.push_str(&format!("{heading}\n\n"));
                 if !images.is_empty() {
                     out.push_str(&format!("> 附带图片：{} 张\n\n", images.len()));
@@ -94,12 +115,20 @@ pub fn to_markdown(events: &[Envelope], title_override: Option<&str>) -> String 
                     }
                 }
             }
-            Event::ToolResult { tool_use_id, tool, content, is_error, .. } => {
+            Event::ToolResult {
+                tool_use_id,
+                tool,
+                content,
+                is_error,
+                ..
+            } => {
                 let (name, input_str) = pending_tools
                     .remove(tool_use_id)
                     .unwrap_or_else(|| (tool.clone(), String::new()));
                 let status = if *is_error { "失败" } else { "完成" };
-                out.push_str(&format!("<details>\n<summary>工具调用：<code>{name}</code>（{status}）</summary>\n\n"));
+                out.push_str(&format!(
+                    "<details>\n<summary>工具调用：<code>{name}</code>（{status}）</summary>\n\n"
+                ));
                 if !input_str.is_empty() && input_str != "null" && input_str != "{}" {
                     out.push_str("```json\n");
                     out.push_str(&clip_chars(&input_str, 1500));
@@ -112,11 +141,19 @@ pub fn to_markdown(events: &[Envelope], title_override: Option<&str>) -> String 
                 }
                 out.push_str("</details>\n\n");
             }
-            Event::ContextCompacted { summary, tokens_before, focus, kept_from_turn, .. } => {
+            Event::ContextCompacted {
+                summary,
+                tokens_before,
+                focus,
+                kept_from_turn,
+                ..
+            } => {
                 out.push_str(&format!(
                     "> **前情凝练**（原约 {tokens_before} tokens{}{}）：\n>\n",
                     focus.as_deref().map(|f| format!("，重点保留：{f}")).unwrap_or_default(),
-                    kept_from_turn.map(|t| format!("，保留第 {t} 轮起上下文")).unwrap_or_default(),
+                    kept_from_turn
+                        .map(|t| format!("，保留第 {t} 轮起上下文"))
+                        .unwrap_or_default(),
                 ));
                 for line in summary.lines() {
                     out.push_str(&format!("> {line}\n"));
@@ -127,7 +164,10 @@ pub fn to_markdown(events: &[Envelope], title_override: Option<&str>) -> String 
                 out.push_str(&format!("> **本轮产出文件**：`{}`\n\n", files.join("`, `")));
             }
             Event::FilesRestored { turn, restored, .. } => {
-                out.push_str(&format!("> **撤回改动**（自第 {turn} 轮起）：`{}`\n\n", restored.join("`, `")));
+                out.push_str(&format!(
+                    "> **撤回改动**（自第 {turn} 轮起）：`{}`\n\n",
+                    restored.join("`, `")
+                ));
             }
             Event::TurnEnd { reason, error, .. } if reason != "completed" => {
                 let detail = error.as_deref().unwrap_or(reason.as_str());
@@ -160,7 +200,13 @@ pub fn abandoned_branch_brief(events: &[Envelope], before_turn: u64) -> Option<S
             Event::UserMessage { text, .. } if !text.trim().is_empty() => {
                 prompts.push(clip_chars(text.trim(), 140));
             }
-            Event::ToolResult { tool, content, is_error, meta, .. } => {
+            Event::ToolResult {
+                tool,
+                content,
+                is_error,
+                meta,
+                ..
+            } => {
                 has_assistant_activity = true;
                 if *is_error {
                     let first_line = content.lines().next().unwrap_or("执行失败").trim();
@@ -185,7 +231,11 @@ pub fn abandoned_branch_brief(events: &[Envelope], before_turn: u64) -> Option<S
                     conclusions.push(clip_chars(trimmed, 220));
                 }
             }
-            Event::TurnEnd { reason, error: Some(err), .. } if reason != "completed" => {
+            Event::TurnEnd {
+                reason,
+                error: Some(err),
+                ..
+            } if reason != "completed" => {
                 has_assistant_activity = true;
                 failures.push(format!("回合中断: {}", clip_chars(err.trim(), 140)));
             }
@@ -197,15 +247,23 @@ pub fn abandoned_branch_brief(events: &[Envelope], before_turn: u64) -> Option<S
         return None;
     }
 
-    let mut lines = vec![format!("[分叉前另一条分支（第 {before_turn} 轮起）的试错摘要，供参考避坑：]")];
+    let mut lines = vec![format!(
+        "[分叉前另一条分支（第 {before_turn} 轮起）的试错摘要，供参考避坑：]"
+    )];
     if !prompts.is_empty() {
-        lines.push(format!("- 原分支尝试过的指令：{}", prompts.into_iter().take(3).collect::<Vec<_>>().join(" / ")));
+        lines.push(format!(
+            "- 原分支尝试过的指令：{}",
+            prompts.into_iter().take(3).collect::<Vec<_>>().join(" / ")
+        ));
     }
     if !edited.is_empty() {
         lines.push(format!("- 原分支改动过的文件：{}", edited.join(", ")));
     }
     if !failures.is_empty() {
-        lines.push(format!("- 原分支遇到的报错：{}", failures.into_iter().take(3).collect::<Vec<_>>().join("；")));
+        lines.push(format!(
+            "- 原分支遇到的报错：{}",
+            failures.into_iter().take(3).collect::<Vec<_>>().join("；")
+        ));
     }
     if let Some(last_reply) = conclusions.last() {
         lines.push(format!("- 原分支最后结论：{last_reply}"));
@@ -221,7 +279,11 @@ mod tests {
     use serde_json::{Value, json};
 
     fn env(seq: u64, event: Event) -> Envelope {
-        Envelope { seq, ts: "2026-11-26T00:00:00Z".into(), event }
+        Envelope {
+            seq,
+            ts: "2026-11-26T00:00:00Z".into(),
+            event,
+        }
     }
 
     #[test]
@@ -243,7 +305,16 @@ mod tests {
                 },
             ),
             env(2, Event::TurnStart { turn: 1 }),
-            env(3, Event::UserMessage { text: "先分析架构".into(), steering: false, mode: Mode::Auto, images: vec![], files: vec![] }),
+            env(
+                3,
+                Event::UserMessage {
+                    text: "先分析架构".into(),
+                    steering: false,
+                    mode: Mode::Auto,
+                    images: vec![],
+                    files: vec![],
+                },
+            ),
             env(
                 4,
                 Event::AssistantMessage {
@@ -251,12 +322,32 @@ mod tests {
                     stop_reason: Some("end_turn".into()),
                     model: "claude-sonnet-5-5".into(),
                     usage: Value::Null,
-                    tokens: Some(Tokens { input: 120, cached: 0, output: 30 }),
+                    tokens: Some(Tokens {
+                        input: 120,
+                        cached: 0,
+                        output: 30,
+                    }),
                 },
             ),
-            env(5, Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }),
+            env(
+                5,
+                Event::TurnEnd {
+                    turn: 1,
+                    reason: "completed".into(),
+                    error: None,
+                },
+            ),
             env(6, Event::TurnStart { turn: 2 }),
-            env(7, Event::UserMessage { text: "用旧方案改 auth.rs".into(), steering: false, mode: Mode::Auto, images: vec![], files: vec![] }),
+            env(
+                7,
+                Event::UserMessage {
+                    text: "用旧方案改 auth.rs".into(),
+                    steering: false,
+                    mode: Mode::Auto,
+                    images: vec![],
+                    files: vec![],
+                },
+            ),
             env(
                 8,
                 Event::AssistantMessage {
@@ -267,7 +358,11 @@ mod tests {
                     stop_reason: Some("end_turn".into()),
                     model: "claude-sonnet-5-5".into(),
                     usage: Value::Null,
-                    tokens: Some(Tokens { input: 200, cached: 100, output: 50 }),
+                    tokens: Some(Tokens {
+                        input: 200,
+                        cached: 100,
+                        output: 50,
+                    }),
                 },
             ),
             env(
@@ -281,7 +376,14 @@ mod tests {
                     images: vec![],
                 },
             ),
-            env(10, Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }),
+            env(
+                10,
+                Event::TurnEnd {
+                    turn: 2,
+                    reason: "completed".into(),
+                    error: None,
+                },
+            ),
         ];
 
         let md = to_markdown(&events, None);

@@ -10,7 +10,9 @@ use crate::documents::{DocError, TEXT_BYTES};
 
 /// Whether these bytes are a PDF: its header is to open the file, though readers look for it in the first kilobyte.
 pub fn is_pdf(bytes: &[u8]) -> bool {
-    bytes[..bytes.len().min(1024)].windows(5).any(|window| window == b"%PDF-")
+    bytes[..bytes.len().min(1024)]
+        .windows(5)
+        .any(|window| window == b"%PDF-")
 }
 
 /// The words of a PDF, each page's under a line that numbers it, and how many
@@ -37,7 +39,11 @@ pub(crate) fn read(bytes: &[u8]) -> Result<(usize, String), DocError> {
             Ok(Ok(())) => {
                 let page = tidy(&page);
                 worded |= !page.is_empty();
-                text.push_str(if page.is_empty() { "(no text on this page)" } else { &page });
+                text.push_str(if page.is_empty() {
+                    "(no text on this page)"
+                } else {
+                    &page
+                });
             }
             _ => text.push_str("(the text of this page could not be read)"),
         }
@@ -112,7 +118,10 @@ fn plain(character: char) -> char {
     if ('\u{2F00}'..='\u{2FD5}').contains(&character) || matches!(character, '\u{2E9F}' | '\u{2EF3}') {
         return std::iter::once(character).nfkc().next().unwrap_or(character);
     }
-    RADICALS.iter().find(|(radical, _)| *radical == character).map_or(character, |(_, written)| *written)
+    RADICALS
+        .iter()
+        .find(|(radical, _)| *radical == character)
+        .map_or(character, |(_, written)| *written)
 }
 
 #[cfg(test)]
@@ -125,10 +134,18 @@ pub(crate) mod tests {
         let font = 3 + 2 * pages.len();
         let kids: Vec<String> = (0..pages.len()).map(|at| format!("{} 0 R", 3 + 2 * at)).collect();
         objects.push("<< /Type /Catalog /Pages 2 0 R >>".into());
-        objects.push(format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), pages.len()));
+        objects.push(format!(
+            "<< /Type /Pages /Kids [{}] /Count {} >>",
+            kids.join(" "),
+            pages.len()
+        ));
         for (at, lines) in pages.iter().enumerate() {
             objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {font} 0 R >> >> /Contents {} 0 R >>", 4 + 2 * at));
-            let words: String = lines.iter().enumerate().map(|(row, line)| format!("BT /F1 12 Tf 72 {} Td ({line}) Tj ET\n", 760 - 16 * row as i64)).collect();
+            let words: String = lines
+                .iter()
+                .enumerate()
+                .map(|(row, line)| format!("BT /F1 12 Tf 72 {} Td ({line}) Tj ET\n", 760 - 16 * row as i64))
+                .collect();
             objects.push(format!("<< /Length {} >>\nstream\n{words}endstream", words.len()));
         }
         objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into());
@@ -143,7 +160,13 @@ pub(crate) mod tests {
         for offset in offsets {
             pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
         }
-        pdf.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
         pdf
     }
 
@@ -162,7 +185,10 @@ pub(crate) mod tests {
     #[test]
     fn writes_radicals_a_font_put_for_characters_as_the_characters() {
         // 第⼆⻚ as a font gave it: a Kangxi radical and a supplementary one; then 氵, which is only ever part of a character.
-        assert_eq!(tidy("第\u{2F06}\u{2EDA}：\u{2EDB}扇 \u{2F00}\u{2EA1}  \n\n\n\nΩ（R22）"), "第二页：风扇 一\u{2EA1}\n\nΩ（R22）");
+        assert_eq!(
+            tidy("第\u{2F06}\u{2EDA}：\u{2EDB}扇 \u{2F00}\u{2EA1}  \n\n\n\nΩ（R22）"),
+            "第二页：风扇 一\u{2EA1}\n\nΩ（R22）"
+        );
     }
 
     #[test]

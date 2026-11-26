@@ -35,8 +35,18 @@ fn step(name: &str, input: &Value) -> String {
         "move_file" => format!("moved {} to {}", field("from"), field("to")),
         "run_command" => format!("ran `{}`", field("command")),
         "search" => format!("searched for `{}`", field("pattern")),
-        "find_files" => format!("listed files {}", [field("path"), field("glob")].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")),
-        "batch_inspect" => format!("batch-inspected {} queries", input["queries"].as_array().map_or(0, Vec::len)),
+        "find_files" => format!(
+            "listed files {}",
+            [field("path"), field("glob")]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        "batch_inspect" => format!(
+            "batch-inspected {} queries",
+            input["queries"].as_array().map_or(0, Vec::len)
+        ),
         "code_nav" => format!("code_nav {} {}", field("operation"), field("path")),
         "fetch_url" => format!("fetched {}", field("url")),
         "web_search" => format!("searched the web for `{}`", field("query")),
@@ -58,17 +68,34 @@ fn standing(status: Status) -> &'static str {
 /// words, and how it stands. Written for the model, in English like the rest of what the app tells it; the
 /// model still answers in the user's language.
 pub fn brief(title: &str, status: Status, events: &[Envelope]) -> String {
-    let mut out = String::from("[Briefing on the main agent, written by the app: these are not the user's words. The user is talking to you in a side conversation while the main agent works in the same workspace.]\n");
-    let title = if title.trim().is_empty() { "untitled" } else { title.trim() };
-    out.push_str(&format!("Main session \"{}\": {}.\n", clip(title, 120), standing(status)));
+    let mut out = String::from(
+        "[Briefing on the main agent, written by the app: these are not the user's words. The user is talking to you in a side conversation while the main agent works in the same workspace.]\n",
+    );
+    let title = if title.trim().is_empty() {
+        "untitled"
+    } else {
+        title.trim()
+    };
+    out.push_str(&format!(
+        "Main session \"{}\": {}.\n",
+        clip(title, 120),
+        standing(status)
+    ));
 
     // The plan as the main agent last wrote it, from anywhere in its log.
     let plan = events.iter().rev().find_map(|envelope| match &envelope.event {
-        Event::ToolResult { tool, is_error: false, meta, .. } if tool == "update_todos" => meta["todos"].as_array().cloned(),
+        Event::ToolResult {
+            tool,
+            is_error: false,
+            meta,
+            ..
+        } if tool == "update_todos" => meta["todos"].as_array().cloned(),
         _ => None,
     });
 
-    let start = events.iter().rposition(|envelope| matches!(envelope.event, Event::TurnStart { .. }));
+    let start = events
+        .iter()
+        .rposition(|envelope| matches!(envelope.event, Event::TurnStart { .. }));
     let Some(start) = start else {
         out.push_str("It has not been given a task yet.\n[End of briefing]");
         return out;
@@ -88,7 +115,9 @@ pub fn brief(title: &str, status: Status, events: &[Envelope]) -> String {
     let mut ended = None;
     for envelope in current {
         match &envelope.event {
-            Event::UserMessage { text, steering: false, .. } if task.is_none() => task = Some(text.clone()),
+            Event::UserMessage {
+                text, steering: false, ..
+            } if task.is_none() => task = Some(text.clone()),
             Event::UserMessage { text, .. } => steering.push(text.clone()),
             Event::AssistantMessage { content, .. } => {
                 for block in content {
@@ -101,20 +130,30 @@ pub fn brief(title: &str, status: Status, events: &[Envelope]) -> String {
                         Some("tool_use") => {
                             let name = block["name"].as_str().unwrap_or_default();
                             if name != "update_todos" {
-                                calls.push((block["id"].as_str().unwrap_or_default().to_string(), step(name, &block["input"])));
+                                calls.push((
+                                    block["id"].as_str().unwrap_or_default().to_string(),
+                                    step(name, &block["input"]),
+                                ));
                             }
                         }
                         _ => {}
                     }
                 }
             }
-            Event::ApprovalRequested { tool_use_id, tool, detail, .. } => {
+            Event::ApprovalRequested {
+                tool_use_id,
+                tool,
+                detail,
+                ..
+            } => {
                 waiting.insert(tool_use_id.clone(), format!("{tool}: {}", clip(detail, 200)));
             }
             Event::ApprovalResolved { tool_use_id, .. } => {
                 waiting.remove(tool_use_id);
             }
-            Event::ToolResult { tool_use_id, is_error, .. } => {
+            Event::ToolResult {
+                tool_use_id, is_error, ..
+            } => {
                 outcome.insert(tool_use_id.clone(), *is_error);
                 waiting.remove(tool_use_id);
             }
@@ -124,7 +163,10 @@ pub fn brief(title: &str, status: Status, events: &[Envelope]) -> String {
     }
 
     match &task {
-        Some(task) => out.push_str(&format!("What the user asked of it in turn {turn}:\n{}\n", clip(task, QUOTE_CHARS))),
+        Some(task) => out.push_str(&format!(
+            "What the user asked of it in turn {turn}:\n{}\n",
+            clip(task, QUOTE_CHARS)
+        )),
         None => out.push_str(&format!("Turn {turn} has no message from the user.\n")),
     }
     if !steering.is_empty() {
@@ -141,12 +183,22 @@ pub fn brief(title: &str, status: Status, events: &[Envelope]) -> String {
                 Some("in_progress") => "[>]",
                 _ => "[ ]",
             };
-            out.push_str(&format!("{mark} {}\n", clip(item["text"].as_str().unwrap_or_default(), 200)));
+            out.push_str(&format!(
+                "{mark} {}\n",
+                clip(item["text"].as_str().unwrap_or_default(), 200)
+            ));
         }
     }
     if !calls.is_empty() {
         let skipped = calls.len().saturating_sub(STEPS);
-        out.push_str(&format!("Its steps in this turn{}:\n", if skipped > 0 { format!(", the last {STEPS} of {}", calls.len()) } else { String::new() }));
+        out.push_str(&format!(
+            "Its steps in this turn{}:\n",
+            if skipped > 0 {
+                format!(", the last {STEPS} of {}", calls.len())
+            } else {
+                String::new()
+            }
+        ));
         for (id, line) in calls.iter().skip(skipped) {
             let note = match (outcome.get(id), waiting.contains_key(id)) {
                 (Some(true), _) => " (failed)",
@@ -181,7 +233,11 @@ mod tests {
     use serde_json::json;
 
     fn at(seq: u64, event: Event) -> Envelope {
-        Envelope { seq, ts: "2026-11-23T00:00:00Z".to_string(), event }
+        Envelope {
+            seq,
+            ts: "2026-11-23T00:00:00Z".to_string(),
+            event,
+        }
     }
 
     fn header() -> Event {
@@ -200,13 +256,22 @@ mod tests {
     }
 
     fn said(text: &str, steering: bool) -> Event {
-        Event::UserMessage { text: text.into(), steering, mode: Mode::Edit, images: vec![], files: vec![] }
+        Event::UserMessage {
+            text: text.into(),
+            steering,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        }
     }
 
     #[test]
     fn a_main_session_with_no_turn_is_said_to_have_no_task() {
         let told = brief("", Status::Idle, &[at(1, header())]);
-        assert!(told.contains("untitled") && told.contains("idle") && told.contains("not been given a task"), "{told}");
+        assert!(
+            told.contains("untitled") && told.contains("idle") && told.contains("not been given a task"),
+            "{told}"
+        );
     }
 
     #[test]
@@ -215,7 +280,14 @@ mod tests {
             at(1, header()),
             at(2, Event::TurnStart { turn: 1 }),
             at(3, said("an earlier task", false)),
-            at(4, Event::TurnEnd { turn: 1, reason: "end_turn".into(), error: None }),
+            at(
+                4,
+                Event::TurnEnd {
+                    turn: 1,
+                    reason: "end_turn".into(),
+                    error: None,
+                },
+            ),
             at(5, Event::TurnStart { turn: 2 }),
             at(6, said("fix the tokenizer bug", false)),
             at(
@@ -232,7 +304,17 @@ mod tests {
                     tokens: None,
                 },
             ),
-            at(8, Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "...".into(), is_error: false, meta: Value::Null, images: vec![] }),
+            at(
+                8,
+                Event::ToolResult {
+                    tool_use_id: "t1".into(),
+                    tool: "read_file".into(),
+                    content: "...".into(),
+                    is_error: false,
+                    meta: Value::Null,
+                    images: vec![],
+                },
+            ),
             at(
                 9,
                 Event::ToolResult {
@@ -258,29 +340,92 @@ mod tests {
                     tokens: None,
                 },
             ),
-            at(12, Event::ToolResult { tool_use_id: "t3".into(), tool: "run_command".into(), content: "1 failed".into(), is_error: true, meta: Value::Null, images: vec![] }),
-            at(13, Event::ApprovalRequested { tool_use_id: "t4".into(), tool: "edit_file".into(), reason: "edit".into(), detail: "src/lexer.rs".into(), grant: None, expires_at: None }),
+            at(
+                12,
+                Event::ToolResult {
+                    tool_use_id: "t3".into(),
+                    tool: "run_command".into(),
+                    content: "1 failed".into(),
+                    is_error: true,
+                    meta: Value::Null,
+                    images: vec![],
+                },
+            ),
+            at(
+                13,
+                Event::ApprovalRequested {
+                    tool_use_id: "t4".into(),
+                    tool: "edit_file".into(),
+                    reason: "edit".into(),
+                    detail: "src/lexer.rs".into(),
+                    grant: None,
+                    expires_at: None,
+                },
+            ),
         ];
         let told = brief("Tokenizer", Status::WaitingApproval, &events);
-        assert!(told.contains("\"Tokenizer\"") && told.contains("waiting for the user"), "{told}");
-        assert!(told.contains("turn 2:\nfix the tokenizer bug") && !told.contains("an earlier task"), "{told}");
+        assert!(
+            told.contains("\"Tokenizer\"") && told.contains("waiting for the user"),
+            "{told}"
+        );
+        assert!(
+            told.contains("turn 2:\nfix the tokenizer bug") && !told.contains("an earlier task"),
+            "{told}"
+        );
         assert!(told.contains("- also keep the old API"), "{told}");
         assert!(told.contains("[x] Find the bug\n[>] Fix it\n[ ] Test"), "{told}");
-        assert!(told.contains("- read src/lexer.rs\n- ran `cargo test` (failed)\n- edited src/lexer.rs (waiting for approval)"), "{told}");
+        assert!(
+            told.contains(
+                "- read src/lexer.rs\n- ran `cargo test` (failed)\n- edited src/lexer.rs (waiting for approval)"
+            ),
+            "{told}"
+        );
         assert!(!told.contains("update_todos"), "{told}");
-        assert!(told.contains("Waiting for the user's approval of edit_file: src/lexer.rs"), "{told}");
-        assert!(told.contains("The last thing it said:\nI will look at the lexer first."), "{told}");
+        assert!(
+            told.contains("Waiting for the user's approval of edit_file: src/lexer.rs"),
+            "{told}"
+        );
+        assert!(
+            told.contains("The last thing it said:\nI will look at the lexer first."),
+            "{told}"
+        );
         assert!(told.ends_with("[End of briefing]"));
     }
 
     #[test]
     fn lists_only_the_latest_steps_of_a_long_turn_and_says_how_it_ended() {
-        let mut events = vec![at(1, header()), at(2, Event::TurnStart { turn: 1 }), at(3, said("go", false))];
+        let mut events = vec![
+            at(1, header()),
+            at(2, Event::TurnStart { turn: 1 }),
+            at(3, said("go", false)),
+        ];
         let blocks: Vec<Value> = (0..20).map(|n| json!({ "type": "tool_use", "id": format!("r{n}"), "name": "read_file", "input": { "path": format!("f{n}.rs") } })).collect();
-        events.push(at(4, Event::AssistantMessage { content: blocks, stop_reason: Some("tool_use".into()), model: "m".into(), usage: Value::Null, tokens: None }));
-        events.push(at(5, Event::TurnEnd { turn: 1, reason: "cancelled".into(), error: None }));
+        events.push(at(
+            4,
+            Event::AssistantMessage {
+                content: blocks,
+                stop_reason: Some("tool_use".into()),
+                model: "m".into(),
+                usage: Value::Null,
+                tokens: None,
+            },
+        ));
+        events.push(at(
+            5,
+            Event::TurnEnd {
+                turn: 1,
+                reason: "cancelled".into(),
+                error: None,
+            },
+        ));
         let told = brief("t", Status::Idle, &events);
-        assert!(told.contains("the last 12 of 20") && told.contains("read f19.rs") && !told.contains("read f7.rs\n"), "{told}");
-        assert!(told.contains("(did not run)") && told.contains("The turn ended (cancelled)."), "{told}");
+        assert!(
+            told.contains("the last 12 of 20") && told.contains("read f19.rs") && !told.contains("read f7.rs\n"),
+            "{told}"
+        );
+        assert!(
+            told.contains("(did not run)") && told.contains("The turn ended (cancelled)."),
+            "{told}"
+        );
     }
 }

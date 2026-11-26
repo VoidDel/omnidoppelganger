@@ -36,9 +36,16 @@ fn choose_retained_turn(events: &[crate::events::Envelope], context_window: u64)
             Event::TurnStart { turn } => {
                 active = Some((*turn, abs_idx, false, 0));
             }
-            Event::UserMessage { text, images, files, .. } => {
+            Event::UserMessage {
+                text, images, files, ..
+            } => {
                 if let Some((_, _, _, ref mut est)) = active {
-                    *est += guess(text) + 1500 * images.len() as u64 + files.iter().map(|f| guess(&crate::events::attached_text(f))).sum::<u64>();
+                    *est += guess(text)
+                        + 1500 * images.len() as u64
+                        + files
+                            .iter()
+                            .map(|f| guess(&crate::events::attached_text(f)))
+                            .sum::<u64>();
                 }
             }
             Event::AssistantMessage { content, .. } => {
@@ -100,7 +107,15 @@ impl<L: Llm> Inner<L> {
     /// user has allowed it so far.
     fn spawn(self: &std::sync::Arc<Self>, name: &str, read_only: bool) -> Result<Session<L>, String> {
         let provider = self.provider();
-        let new = NewSession { workspace: &self.workspace, provider: &provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone(), schedule: None, aside: None };
+        let new = NewSession {
+            workspace: &self.workspace,
+            provider: &provider,
+            model: &self.model(),
+            parent: Some(&self.id),
+            worktree: self.worktree.clone(),
+            schedule: None,
+            aside: None,
+        };
         let log = self.store.create_with(new).map_err(|error| error.to_string())?;
         let root_user_messages: super::RootUserMessages = match &self.root_user_messages {
             Some(existing) => existing.clone(),
@@ -143,26 +158,48 @@ impl<L: Llm> Inner<L> {
         if let Some(effort) = self.effort.lock().unwrap().clone() {
             child.set_effort(&effort)?;
         }
-        self.children.lock().unwrap().insert(child.id().to_string(), child.clone());
+        self.children
+            .lock()
+            .unwrap()
+            .insert(child.id().to_string(), child.clone());
         Ok(child)
     }
 
     /// Put the agent's questions to the user and wait for the answers: for good where the user is
     /// taken to be there, for `approval_wait` in auto and bypass mode, where nobody may be. `None` when
     /// the turn was stopped meanwhile.
-    pub(super) async fn ask_user(&self, tool_use_id: &str, input: &Value, tuning: &Tuning, cancel: &CancellationToken) -> Result<Option<ToolOutput>, String> {
+    pub(super) async fn ask_user(
+        &self,
+        tool_use_id: &str,
+        input: &Value,
+        tuning: &Tuning,
+        cancel: &CancellationToken,
+    ) -> Result<Option<ToolOutput>, String> {
         if self.parent.is_some() {
-            return Ok(Some(ToolOutput::error("A subagent cannot ask the user. Decide yourself, and say in your report what you decided and why.")));
+            return Ok(Some(ToolOutput::error(
+                "A subagent cannot ask the user. Decide yourself, and say in your report what you decided and why.",
+            )));
         }
         let questions = match tools::questions(input) {
             Ok(questions) => questions,
             Err(message) => return Ok(Some(ToolOutput::error(message))),
         };
         let (sender, receiver) = oneshot::channel();
-        self.state.lock().unwrap().questions.insert(tool_use_id.to_string(), sender);
-        let wait = tuning.approval_wait.filter(|_| matches!(self.mode(), Mode::Auto | Mode::Bypass));
-        let expires_at = wait.map(|wait| (chrono::Utc::now() + wait).to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-        self.append(Event::QuestionAsked { tool_use_id: tool_use_id.to_string(), questions: questions.clone(), expires_at })?;
+        self.state
+            .lock()
+            .unwrap()
+            .questions
+            .insert(tool_use_id.to_string(), sender);
+        let wait = tuning
+            .approval_wait
+            .filter(|_| matches!(self.mode(), Mode::Auto | Mode::Bypass));
+        let expires_at =
+            wait.map(|wait| (chrono::Utc::now() + wait).to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        self.append(Event::QuestionAsked {
+            tool_use_id: tool_use_id.to_string(),
+            questions: questions.clone(),
+            expires_at,
+        })?;
         self.set_status(Status::WaitingApproval);
         let (answers, timed_out) = tokio::select! {
             answers = receiver => (answers.unwrap_or(None), false),
@@ -177,10 +214,29 @@ impl<L: Llm> Inner<L> {
         let declined = answers.is_none() && !timed_out;
         let mut answers = answers.unwrap_or_default();
         answers.resize(questions.len(), Reply::default());
-        let answers = if answers.iter().all(Reply::is_empty) { Vec::new() } else { answers };
-        self.append(Event::QuestionAnswered { tool_use_id: tool_use_id.to_string(), answers: answers.clone(), declined, timed_out })?;
-        let content = tools::answered(&questions, &answers, declined, timed_out.then(|| wait.map_or(0, |wait| wait.as_secs())));
-        Ok(Some(ToolOutput { content, is_error: false, meta: Value::Null, images: Vec::new() }))
+        let answers = if answers.iter().all(Reply::is_empty) {
+            Vec::new()
+        } else {
+            answers
+        };
+        self.append(Event::QuestionAnswered {
+            tool_use_id: tool_use_id.to_string(),
+            answers: answers.clone(),
+            declined,
+            timed_out,
+        })?;
+        let content = tools::answered(
+            &questions,
+            &answers,
+            declined,
+            timed_out.then(|| wait.map_or(0, |wait| wait.as_secs())),
+        );
+        Ok(Some(ToolOutput {
+            content,
+            is_error: false,
+            meta: Value::Null,
+            images: Vec::new(),
+        }))
     }
 
     /// Search the web through the session's own provider and model, with the provider's search tool, in a request of
@@ -212,7 +268,12 @@ impl<L: Llm> Inner<L> {
 
     /// Run `delegate`: set off a subagent for each task, wait until all have
     /// finished, and hand back what each reported. Stopping this turn stops them.
-    pub(super) async fn delegate(self: &std::sync::Arc<Self>, tool_use_id: &str, input: &Value, cancel: &CancellationToken) -> Result<ToolOutput, String> {
+    pub(super) async fn delegate(
+        self: &std::sync::Arc<Self>,
+        tool_use_id: &str,
+        input: &Value,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutput, String> {
         if self.parent.is_some() {
             return Ok(ToolOutput::error("A subagent cannot delegate. Do the task yourself."));
         }
@@ -225,7 +286,11 @@ impl<L: Llm> Inner<L> {
         for task in tasks {
             let child = self.spawn(&task.name, task.read_only);
             if let Ok(child) = &child {
-                self.append(Event::SubagentStarted { tool_use_id: tool_use_id.to_string(), session: child.id().to_string(), name: task.name.clone() })?;
+                self.append(Event::SubagentStarted {
+                    tool_use_id: tool_use_id.to_string(),
+                    session: child.id().to_string(),
+                    name: task.name.clone(),
+                })?;
                 child.send(task.task);
             }
             started.push((task.name, child));
@@ -265,19 +330,33 @@ impl<L: Llm> Inner<L> {
                             String::new()
                         }
                         "running" => "[This subagent was still working when the turn was stopped.]\n".to_string(),
-                        other => format!("[This subagent stopped before finishing ({}); what follows is the last thing it said.]\n", error.as_deref().unwrap_or(other)),
+                        other => format!(
+                            "[This subagent stopped before finishing ({}); what follows is the last thing it said.]\n",
+                            error.as_deref().unwrap_or(other)
+                        ),
                     };
-                    let said = if said.trim().is_empty() { "(it said nothing)".to_string() } else { said };
+                    let said = if said.trim().is_empty() {
+                        "(it said nothing)".to_string()
+                    } else {
+                        said
+                    };
                     parts.push(format!("<subagent name=\"{name}\">\n{note}{said}\n</subagent>"));
                     agents.push(json!({ "session": child.id(), "name": name, "reason": reason }));
                 }
                 Err(error) => {
-                    parts.push(format!("<subagent name=\"{name}\">\n[This subagent could not be started: {error}]\n</subagent>"));
+                    parts.push(format!(
+                        "<subagent name=\"{name}\">\n[This subagent could not be started: {error}]\n</subagent>"
+                    ));
                     agents.push(json!({ "session": Value::Null, "name": name, "reason": "error" }));
                 }
             }
         }
-        Ok(ToolOutput { content: parts.join("\n\n"), is_error: finished == 0, meta: json!({ "agents": agents }), images: Vec::new() })
+        Ok(ToolOutput {
+            content: parts.join("\n\n"),
+            is_error: finished == 0,
+            meta: json!({ "agents": agents }),
+            images: Vec::new(),
+        })
     }
 
     /// Replace the conversation by a summary the model writes of it. The
@@ -295,7 +374,9 @@ impl<L: Llm> Inner<L> {
     ) -> Result<(), LlmError> {
         let focus_clean = focus.map(str::trim).filter(|s| !s.is_empty());
         let question = match focus_clean {
-            Some(extra) => format!("{SUMMARIZE}\n\nAdditional user instructions — be sure to preserve the following details in your summary:\n{extra}"),
+            Some(extra) => format!(
+                "{SUMMARIZE}\n\nAdditional user instructions — be sure to preserve the following details in your summary:\n{extra}"
+            ),
             None => SUMMARIZE.to_string(),
         };
         loop {
@@ -317,13 +398,19 @@ impl<L: Llm> Inner<L> {
                     // Half the window, at about three bytes a token.
                     let budget = usize::try_from((tuning.context_window / 2).saturating_mul(3)).unwrap_or(usize::MAX);
                     (
-                        vec![json!({ "role": "user", "content": [text(format!("{}\n\n{question}", transcript(slice, budget)))] })],
+                        vec![
+                            json!({ "role": "user", "content": [text(format!("{}\n\n{question}", transcript(slice, budget)))] }),
+                        ],
                         None,
                     )
                 } else {
                     let mut messages = derive_messages(slice);
                     // A step starts with the user's turn to speak, so the question joins that message.
-                    match messages.last_mut().filter(|message| message["role"] == "user").and_then(|message| message["content"].as_array_mut()) {
+                    match messages
+                        .last_mut()
+                        .filter(|message| message["role"] == "user")
+                        .and_then(|message| message["content"].as_array_mut())
+                    {
                         Some(content) => content.push(text(question.clone())),
                         None => messages.push(json!({ "role": "user", "content": [text(question.clone())] })),
                     }
@@ -351,7 +438,12 @@ impl<L: Llm> Inner<L> {
                 }
                 other => other?,
             };
-            let written: Vec<&str> = turn.content.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect();
+            let written: Vec<&str> = turn
+                .content
+                .iter()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str())
+                .collect();
             let written = written.join("\n");
             let summary = match (written.find("<summary>"), written.rfind("</summary>")) {
                 (Some(start), Some(end)) if start < end => &written[start + "<summary>".len()..end],
@@ -376,10 +468,21 @@ impl<L: Llm> Inner<L> {
     /// messages, what the agent said before the call, the command; never a tool's output. Its verdict
     /// is logged. `Ok(false)` leaves the command to the user, as does a guardian that cannot be
     /// asked; `Err` when the turn was stopped meanwhile.
-    pub(super) async fn review(&self, tool_use_id: &str, command: &str, said: &[Value], guardian: &str, cancel: &CancellationToken) -> Result<bool, ()> {
+    pub(super) async fn review(
+        &self,
+        tool_use_id: &str,
+        command: &str,
+        said: &[Value],
+        guardian: &str,
+        cancel: &CancellationToken,
+    ) -> Result<bool, ()> {
         let clip = |text: &str, most: usize| -> String {
             let count = text.chars().count();
-            if count <= most { text.to_string() } else { format!("…{}", text.chars().skip(count - most).collect::<String>()) }
+            if count <= most {
+                text.to_string()
+            } else {
+                format!("…{}", text.chars().skip(count - most).collect::<String>())
+            }
         };
         let (asked, delegated_task): (Vec<String>, Option<String>) = if self.parent.is_some() {
             // Lock-ordering invariant: never hold child `self.log` or `self.state` while calling
@@ -425,7 +528,11 @@ impl<L: Llm> Inner<L> {
                 .collect();
             (messages[messages.len().saturating_sub(8)..].to_vec(), None)
         };
-        let intent: Vec<&str> = said.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect();
+        let intent: Vec<&str> = said
+            .iter()
+            .filter(|block| block["type"] == "text")
+            .filter_map(|block| block["text"].as_str())
+            .collect();
         let (_, _, shell) = tools::shell();
         let escaped_asked = asked
             .iter()
@@ -461,15 +568,41 @@ impl<L: Llm> Inner<L> {
             Err(LlmError::Cancelled) => return Err(()),
             Err(error) => (false, error.to_string(), String::new(), true, None),
             Ok(turn) => {
-                let written: Vec<&str> = turn.content.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect();
+                let written: Vec<&str> = turn
+                    .content
+                    .iter()
+                    .filter(|block| block["type"] == "text")
+                    .filter_map(|block| block["text"].as_str())
+                    .collect();
                 let written = written.join("\n");
                 let (allowed, reason) = verdict(&written);
                 // The first line as written, so a verdict read wrongly can be seen in the log.
-                let said: String = written.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().chars().take(200).collect();
-                (allowed, reason, said, false, providers::tokens(&self.provider(), &turn.usage))
+                let said: String = written
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect();
+                (
+                    allowed,
+                    reason,
+                    said,
+                    false,
+                    providers::tokens(&self.provider(), &turn.usage),
+                )
             }
         };
-        let event = Event::GuardianReviewed { tool_use_id: tool_use_id.to_string(), model: guardian.to_string(), allowed, reason, verdict: said, failed, tokens };
+        let event = Event::GuardianReviewed {
+            tool_use_id: tool_use_id.to_string(),
+            model: guardian.to_string(),
+            allowed,
+            reason,
+            verdict: said,
+            failed,
+            tokens,
+        };
         if self.append(event).is_err() {
             return Ok(false);
         }
@@ -479,8 +612,14 @@ impl<L: Llm> Inner<L> {
     /// Whether the model has said anything since the last compaction: without that there is nothing to summarize.
     pub(super) fn compactable(&self) -> bool {
         let log = self.log.lock().unwrap();
-        let since = log.events().iter().rposition(|envelope| matches!(envelope.event, Event::ContextCompacted { .. })).unwrap_or(0);
-        log.events()[since..].iter().any(|envelope| matches!(envelope.event, Event::AssistantMessage { .. }))
+        let since = log
+            .events()
+            .iter()
+            .rposition(|envelope| matches!(envelope.event, Event::ContextCompacted { .. }))
+            .unwrap_or(0);
+        log.events()[since..]
+            .iter()
+            .any(|envelope| matches!(envelope.event, Event::AssistantMessage { .. }))
     }
 }
 
@@ -490,12 +629,22 @@ mod tests {
     use crate::events::Envelope;
 
     fn env(seq: u64, event: Event) -> Envelope {
-        Envelope { seq, ts: "2026-01-01T00:00:00Z".into(), event }
+        Envelope {
+            seq,
+            ts: "2026-01-01T00:00:00Z".into(),
+            event,
+        }
     }
 
     #[test]
     fn choose_retained_turn_accounts_for_active_turn_volume() {
-        let user = |s: &str| Event::UserMessage { text: s.into(), steering: false, mode: Mode::Auto, images: vec![], files: vec![] };
+        let user = |s: &str| Event::UserMessage {
+            text: s.into(),
+            steering: false,
+            mode: Mode::Auto,
+            images: vec![],
+            files: vec![],
+        };
         let asst = |s: &str| Event::AssistantMessage {
             content: vec![json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": s } })],
             stop_reason: Some("tool_use".into()),
@@ -511,15 +660,39 @@ mod tests {
             env(1, Event::TurnStart { turn: 1 }),
             env(2, user("turn1")),
             env(3, asst("a.rs")),
-            env(4, Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }),
+            env(
+                4,
+                Event::TurnEnd {
+                    turn: 1,
+                    reason: "completed".into(),
+                    error: None,
+                },
+            ),
             env(5, Event::TurnStart { turn: 2 }),
             env(6, user(&"x".repeat(1800))),
             env(7, asst("b.rs")),
-            env(8, Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }),
+            env(
+                8,
+                Event::TurnEnd {
+                    turn: 2,
+                    reason: "completed".into(),
+                    error: None,
+                },
+            ),
             env(9, Event::TurnStart { turn: 3 }),
             env(10, user("turn3")),
             env(11, asst("c.rs")),
-            env(12, Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "y".repeat(1800), is_error: false, meta: Value::Null, images: vec![] }),
+            env(
+                12,
+                Event::ToolResult {
+                    tool_use_id: "t1".into(),
+                    tool: "read_file".into(),
+                    content: "y".repeat(1800),
+                    is_error: false,
+                    meta: Value::Null,
+                    images: vec![],
+                },
+            ),
         ];
         assert_eq!(choose_retained_turn(&events, 4000), Some((8, 3)));
         // With a huge window (40_000), Turn 2 + Turn 3 fit within quarter -> retains from Turn 2.

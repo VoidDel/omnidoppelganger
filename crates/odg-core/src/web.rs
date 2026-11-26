@@ -58,13 +58,17 @@ pub fn host(url: &str) -> Option<String> {
 
 /// The words of an HTML page: its title, and its text with one block per line.
 pub fn html_text(html: &str) -> (Option<String>, String) {
-    static HIDDEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<!--.*?-->|<(script|style|noscript|svg|template|head)\b.*?</(script|style|noscript|svg|template|head)\s*>").expect("valid pattern"));
-    static TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<title\b[^>]*>(.*?)</title\s*>").expect("valid pattern"));
+    static HIDDEN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?is)<!--.*?-->|<(script|style|noscript|svg|template|head)\b.*?</(script|style|noscript|svg|template|head)\s*>").expect("valid pattern")
+    });
+    static TITLE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<title\b[^>]*>(.*?)</title\s*>").expect("valid pattern"));
     static BREAK: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)</?(p|div|br|li|tr|h[1-6]|section|article|header|footer|main|nav|aside|pre|blockquote|ul|ol|table|dl|dt|dd|hr|form)\b[^>]*>").expect("valid pattern")
     });
     static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<[^>]*>").expect("valid pattern"));
-    static ENTITY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);").expect("valid pattern"));
+    static ENTITY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);").expect("valid pattern"));
     static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t\r\u{a0}]+").expect("valid pattern"));
 
     let decode = |text: &str| {
@@ -87,13 +91,23 @@ pub fn html_text(html: &str) -> (Option<String>, String) {
             })
             .into_owned()
     };
-    let title = TITLE.captures(html).map(|found| SPACES.replace_all(decode(&TAG.replace_all(&found[1], "")).trim(), " ").into_owned()).filter(|title| !title.is_empty());
+    let title = TITLE
+        .captures(html)
+        .map(|found| {
+            SPACES
+                .replace_all(decode(&TAG.replace_all(&found[1], "")).trim(), " ")
+                .into_owned()
+        })
+        .filter(|title| !title.is_empty());
     let visible = HIDDEN.replace_all(html, " ");
     let broken = BREAK.replace_all(&visible, "\n");
     let text = decode(&TAG.replace_all(&broken, ""));
     // One block per line, and no more than one empty line between blocks.
     let mut lines: Vec<String> = Vec::new();
-    for line in text.lines().map(|line| SPACES.replace_all(line, " ").trim().to_string()) {
+    for line in text
+        .lines()
+        .map(|line| SPACES.replace_all(line, " ").trim().to_string())
+    {
         if !line.is_empty() || lines.last().is_some_and(|last| !last.is_empty()) {
             lines.push(line);
         }
@@ -109,7 +123,11 @@ pub struct Fetched {
 }
 
 fn failed(message: String) -> Fetched {
-    Fetched { content: message, is_error: true, meta: Value::Null }
+    Fetched {
+        content: message,
+        is_error: true,
+        meta: Value::Null,
+    }
 }
 
 /// The headers a browser sends when it opens a page. Some sites (those behind
@@ -117,8 +135,14 @@ fn failed(message: String) -> Fetched {
 /// them, though a person could read the page. Nothing in them is about the
 /// user or the project. Only gzip is asked for, which [`unzipped`] undoes.
 const BROWSER: &[(&str, &str)] = &[
-    ("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"),
-    ("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.9,*/*;q=0.8"),
+    (
+        "user-agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    ),
+    (
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.9,*/*;q=0.8",
+    ),
     ("accept-language", "zh-CN,zh;q=0.9,en;q=0.8"),
     ("accept-encoding", "gzip"),
     ("sec-fetch-dest", "document"),
@@ -137,7 +161,9 @@ fn unzipped(body: &[u8], limit: usize) -> Vec<u8> {
     use std::io::Read;
     let mut out = Vec::new();
     // An error here leaves what was unzipped before it in `out`, which is what there is to read.
-    let _ = flate2::read::MultiGzDecoder::new(body).take(limit as u64).read_to_end(&mut out);
+    let _ = flate2::read::MultiGzDecoder::new(body)
+        .take(limit as u64)
+        .read_to_end(&mut out);
     out
 }
 
@@ -147,7 +173,9 @@ fn advice(status: u16) -> &'static str {
         404 | 410 => {
             " There is no page at this address: it may be mistyped, or the page may have moved. Find its address from the site's home page or a search rather than guessing another."
         }
-        401 | 403 => " The site refused the request: it may show this page only to a signed-in user, or turn away programs. Look for what is on it elsewhere.",
+        401 | 403 => {
+            " The site refused the request: it may show this page only to a signed-in user, or turn away programs. Look for what is on it elsewhere."
+        }
         429 => " The site is asking for fewer requests: wait before asking it again, or look elsewhere.",
         500..=599 => " The site failed to answer: it may work later.",
         _ => "",
@@ -197,10 +225,11 @@ fn validate_resolved_addrs(host: &str, addrs: Vec<SocketAddr>, allow_local: bool
     if addrs.is_empty() {
         return Err(format!("DNS lookup for `{host}` returned no addresses"));
     }
-    if !allow_local
-        && let Some(blocked) = addrs.iter().find(|addr| is_non_global_ip(addr.ip()))
-    {
-        return Err(format!("refusing to connect external host `{host}` to non-global IP {}", blocked.ip()));
+    if !allow_local && let Some(blocked) = addrs.iter().find(|addr| is_non_global_ip(addr.ip())) {
+        return Err(format!(
+            "refusing to connect external host `{host}` to non-global IP {}",
+            blocked.ip()
+        ));
     }
     Ok(addrs)
 }
@@ -222,7 +251,10 @@ impl SafeDnsResolver {
 
     #[cfg(test)]
     fn with_override(allow_local: bool, addrs: Vec<SocketAddr>) -> Self {
-        Self { allow_local, override_addrs: Some(addrs) }
+        Self {
+            allow_local,
+            override_addrs: Some(addrs),
+        }
     }
 }
 
@@ -240,7 +272,10 @@ impl reqwest::dns::Resolve for SafeDnsResolver {
         }
         Box::pin(async move {
             let lookup_host = host.clone();
-            let addrs: Vec<SocketAddr> = tokio::task::spawn_blocking(move || (lookup_host.as_str(), 0u16).to_socket_addrs().map(Iterator::collect)).await??;
+            let addrs: Vec<SocketAddr> = tokio::task::spawn_blocking(move || {
+                (lookup_host.as_str(), 0u16).to_socket_addrs().map(Iterator::collect)
+            })
+            .await??;
             let checked = validate_resolved_addrs(&host, addrs, allow_local).map_err(std::io::Error::other)?;
             let iter: reqwest::dns::Addrs = Box::new(checked.into_iter());
             Ok(iter)
@@ -253,13 +288,19 @@ impl reqwest::dns::Resolve for SafeDnsResolver {
 /// to another site, downgrade TLS, or jump to a local port without asking the user.
 fn same_origin_host(origin: &reqwest::Url, target: &reqwest::Url) -> bool {
     let scheme_ok = origin.scheme() == target.scheme()
-        || (origin.scheme() == "http" && target.scheme() == "https" && origin.port().is_none() && target.port().is_none());
+        || (origin.scheme() == "http"
+            && target.scheme() == "https"
+            && origin.port().is_none()
+            && target.port().is_none());
     scheme_ok
         && target.username().is_empty()
         && target.password().is_none()
         && origin.host_str().map(str::to_ascii_lowercase) == target.host_str().map(str::to_ascii_lowercase)
         && (origin.port_or_known_default() == target.port_or_known_default()
-            || (origin.scheme() == "http" && target.scheme() == "https" && origin.port().is_none() && target.port().is_none()))
+            || (origin.scheme() == "http"
+                && target.scheme() == "https"
+                && origin.port().is_none()
+                && target.port().is_none()))
 }
 
 /// Get `url` and return its text from character `offset` on.
@@ -267,9 +308,9 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
     let Ok(origin) = parse_http_url(url) else {
         return failed(format!("`{url}` is not an http or https address."));
     };
-    let allow_local = origin.host_str().is_some_and(|h| {
-        h.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() || h.eq_ignore_ascii_case("localhost")
-    });
+    let allow_local = origin
+        .host_str()
+        .is_some_and(|h| h.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() || h.eq_ignore_ascii_case("localhost"));
     let redirect_origin = origin.clone();
     // Follow redirects only on the approved host: crossing to another host (or a local port) stops so the model can ask for that address.
     let redirects = reqwest::redirect::Policy::custom(move |attempt| {
@@ -291,16 +332,31 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         Ok(client) => client,
         Err(error) => return failed(format!("Cannot set up the request: {error}")),
     };
-    let request = BROWSER.iter().fold(client.get(origin.clone()), |request, (name, value)| request.header(*name, *value));
+    let request = BROWSER
+        .iter()
+        .fold(client.get(origin.clone()), |request, (name, value)| {
+            request.header(*name, *value)
+        });
     let download = async {
-        let mut response = request.send().await.map_err(|error| format!("Cannot reach {url}: {error}"))?;
+        let mut response = request
+            .send()
+            .await
+            .map_err(|error| format!("Cannot reach {url}: {error}"))?;
         let status = response.status();
         if status.is_redirection() {
-            let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).unwrap_or_default().trim();
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .trim();
             let target = if location.is_empty() {
                 String::new()
             } else {
-                response.url().join(location).map_or_else(|_| location.to_string(), |resolved| resolved.to_string())
+                response
+                    .url()
+                    .join(location)
+                    .map_or_else(|_| location.to_string(), |resolved| resolved.to_string())
             };
             return Err(if target.is_empty() {
                 format!("{url} answered HTTP {} without a redirect address.", status.as_u16())
@@ -308,20 +364,39 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
                 if Some(target_host.as_str()) == host(url).as_deref() {
                     format!("{url} redirected to `{target}`, which downgrades HTTPS to HTTP and will not be followed.")
                 } else {
-                    format!("{url} redirected to {target}, which is on another host. Call `fetch_url` with `{target}` if you want to read it (the user will be asked for that host).")
+                    format!(
+                        "{url} redirected to {target}, which is on another host. Call `fetch_url` with `{target}` if you want to read it (the user will be asked for that host)."
+                    )
                 }
             } else {
-                format!("{url} redirected to `{target}`, which is not an http or https address and will not be followed.")
+                format!(
+                    "{url} redirected to `{target}`, which is not an http or https address and will not be followed."
+                )
             });
         }
-        let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).unwrap_or_default().to_lowercase();
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_lowercase()
+        };
         let (kind, encoding) = (header("content-type"), header("content-encoding"));
         let landed = response.url().to_string();
         // A document is read whole or not at all, and runs larger than a page of HTML.
-        let limit = if is_document_type(&kind) { crate::documents::DOCUMENT_BYTES as usize } else { BODY_BYTES };
+        let limit = if is_document_type(&kind) {
+            crate::documents::DOCUMENT_BYTES as usize
+        } else {
+            BODY_BYTES
+        };
         let mut body: Vec<u8> = Vec::new();
         let mut whole = true;
-        while let Some(chunk) = response.chunk().await.map_err(|error| format!("The download of {url} broke off: {error}"))? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("The download of {url} broke off: {error}"))?
+        {
             body.extend_from_slice(&chunk);
             if body.len() > limit {
                 body.truncate(limit);
@@ -344,7 +419,11 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         },
         () = cancel.cancelled() => return failed("The fetch was cancelled.".to_string()),
     };
-    let textual = kind.is_empty() || kind.starts_with("text/") || ["json", "xml", "javascript", "yaml"].iter().any(|word| kind.contains(word));
+    let textual = kind.is_empty()
+        || kind.starts_with("text/")
+        || ["json", "xml", "javascript", "yaml"]
+            .iter()
+            .any(|word| kind.contains(word));
     let binary = body.iter().take(8192).any(|byte| *byte == 0);
     if !status.is_success() {
         let mut message = format!("{url} answered HTTP {}.{}", status.as_u16(), advice(status.as_u16()));
@@ -361,12 +440,20 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
     }
     // A document cut short cannot be read, and a cut zip is not even known for one: its list of parts is at its end.
     if !whole && is_document_type(&kind) {
-        return failed(format!("{url} is a document larger than {} MB, too large to read here.", crate::documents::DOCUMENT_BYTES / 1024 / 1024));
+        return failed(format!(
+            "{url} is a document larger than {} MB, too large to read here.",
+            crate::documents::DOCUMENT_BYTES / 1024 / 1024
+        ));
     }
     let (title, text, document) = if let Some(found) = crate::documents::kind_of_bytes(&body, &landed) {
         let document = match found {
             Ok(document) if whole => document,
-            Ok(_) => return failed(format!("{url} is a document larger than {} MB, too large to read here.", crate::documents::DOCUMENT_BYTES / 1024 / 1024)),
+            Ok(_) => {
+                return failed(format!(
+                    "{url} is a document larger than {} MB, too large to read here.",
+                    crate::documents::DOCUMENT_BYTES / 1024 / 1024
+                ));
+            }
             Err(why) => return failed(format!("{url} {}.", why.describe())),
         };
         // Taking the words out of a long document takes a while: off the thread the agent runs on.
@@ -377,11 +464,21 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         }
     } else {
         if !textual || binary {
-            return failed(format!("{url} is {}, not text or a document; it cannot be read here.", if kind.is_empty() { "binary data" } else { kind.as_str() }));
+            return failed(format!(
+                "{url} is {}, not text or a document; it cannot be read here.",
+                if kind.is_empty() { "binary data" } else { kind.as_str() }
+            ));
         }
         let raw = String::from_utf8_lossy(&body);
-        let looks_like_html = kind.contains("html") || raw.trim_start().get(..15).is_some_and(|start| start.to_lowercase().starts_with("<!doctype html") || start.to_lowercase().starts_with("<html"));
-        let (title, text) = if looks_like_html { html_text(&raw) } else { (None, raw.trim().to_string()) };
+        let looks_like_html = kind.contains("html")
+            || raw.trim_start().get(..15).is_some_and(|start| {
+                start.to_lowercase().starts_with("<!doctype html") || start.to_lowercase().starts_with("<html")
+            });
+        let (title, text) = if looks_like_html {
+            html_text(&raw)
+        } else {
+            (None, raw.trim().to_string())
+        };
         (title, text, None)
     };
 
@@ -396,11 +493,17 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         content.push_str(&format!("Title: {title}\n\n"));
     }
     if shown.is_empty() {
-        content.push_str(&if total == 0 { "(the page has no text)".to_string() } else { format!("The page has {total} characters; nothing at offset {offset}.") });
+        content.push_str(&if total == 0 {
+            "(the page has no text)".to_string()
+        } else {
+            format!("The page has {total} characters; nothing at offset {offset}.")
+        });
     } else {
         content.push_str(&shown);
         if end < total {
-            content.push_str(&format!("\n[showing characters {offset}-{end} of {total}; pass offset {end} to read on]"));
+            content.push_str(&format!(
+                "\n[showing characters {offset}-{end} of {total}; pass offset {end} to read on]"
+            ));
         }
     }
     let mut meta = json!({ "url": landed, "title": title, "characters": total });
@@ -408,12 +511,25 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
         meta["document"] = json!(read.kind);
         meta["parts"] = json!(read.parts);
     }
-    Fetched { content, is_error: false, meta }
+    Fetched {
+        content,
+        is_error: false,
+        meta,
+    }
 }
 
 /// Whether a content type is that of a document: a PDF, or an Office or OpenDocument file.
 fn is_document_type(kind: &str) -> bool {
-    ["pdf", "officedocument", "msword", "ms-excel", "ms-powerpoint", "opendocument"].iter().any(|word| kind.contains(word))
+    [
+        "pdf",
+        "officedocument",
+        "msword",
+        "ms-excel",
+        "ms-powerpoint",
+        "opendocument",
+    ]
+    .iter()
+    .any(|word| kind.contains(word))
 }
 
 /// Where a search is sent. Today the one source is Zhipu's Web Search API,
@@ -433,7 +549,12 @@ pub type SearchSource = std::sync::Arc<dyn Fn() -> Option<SearchConfig> + Send +
 
 /// The engines Zhipu's site in China offers, the plainest first: `(id, what it is)`. What each costs is Zhipu's to
 /// say, and changes; it is not said here.
-pub const SEARCH_ENGINES: &[(&str, &str)] = &[("search_std", "智谱基础版"), ("search_pro", "智谱高阶版"), ("search_pro_sogou", "搜狗"), ("search_pro_quark", "夸克")];
+pub const SEARCH_ENGINES: &[(&str, &str)] = &[
+    ("search_std", "智谱基础版"),
+    ("search_pro", "智谱高阶版"),
+    ("search_pro_sogou", "搜狗"),
+    ("search_pro_quark", "夸克"),
+];
 /// The one engine of Zhipu's international site, which also takes fewer fields.
 pub const INTERNATIONAL_ENGINE: &str = "search-prime";
 const RECENCY: &[&str] = &["oneDay", "oneWeek", "oneMonth", "oneYear"];
@@ -466,15 +587,25 @@ pub async fn search(config: &SearchConfig, query: &str, input: &Value, cancel: &
         body["search_domain_filter"] = json!(site);
     }
 
-    let client = match reqwest::Client::builder().connect_timeout(TIMEOUT).timeout(TIMEOUT).build() {
+    let client = match reqwest::Client::builder()
+        .connect_timeout(TIMEOUT)
+        .timeout(TIMEOUT)
+        .build()
+    {
         Ok(client) => client,
         Err(error) => return failed(format!("Cannot set up the request: {error}")),
     };
     let request = client.post(&config.url).bearer_auth(config.key.trim()).json(&body);
     let answered = async {
-        let response = request.send().await.map_err(|error| format!("Cannot reach the search service: {error}"))?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| format!("Cannot reach the search service: {error}"))?;
         let status = response.status();
-        let text = response.text().await.map_err(|error| format!("The search service's answer broke off: {error}"))?;
+        let text = response
+            .text()
+            .await
+            .map_err(|error| format!("The search service's answer broke off: {error}"))?;
         Ok::<_, String>((status, text))
     };
     let (status, text) = tokio::select! {
@@ -486,15 +617,30 @@ pub async fn search(config: &SearchConfig, query: &str, input: &Value, cancel: &
     };
     let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     // The site in China wraps an error as {"error": {code, message}}; the international one puts both at the top.
-    let error = if answer["error"].is_object() { &answer["error"] } else { &answer };
+    let error = if answer["error"].is_object() {
+        &answer["error"]
+    } else {
+        &answer
+    };
     if !status.is_success() || error["message"].is_string() && !answer["search_result"].is_array() {
-        let code = error["code"].as_str().map(str::to_string).or_else(|| error["code"].as_i64().map(|code| code.to_string())).unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+        let code = error["code"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| error["code"].as_i64().map(|code| code.to_string()))
+            .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
         let message = error["message"].as_str().unwrap_or("the search service gave no reason");
         return failed(format!("The search failed ({code}): {message}"));
     }
-    let results = answer["search_result"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let results = answer["search_result"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     if results.is_empty() {
-        return Fetched { content: format!("No results for `{query}`. Try other words."), is_error: false, meta: json!({ "query": query, "results": 0 }) };
+        return Fetched {
+            content: format!("No results for `{query}`. Try other words."),
+            is_error: false,
+            meta: json!({ "query": query, "results": 0 }),
+        };
     }
     let listed: Vec<String> = results
         .iter()
@@ -502,13 +648,36 @@ pub async fn search(config: &SearchConfig, query: &str, input: &Value, cancel: &
         .map(|(index, result)| {
             let field = |name: &str| result[name].as_str().map(str::trim).filter(|value| !value.is_empty());
             let from: Vec<&str> = [field("media"), field("publish_date")].into_iter().flatten().collect();
-            let heading = format!("{}. {}{}", index + 1, field("title").unwrap_or("(no title)"), if from.is_empty() { String::new() } else { format!(" ({})", from.join(", ")) });
+            let heading = format!(
+                "{}. {}{}",
+                index + 1,
+                field("title").unwrap_or("(no title)"),
+                if from.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", from.join(", "))
+                }
+            );
             // A summary is enough to choose by; the page itself is read with fetch_url.
-            let summary: String = field("content").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(700).collect();
-            format!("{heading}\n   {}\n   {summary}", field("link").unwrap_or("(no address)"))
+            let summary: String = field("content")
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(700)
+                .collect();
+            format!(
+                "{heading}\n   {}\n   {summary}",
+                field("link").unwrap_or("(no address)")
+            )
         })
         .collect();
-    Fetched { content: listed.join("\n\n"), is_error: false, meta: json!({ "query": query, "results": results.len() }) }
+    Fetched {
+        content: listed.join("\n\n"),
+        is_error: false,
+        meta: json!({ "query": query, "results": results.len() }),
+    }
 }
 
 #[cfg(test)]
@@ -531,24 +700,63 @@ mod tests {
             page("application/json", r#"{"code":1702,"message":"no engine"}"#),
         ])
         .await;
-        let config = |engine: &str| SearchConfig { url: format!("{address}/paas/v4/web_search"), key: " glm-key ".into(), engine: engine.into() };
+        let config = |engine: &str| SearchConfig {
+            url: format!("{address}/paas/v4/web_search"),
+            key: " glm-key ".into(),
+            engine: engine.into(),
+        };
 
-        let got = search(&config("search_std"), " tokio release ", &json!({ "count": 3, "recency": "oneMonth", "site": "tokio.rs" }), &cancel).await;
-        assert_eq!(got.content, "1. Tokio 1.54 released (Tokio, 2026-10-01)\n   https://tokio.rs/blog/1-54\n   The release adds a thing.\n\n2. (no title)\n   https://example.com/x\n   ");
+        let got = search(
+            &config("search_std"),
+            " tokio release ",
+            &json!({ "count": 3, "recency": "oneMonth", "site": "tokio.rs" }),
+            &cancel,
+        )
+        .await;
+        assert_eq!(
+            got.content,
+            "1. Tokio 1.54 released (Tokio, 2026-10-01)\n   https://tokio.rs/blog/1-54\n   The release adds a thing.\n\n2. (no title)\n   https://example.com/x\n   "
+        );
         assert_eq!((got.is_error, got.meta["results"].as_u64()), (false, Some(2)));
         // The international site's engine takes fewer fields; Sogou takes counts in tens.
         let none = search(&config(INTERNATIONAL_ENGINE), "nothing", &json!({}), &cancel).await;
-        assert_eq!((none.content.as_str(), none.is_error), ("No results for `nothing`. Try other words.", false));
-        assert_eq!(search(&config("search_pro_sogou"), "q", &json!({ "count": 12 }), &cancel).await.content, "The search failed (1701): too many searches at once");
-        assert_eq!(search(&config("search_std"), "q", &json!({}), &cancel).await.content, "The search failed (1702): no engine");
-        assert!(search(&config("search_std"), "q", &json!({ "recency": "lately" }), &cancel).await.content.starts_with("`recency` must be one of"));
+        assert_eq!(
+            (none.content.as_str(), none.is_error),
+            ("No results for `nothing`. Try other words.", false)
+        );
+        assert_eq!(
+            search(&config("search_pro_sogou"), "q", &json!({ "count": 12 }), &cancel)
+                .await
+                .content,
+            "The search failed (1701): too many searches at once"
+        );
+        assert_eq!(
+            search(&config("search_std"), "q", &json!({}), &cancel).await.content,
+            "The search failed (1702): no engine"
+        );
+        assert!(
+            search(&config("search_std"), "q", &json!({ "recency": "lately" }), &cancel)
+                .await
+                .content
+                .starts_with("`recency` must be one of")
+        );
         assert!(search(&config("search_std"), "  ", &json!({}), &cancel).await.is_error);
 
         let requests = requests.await.unwrap();
-        let body = |request: &str| -> Value { serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap() };
-        assert!(requests[0].starts_with("POST /paas/v4/web_search ") && requests[0].to_lowercase().contains("authorization: bearer glm-key\r\n"));
-        assert_eq!(body(&requests[0]), json!({ "search_engine": "search_std", "search_query": "tokio release", "count": 3, "search_intent": false, "content_size": "medium", "search_recency_filter": "oneMonth", "search_domain_filter": "tokio.rs" }));
-        assert_eq!(body(&requests[1]), json!({ "search_engine": "search-prime", "search_query": "nothing", "count": 8 }));
+        let body =
+            |request: &str| -> Value { serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap() };
+        assert!(
+            requests[0].starts_with("POST /paas/v4/web_search ")
+                && requests[0].to_lowercase().contains("authorization: bearer glm-key\r\n")
+        );
+        assert_eq!(
+            body(&requests[0]),
+            json!({ "search_engine": "search_std", "search_query": "tokio release", "count": 3, "search_intent": false, "content_size": "medium", "search_recency_filter": "oneMonth", "search_domain_filter": "tokio.rs" })
+        );
+        assert_eq!(
+            body(&requests[1]),
+            json!({ "search_engine": "search-prime", "search_query": "nothing", "count": 8 })
+        );
         assert_eq!(body(&requests[2])["count"], 20);
     }
 
@@ -560,7 +768,10 @@ mod tests {
             <ul><li>One</li><li>Two &lt;tag&gt; &unknown;</li></ul><div>分身 &#x5206;</div></body></html>"#;
         let (title, text) = html_text(html);
         assert_eq!(title.as_deref(), Some("Release & notes"));
-        assert_eq!(text, "Version 2\n\nFixes the lexer bug — see issue #1.\n\nOne\n\nTwo <tag> &unknown;\n\n分身 分");
+        assert_eq!(
+            text,
+            "Version 2\n\nFixes the lexer bug — see issue #1.\n\nOne\n\nTwo <tag> &unknown;\n\n分身 分"
+        );
         assert_eq!(html_text("just words"), (None, "just words".to_string()));
     }
 
@@ -568,9 +779,19 @@ mod tests {
     fn reads_the_host_of_an_address() {
         assert_eq!(host("https://Docs.RS/serde/latest?x=1").as_deref(), Some("docs.rs"));
         assert_eq!(host("http://localhost:1420/").as_deref(), Some("localhost:1420"));
-        assert_eq!(host("https://www.npmjs.com/package/@tauri-apps/api").as_deref(), Some("www.npmjs.com"));
+        assert_eq!(
+            host("https://www.npmjs.com/package/@tauri-apps/api").as_deref(),
+            Some("www.npmjs.com")
+        );
         assert_eq!(host("http://[::1]:8080/health").as_deref(), Some("[::1]:8080"));
-        for bad in ["ftp://example.com", "file:///etc/passwd", "example.com", "https://", "https:// bad/", "https://user:pw@example.com/a"] {
+        for bad in [
+            "ftp://example.com",
+            "file:///etc/passwd",
+            "example.com",
+            "https://",
+            "https:// bad/",
+            "https://user:pw@example.com/a",
+        ] {
             assert_eq!(host(bad), None, "{bad}");
         }
     }
@@ -592,7 +813,12 @@ mod tests {
             assert!(parse_http_url(bad).is_err(), "{bad}");
             assert!(
                 matches!(
-                    crate::policy::check(crate::policy::Mode::Auto, "fetch_url", &json!({ "url": bad }), workspace),
+                    crate::policy::check(
+                        crate::policy::Mode::Auto,
+                        "fetch_url",
+                        &json!({ "url": bad }),
+                        workspace
+                    ),
                     crate::policy::Verdict::Refuse(_)
                 ),
                 "{bad}"
@@ -605,9 +831,18 @@ mod tests {
         let url = |text: &str| reqwest::Url::parse(text).unwrap();
         assert!(same_origin_host(&url("https://docs.rs/a"), &url("https://DOCS.RS/b")));
         assert!(same_origin_host(&url("http://docs.rs/a"), &url("https://docs.rs/a")));
-        assert!(same_origin_host(&url("http://127.0.0.1:8080/a"), &url("http://127.0.0.1:8080/b")));
-        assert!(!same_origin_host(&url("https://docs.rs/a"), &url("https://other.example/a")));
-        assert!(!same_origin_host(&url("http://127.0.0.1:8080/a"), &url("http://127.0.0.1:9090/a")));
+        assert!(same_origin_host(
+            &url("http://127.0.0.1:8080/a"),
+            &url("http://127.0.0.1:8080/b")
+        ));
+        assert!(!same_origin_host(
+            &url("https://docs.rs/a"),
+            &url("https://other.example/a")
+        ));
+        assert!(!same_origin_host(
+            &url("http://127.0.0.1:8080/a"),
+            &url("http://127.0.0.1:9090/a")
+        ));
         assert!(!same_origin_host(&url("https://docs.rs/a"), &url("file:///etc/passwd")));
     }
 
@@ -615,12 +850,27 @@ mod tests {
     fn same_origin_blocks_https_to_http_downgrade_and_port_change() {
         let url = |text: &str| reqwest::Url::parse(text).unwrap();
         assert!(!same_origin_host(&url("https://docs.rs/a"), &url("http://docs.rs/b")));
-        assert!(!same_origin_host(&url("https://docs.rs/a"), &url("https://docs.rs:8443/b")));
-        assert!(!same_origin_host(&url("http://docs.rs:8080/a"), &url("https://docs.rs/b")));
-        assert!(!same_origin_host(&url("http://docs.rs:8080/a"), &url("https://docs.rs:8080/b")));
-        assert!(!same_origin_host(&url("https://docs.rs/a"), &url("https://user:pass@docs.rs/b")));
+        assert!(!same_origin_host(
+            &url("https://docs.rs/a"),
+            &url("https://docs.rs:8443/b")
+        ));
+        assert!(!same_origin_host(
+            &url("http://docs.rs:8080/a"),
+            &url("https://docs.rs/b")
+        ));
+        assert!(!same_origin_host(
+            &url("http://docs.rs:8080/a"),
+            &url("https://docs.rs:8080/b")
+        ));
+        assert!(!same_origin_host(
+            &url("https://docs.rs/a"),
+            &url("https://user:pass@docs.rs/b")
+        ));
         assert!(same_origin_host(&url("http://docs.rs/a"), &url("https://docs.rs/a")));
-        assert!(same_origin_host(&url("https://docs.rs:443/a"), &url("https://docs.rs/b")));
+        assert!(same_origin_host(
+            &url("https://docs.rs:443/a"),
+            &url("https://docs.rs/b")
+        ));
     }
 
     #[tokio::test]
@@ -674,11 +924,21 @@ mod tests {
             .dns_resolver(SafeDnsResolver::with_override(false, vec![local_addr]))
             .build()
             .unwrap();
-        let blocked_err = guarded_client.get(format!("http://rebind.example:{}/secret", local_addr.port())).send().await;
-        assert!(blocked_err.is_err(), "reqwest should block external domain resolving to loopback");
+        let blocked_err = guarded_client
+            .get(format!("http://rebind.example:{}/secret", local_addr.port()))
+            .send()
+            .await;
+        assert!(
+            blocked_err.is_err(),
+            "reqwest should block external domain resolving to loopback"
+        );
 
         let allowed = fetch(&format!("{address}/ok"), 0, &cancel).await;
-        assert!(!allowed.is_error && allowed.content == "local-ok", "{}", allowed.content);
+        assert!(
+            !allowed.is_error && allowed.content == "local-ok",
+            "{}",
+            allowed.content
+        );
         let seen = requests.await.unwrap();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].starts_with("GET /ok "));
@@ -694,19 +954,36 @@ mod tests {
         ])
         .await;
         let same = fetch(&format!("{address}/start"), 0, &cancel).await;
-        assert!(!same.is_error && same.content == format!("[redirected to {address}/landed]\narrived"), "{}", same.content);
+        assert!(
+            !same.is_error && same.content == format!("[redirected to {address}/landed]\narrived"),
+            "{}",
+            same.content
+        );
         let cross = fetch(&format!("{address}/bounce"), 0, &cancel).await;
-        assert!(cross.is_error && cross.content.contains("on another host") && cross.content.contains("https://other.example/secret"), "{}", cross.content);
+        assert!(
+            cross.is_error
+                && cross.content.contains("on another host")
+                && cross.content.contains("https://other.example/secret"),
+            "{}",
+            cross.content
+        );
         assert_eq!(requests.await.unwrap().len(), 3);
     }
 
     fn page(kind: &str, body: &str) -> String {
-        format!("HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
     }
 
     /// A response with this status line, these headers, and this body, which need not be text.
     fn answer(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
-        let mut bytes = format!("HTTP/1.1 {status}\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n", body.len()).into_bytes();
+        let mut bytes = format!(
+            "HTTP/1.1 {status}\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
         bytes.extend_from_slice(body);
         bytes
     }
@@ -718,17 +995,35 @@ mod tests {
         let long = "word ".repeat(TEXT_CHARS / 4);
         let moved = "<html><head><title>Not found</title></head><body><h1>No such page</h1><p>Datasheets are now under /docs.</p></body></html>";
         let mut zipped = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        zipped.write_all(b"<html><head><title>Zipped</title></head><body><p>Small and squeezed</p></body></html>").unwrap();
+        zipped
+            .write_all(b"<html><head><title>Zipped</title></head><body><p>Small and squeezed</p></body></html>")
+            .unwrap();
         let (address, requests) = crate::testing::serve_bytes(vec![
-            page("text/html; charset=utf-8", "<html><head><title>Docs</title></head><body><p>Hello</p><p>there</p></body></html>").into_bytes(),
+            page(
+                "text/html; charset=utf-8",
+                "<html><head><title>Docs</title></head><body><p>Hello</p><p>there</p></body></html>",
+            )
+            .into_bytes(),
             page("application/json", "{\"ok\": true}").into_bytes(),
-            answer("200 OK", "content-type: application/pdf\r\n", &crate::pdf::tests::sample(&[&["Pin 1 is VIN"], &["Absolute maximum 42 V"]])),
+            answer(
+                "200 OK",
+                "content-type: application/pdf\r\n",
+                &crate::pdf::tests::sample(&[&["Pin 1 is VIN"], &["Absolute maximum 42 V"]]),
+            ),
             answer("404 Not Found", "content-type: text/html\r\n", moved.as_bytes()),
             page("text/plain", &long).into_bytes(),
             page("text/plain", &long).into_bytes(),
-            answer("200 OK", "content-type: text/html\r\ncontent-encoding: gzip\r\n", &zipped.finish().unwrap()),
+            answer(
+                "200 OK",
+                "content-type: text/html\r\ncontent-encoding: gzip\r\n",
+                &zipped.finish().unwrap(),
+            ),
             answer("200 OK", "content-type: application/zip\r\n", &[b'P', b'K', 3, 4, 0, 0]),
-            answer("200 OK", "content-type: application/octet-stream\r\n", &crate::pdf::tests::sample(&[&[]])),
+            answer(
+                "200 OK",
+                "content-type: application/octet-stream\r\n",
+                &crate::pdf::tests::sample(&[&[]]),
+            ),
             // A type that says xml, which is not to be read as text.
             answer(
                 "200 OK",
@@ -738,39 +1033,110 @@ mod tests {
         ])
         .await;
         let got = fetch(&format!("{address}/docs?page=1"), 0, &cancel).await;
-        assert_eq!((got.content.as_str(), got.is_error), ("Title: Docs\n\nHello\n\nthere", false));
-        assert_eq!((got.meta["title"].as_str(), got.meta["characters"].as_u64()), (Some("Docs"), Some(12)));
-        assert_eq!(fetch(&format!("{address}/data.json"), 0, &cancel).await.content, "{\"ok\": true}");
+        assert_eq!(
+            (got.content.as_str(), got.is_error),
+            ("Title: Docs\n\nHello\n\nthere", false)
+        );
+        assert_eq!(
+            (got.meta["title"].as_str(), got.meta["characters"].as_u64()),
+            (Some("Docs"), Some(12))
+        );
+        assert_eq!(
+            fetch(&format!("{address}/data.json"), 0, &cancel).await.content,
+            "{\"ok\": true}"
+        );
         // A PDF comes back as its words, page by page.
         let pdf = fetch(&format!("{address}/a.pdf"), 0, &cancel).await;
-        assert!(!pdf.is_error && pdf.content.starts_with("[It is a PDF of 2 pages. This is its text"), "{}", pdf.content);
-        assert!(pdf.content.contains("[page 1 of 2]\nPin 1 is VIN") && pdf.content.contains("[page 2 of 2]\nAbsolute maximum 42 V"), "{}", pdf.content);
-        assert_eq!((pdf.meta["document"].as_str(), pdf.meta["parts"].as_u64()), (Some("pdf"), Some(2)));
+        assert!(
+            !pdf.is_error && pdf.content.starts_with("[It is a PDF of 2 pages. This is its text"),
+            "{}",
+            pdf.content
+        );
+        assert!(
+            pdf.content.contains("[page 1 of 2]\nPin 1 is VIN")
+                && pdf.content.contains("[page 2 of 2]\nAbsolute maximum 42 V"),
+            "{}",
+            pdf.content
+        );
+        assert_eq!(
+            (pdf.meta["document"].as_str(), pdf.meta["parts"].as_u64()),
+            (Some("pdf"), Some(2))
+        );
         // A missing page says so, with what to do instead and what the site's own page said.
         let missing = fetch(&format!("{address}/missing"), 0, &cancel).await;
-        assert!(missing.is_error && missing.content.contains("answered HTTP 404. There is no page at this address") && missing.content.contains("rather than guessing"), "{}", missing.content);
-        assert!(missing.content.ends_with("The page it sent with that:\nNo such page\n\nDatasheets are now under /docs."), "{}", missing.content);
+        assert!(
+            missing.is_error
+                && missing
+                    .content
+                    .contains("answered HTTP 404. There is no page at this address")
+                && missing.content.contains("rather than guessing"),
+            "{}",
+            missing.content
+        );
+        assert!(
+            missing
+                .content
+                .ends_with("The page it sent with that:\nNo such page\n\nDatasheets are now under /docs."),
+            "{}",
+            missing.content
+        );
 
         // A long page is cut, and read on from an offset.
         let total = long.trim().chars().count();
         let first = fetch(&format!("{address}/long"), 0, &cancel).await;
-        assert!(first.content.ends_with(&format!("[showing characters 0-{TEXT_CHARS} of {total}; pass offset {TEXT_CHARS} to read on]")), "{}", &first.content[first.content.len() - 90..]);
+        assert!(
+            first.content.ends_with(&format!(
+                "[showing characters 0-{TEXT_CHARS} of {total}; pass offset {TEXT_CHARS} to read on]"
+            )),
+            "{}",
+            &first.content[first.content.len() - 90..]
+        );
         let rest = fetch(&format!("{address}/long"), TEXT_CHARS, &cancel).await;
         assert_eq!(rest.content.chars().count(), total - TEXT_CHARS);
         // A page sent gzipped is unzipped; an archive is still refused; a PDF of scans says why it gives nothing.
-        assert_eq!(fetch(&format!("{address}/zipped"), 0, &cancel).await.content, "Title: Zipped\n\nSmall and squeezed");
+        assert_eq!(
+            fetch(&format!("{address}/zipped"), 0, &cancel).await.content,
+            "Title: Zipped\n\nSmall and squeezed"
+        );
         let archive = fetch(&format!("{address}/a.zip"), 0, &cancel).await;
-        assert!(archive.is_error && archive.content.ends_with("is application/zip, not text or a document; it cannot be read here."), "{}", archive.content);
+        assert!(
+            archive.is_error
+                && archive
+                    .content
+                    .ends_with("is application/zip, not text or a document; it cannot be read here."),
+            "{}",
+            archive.content
+        );
         let scan = fetch(&format!("{address}/scan"), 0, &cancel).await;
-        assert!(scan.is_error && scan.content.contains("no text in it"), "{}", scan.content);
+        assert!(
+            scan.is_error && scan.content.contains("no text in it"),
+            "{}",
+            scan.content
+        );
         let word = fetch(&format!("{address}/errata.docx"), 0, &cancel).await;
-        assert!(!word.is_error && word.content.starts_with("[It is a Word document.") && word.content.ends_with("]\n# Errata"), "{}", word.content);
+        assert!(
+            !word.is_error
+                && word.content.starts_with("[It is a Word document.")
+                && word.content.ends_with("]\n# Errata"),
+            "{}",
+            word.content
+        );
 
         // Asked for as a browser asks: some sites turn away anything else.
         let requests = requests.await.unwrap();
         let asked = requests[0].to_lowercase();
         assert!(requests[0].starts_with("GET /docs?page=1 "));
-        assert!(["user-agent: mozilla/5.0", "accept-encoding: gzip", "accept-language: zh-cn", "sec-fetch-mode: navigate"].iter().all(|header| asked.contains(header)), "{asked}");
+        assert!(
+            [
+                "user-agent: mozilla/5.0",
+                "accept-encoding: gzip",
+                "accept-language: zh-cn",
+                "sec-fetch-mode: navigate"
+            ]
+            .iter()
+            .all(|header| asked.contains(header)),
+            "{asked}"
+        );
         assert!(fetch("file:///etc/passwd", 0, &cancel).await.is_error);
     }
 }

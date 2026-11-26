@@ -5,8 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DEFAULT_RELEASE_API: &str =
-    "https://api.github.com/repos/VoidDel/omnidoppelganger/releases/latest";
+pub const DEFAULT_RELEASE_API: &str = "https://api.github.com/repos/VoidDel/omnidoppelganger/releases/latest";
 
 const NOTES_MAX_CHARS: usize = 1_500;
 
@@ -75,10 +74,7 @@ pub async fn check_from_url(current_version: &str, url: &str) -> Result<UpdateSt
         return Err(format!("检查更新失败（HTTP {}）", response.status().as_u16()));
     }
 
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|e| format!("解析发布信息失败：{e}"))?;
+    let body: Value = response.json().await.map_err(|e| format!("解析发布信息失败：{e}"))?;
 
     let tag = body["tag_name"]
         .as_str()
@@ -94,10 +90,7 @@ pub async fn check_from_url(current_version: &str, url: &str) -> Result<UpdateSt
         .to_string();
     let raw_notes = body["body"].as_str().unwrap_or_default().trim();
     let notes: String = if raw_notes.chars().count() > NOTES_MAX_CHARS {
-        format!(
-            "{}…",
-            raw_notes.chars().take(NOTES_MAX_CHARS).collect::<String>()
-        )
+        format!("{}…", raw_notes.chars().take(NOTES_MAX_CHARS).collect::<String>())
     } else {
         raw_notes.to_string()
     };

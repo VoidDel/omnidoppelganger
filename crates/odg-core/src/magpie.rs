@@ -143,12 +143,23 @@ fn extract_remaining_percent(w: &Value) -> Option<u8> {
 }
 
 fn extract_reset_time(w: &Value) -> Option<String> {
-    for key in ["resetsAt", "resetAt", "reset_at", "reset_time", "resetTime", "runsOutAt"] {
+    for key in [
+        "resetsAt",
+        "resetAt",
+        "reset_at",
+        "reset_time",
+        "resetTime",
+        "runsOutAt",
+    ] {
         if let Some(s) = w[key].as_str().map(str::trim).filter(|s| !s.is_empty()) {
             return Some(s.to_string());
         }
     }
-    if let Some(secs) = w["resetSecs"].as_i64().or_else(|| w["reset_secs"].as_i64()).filter(|&s| s > 0) {
+    if let Some(secs) = w["resetSecs"]
+        .as_i64()
+        .or_else(|| w["reset_secs"].as_i64())
+        .filter(|&s| s > 0)
+    {
         let target = chrono::Utc::now() + chrono::Duration::seconds(secs);
         return Some(target.to_rfc3339());
     }
@@ -162,8 +173,7 @@ fn first_non_empty<'a>(obj: &'a Value, keys: &[&str]) -> Option<&'a str> {
 
 /// Parse the JSON payload returned by Magpie's `GET /v1/magpie/quotas` endpoint.
 pub fn parse_magpie_quotas_json(raw: &str) -> Result<AntigravityQuota, String> {
-    let parsed: Value = serde_json::from_str(raw.trim())
-        .map_err(|e| format!("解析 Magpie 额度 JSON 失败：{e}"))?;
+    let parsed: Value = serde_json::from_str(raw.trim()).map_err(|e| format!("解析 Magpie 额度 JSON 失败：{e}"))?;
 
     let items: &[Value] = if let Some(arr) = parsed.as_array() {
         arr
@@ -183,11 +193,8 @@ pub fn parse_magpie_quotas_json(raw: &str) -> Result<AntigravityQuota, String> {
     let mut group_idx: HashMap<String, usize> = HashMap::new();
 
     for card in items {
-        let provider_label = first_non_empty(
-            card,
-            &["name", "title", "label", "provider", "kind", "Kind", "id"],
-        )
-        .unwrap_or("Magpie");
+        let provider_label =
+            first_non_empty(card, &["name", "title", "label", "provider", "kind", "Kind", "id"]).unwrap_or("Magpie");
         let account = first_non_empty(card, &["account", "email", "accountName", "profile"]);
 
         let windows = card["windows"]
@@ -225,7 +232,11 @@ pub fn parse_magpie_quotas_json(raw: &str) -> Result<AntigravityQuota, String> {
                 id: first_non_empty(w, &["id", "name", "window"])
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("{window}-{idx}")),
-                name: if win_name.is_empty() { window.clone() } else { win_name.to_string() },
+                name: if win_name.is_empty() {
+                    window.clone()
+                } else {
+                    win_name.to_string()
+                },
                 window,
                 remaining_percent,
                 reset_time: extract_reset_time(w),
@@ -238,7 +249,8 @@ pub fn parse_magpie_quotas_json(raw: &str) -> Result<AntigravityQuota, String> {
                 group_idx.insert(group_name.clone(), groups.len());
                 groups.push(QuotaGroup {
                     name: group_name,
-                    description: first_non_empty(card, &["provider", "kind", "Kind", "description"]).map(str::to_string),
+                    description: first_non_empty(card, &["provider", "kind", "Kind", "description"])
+                        .map(str::to_string),
                     buckets: vec![bucket],
                 });
             }
@@ -304,7 +316,10 @@ pub async fn fetch_quota(base_url: &str, api_key: Option<&str>, force: bool) -> 
         .map_err(|e| format!("读取 Magpie 额度响应失败：{e}"))?;
 
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Err("Magpie 网关拒绝读取额度（401/403），请确认 Gateway Key 已开启额度权限：magpie gateway-key quotas <id> on".to_string());
+        return Err(
+            "Magpie 网关拒绝读取额度（401/403），请确认 Gateway Key 已开启额度权限：magpie gateway-key quotas <id> on"
+                .to_string(),
+        );
     }
     if !status.is_success() {
         let preview: String = body.trim().chars().take(160).collect();
@@ -322,9 +337,18 @@ mod tests {
 
     #[test]
     fn derives_magpie_origin_from_v1_or_bare_url() {
-        assert_eq!(magpie_origin("http://127.0.0.1:3425/v1").unwrap(), "http://127.0.0.1:3425");
-        assert_eq!(magpie_origin("http://127.0.0.1:3425/v1/").unwrap(), "http://127.0.0.1:3425");
-        assert_eq!(magpie_origin("http://192.168.1.10:3425/").unwrap(), "http://192.168.1.10:3425");
+        assert_eq!(
+            magpie_origin("http://127.0.0.1:3425/v1").unwrap(),
+            "http://127.0.0.1:3425"
+        );
+        assert_eq!(
+            magpie_origin("http://127.0.0.1:3425/v1/").unwrap(),
+            "http://127.0.0.1:3425"
+        );
+        assert_eq!(
+            magpie_origin("http://192.168.1.10:3425/").unwrap(),
+            "http://192.168.1.10:3425"
+        );
     }
 
     #[test]

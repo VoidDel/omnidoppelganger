@@ -57,10 +57,17 @@ fn write_in_place_fallback(target: &Path, contents: &[u8], _private: bool) -> io
 fn write_atomically_inner(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
     let target = resolve_atomic_target(path)?;
     let (Some(directory), Some(name)) = (target.parent(), target.file_name()) else {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} is not a file path", path.display())));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a file path", path.display()),
+        ));
     };
-    let temporary =
-        directory.join(format!(".{}.odg-{}-{}.tmp", name.to_string_lossy(), std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let temporary = directory.join(format!(
+        ".{}.odg-{}-{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
 
     let written = (|| {
         let mut options = OpenOptions::new();
@@ -257,7 +264,13 @@ pub fn create_private_subdir(subdir: &str) -> io::Result<PathBuf> {
 
 fn sanitize_affix(raw: &str) -> String {
     raw.chars()
-        .map(|ch| if ch == '/' || ch == '\\' || ch == '\0' || ch.is_control() { '_' } else { ch })
+        .map(|ch| {
+            if ch == '/' || ch == '\\' || ch == '\0' || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
         .collect::<String>()
         .replace("..", "_")
 }
@@ -442,7 +455,11 @@ mod tests {
         let home = root.path().join(".odg");
         for bad in ["", ".", "..", "a/b", "a\\b", "../escape", "a/../b", "mcp\0bad"] {
             let err = private_temp_dir_in(&home, bad).unwrap_err();
-            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "expected InvalidInput for {bad:?}");
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::InvalidInput,
+                "expected InvalidInput for {bad:?}"
+            );
         }
     }
 
@@ -483,12 +500,30 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(fs::symlink_metadata(&home).unwrap().permissions().mode() & 0o777, 0o700);
-            assert_eq!(fs::symlink_metadata(home.join("tmp")).unwrap().permissions().mode() & 0o777, 0o700);
-            assert_eq!(fs::symlink_metadata(&mcp_dir).unwrap().permissions().mode() & 0o777, 0o700);
-            assert_eq!(fs::symlink_metadata(&prompt_subdir).unwrap().permissions().mode() & 0o777, 0o700);
-            assert_eq!(fs::symlink_metadata(&secret_file).unwrap().permissions().mode() & 0o777, 0o600);
-            assert_eq!(fs::symlink_metadata(&sanitized).unwrap().permissions().mode() & 0o777, 0o600);
-            assert_eq!(fs::symlink_metadata(&cfg_path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                fs::symlink_metadata(home.join("tmp")).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::symlink_metadata(&mcp_dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::symlink_metadata(&prompt_subdir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::symlink_metadata(&secret_file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::symlink_metadata(&sanitized).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::symlink_metadata(&cfg_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
     }
 
@@ -508,7 +543,10 @@ mod tests {
         let err1 = private_temp_dir_in(&home1, "mcp").unwrap_err();
         assert_eq!(err1.kind(), io::ErrorKind::InvalidInput);
         assert!(!outside1.path().join("mcp").exists());
-        assert_eq!(fs::metadata(outside1.path()).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            fs::metadata(outside1.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
 
         // Case 2: `<home>/tmp/<subdir>` pre-created as a symlink.
         let root2 = tempfile::tempdir().unwrap();
@@ -531,14 +569,24 @@ mod tests {
         let old_time = SystemTime::now() - Duration::from_secs(7200);
 
         let stale_file = write_private_new_in(&home, "mcp", "old-", ".json", b"old").unwrap();
-        OpenOptions::new().write(true).open(&stale_file).unwrap().set_modified(old_time).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&stale_file)
+            .unwrap()
+            .set_modified(old_time)
+            .unwrap();
 
         let fresh_file = write_private_new_in(&home, "mcp", "new-", ".json", b"new").unwrap();
 
         let stale_subdir = create_private_subdir_in(&home, "prompts").unwrap();
         let stale_prompt = stale_subdir.join("prompt.txt");
         fs::write(&stale_prompt, b"old prompt").unwrap();
-        OpenOptions::new().write(true).open(&stale_prompt).unwrap().set_modified(old_time).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&stale_prompt)
+            .unwrap()
+            .set_modified(old_time)
+            .unwrap();
         #[cfg(unix)]
         fs::File::open(&stale_subdir).unwrap().set_modified(old_time).unwrap();
 
@@ -551,7 +599,12 @@ mod tests {
             let outside = tempfile::tempdir().unwrap();
             let ext_file = outside.path().join("keep.txt");
             fs::write(&ext_file, b"keep").unwrap();
-            OpenOptions::new().write(true).open(&ext_file).unwrap().set_modified(old_time).unwrap();
+            OpenOptions::new()
+                .write(true)
+                .open(&ext_file)
+                .unwrap()
+                .set_modified(old_time)
+                .unwrap();
             let link_in_subdir = home.join("tmp").join("mcp").join("keep-link.json");
             std::os::unix::fs::symlink(&ext_file, &link_in_subdir).unwrap();
             let link_subdir = home.join("tmp").join("linked-dir");

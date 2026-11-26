@@ -14,7 +14,9 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
     let lower = raw_name.to_ascii_lowercase();
     let mapped_name = match lower.as_str() {
         "read_file" | "view_file" | "read" | "readtoolcall" => "read_file",
-        "write_file" | "write_to_file" | "write" | "writetoolcall" | "create_file" | "createfiletoolcall" => "write_file",
+        "write_file" | "write_to_file" | "write" | "writetoolcall" | "create_file" | "createfiletoolcall" => {
+            "write_file"
+        }
         "edit_file"
         | "replace_file_content"
         | "multi_replace_file_content"
@@ -34,7 +36,14 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
         | "applypatchtoolcall"
         | "file_change" => "edit_file",
         "delete_file" | "remove_file" | "delete" | "deletetoolcall" | "deletefiletoolcall" => "delete_file",
-        "run_command" | "bash" | "shell" | "command_execution" | "shelltoolcall" | "bashtoolcall" | "runterminalcommand" | "run_terminal_command" => "run_command",
+        "run_command"
+        | "bash"
+        | "shell"
+        | "command_execution"
+        | "shelltoolcall"
+        | "bashtoolcall"
+        | "runterminalcommand"
+        | "run_terminal_command" => "run_command",
         "grep_search" | "search" | "grep" | "greptoolcall" => "search",
         "find_by_name" | "list_dir" | "find_files" | "glob" | "ls" | "globtoolcall" | "lstoolcall" => "find_files",
         "search_web" | "web_search" | "websearch" => "web_search",
@@ -48,10 +57,11 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
         && !normalized.contains_key("todos")
         && let Some(raw_steps) = normalized.get("steps")
     {
-        let parsed_arr = raw_steps
-            .as_array()
-            .cloned()
-            .or_else(|| raw_steps.as_str().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()));
+        let parsed_arr = raw_steps.as_array().cloned().or_else(|| {
+            raw_steps
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok())
+        });
         if let Some(items) = parsed_arr {
             let todos: Vec<Value> = items
                 .into_iter()
@@ -121,17 +131,26 @@ pub fn normalize_tool(raw_name: &str, params: &Value) -> (String, Value) {
         normalized.insert("path".to_string(), Value::String(path));
     }
     if !normalized.contains_key("command")
-        && let Some(cmd) = ["CommandLine", "cmd"].iter().find_map(|key| normalized.get(*key).and_then(Value::as_str)).map(str::to_string)
+        && let Some(cmd) = ["CommandLine", "cmd"]
+            .iter()
+            .find_map(|key| normalized.get(*key).and_then(Value::as_str))
+            .map(str::to_string)
     {
         normalized.insert("command".to_string(), Value::String(cmd));
     }
     if !normalized.contains_key("pattern")
-        && let Some(query) = ["Query", "Pattern", "query"].iter().find_map(|key| normalized.get(*key).and_then(Value::as_str)).map(str::to_string)
+        && let Some(query) = ["Query", "Pattern", "query"]
+            .iter()
+            .find_map(|key| normalized.get(*key).and_then(Value::as_str))
+            .map(str::to_string)
     {
         normalized.insert("pattern".to_string(), Value::String(query));
     }
     if !normalized.contains_key("url")
-        && let Some(url) = ["Url", "URI"].iter().find_map(|key| normalized.get(*key).and_then(Value::as_str)).map(str::to_string)
+        && let Some(url) = ["Url", "URI"]
+            .iter()
+            .find_map(|key| normalized.get(*key).and_then(Value::as_str))
+            .map(str::to_string)
     {
         normalized.insert("url".to_string(), Value::String(url));
     }
@@ -153,7 +172,10 @@ pub struct StreamParser {
 impl StreamParser {
     pub fn parse_line(&mut self, kind: CliKind, line: &str) -> Vec<CliEvent> {
         match kind {
-            CliKind::Antigravity => crate::antigravity::parse_ndjson_line(line).into_iter().map(crate::antigravity::into_cli_event).collect(),
+            CliKind::Antigravity => crate::antigravity::parse_ndjson_line(line)
+                .into_iter()
+                .map(crate::antigravity::into_cli_event)
+                .collect(),
             CliKind::Codex => self.parse_codex(line),
             CliKind::ClaudeCode => self.parse_claude(line),
             CliKind::Cursor => self.parse_cursor(line),
@@ -171,10 +193,16 @@ impl StreamParser {
         if !trimmed.starts_with('{') {
             return Vec::new();
         }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else { return Vec::new() };
-        let Some(ty) = v["type"].as_str() else { return Vec::new() };
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            return Vec::new();
+        };
+        let Some(ty) = v["type"].as_str() else {
+            return Vec::new();
+        };
         match ty {
-            "thread.started" => vec![CliEvent::Init { conversation_id: v["thread_id"].as_str().map(str::to_string) }],
+            "thread.started" => vec![CliEvent::Init {
+                conversation_id: v["thread_id"].as_str().map(str::to_string),
+            }],
             "item.started" | "item.updated" | "item.completed" => {
                 let item = &v["item"];
                 let item_id = item["id"].as_str().unwrap_or("item").to_string();
@@ -183,12 +211,22 @@ impl StreamParser {
                     "agent_message" => {
                         let full = item["text"].as_str().unwrap_or("");
                         let prev = self.seen_item_bytes.get(&item_id).copied().unwrap_or(0);
-                        let delta = if full.len() > prev && full.is_char_boundary(prev) { full[prev..].to_string() } else { String::new() };
+                        let delta = if full.len() > prev && full.is_char_boundary(prev) {
+                            full[prev..].to_string()
+                        } else {
+                            String::new()
+                        };
                         self.seen_item_bytes.insert(item_id, full.len());
                         if delta.is_empty() && !done {
                             Vec::new()
                         } else {
-                            vec![CliEvent::AgentText { conversation_id: None, delta, done, usage: Value::Null, tokens: None }]
+                            vec![CliEvent::AgentText {
+                                conversation_id: None,
+                                delta,
+                                done,
+                                usage: Value::Null,
+                                tokens: None,
+                            }]
                         }
                     }
                     "command_execution" => {
@@ -198,19 +236,35 @@ impl StreamParser {
                             let output = item["aggregated_output"].as_str().unwrap_or("").to_string();
                             let exit_code = item["exit_code"].as_i64().unwrap_or(0);
                             let failed = exit_code != 0 || item["status"].as_str() == Some("failed");
-                            vec![CliEvent::ToolDone { conversation_id: None, call_key: item_id, name: Some("run_command".into()), input, output, is_error: failed }]
+                            vec![CliEvent::ToolDone {
+                                conversation_id: None,
+                                call_key: item_id,
+                                name: Some("run_command".into()),
+                                input,
+                                output,
+                                is_error: failed,
+                            }]
                         } else if ty == "item.started" {
-                            vec![CliEvent::ToolStart { conversation_id: None, call_key: item_id, name: "run_command".into(), input }]
+                            vec![CliEvent::ToolStart {
+                                conversation_id: None,
+                                call_key: item_id,
+                                name: "run_command".into(),
+                                input,
+                            }]
                         } else {
                             Vec::new()
                         }
                     }
                     "file_change" => {
-                        let Some(changes) = item["changes"].as_array() else { return Vec::new() };
+                        let Some(changes) = item["changes"].as_array() else {
+                            return Vec::new();
+                        };
                         let failed = item["status"].as_str() == Some("failed");
                         let mut events = Vec::new();
                         for (idx, change) in changes.iter().enumerate() {
-                            let Some(path) = change["path"].as_str().filter(|p| !p.is_empty()) else { continue };
+                            let Some(path) = change["path"].as_str().filter(|p| !p.is_empty()) else {
+                                continue;
+                            };
                             let kind_str = change["kind"].as_str().unwrap_or("update").to_ascii_lowercase();
                             let tool_name = match kind_str.as_str() {
                                 "add" | "create" => "write_file",
@@ -221,7 +275,11 @@ impl StreamParser {
                             if let Some(diff_str) = change["diff"].as_str().or_else(|| change["patch"].as_str()) {
                                 input["diff"] = Value::String(diff_str.to_string());
                             }
-                            let key = if changes.len() == 1 { item_id.clone() } else { format!("{item_id}-{idx}") };
+                            let key = if changes.len() == 1 {
+                                item_id.clone()
+                            } else {
+                                format!("{item_id}-{idx}")
+                            };
                             if done {
                                 let output = format!("{kind_str}: {path}");
                                 events.push(CliEvent::ToolDone {
@@ -244,7 +302,11 @@ impl StreamParser {
                         events
                     }
                     "mcp_tool_call" => {
-                        let raw = format!("mcp__{}__{}", item["server"].as_str().unwrap_or("mcp"), item["tool"].as_str().unwrap_or("call"));
+                        let raw = format!(
+                            "mcp__{}__{}",
+                            item["server"].as_str().unwrap_or("mcp"),
+                            item["tool"].as_str().unwrap_or("call")
+                        );
                         let input = item["arguments"].clone();
                         if done {
                             let err = item["error"]["message"].as_str();
@@ -252,9 +314,21 @@ impl StreamParser {
                                 .map(str::to_string)
                                 .or_else(|| (!item["result"].is_null()).then(|| item["result"].to_string()))
                                 .unwrap_or_default();
-                            vec![CliEvent::ToolDone { conversation_id: None, call_key: item_id, name: Some(raw), input, output, is_error: err.is_some() }]
+                            vec![CliEvent::ToolDone {
+                                conversation_id: None,
+                                call_key: item_id,
+                                name: Some(raw),
+                                input,
+                                output,
+                                is_error: err.is_some(),
+                            }]
                         } else if ty == "item.started" {
-                            vec![CliEvent::ToolStart { conversation_id: None, call_key: item_id, name: raw, input }]
+                            vec![CliEvent::ToolStart {
+                                conversation_id: None,
+                                call_key: item_id,
+                                name: raw,
+                                input,
+                            }]
                         } else {
                             Vec::new()
                         }
@@ -268,15 +342,39 @@ impl StreamParser {
                 let input = usage["input_tokens"].as_u64().unwrap_or(0);
                 let output = usage["output_tokens"].as_u64().unwrap_or(0);
                 let tokens = (input > 0 || output > 0).then_some(Tokens { input, cached, output });
-                vec![CliEvent::Result { conversation_id: None, success: true, response: String::new(), error: None, usage, tokens }]
+                vec![CliEvent::Result {
+                    conversation_id: None,
+                    success: true,
+                    response: String::new(),
+                    error: None,
+                    usage,
+                    tokens,
+                }]
             }
             "turn.failed" => {
-                let msg = v["error"]["message"].as_str().unwrap_or("Codex turn failed").to_string();
-                vec![CliEvent::Result { conversation_id: None, success: false, response: String::new(), error: Some(msg), usage: Value::Null, tokens: None }]
+                let msg = v["error"]["message"]
+                    .as_str()
+                    .unwrap_or("Codex turn failed")
+                    .to_string();
+                vec![CliEvent::Result {
+                    conversation_id: None,
+                    success: false,
+                    response: String::new(),
+                    error: Some(msg),
+                    usage: Value::Null,
+                    tokens: None,
+                }]
             }
             "error" => {
                 let msg = v["message"].as_str().unwrap_or("Codex error").to_string();
-                vec![CliEvent::Result { conversation_id: None, success: false, response: String::new(), error: Some(msg), usage: Value::Null, tokens: None }]
+                vec![CliEvent::Result {
+                    conversation_id: None,
+                    success: false,
+                    response: String::new(),
+                    error: Some(msg),
+                    usage: Value::Null,
+                    tokens: None,
+                }]
             }
             _ => Vec::new(),
         }
@@ -287,18 +385,30 @@ impl StreamParser {
         if !trimmed.starts_with('{') {
             return Vec::new();
         }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else { return Vec::new() };
-        let Some(ty) = v["type"].as_str() else { return Vec::new() };
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            return Vec::new();
+        };
+        let Some(ty) = v["type"].as_str() else {
+            return Vec::new();
+        };
         let conv = v["session_id"].as_str().map(str::to_string);
         match ty {
             "system" => vec![CliEvent::Init { conversation_id: conv }],
             "stream_event" => {
                 let ev = &v["event"];
-                if ev["type"].as_str() == Some("content_block_delta") && ev["delta"]["type"].as_str() == Some("text_delta") {
+                if ev["type"].as_str() == Some("content_block_delta")
+                    && ev["delta"]["type"].as_str() == Some("text_delta")
+                {
                     let text = ev["delta"]["text"].as_str().unwrap_or("").to_string();
                     if !text.is_empty() {
                         self.saw_partial_delta = true;
-                        return vec![CliEvent::AgentText { conversation_id: conv, delta: text, done: false, usage: Value::Null, tokens: None }];
+                        return vec![CliEvent::AgentText {
+                            conversation_id: conv,
+                            delta: text,
+                            done: false,
+                            usage: Value::Null,
+                            tokens: None,
+                        }];
                     }
                 }
                 Vec::new()
@@ -318,27 +428,56 @@ impl StreamParser {
                                 }
                             }
                             "tool_use" => {
-                                let call_key = block["id"].as_str().map(str::to_string).unwrap_or_else(|| self.next_key("claude"));
+                                let call_key = block["id"]
+                                    .as_str()
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| self.next_key("claude"));
                                 let raw_name = block["name"].as_str().unwrap_or("tool");
                                 let (name, input) = normalize_tool(raw_name, &block["input"]);
-                                out.push(CliEvent::ToolStart { conversation_id: conv.clone(), call_key, name, input });
+                                out.push(CliEvent::ToolStart {
+                                    conversation_id: conv.clone(),
+                                    call_key,
+                                    name,
+                                    input,
+                                });
                             }
                             _ => {}
                         }
                     }
-                    let delta = if self.saw_partial_delta { String::new() } else { full_text };
+                    let delta = if self.saw_partial_delta {
+                        String::new()
+                    } else {
+                        full_text
+                    };
                     if self.saw_partial_delta || !delta.is_empty() || tokens.is_some() {
-                        out.insert(0, CliEvent::AgentText { conversation_id: conv, delta, done: true, usage, tokens });
+                        out.insert(
+                            0,
+                            CliEvent::AgentText {
+                                conversation_id: conv,
+                                delta,
+                                done: true,
+                                usage,
+                                tokens,
+                            },
+                        );
                     }
                 }
                 self.saw_partial_delta = false;
                 out
             }
             "tool_use" => {
-                let call_key = v["id"].as_str().map(str::to_string).unwrap_or_else(|| self.next_key("claude"));
+                let call_key = v["id"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.next_key("claude"));
                 let raw_name = v["name"].as_str().unwrap_or("tool");
                 let (name, input) = normalize_tool(raw_name, &v["input"]);
-                vec![CliEvent::ToolStart { conversation_id: conv, call_key, name, input }]
+                vec![CliEvent::ToolStart {
+                    conversation_id: conv,
+                    call_key,
+                    name,
+                    input,
+                }]
             }
             "user" => {
                 let mut out = Vec::new();
@@ -348,7 +487,14 @@ impl StreamParser {
                             let call_key = block["tool_use_id"].as_str().unwrap_or("").to_string();
                             let output = extract_content_text(&block["content"]);
                             let is_error = block["is_error"].as_bool().unwrap_or(false);
-                            out.push(CliEvent::ToolDone { conversation_id: conv.clone(), call_key, name: None, input: Value::Null, output, is_error });
+                            out.push(CliEvent::ToolDone {
+                                conversation_id: conv.clone(),
+                                call_key,
+                                name: None,
+                                input: Value::Null,
+                                output,
+                                is_error,
+                            });
                         }
                     }
                 }
@@ -358,10 +504,18 @@ impl StreamParser {
                 let call_key = v["tool_use_id"].as_str().unwrap_or("").to_string();
                 let output = extract_content_text(&v["content"]);
                 let is_error = v["is_error"].as_bool().unwrap_or(false);
-                vec![CliEvent::ToolDone { conversation_id: conv, call_key, name: None, input: Value::Null, output, is_error }]
+                vec![CliEvent::ToolDone {
+                    conversation_id: conv,
+                    call_key,
+                    name: None,
+                    input: Value::Null,
+                    output,
+                    is_error,
+                }]
             }
             "result" => {
-                let is_error = v["is_error"].as_bool().unwrap_or(false) || v["subtype"].as_str().is_some_and(|s| s.starts_with("error"));
+                let is_error = v["is_error"].as_bool().unwrap_or(false)
+                    || v["subtype"].as_str().is_some_and(|s| s.starts_with("error"));
                 let response = v["result"].as_str().unwrap_or("").to_string();
                 let error = is_error.then(|| {
                     if !response.is_empty() {
@@ -372,7 +526,14 @@ impl StreamParser {
                 });
                 let usage = v["usage"].clone();
                 let tokens = anthropic_like_tokens(&usage);
-                vec![CliEvent::Result { conversation_id: conv, success: !is_error, response, error, usage, tokens }]
+                vec![CliEvent::Result {
+                    conversation_id: conv,
+                    success: !is_error,
+                    response,
+                    error,
+                    usage,
+                    tokens,
+                }]
             }
             _ => Vec::new(),
         }
@@ -383,9 +544,16 @@ impl StreamParser {
         if !trimmed.starts_with('{') {
             return Vec::new();
         }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else { return Vec::new() };
-        let Some(ty) = v["type"].as_str() else { return Vec::new() };
-        let conv = v["session_id"].as_str().or_else(|| v["chatId"].as_str()).map(str::to_string);
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            return Vec::new();
+        };
+        let Some(ty) = v["type"].as_str() else {
+            return Vec::new();
+        };
+        let conv = v["session_id"]
+            .as_str()
+            .or_else(|| v["chatId"].as_str())
+            .map(str::to_string);
         match ty {
             "system" | "init" => vec![CliEvent::Init { conversation_id: conv }],
             "assistant" => {
@@ -400,10 +568,22 @@ impl StreamParser {
                     // `--stream-partial-output` emits incremental `assistant` chunks followed by one
                     // final `assistant` event repeating the entire message; flush without duplicating.
                     self.cursor_streamed.clear();
-                    vec![CliEvent::AgentText { conversation_id: conv, delta: String::new(), done: true, usage: Value::Null, tokens: None }]
+                    vec![CliEvent::AgentText {
+                        conversation_id: conv,
+                        delta: String::new(),
+                        done: true,
+                        usage: Value::Null,
+                        tokens: None,
+                    }]
                 } else {
                     self.cursor_streamed.push_str(&text);
-                    vec![CliEvent::AgentText { conversation_id: conv, delta: text, done: false, usage: Value::Null, tokens: None }]
+                    vec![CliEvent::AgentText {
+                        conversation_id: conv,
+                        delta: text,
+                        done: false,
+                        usage: Value::Null,
+                        tokens: None,
+                    }]
                 }
             }
             "tool_call" => {
@@ -420,10 +600,18 @@ impl StreamParser {
                 // rather than `.next()` (which would otherwise pick `hookAdditionalContexts` before `readToolCall`).
                 let nested = v["tool_call"].as_object().and_then(|map| {
                     map.iter()
-                        .find(|(k, val)| val.is_object() && (k.ends_with("ToolCall") || val.get("args").is_some() || val.get("result").is_some()))
+                        .find(|(k, val)| {
+                            val.is_object()
+                                && (k.ends_with("ToolCall") || val.get("args").is_some() || val.get("result").is_some())
+                        })
                         .or_else(|| {
-                            map.iter()
-                                .find(|(k, val)| val.is_object() && !matches!(k.as_str(), "hookAdditionalContexts" | "toolCallId" | "startedAtMs" | "completedAtMs"))
+                            map.iter().find(|(k, val)| {
+                                val.is_object()
+                                    && !matches!(
+                                        k.as_str(),
+                                        "hookAdditionalContexts" | "toolCallId" | "startedAtMs" | "completedAtMs"
+                                    )
+                            })
                         })
                 });
                 let raw_name = nested
@@ -446,7 +634,11 @@ impl StreamParser {
                         || res["is_error"].as_bool() == Some(true)
                         || !res["error"].is_null()
                         || !res["rejected"].is_null();
-                    let payload = if res["success"].is_object() { &res["success"] } else { res };
+                    let payload = if res["success"].is_object() {
+                        &res["success"]
+                    } else {
+                        res
+                    };
                     if let Some(created_lines) = payload["linesCreated"].as_u64()
                         && let Some(obj) = input.as_object_mut()
                     {
@@ -469,7 +661,10 @@ impl StreamParser {
                             })
                     } else if name == "run_command" && payload["exitCode"].is_i64() {
                         let code = payload["exitCode"].as_i64().unwrap_or(0);
-                        let stdout = payload["stdout"].as_str().or_else(|| payload["output"].as_str()).unwrap_or("");
+                        let stdout = payload["stdout"]
+                            .as_str()
+                            .or_else(|| payload["output"].as_str())
+                            .unwrap_or("");
                         format!("Command exited with code {code}.\n\nCommand output:\n{stdout}")
                     } else if name == "read_file"
                         && payload["content"].as_str().is_none_or(str::is_empty)
@@ -483,19 +678,44 @@ impl StreamParser {
                             .unwrap_or_default()
                             .to_string()
                     };
-                    vec![CliEvent::ToolDone { conversation_id: conv, call_key, name: Some(name), input, output, is_error }]
+                    vec![CliEvent::ToolDone {
+                        conversation_id: conv,
+                        call_key,
+                        name: Some(name),
+                        input,
+                        output,
+                        is_error,
+                    }]
                 } else {
-                    vec![CliEvent::ToolStart { conversation_id: conv, call_key, name, input }]
+                    vec![CliEvent::ToolStart {
+                        conversation_id: conv,
+                        call_key,
+                        name,
+                        input,
+                    }]
                 }
             }
             "result" => {
                 self.cursor_streamed.clear();
                 let is_error = v["is_error"].as_bool().unwrap_or(false) || v["subtype"].as_str() == Some("error");
                 let response = v["result"].as_str().unwrap_or("").to_string();
-                let error = is_error.then(|| if !response.is_empty() { response.clone() } else { "Cursor Agent turn failed".to_string() });
+                let error = is_error.then(|| {
+                    if !response.is_empty() {
+                        response.clone()
+                    } else {
+                        "Cursor Agent turn failed".to_string()
+                    }
+                });
                 let usage = v.get("usage").cloned().unwrap_or(Value::Null);
                 let tokens = anthropic_like_tokens(&usage);
-                vec![CliEvent::Result { conversation_id: conv, success: !is_error, response, error, usage, tokens }]
+                vec![CliEvent::Result {
+                    conversation_id: conv,
+                    success: !is_error,
+                    response,
+                    error,
+                    usage,
+                    tokens,
+                }]
             }
             _ => Vec::new(),
         }
@@ -506,7 +726,9 @@ impl StreamParser {
         if !trimmed.starts_with('{') {
             return Vec::new();
         }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else { return Vec::new() };
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            return Vec::new();
+        };
         let ty = v["type"].as_str().or_else(|| v["event"].as_str()).unwrap_or("");
         let conv = v["session_id"]
             .as_str()
@@ -535,7 +757,13 @@ impl StreamParser {
                 if delta.is_empty() {
                     Vec::new()
                 } else {
-                    vec![CliEvent::AgentText { conversation_id: conv, delta, done: false, usage: Value::Null, tokens: None }]
+                    vec![CliEvent::AgentText {
+                        conversation_id: conv,
+                        delta,
+                        done: false,
+                        usage: Value::Null,
+                        tokens: None,
+                    }]
                 }
             }
             "tool_use" | "tool_call" => {
@@ -603,7 +831,12 @@ impl StreamParser {
                         },
                     ]
                 } else {
-                    vec![CliEvent::ToolStart { conversation_id: conv, call_key, name, input }]
+                    vec![CliEvent::ToolStart {
+                        conversation_id: conv,
+                        call_key,
+                        name,
+                        input,
+                    }]
                 }
             }
             "tool_call_update" => {
@@ -629,7 +862,14 @@ impl StreamParser {
                         .to_string();
                 }
                 let is_error = matches!(status, "failed" | "error") || v["is_error"].as_bool().unwrap_or(false);
-                vec![CliEvent::ToolDone { conversation_id: conv, call_key, name: None, input: Value::Null, output, is_error }]
+                vec![CliEvent::ToolDone {
+                    conversation_id: conv,
+                    call_key,
+                    name: None,
+                    input: Value::Null,
+                    output,
+                    is_error,
+                }]
             }
             "tool_result" => {
                 let node = if v["part"].is_object() { &v["part"] } else { &v };
@@ -652,26 +892,68 @@ impl StreamParser {
                     &node["result"]
                 };
                 let output = extract_content_text(content);
-                let is_error = node["is_error"].as_bool().or_else(|| v["is_error"].as_bool()).unwrap_or(false);
-                vec![CliEvent::ToolDone { conversation_id: conv, call_key, name: None, input: Value::Null, output, is_error }]
+                let is_error = node["is_error"]
+                    .as_bool()
+                    .or_else(|| v["is_error"].as_bool())
+                    .unwrap_or(false);
+                vec![CliEvent::ToolDone {
+                    conversation_id: conv,
+                    call_key,
+                    name: None,
+                    input: Value::Null,
+                    output,
+                    is_error,
+                }]
             }
             "step_finish" => {
-                let usage = if !v["part"]["tokens"].is_null() { v["part"]["tokens"].clone() } else { v["usage"].clone() };
+                let usage = if !v["part"]["tokens"].is_null() {
+                    v["part"]["tokens"].clone()
+                } else {
+                    v["usage"].clone()
+                };
                 let tokens = anthropic_like_tokens(&usage);
-                vec![CliEvent::AgentText { conversation_id: conv, delta: String::new(), done: true, usage, tokens }]
+                vec![CliEvent::AgentText {
+                    conversation_id: conv,
+                    delta: String::new(),
+                    done: true,
+                    usage,
+                    tokens,
+                }]
             }
             "end" => {
                 let usage = v["usage"].clone();
                 let tokens = anthropic_like_tokens(&usage);
-                vec![CliEvent::Result { conversation_id: conv, success: true, response: String::new(), error: None, usage, tokens }]
+                vec![CliEvent::Result {
+                    conversation_id: conv,
+                    success: true,
+                    response: String::new(),
+                    error: None,
+                    usage,
+                    tokens,
+                }]
             }
             "result" => {
-                let is_error = v["is_error"].as_bool().unwrap_or(false) || v["status"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("error"));
-                let response = v["result"].as_str().or_else(|| v["response"].as_str()).unwrap_or("").to_string();
-                let error = v["error"].as_str().map(str::to_string).or_else(|| is_error.then(|| response.clone()));
+                let is_error = v["is_error"].as_bool().unwrap_or(false)
+                    || v["status"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("error"));
+                let response = v["result"]
+                    .as_str()
+                    .or_else(|| v["response"].as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let error = v["error"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| is_error.then(|| response.clone()));
                 let usage = v["usage"].clone();
                 let tokens = anthropic_like_tokens(&usage);
-                vec![CliEvent::Result { conversation_id: conv, success: !is_error, response, error, usage, tokens }]
+                vec![CliEvent::Result {
+                    conversation_id: conv,
+                    success: !is_error,
+                    response,
+                    error,
+                    usage,
+                    tokens,
+                }]
             }
             "error" => {
                 let msg = v["error"]["data"]["message"]
@@ -681,7 +963,14 @@ impl StreamParser {
                     .or_else(|| v["error"].as_str())
                     .unwrap_or("CLI error")
                     .to_string();
-                vec![CliEvent::Result { conversation_id: conv, success: false, response: String::new(), error: Some(msg), usage: Value::Null, tokens: None }]
+                vec![CliEvent::Result {
+                    conversation_id: conv,
+                    success: false,
+                    response: String::new(),
+                    error: Some(msg),
+                    usage: Value::Null,
+                    tokens: None,
+                }]
             }
             _ => Vec::new(),
         }
@@ -704,7 +993,11 @@ fn extract_content_text(content: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    if content.is_null() { String::new() } else { content.to_string() }
+    if content.is_null() {
+        String::new()
+    } else {
+        content.to_string()
+    }
 }
 
 /// Parse an OpenAI Chat Completions-style usage object where `prompt_tokens` already includes
@@ -722,7 +1015,11 @@ pub(super) fn openai_like_tokens(usage: &Value) -> Option<Tokens> {
         .max(count("output_tokens"))
         .max(count("outputTokens") + count("reasoningTokens"))
         .max(count("output") + count("reasoning"));
-    (input > 0 || output > 0).then_some(Tokens { input, cached: cached.min(input), output })
+    (input > 0 || output > 0).then_some(Tokens {
+        input,
+        cached: cached.min(input),
+        output,
+    })
 }
 
 fn anthropic_like_tokens(usage: &Value) -> Option<Tokens> {
@@ -740,15 +1037,17 @@ fn anthropic_like_tokens(usage: &Value) -> Option<Tokens> {
         .max(count("cache_write_tokens"))
         .max(count("cacheWriteTokens"))
         .max(usage["cache"]["write"].as_u64().unwrap_or(0));
-    let base_input = count("input_tokens")
-        .max(count("inputTokens"))
-        .max(count("input"));
+    let base_input = count("input_tokens").max(count("inputTokens")).max(count("input"));
     let input = base_input + cache_read + cache_write;
     let output = count("output_tokens")
         .max(count("completion_tokens"))
         .max(count("outputTokens") + count("reasoningTokens"))
         .max(count("output") + count("reasoning"));
-    (input > 0 || output > 0).then_some(Tokens { input, cached: cache_read, output })
+    (input > 0 || output > 0).then_some(Tokens {
+        input,
+        cached: cache_read,
+        output,
+    })
 }
 
 pub(super) fn strip_agy_timestamp_envelope(raw_output: &str) -> String {
@@ -804,7 +1103,8 @@ pub fn clean_tool_result(tool_name: &str, input: &Value, raw_output: &str, is_er
             (out_str, meta)
         }
         "read_file" => {
-            let lines = parse_leading_line_count(&cleaned).unwrap_or_else(|| if cleaned.is_empty() { 0 } else { cleaned.lines().count() });
+            let lines = parse_leading_line_count(&cleaned)
+                .unwrap_or_else(|| if cleaned.is_empty() { 0 } else { cleaned.lines().count() });
             let meta = json!({
                 "path": input["path"].as_str().unwrap_or(""),
                 "lines": lines,
@@ -813,7 +1113,8 @@ pub fn clean_tool_result(tool_name: &str, input: &Value, raw_output: &str, is_er
         }
         "write_file" | "edit_file" => {
             let path = input["path"].as_str().unwrap_or("");
-            let (added, removed) = parse_plus_minus_lines(&cleaned).unwrap_or_else(|| estimate_edit_lines(tool_name, input, path));
+            let (added, removed) =
+                parse_plus_minus_lines(&cleaned).unwrap_or_else(|| estimate_edit_lines(tool_name, input, path));
             let meta = json!({
                 "path": path,
                 "file": path,
@@ -904,10 +1205,17 @@ pub(super) fn estimate_edit_lines(tool_name: &str, input: &Value, path: &str) ->
             return (total_added, total_removed);
         }
     }
-    let added = ["Replacement", "new_string", "new_str", "newString", "new_source", "streamContent"]
-        .iter()
-        .find_map(|k| input.get(*k).and_then(Value::as_str))
-        .map_or(0, count_lines);
+    let added = [
+        "Replacement",
+        "new_string",
+        "new_str",
+        "newString",
+        "new_source",
+        "streamContent",
+    ]
+    .iter()
+    .find_map(|k| input.get(*k).and_then(Value::as_str))
+    .map_or(0, count_lines);
     let removed = ["Target", "old_string", "old_str", "oldString"]
         .iter()
         .find_map(|k| input.get(*k).and_then(Value::as_str))
@@ -976,9 +1284,19 @@ pub(super) fn parse_unified_diff(diff_text: &str) -> Option<crate::tools::LineDi
         return None;
     }
     if total_hunk_lines > 400 {
-        return Some(crate::tools::LineDiff { added, removed, hunk: Value::Null, hunks: Vec::new() });
+        return Some(crate::tools::LineDiff {
+            added,
+            removed,
+            hunk: Value::Null,
+            hunks: Vec::new(),
+        });
     }
     let hunk = hunks.first().cloned().unwrap_or(Value::Null);
     let multi = if hunks.len() > 1 { hunks } else { Vec::new() };
-    Some(crate::tools::LineDiff { added, removed, hunk, hunks: multi })
+    Some(crate::tools::LineDiff {
+        added,
+        removed,
+        hunk,
+        hunks: multi,
+    })
 }

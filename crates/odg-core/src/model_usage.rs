@@ -363,7 +363,8 @@ pub fn parse_cooldown_from_error(error: &str, now: DateTime<Utc>) -> Option<(Dat
 
     // 1. Explicit ISO-8601 / RFC3339 reset timestamp in the error message.
     static ISO_RE: OnceLock<Regex> = OnceLock::new();
-    let iso_re = ISO_RE.get_or_init(|| Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})").unwrap());
+    let iso_re = ISO_RE
+        .get_or_init(|| Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})").unwrap());
     if let Some(m) = iso_re.find(error)
         && let Ok(parsed) = DateTime::parse_from_rfc3339(m.as_str())
     {
@@ -414,7 +415,10 @@ fn parse_duration_seconds(text: &str) -> Option<u64> {
         let h = parse_u64(1);
         let m = parse_u64(2).max(parse_u64(4));
         let s = parse_secs(3).max(parse_secs(5)).max(parse_secs(6));
-        let total = h.saturating_mul(3600).saturating_add(m.saturating_mul(60)).saturating_add(s);
+        let total = h
+            .saturating_mul(3600)
+            .saturating_add(m.saturating_mul(60))
+            .saturating_add(s);
         if total > best {
             best = total;
         }
@@ -434,7 +438,10 @@ fn parse_duration_seconds(text: &str) -> Option<u64> {
         let h = parse_u64(1);
         let m = parse_u64(2).max(parse_u64(4));
         let s = parse_u64(3).max(parse_u64(5)).max(parse_u64(6));
-        let total = h.saturating_mul(3600).saturating_add(m.saturating_mul(60)).saturating_add(s);
+        let total = h
+            .saturating_mul(3600)
+            .saturating_add(m.saturating_mul(60))
+            .saturating_add(s);
         if total > best {
             best = total;
         }
@@ -468,14 +475,35 @@ mod tests {
         let path = dir.path().join("model-usage.json");
         let store = ModelUsageStore::at(&path);
 
-        store.record_cooldown("antigravity", "gemini-4-neon", Utc::now() + Duration::seconds(180), "配额已用尽".into());
+        store.record_cooldown(
+            "antigravity",
+            "gemini-4-neon",
+            Utc::now() + Duration::seconds(180),
+            "配额已用尽".into(),
+        );
         let listed = store.list();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].cooldown_until.is_some());
         assert_eq!(listed[0].cooldown_reason.as_deref(), Some("配额已用尽"));
 
-        store.record_usage("antigravity", "gemini-4-neon", &Tokens { input: 1000, cached: 400, output: 250 });
-        store.record_usage("antigravity", "gemini-4-neon", &Tokens { input: 500, cached: 100, output: 50 });
+        store.record_usage(
+            "antigravity",
+            "gemini-4-neon",
+            &Tokens {
+                input: 1000,
+                cached: 400,
+                output: 250,
+            },
+        );
+        store.record_usage(
+            "antigravity",
+            "gemini-4-neon",
+            &Tokens {
+                input: 500,
+                cached: 100,
+                output: 50,
+            },
+        );
         store.flush_sync();
 
         let reloaded = ModelUsageStore::at(&path);
@@ -496,10 +524,21 @@ mod tests {
         let path = dir.path().join("debounced-usage.json");
         let store = ModelUsageStore::at(&path);
 
-        store.record_usage("anthropic", "claude-sonnet-5-5", &Tokens { input: 300, cached: 100, output: 40 });
+        store.record_usage(
+            "anthropic",
+            "claude-sonnet-5-5",
+            &Tokens {
+                input: 300,
+                cached: 100,
+                output: 40,
+            },
+        );
         // Updated in memory immediately without blocking on synchronous disk fsync.
         assert_eq!(store.list()[0].input_tokens, 300);
-        assert!(!path.exists(), "record_usage must not synchronously write disk before debounce");
+        assert!(
+            !path.exists(),
+            "record_usage must not synchronously write disk before debounce"
+        );
 
         // Explicit flush_sync persists immediately.
         store.flush_sync();
@@ -507,14 +546,24 @@ mod tests {
         assert_eq!(ModelUsageStore::at(&path).list()[0].input_tokens, 300);
 
         // A second usage update coalesces into the background debounce flush.
-        store.record_usage("anthropic", "claude-sonnet-5-5", &Tokens { input: 200, cached: 0, output: 10 });
+        store.record_usage(
+            "anthropic",
+            "claude-sonnet-5-5",
+            &Tokens {
+                input: 200,
+                cached: 0,
+                output: 10,
+            },
+        );
         tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
         assert_eq!(ModelUsageStore::at(&path).list()[0].input_tokens, 500);
     }
 
     #[test]
     fn parses_cooldown_from_api_and_cli_errors() {
-        let now = DateTime::parse_from_rfc3339("2026-11-25T09:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-11-25T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
 
         let (until, reason) = parse_cooldown_from_error("HTTP 429 rate limit exceeded, retry after 45s", now).unwrap();
         assert_eq!(reason, "触发限流");
@@ -536,7 +585,9 @@ mod tests {
 
     #[test]
     fn cooldown_parser_ignores_hex_request_ids_and_uuids() {
-        let now = DateTime::parse_from_rfc3339("2026-11-25T09:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-11-25T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
 
         let (until, reason) = parse_cooldown_from_error(
             "HTTP 429 rate limit: retry after 5s (request_id: req_a8f72h, trace: 9b-45m-10s)",

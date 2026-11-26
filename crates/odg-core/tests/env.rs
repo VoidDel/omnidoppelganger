@@ -22,10 +22,15 @@ fn adds_the_folders_programs_are_installed_in_before_the_ones_it_was_given_and_o
     let place = |path: &str| folders.iter().position(|folder| folder == Path::new(path));
     // Homebrew's folder is now there, before the system's own, where this machine has it.
     if Path::new("/opt/homebrew/bin").is_dir() {
-        let (homebrew, usr) = (place("/opt/homebrew/bin").expect("Homebrew's folder was not added"), place("/usr/bin").unwrap());
+        let (homebrew, usr) = (
+            place("/opt/homebrew/bin").expect("Homebrew's folder was not added"),
+            place("/usr/bin").unwrap(),
+        );
         assert!(homebrew < usr, "{folders:?}");
         // And so a program there is found, where before it was not.
-        let found = std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|folder| folder.join("npx")).find(|path| path.is_file());
+        let found = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|folder| folder.join("npx"))
+            .find(|path| path.is_file());
         assert!(found.is_some(), "{folders:?}");
     }
     // Nothing twice, and the like of it done again changes nothing.
@@ -34,7 +39,10 @@ fn adds_the_folders_programs_are_installed_in_before_the_ones_it_was_given_and_o
     once.dedup();
     assert_eq!(once.len(), folders.len(), "{folders:?}");
     odg_core::env::adopt_shell_path();
-    assert_eq!(std::env::var_os("PATH").unwrap(), std::env::join_paths(&folders).unwrap());
+    assert_eq!(
+        std::env::var_os("PATH").unwrap(),
+        std::env::join_paths(&folders).unwrap()
+    );
 }
 
 #[test]
@@ -72,10 +80,15 @@ fn shell_command_strips_provider_api_keys_from_child_env() {
         lsp: None,
     };
 
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let (ran, inline) = rt.block_on(async {
         let ran = odg_core::tools::execute("run_command", &serde_json::json!({ "command": print_env }), &context).await;
-        let inline = odg_core::tools::run_inline_shell(print_env, dir.path(), 10, 32_000).await.unwrap();
+        let inline = odg_core::tools::run_inline_shell(print_env, dir.path(), 10, 32_000)
+            .await
+            .unwrap();
         (ran, inline)
     });
 
@@ -91,8 +104,16 @@ fn shell_command_strips_provider_api_keys_from_child_env() {
         assert!(!ran.content.contains(secret), "run_command leaked {secret}");
         assert!(!inline.output.contains(secret), "run_inline_shell leaked {secret}");
     }
-    assert!(ran.content.contains("keep-this-benign-value"), "benign env var missing: {}", ran.content);
-    assert!(inline.output.contains("keep-this-benign-value"), "benign env var missing in inline shell: {}", inline.output);
+    assert!(
+        ran.content.contains("keep-this-benign-value"),
+        "benign env var missing: {}",
+        ran.content
+    );
+    assert!(
+        inline.output.contains("keep-this-benign-value"),
+        "benign env var missing in inline shell: {}",
+        inline.output
+    );
     assert!(odg_core::tools::SENSITIVE_ENV_VARS.contains(&"OPENAI_API_KEY"));
     assert!(odg_core::tools::SENSITIVE_ENV_VARS.contains(&"SILICONFLOW_API_KEY"));
 }

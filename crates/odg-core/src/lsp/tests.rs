@@ -9,7 +9,10 @@ fn turns_paths_into_uris_and_back() {
     assert_eq!(document, "file:///work/my%20project/src/%E6%97%A5%E5%BF%97.rs");
     assert_eq!(path_of(&document).unwrap(), path);
     assert_eq!(path_of("untitled:Untitled-1"), None);
-    assert_eq!(language_for(Path::new("a/B.TSX")).map(|language| language.program), Some("typescript-language-server"));
+    assert_eq!(
+        language_for(Path::new("a/B.TSX")).map(|language| language.program),
+        Some("typescript-language-server")
+    );
     assert!(language_for(Path::new("README.md")).is_none());
 }
 
@@ -21,9 +24,18 @@ fn writes_windows_paths_as_servers_do_and_reads_them_back_alike() {
     assert_eq!(uri_of(r"\\?\UNC\server\share\x.c"), "file://server/share/x.c");
     assert_eq!(plain_text(r"\\?\C:\w"), r"C:\w");
     // Read back on Windows with backslashes and a capital drive, however the server wrote the drive.
-    assert_eq!(path_text("file:///C:/Users/me/a%20b/x.c", true).unwrap(), r"C:\Users\me\a b\x.c");
-    assert_eq!(path_text("file:///c%3A/Users/me/x.c", true).unwrap(), r"C:\Users\me\x.c");
-    assert_eq!(path_text("file://server/share/x.c", true).unwrap(), r"\\server\share\x.c");
+    assert_eq!(
+        path_text("file:///C:/Users/me/a%20b/x.c", true).unwrap(),
+        r"C:\Users\me\a b\x.c"
+    );
+    assert_eq!(
+        path_text("file:///c%3A/Users/me/x.c", true).unwrap(),
+        r"C:\Users\me\x.c"
+    );
+    assert_eq!(
+        path_text("file://server/share/x.c", true).unwrap(),
+        r"\\server\share\x.c"
+    );
     // Elsewhere, as it is.
     assert_eq!(path_text("file:///home/me/x.c", false).unwrap(), "/home/me/x.c");
 }
@@ -42,12 +54,30 @@ fn counts_columns_in_utf16_as_lsp_does() {
 fn finds_the_place_by_the_symbol_named_on_the_line() {
     let text = "fn width() {}\nlet w = width(id);\n";
     // The whole word: `id` in `width` is passed over for the `id` after it.
-    assert_eq!(position(text, &json!({ "line": 2, "symbol": "id" }), "a.rs"), Ok((1, 14)));
-    assert_eq!(position(text, &json!({ "line": 2, "symbol": "width" }), "a.rs"), Ok((1, 8)));
+    assert_eq!(
+        position(text, &json!({ "line": 2, "symbol": "id" }), "a.rs"),
+        Ok((1, 14))
+    );
+    assert_eq!(
+        position(text, &json!({ "line": 2, "symbol": "width" }), "a.rs"),
+        Ok((1, 8))
+    );
     assert_eq!(position(text, &json!({ "line": 1, "column": 4 }), "a.rs"), Ok((0, 3)));
-    assert!(position(text, &json!({ "line": 2, "symbol": "height" }), "a.rs").unwrap_err().contains("which reads: let w = width(id);"));
-    assert!(position(text, &json!({ "line": 9, "symbol": "w" }), "a.rs").unwrap_err().contains("has no line 9"));
-    assert!(position(text, &json!({ "symbol": "w" }), "a.rs").unwrap_err().contains("`line` is required"));
+    assert!(
+        position(text, &json!({ "line": 2, "symbol": "height" }), "a.rs")
+            .unwrap_err()
+            .contains("which reads: let w = width(id);")
+    );
+    assert!(
+        position(text, &json!({ "line": 9, "symbol": "w" }), "a.rs")
+            .unwrap_err()
+            .contains("has no line 9")
+    );
+    assert!(
+        position(text, &json!({ "symbol": "w" }), "a.rs")
+            .unwrap_err()
+            .contains("`line` is required")
+    );
 }
 
 #[test]
@@ -57,10 +87,22 @@ fn reads_every_shape_an_answer_comes_in() {
     assert_eq!(locations(&json!([link, location])).len(), 2);
     assert_eq!(locations(&location)[0].0, "file:///w/b.rs");
     assert!(locations(&Value::Null).is_empty());
-    assert_eq!(hover_text(&json!({ "kind": "markdown", "value": "```rust\nfn f()\n```" })), "```rust\nfn f()\n```");
-    assert_eq!(hover_text(&json!([{ "language": "rust", "value": "fn f()" }, "docs"])), "```rust\nfn f()\n```\n\ndocs");
+    assert_eq!(
+        hover_text(&json!({ "kind": "markdown", "value": "```rust\nfn f()\n```" })),
+        "```rust\nfn f()\n```"
+    );
+    assert_eq!(
+        hover_text(&json!([{ "language": "rust", "value": "fn f()" }, "docs"])),
+        "```rust\nfn f()\n```\n\ndocs"
+    );
     let mut lines = Vec::new();
-    outline(&[json!({ "name": "S", "kind": 23, "selectionRange": { "start": { "line": 0 } }, "children": [{ "name": "f", "kind": 6, "detail": "fn()", "selectionRange": { "start": { "line": 1 } } }] })], 0, &mut lines);
+    outline(
+        &[
+            json!({ "name": "S", "kind": 23, "selectionRange": { "start": { "line": 0 } }, "children": [{ "name": "f", "kind": 6, "detail": "fn()", "selectionRange": { "start": { "line": 1 } } }] }),
+        ],
+        0,
+        &mut lines,
+    );
     assert_eq!(lines, ["struct S  (line 1)", "  method f  fn()  (line 2)"]);
 }
 
@@ -76,7 +118,12 @@ async fn scripted(root: &Path, configured: Arc<Mutex<Value>>) -> Arc<Client> {
         while let Some(message) = receive(&mut reader).await {
             let reply = |result: Value| json!({ "jsonrpc": "2.0", "id": message["id"], "result": result });
             match message["method"].as_str() {
-                Some("initialize") => send(&writer, &reply(json!({ "capabilities": { "definitionProvider": true } }))).await.unwrap(),
+                Some("initialize") => send(
+                    &writer,
+                    &reply(json!({ "capabilities": { "definitionProvider": true } })),
+                )
+                .await
+                .unwrap(),
                 Some("initialized") => {
                     send(&writer, &json!({ "jsonrpc": "2.0", "id": 900, "method": "workspace/configuration", "params": { "items": [{ "section": "rust-analyzer" }] } })).await.unwrap();
                     send(&writer, &json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": "index", "value": { "kind": "begin", "title": "Indexing" } } })).await.unwrap();
@@ -99,7 +146,15 @@ async fn scripted(root: &Path, configured: Arc<Mutex<Value>>) -> Arc<Client> {
             }
         }
     });
-    Client::start("rust-analyzer", root, Box::new(client_read), Box::new(client_write), None).await.unwrap()
+    Client::start(
+        "rust-analyzer",
+        root,
+        Box::new(client_read),
+        Box::new(client_write),
+        None,
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -114,26 +169,62 @@ async fn waits_for_indexing_then_answers_with_the_line_it_points_at() {
     let cancel = CancellationToken::new();
     // rust-analyzer's own word counts: until it says it is done, it is at work.
     assert!(client.busy());
-    let defined = navigate(&hub, root, &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }), &cancel).await.unwrap();
+    let defined = navigate(
+        &hub,
+        root,
+        &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }),
+        &cancel,
+    )
+    .await
+    .unwrap();
     assert_eq!(defined.content, "Defined at (1):\na.rs:1:4  fn f() {}");
-    assert_eq!((defined.meta["results"].as_u64(), defined.meta["line"].as_u64()), (Some(1), Some(2)));
+    assert_eq!(
+        (defined.meta["results"].as_u64(), defined.meta["line"].as_u64()),
+        (Some(1), Some(2))
+    );
     assert!(!client.busy());
-    let found = navigate(&hub, root, &json!({ "operation": "diagnostics", "path": "a.rs" }), &cancel).await.unwrap();
-    assert!(found.content.starts_with("1 problems in a.rs:\nerror a.rs:2:5 [E0425]: cannot find value `y`\n    fn g() { y; f(); }"), "{}", found.content);
+    let found = navigate(
+        &hub,
+        root,
+        &json!({ "operation": "diagnostics", "path": "a.rs" }),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    assert!(
+        found
+            .content
+            .starts_with("1 problems in a.rs:\nerror a.rs:2:5 [E0425]: cannot find value `y`\n    fn g() { y; f(); }"),
+        "{}",
+        found.content
+    );
     assert_eq!(found.meta["errors"], 1);
     // What it asked for its settings was answered with them: no build scripts, no proc macros, no `cargo check`.
     assert_eq!(configured.lock().unwrap()[0]["procMacro"]["enable"], false);
     assert_eq!(configured.lock().unwrap()[0]["checkOnSave"], false);
-    let refused = navigate(&hub, root, &json!({ "operation": "rename", "path": "a.rs" }), &cancel).await.unwrap_err();
+    let refused = navigate(&hub, root, &json!({ "operation": "rename", "path": "a.rs" }), &cancel)
+        .await
+        .unwrap_err();
     assert!(refused.contains("`operation` must be one of"), "{refused}");
-    let other = navigate(&hub, root, &json!({ "operation": "symbols", "path": "notes.md" }), &cancel).await.unwrap_err();
+    let other = navigate(
+        &hub,
+        root,
+        &json!({ "operation": "symbols", "path": "notes.md" }),
+        &cancel,
+    )
+    .await
+    .unwrap_err();
     assert!(other.contains("is not of a language navigated here"), "{other}");
 }
 
 /// Whether a language server can be run here: on the `PATH`, and answering (rustup's stand-in for a component
 /// not installed is on the `PATH` but fails).
 fn runs(program: &str) -> bool {
-    installed(program).is_some() && std::process::Command::new(program).arg("--version").output().is_ok_and(|output| output.status.success())
+    installed(program).is_some()
+        && std::process::Command::new(program)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -145,7 +236,11 @@ async fn navigates_a_real_rust_project_with_rust_analyzer() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n").unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+    )
+    .unwrap();
     std::fs::write(
         root.join("src/lib.rs"),
         "mod broken;\n\npub struct Counter {\n    pub count: u32,\n}\n\n/// Adds one.\npub fn helper(counter: &Counter) -> u32 {\n    counter.count + 1\n}\n\npub fn caller() -> u32 {\n    let counter = Counter { count: 1 };\n    helper(&counter) + helper(&counter)\n}\n",
@@ -160,17 +255,39 @@ async fn navigates_a_real_rust_project_with_rust_analyzer() {
     };
 
     let defined = ask(json!({ "operation": "definition", "path": "src/lib.rs", "line": 14, "symbol": "helper" })).await;
-    assert!(defined.content.starts_with("Defined at (1):\nsrc/lib.rs:8:8  pub fn helper(counter: &Counter) -> u32 {"), "{}", defined.content);
+    assert!(
+        defined
+            .content
+            .starts_with("Defined at (1):\nsrc/lib.rs:8:8  pub fn helper(counter: &Counter) -> u32 {"),
+        "{}",
+        defined.content
+    );
     let used = ask(json!({ "operation": "references", "path": "src/lib.rs", "line": 8, "symbol": "helper" })).await;
     assert_eq!(used.meta["results"], 3, "{}", used.content);
     let hover = ask(json!({ "operation": "hover", "path": "src/lib.rs", "line": 14, "symbol": "helper" })).await;
-    assert!(hover.content.contains("fn helper(counter: &Counter) -> u32") && hover.content.contains("Adds one."), "{}", hover.content);
+    assert!(
+        hover.content.contains("fn helper(counter: &Counter) -> u32") && hover.content.contains("Adds one."),
+        "{}",
+        hover.content
+    );
     let outline = ask(json!({ "operation": "symbols", "path": "src/lib.rs" })).await;
-    assert!(outline.content.contains("struct Counter  (line 3)") && outline.content.contains("function helper"), "{}", outline.content);
+    assert!(
+        outline.content.contains("struct Counter  (line 3)") && outline.content.contains("function helper"),
+        "{}",
+        outline.content
+    );
     let found = ask(json!({ "operation": "find_symbol", "path": "src/lib.rs", "query": "Counter" })).await;
-    assert!(found.content.contains("struct Counter") && found.content.contains("src/lib.rs:3:"), "{}", found.content);
+    assert!(
+        found.content.contains("struct Counter") && found.content.contains("src/lib.rs:3:"),
+        "{}",
+        found.content
+    );
     let broken = ask(json!({ "operation": "diagnostics", "path": "src/broken.rs" })).await;
-    assert!(broken.meta["errors"].as_u64().unwrap() >= 1 && broken.content.contains("error src/broken.rs:1:"), "{}", broken.content);
+    assert!(
+        broken.meta["errors"].as_u64().unwrap() >= 1 && broken.content.contains("error src/broken.rs:1:"),
+        "{}",
+        broken.content
+    );
     // A file changed on disk is given to the server again before it is asked.
     std::fs::write(root.join("src/broken.rs"), "pub fn oops() {}\n").unwrap();
     let mended = ask(json!({ "operation": "diagnostics", "path": "src/broken.rs" })).await;
@@ -199,16 +316,36 @@ async fn navigates_a_real_c_project_with_clangd() {
         async move { navigate(hub, root, &input, cancel).await.unwrap() }
     };
     let defined = ask(json!({ "operation": "definition", "path": "counter.c", "line": 12, "symbol": "helper" })).await;
-    assert!(defined.content.starts_with("Defined at (1):\ncounter.c:6:5  int helper(struct counter *c) {"), "{}", defined.content);
+    assert!(
+        defined
+            .content
+            .starts_with("Defined at (1):\ncounter.c:6:5  int helper(struct counter *c) {"),
+        "{}",
+        defined.content
+    );
     let used = ask(json!({ "operation": "references", "path": "counter.c", "line": 6, "symbol": "helper" })).await;
     assert_eq!(used.meta["results"], 3, "{}", used.content);
     let hover = ask(json!({ "operation": "hover", "path": "counter.c", "line": 12, "symbol": "helper" })).await;
-    assert!(hover.content.contains("int helper(struct counter *c)") && hover.content.contains("Adds one."), "{}", hover.content);
+    assert!(
+        hover.content.contains("int helper(struct counter *c)") && hover.content.contains("Adds one."),
+        "{}",
+        hover.content
+    );
     let outline = ask(json!({ "operation": "symbols", "path": "counter.c" })).await;
     // clangd calls a C struct a class, with `struct` as its detail.
-    assert!(outline.content.contains("counter  struct  (line 1)") && outline.content.contains("  field count  int  (line 2)") && outline.content.contains("function helper"), "{}", outline.content);
+    assert!(
+        outline.content.contains("counter  struct  (line 1)")
+            && outline.content.contains("  field count  int  (line 2)")
+            && outline.content.contains("function helper"),
+        "{}",
+        outline.content
+    );
     let broken = ask(json!({ "operation": "diagnostics", "path": "broken.c" })).await;
-    assert!(broken.meta["errors"].as_u64().unwrap() >= 1 && broken.content.contains("error broken.c:1:"), "{}", broken.content);
+    assert!(
+        broken.meta["errors"].as_u64().unwrap() >= 1 && broken.content.contains("error broken.c:1:"),
+        "{}",
+        broken.content
+    );
     // A file changed on disk is given to the server again before it is asked.
     std::fs::write(root.join("broken.c"), "int oops(void) {\n    return 0;\n}\n").unwrap();
     let mended = ask(json!({ "operation": "diagnostics", "path": "broken.c" })).await;
@@ -220,18 +357,50 @@ async fn navigates_a_real_c_project_with_clangd() {
 async fn a_stand_in_that_fails_is_not_taken_for_a_server_and_one_that_will_not_serve_says_so() {
     // rustup's stand-in for rust-analyzer, when the component is not installed, fails at `--version`: `false` does
     // the same, and is not taken for an installed server.
-    static FAILING: Language = Language { key: "test", name: "Test", program: "false", version_arg: "--version", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[], download: None };
+    static FAILING: Language = Language {
+        key: "test",
+        name: "Test",
+        program: "false",
+        version_arg: "--version",
+        args: &[],
+        extensions: &["test"],
+        install: "install it somehow",
+        runs_project_code: false,
+        env: &[],
+        download: None,
+    };
     // `true` answers `--version`, then exits rather than serve.
-    static SILENT: Language = Language { key: "test", name: "Test", program: "true", version_arg: "--version", args: &[], extensions: &["test"], install: "install it somehow", runs_project_code: false, env: &[], download: None };
+    static SILENT: Language = Language {
+        key: "test",
+        name: "Test",
+        program: "true",
+        version_arg: "--version",
+        args: &[],
+        extensions: &["test"],
+        install: "install it somehow",
+        runs_project_code: false,
+        env: &[],
+        download: None,
+    };
     if installed("false").is_none() || installed("true").is_none() {
         return;
     }
     let directory = tempfile::tempdir().unwrap();
     assert_eq!(locate(None, &FAILING).await, Located::Missing);
-    let missing = LspHub::default().client(directory.path(), &FAILING).await.err().unwrap();
-    assert!(missing.starts_with("false is not installed") && missing.contains("install it somehow"), "{missing}");
+    let missing = LspHub::default()
+        .client(directory.path(), &FAILING)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        missing.starts_with("false is not installed") && missing.contains("install it somehow"),
+        "{missing}"
+    );
     let silent = LspHub::default().client(directory.path(), &SILENT).await.err().unwrap();
-    assert!(silent.starts_with("true would not start") && silent.contains("install it somehow"), "{silent}");
+    assert!(
+        silent.starts_with("true would not start") && silent.contains("install it somehow"),
+        "{silent}"
+    );
 }
 
 /// A server's archive as its release would have it on this system: a zip holding the program on Windows, the
@@ -240,7 +409,8 @@ fn archive(program: &str, bytes: &[u8]) -> (String, Vec<u8>, String) {
     use sha2::Digest;
     let (name, packed) = if cfg!(windows) {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        zip.start_file(executable(program), zip::write::SimpleFileOptions::default()).unwrap();
+        zip.start_file(executable(program), zip::write::SimpleFileOptions::default())
+            .unwrap();
         std::io::Write::write_all(&mut zip, bytes).unwrap();
         (format!("{program}.zip"), zip.finish().unwrap().into_inner())
     } else {
@@ -248,7 +418,10 @@ fn archive(program: &str, bytes: &[u8]) -> (String, Vec<u8>, String) {
         std::io::Write::write_all(&mut gz, bytes).unwrap();
         (format!("{program}.gz"), gz.finish().unwrap())
     };
-    let sha256 = sha2::Sha256::digest(&packed).iter().map(|byte| format!("{byte:02x}")).collect();
+    let sha256 = sha2::Sha256::digest(&packed)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     (name, packed, sha256)
 }
 
@@ -258,34 +431,92 @@ fn downloadable(program: &'static str, file: String, sha256: String) -> &'static
 }
 
 /// A language whose server on the `PATH` is `program`, and in whose place `downloaded` is downloaded.
-fn downloadable_in_place(program: &'static str, downloaded: &'static str, file: String, sha256: String) -> &'static Language {
+fn downloadable_in_place(
+    program: &'static str,
+    downloaded: &'static str,
+    file: String,
+    sha256: String,
+) -> &'static Language {
     let target = crate::runtime::target().expect("a target with builds");
-    let builds: &'static [(&'static str, &'static str, &'static str, u64)] = Box::leak(vec![(target, &*Box::leak(file.into_boxed_str()), &*Box::leak(sha256.into_boxed_str()), 1_000)].into_boxed_slice());
-    let download: &'static Download = Box::leak(Box::new(Download { name: "Fake", program: downloaded, args: &["--serve"], version: "1.0", address: "", builds }));
-    Box::leak(Box::new(Language { key: "fake", name: "Fake", program, version_arg: "--version", args: &[], extensions: &["fake"], install: "install it somehow", runs_project_code: false, env: &[], download: Some(download) }))
+    let builds: &'static [(&'static str, &'static str, &'static str, u64)] = Box::leak(
+        vec![(
+            target,
+            &*Box::leak(file.into_boxed_str()),
+            &*Box::leak(sha256.into_boxed_str()),
+            1_000,
+        )]
+        .into_boxed_slice(),
+    );
+    let download: &'static Download = Box::leak(Box::new(Download {
+        name: "Fake",
+        program: downloaded,
+        args: &["--serve"],
+        version: "1.0",
+        address: "",
+        builds,
+    }));
+    Box::leak(Box::new(Language {
+        key: "fake",
+        name: "Fake",
+        program,
+        version_arg: "--version",
+        args: &[],
+        extensions: &["fake"],
+        install: "install it somehow",
+        runs_project_code: false,
+        env: &[],
+        download: Some(download),
+    }))
 }
 
 fn sha256_of(bytes: &[u8]) -> String {
     use sha2::Digest;
-    sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[test]
 fn every_download_is_pinned_for_each_system_the_app_runs_on() {
-    let targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"];
+    let targets = [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+    ];
     let downloads: Vec<&Download> = LANGUAGES.iter().filter_map(|language| language.download).collect();
-    assert_eq!(downloads.iter().map(|download| download.program).collect::<Vec<_>>(), ["rust-analyzer", "tsc", "ty"]);
+    assert_eq!(
+        downloads.iter().map(|download| download.program).collect::<Vec<_>>(),
+        ["rust-analyzer", "tsc", "ty"]
+    );
     for download in downloads {
-        assert_eq!(download.builds.iter().map(|(target, ..)| *target).collect::<Vec<_>>(), targets, "{}", download.name);
+        assert_eq!(
+            download.builds.iter().map(|(target, ..)| *target).collect::<Vec<_>>(),
+            targets,
+            "{}",
+            download.name
+        );
         for (target, file, sha256, bytes) in download.builds {
-            assert!(sha256.len() == 64 && sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{target} {file}");
+            assert!(
+                sha256.len() == 64 && sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "{target} {file}"
+            );
             assert!((1_000_000..40_000_000).contains(bytes), "{target} {file}");
-            assert!([".gz", ".tgz", ".tar.gz", ".zip"].iter().any(|end| file.ends_with(end)), "{file}");
+            assert!(
+                [".gz", ".tgz", ".tar.gz", ".zip"].iter().any(|end| file.ends_with(end)),
+                "{file}"
+            );
             assert!(download.address.starts_with("https://"));
         }
     }
     // TypeScript and Python are served by programs of their own when downloaded, started as servers.
-    assert_eq!((TYPESCRIPT.program, TYPESCRIPT.args), ("tsc", &["--lsp", "--stdio"][..]));
+    assert_eq!(
+        (TYPESCRIPT.program, TYPESCRIPT.args),
+        ("tsc", &["--lsp", "--stdio"][..])
+    );
     assert_eq!((TY.program, TY.args), ("ty", &["server"][..]));
     assert_eq!(settings("tsc")["runExternalCode"], false);
 }
@@ -297,7 +528,10 @@ async fn keeps_the_program_with_its_folder_from_a_tarball_and_nothing_outside_it
     }
     // As an npm package has it: the program in `package/lib`, beside the files it reads; other files above.
     let program = executable("odg-fake-tsc");
-    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::default(),
+    ));
     let mut add = |path: &str, bytes: &[u8]| {
         let mut header = tar::Header::new_gnu();
         header.set_size(bytes.len() as u64);
@@ -314,16 +548,27 @@ async fn keeps_the_program_with_its_folder_from_a_tarball_and_nothing_outside_it
     let packed = tar.into_inner().unwrap().finish().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("lsp");
-    let language = downloadable_in_place("odg-fake-tsls", "odg-fake-tsc", "pkg/-/odg-fake-tsc-1.0.tgz".to_string(), sha256_of(&packed));
+    let language = downloadable_in_place(
+        "odg-fake-tsls",
+        "odg-fake-tsc",
+        "pkg/-/odg-fake-tsc-1.0.tgz".to_string(),
+        sha256_of(&packed),
+    );
     let (address, requests) = crate::testing::serve_bytes(vec![ok(&packed)]).await;
-    let got = install_from(&root, language, &address, &CancellationToken::new()).await.unwrap();
+    let got = install_from(&root, language, &address, &CancellationToken::new())
+        .await
+        .unwrap();
     assert!(requests.await.unwrap()[0].starts_with("GET /pkg/-/odg-fake-tsc-1.0.tgz "));
     let into = root.join("odg-fake-tsc/1.0");
     assert_eq!(got, into.join(&program));
     assert_eq!(std::fs::read(&got).unwrap(), b"the program");
     assert_eq!(std::fs::read(into.join("lib.d.ts")).unwrap(), b"declare var x: number;");
     assert_eq!(std::fs::read(into.join("sub/more.d.ts")).unwrap(), b"more");
-    assert!(!into.join("README.md").exists() && !directory.path().join("escaped").exists() && !root.join("escaped").exists());
+    assert!(
+        !into.join("README.md").exists()
+            && !directory.path().join("escaped").exists()
+            && !root.join("escaped").exists()
+    );
     assert!(!root.join("odg-fake-tsc/odg-fake-tsc-1.0.tgz.part").exists());
     #[cfg(unix)]
     {
@@ -348,32 +593,93 @@ async fn navigates_with_the_servers_it_downloads() {
     let hub = LspHub::new(downloads.path().to_path_buf());
     let cancel = CancellationToken::new();
     let projects = [
-        ("typescript", "a.ts", "export function greet(name: string): string {\n    return name;\n}\n", "b.ts", "import { greet } from \"./a\";\ngreet(\"x\");\nconst n: number = \"oops\";\n"),
-        ("python", "a.py", "def greet(name: str) -> str:\n    return name\n", "b.py", "from a import greet\ngreet(\"x\")\nn: int = \"oops\"\n"),
+        (
+            "typescript",
+            "a.ts",
+            "export function greet(name: string): string {\n    return name;\n}\n",
+            "b.ts",
+            "import { greet } from \"./a\";\ngreet(\"x\");\nconst n: number = \"oops\";\n",
+        ),
+        (
+            "python",
+            "a.py",
+            "def greet(name: str) -> str:\n    return name\n",
+            "b.py",
+            "from a import greet\ngreet(\"x\")\nn: int = \"oops\"\n",
+        ),
     ];
     for (key, defined_in, defining, used_in, using) in projects {
         let language = language_by_key(key).unwrap();
         if matches!(locate(None, language).await, Located::System(_)) {
             continue;
         }
-        let installed = server_tool(&hub, &json!({ "language": key, "install": true }), &cancel).await.unwrap();
+        let installed = server_tool(&hub, &json!({ "language": key, "install": true }), &cancel)
+            .await
+            .unwrap();
         assert_eq!(installed.meta["state"], "downloaded", "{}", installed.content);
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
         std::fs::write(root.join(defined_in), defining).unwrap();
         std::fs::write(root.join(used_in), using).unwrap();
         if key == "typescript" {
-            std::fs::write(root.join("tsconfig.json"), r#"{ "compilerOptions": { "strict": true } }"#).unwrap();
+            std::fs::write(
+                root.join("tsconfig.json"),
+                r#"{ "compilerOptions": { "strict": true } }"#,
+            )
+            .unwrap();
         }
-        let defined = navigate(&hub, root, &json!({ "operation": "definition", "path": used_in, "line": 2, "symbol": "greet" }), &cancel).await.unwrap();
-        assert!(defined.content.contains(&format!("{defined_in}:1:")), "{key}: {}", defined.content);
-        let hover = navigate(&hub, root, &json!({ "operation": "hover", "path": used_in, "line": 2, "symbol": "greet" }), &cancel).await.unwrap();
+        let defined = navigate(
+            &hub,
+            root,
+            &json!({ "operation": "definition", "path": used_in, "line": 2, "symbol": "greet" }),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert!(
+            defined.content.contains(&format!("{defined_in}:1:")),
+            "{key}: {}",
+            defined.content
+        );
+        let hover = navigate(
+            &hub,
+            root,
+            &json!({ "operation": "hover", "path": used_in, "line": 2, "symbol": "greet" }),
+            &cancel,
+        )
+        .await
+        .unwrap();
         assert!(hover.content.contains("str"), "{key}: {}", hover.content);
-        let outline = navigate(&hub, root, &json!({ "operation": "symbols", "path": defined_in }), &cancel).await.unwrap();
+        let outline = navigate(
+            &hub,
+            root,
+            &json!({ "operation": "symbols", "path": defined_in }),
+            &cancel,
+        )
+        .await
+        .unwrap();
         assert!(outline.content.contains("greet"), "{key}: {}", outline.content);
-        let found = navigate(&hub, root, &json!({ "operation": "diagnostics", "path": used_in }), &cancel).await.unwrap();
-        assert!(found.meta["errors"].as_u64().unwrap_or(0) >= 1, "{key}: {}", found.content);
-        let referenced = navigate(&hub, root, &json!({ "operation": "references", "path": defined_in, "line": 1, "symbol": "greet" }), &cancel).await.unwrap();
+        let found = navigate(
+            &hub,
+            root,
+            &json!({ "operation": "diagnostics", "path": used_in }),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert!(
+            found.meta["errors"].as_u64().unwrap_or(0) >= 1,
+            "{key}: {}",
+            found.content
+        );
+        let referenced = navigate(
+            &hub,
+            root,
+            &json!({ "operation": "references", "path": defined_in, "line": 1, "symbol": "greet" }),
+            &cancel,
+        )
+        .await
+        .unwrap();
         assert!(referenced.content.contains(used_in), "{key}: {}", referenced.content);
     }
     hub.shutdown();
@@ -384,7 +690,11 @@ fn keeps_the_program_from_a_zip_and_nothing_that_would_climb_out() {
     let directory = tempfile::tempdir().unwrap();
     let program = executable("odg-zipped");
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    for (name, bytes) in [(program.as_str(), &b"zipped"[..]), ("../outside", b"out"), ("notes.txt", b"notes")] {
+    for (name, bytes) in [
+        (program.as_str(), &b"zipped"[..]),
+        ("../outside", b"out"),
+        ("notes.txt", b"notes"),
+    ] {
         zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
         std::io::Write::write_all(&mut zip, bytes).unwrap();
     }
@@ -401,7 +711,15 @@ fn keeps_the_program_from_a_zip_and_nothing_that_would_climb_out() {
 }
 
 fn ok(body: &[u8]) -> Vec<u8> {
-    [format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()).into_bytes(), body.to_vec()].concat()
+    [
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes(),
+        body.to_vec(),
+    ]
+    .concat()
 }
 
 #[tokio::test]
@@ -416,8 +734,13 @@ async fn downloads_a_server_checked_against_its_checksum_and_keeps_only_that_ver
     // A version from before, to be taken away.
     std::fs::create_dir_all(root.join("odg-fake-server/0.9")).unwrap();
     let (address, requests) = crate::testing::serve_bytes(vec![ok(&packed)]).await;
-    let program = install_from(root, language, &address, &CancellationToken::new()).await.unwrap();
-    assert_eq!(program, root.join("odg-fake-server/1.0").join(executable("odg-fake-server")));
+    let program = install_from(root, language, &address, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        program,
+        root.join("odg-fake-server/1.0").join(executable("odg-fake-server"))
+    );
     assert_eq!(std::fs::read(&program).unwrap(), b"#!/bin/sh\necho fake\n");
     #[cfg(unix)]
     {
@@ -442,7 +765,9 @@ async fn refuses_a_download_whose_checksum_does_not_match_and_leaves_nothing() {
     let (file, packed, _) = archive("odg-other-server", b"anything");
     let language = downloadable("odg-other-server", file, "0".repeat(64));
     let (address, _) = crate::testing::serve_bytes(vec![ok(&packed)]).await;
-    let error = install_from(root, language, &address, &CancellationToken::new()).await.unwrap_err();
+    let error = install_from(root, language, &address, &CancellationToken::new())
+        .await
+        .unwrap_err();
     assert!(error.contains("校验不符"), "{error}");
     assert!(!root.join("odg-other-server/1.0").exists());
     assert_eq!(std::fs::read_dir(root.join("odg-other-server")).unwrap().count(), 0);
@@ -454,19 +779,44 @@ async fn says_how_a_missing_server_can_be_had() {
     // Downloadable, with this machine's size, unless rust-analyzer is installed here.
     if !matches!(locate(None, rust).await, Located::System(_)) && RUST_ANALYZER.megabytes().is_some() {
         let directory = tempfile::tempdir().unwrap();
-        let told = server_tool(&LspHub::new(directory.path().to_path_buf()), &json!({ "language": "rust" }), &CancellationToken::new()).await.unwrap();
-        assert!(told.content.contains("call `language_server` with `language` \"rust\" and `install` true") && told.content.contains("about 1"), "{}", told.content);
+        let told = server_tool(
+            &LspHub::new(directory.path().to_path_buf()),
+            &json!({ "language": "rust" }),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            told.content
+                .contains("call `language_server` with `language` \"rust\" and `install` true")
+                && told.content.contains("about 1"),
+            "{}",
+            told.content
+        );
         assert_eq!(told.meta["state"], "missing");
     }
     // Python: ty can be downloaded in pyright's place, or the user installs pyright.
     let python = missing(language_by_key("python").unwrap());
-    assert!(python.contains("`language` \"python\" and `install` true (ty 0.0.107") && python.contains("npm install -g pyright"), "{python}");
+    assert!(
+        python.contains("`language` \"python\" and `install` true (ty 0.0.107")
+            && python.contains("npm install -g pyright"),
+        "{python}"
+    );
     let typescript = missing(language_by_key("typescript").unwrap());
     assert!(typescript.contains("(TypeScript 7.0.2"), "{typescript}");
     // One the app cannot download: how the user installs it.
     assert!(missing(language_by_key("go").unwrap()).contains("go install golang.org/x/tools/gopls@latest"));
-    let wrong = server_tool(&LspHub::default(), &json!({ "language": "cobol" }), &CancellationToken::new()).await.unwrap_err();
-    assert!(wrong.contains("`language` must be one of rust, c, typescript, python, go"), "{wrong}");
+    let wrong = server_tool(
+        &LspHub::default(),
+        &json!({ "language": "cobol" }),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        wrong.contains("`language` must be one of rust, c, typescript, python, go"),
+        "{wrong}"
+    );
 }
 
 #[cfg(unix)]
@@ -477,7 +827,11 @@ async fn checks_gopls_with_version_subcommand_instead_of_flag() {
     assert_eq!(go.version_arg, "version");
     let directory = tempfile::tempdir().unwrap();
     let fake_gopls = directory.path().join("gopls");
-    std::fs::write(&fake_gopls, "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo 'gopls v0.24.0'; exit 0; fi\nexit 2\n").unwrap();
+    std::fs::write(
+        &fake_gopls,
+        "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo 'gopls v0.24.0'; exit 0; fi\nexit 2\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&fake_gopls, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(servers::works(&fake_gopls, go.version_arg).await);
     assert!(!servers::works(&fake_gopls, "--version").await);
@@ -517,12 +871,42 @@ async fn singleflight_slots_do_not_block_other_languages_and_shutdown_kills_infl
         version: "1.0",
         address: "https://example.invalid",
         builds: &[
-            ("aarch64-apple-darwin", "slow.gz", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
-            ("x86_64-apple-darwin", "slow.gz", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
-            ("x86_64-unknown-linux-gnu", "slow.gz", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
-            ("aarch64-unknown-linux-gnu", "slow.gz", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
-            ("x86_64-pc-windows-msvc", "slow.zip", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
-            ("aarch64-pc-windows-msvc", "slow.zip", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
+            (
+                "aarch64-apple-darwin",
+                "slow.gz",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                1_000_000,
+            ),
+            (
+                "x86_64-apple-darwin",
+                "slow.gz",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                1_000_000,
+            ),
+            (
+                "x86_64-unknown-linux-gnu",
+                "slow.gz",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                1_000_000,
+            ),
+            (
+                "aarch64-unknown-linux-gnu",
+                "slow.gz",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                1_000_000,
+            ),
+            (
+                "x86_64-pc-windows-msvc",
+                "slow.zip",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                1_000_000,
+            ),
+            (
+                "aarch64-pc-windows-msvc",
+                "slow.zip",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                1_000_000,
+            ),
         ],
     };
     static SLOW_LANG: Language = Language {
@@ -579,7 +963,11 @@ async fn singleflight_slots_do_not_block_other_languages_and_shutdown_kills_infl
     let t0 = tokio::time::Instant::now();
     let fast_res = hub.client(&workspace, &FAST_LANG).await;
     assert!(fast_res.is_err());
-    assert!(t0.elapsed() < Duration::from_secs(1), "Language B blocked for {:?}", t0.elapsed());
+    assert!(
+        t0.elapsed() < Duration::from_secs(1),
+        "Language B blocked for {:?}",
+        t0.elapsed()
+    );
 
     // Targeted `shutdown_language("fast_b")` closes `live_b` without disturbing `slow_a`.
     assert!(!live_b.closed());
@@ -596,7 +984,11 @@ async fn singleflight_slots_do_not_block_other_languages_and_shutdown_kills_infl
         .unwrap()
         .err()
         .expect("expected startup error");
-    assert!(shutdown_t0.elapsed() < Duration::from_secs(2), "shutdown took {:?}", shutdown_t0.elapsed());
+    assert!(
+        shutdown_t0.elapsed() < Duration::from_secs(2),
+        "shutdown took {:?}",
+        shutdown_t0.elapsed()
+    );
     assert!(!slow_err.is_empty());
 
     for pid in pids {
@@ -618,7 +1010,10 @@ async fn singleflight_slots_do_not_block_other_languages_and_shutdown_kills_infl
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|s| s.success());
-        assert!(!still_alive, "process {pid} should have been killed by LspHub::shutdown");
+        assert!(
+            !still_alive,
+            "process {pid} should have been killed by LspHub::shutdown"
+        );
     }
 }
 
@@ -641,7 +1036,12 @@ async fn cancelled_first_navigate_preserves_first_settle_budget_and_aborts_rpc()
             let reply = |result: Value| json!({ "jsonrpc": "2.0", "id": message["id"], "result": result });
             match message["method"].as_str() {
                 Some("initialize") => {
-                    send(&writer, &reply(json!({ "capabilities": { "definitionProvider": true } }))).await.unwrap();
+                    send(
+                        &writer,
+                        &reply(json!({ "capabilities": { "definitionProvider": true } })),
+                    )
+                    .await
+                    .unwrap();
                 }
                 Some("initialized") => {
                     send(&writer, &json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": "idx", "value": { "kind": "begin" } } })).await.unwrap();
@@ -665,7 +1065,15 @@ async fn cancelled_first_navigate_preserves_first_settle_budget_and_aborts_rpc()
         }
     });
 
-    let client = Client::start("rust-analyzer", root, Box::new(client_read), Box::new(client_write), None).await.unwrap();
+    let client = Client::start(
+        "rust-analyzer",
+        root,
+        Box::new(client_read),
+        Box::new(client_write),
+        None,
+    )
+    .await
+    .unwrap();
     let hub = LspHub::default();
     hub.insert(root, &LANGUAGES[0], client.clone()).await;
 
@@ -676,17 +1084,30 @@ async fn cancelled_first_navigate_preserves_first_settle_budget_and_aborts_rpc()
         tokio::time::sleep(Duration::from_millis(40)).await;
         c1_trigger.cancel();
     });
-    let err1 = navigate(&hub, root, &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }), &cancel1)
-        .await
-        .unwrap_err();
+    let err1 = navigate(
+        &hub,
+        root,
+        &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }),
+        &cancel1,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err1, "Cancelled.");
-    assert!(!client.settled.load(Ordering::Acquire), "settled must not be set when first settle was cancelled");
+    assert!(
+        !client.settled.load(Ordering::Acquire),
+        "settled must not be set when first settle was cancelled"
+    );
 
     // 2) Second `navigate` still gets `FIRST_SETTLE`, finishes indexing cleanly, and sets `settled = true`.
     let cancel2 = CancellationToken::new();
-    let ok2 = navigate(&hub, root, &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }), &cancel2)
-        .await
-        .unwrap();
+    let ok2 = navigate(
+        &hub,
+        root,
+        &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }),
+        &cancel2,
+    )
+    .await
+    .unwrap();
     assert!(ok2.content.starts_with("Defined at (1):"), "{}", ok2.content);
     assert!(client.settled.load(Ordering::Acquire));
 
@@ -699,9 +1120,14 @@ async fn cancelled_first_navigate_preserves_first_settle_budget_and_aborts_rpc()
         c3_trigger.cancel();
     });
     let t_rpc = tokio::time::Instant::now();
-    let err3 = navigate(&hub, root, &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }), &cancel3)
-        .await
-        .unwrap_err();
+    let err3 = navigate(
+        &hub,
+        root,
+        &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }),
+        &cancel3,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err3, "Cancelled.");
     assert!(t_rpc.elapsed() < Duration::from_secs(2));
 }
@@ -725,7 +1151,12 @@ async fn concurrent_large_server_requests_and_client_sync_never_deadlock_and_bou
             let reply = |result: Value| json!({ "jsonrpc": "2.0", "id": message["id"], "result": result });
             match message["method"].as_str() {
                 Some("initialize") => {
-                    send(&writer, &reply(json!({ "capabilities": { "definitionProvider": true } }))).await.unwrap();
+                    send(
+                        &writer,
+                        &reply(json!({ "capabilities": { "definitionProvider": true } })),
+                    )
+                    .await
+                    .unwrap();
                 }
                 Some("initialized") => {
                     let _ = send(&writer, &json!({ "jsonrpc": "2.0", "method": "experimental/serverStatus", "params": { "quiescent": true } })).await;
@@ -759,7 +1190,15 @@ async fn concurrent_large_server_requests_and_client_sync_never_deadlock_and_bou
         }
     });
 
-    let client = Client::start("rust-analyzer", root, Box::new(client_read), Box::new(client_write), None).await.unwrap();
+    let client = Client::start(
+        "rust-analyzer",
+        root,
+        Box::new(client_read),
+        Box::new(client_write),
+        None,
+    )
+    .await
+    .unwrap();
 
     // Concurrently sync 70 files (~4 KB each) > MAX_OPEN_DOCUMENTS (64), verifying zero deadlock and LRU eviction.
     let mut handles = Vec::new();

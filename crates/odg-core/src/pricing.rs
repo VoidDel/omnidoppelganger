@@ -38,7 +38,8 @@ pub fn rate_for(provider: &str, model: &str) -> Option<ModelRate> {
         (0.60, 0.15, 2.40)
     } else if m.starts_with("gemini-2.5-pro") || m.starts_with("gemini-3-pro") {
         (1.25, 0.31, 10.0)
-    } else if m.starts_with("gemini-2.5-flash") || m.starts_with("gemini-3-flash") || m.starts_with("gemini-2.0-flash") {
+    } else if m.starts_with("gemini-2.5-flash") || m.starts_with("gemini-3-flash") || m.starts_with("gemini-2.0-flash")
+    {
         (0.30, 0.075, 2.50)
     } else if m.starts_with("deepseek-v4") || m.starts_with("deepseek-chat") || m.starts_with("deepseek-reasoner") {
         (0.28, 0.028, 1.10)
@@ -67,8 +68,7 @@ pub fn estimate_usd(provider: &str, model: &str, tokens: Tokens) -> Option<f64> 
     let uncached = tokens.input.saturating_sub(tokens.cached) as f64;
     let cached = tokens.cached.min(tokens.input) as f64;
     let output = tokens.output as f64;
-    let usd = (uncached * rate.input_per_m + cached * rate.cached_per_m + output * rate.output_per_m)
-        / 1_000_000.0;
+    let usd = (uncached * rate.input_per_m + cached * rate.cached_per_m + output * rate.output_per_m) / 1_000_000.0;
     Some(usd)
 }
 

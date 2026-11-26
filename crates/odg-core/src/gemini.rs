@@ -14,8 +14,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::llm::{
-    AssistantTurn, Attempt, EndpointSource, LlmError, LlmRequest, StreamDelta, TOOL_PICTURES,
-    http_failure, tool_result_parts, with_retries,
+    AssistantTurn, Attempt, EndpointSource, LlmError, LlmRequest, StreamDelta, TOOL_PICTURES, http_failure,
+    tool_result_parts, with_retries,
 };
 use crate::sse::SseParser;
 
@@ -182,10 +182,7 @@ pub fn gemini_contents(messages: &[Value]) -> Vec<Value> {
                             .flatten();
                         let name = adjacent_by_id
                             .or_else(|| {
-                                if id.is_empty()
-                                    && result_idx < prev_assistant_calls.len()
-                                    && !used_prev[result_idx]
-                                {
+                                if id.is_empty() && result_idx < prev_assistant_calls.len() && !used_prev[result_idx] {
                                     used_prev[result_idx] = true;
                                     Some(prev_assistant_calls[result_idx].1.clone())
                                 } else {
@@ -371,9 +368,7 @@ impl GeminiAccumulator {
                             .as_str()
                             .filter(|s| !s.is_empty())
                             .map(str::to_string)
-                            .unwrap_or_else(|| {
-                                format!("gemini_call_{}_{call_idx}", uuid::Uuid::now_v7().simple())
-                            });
+                            .unwrap_or_else(|| format!("gemini_call_{}_{call_idx}", uuid::Uuid::now_v7().simple()));
                         let partial = args.to_string();
                         deltas.push(StreamDelta::ToolUseStart {
                             index: stream_idx,
@@ -423,12 +418,7 @@ impl GeminiAccumulator {
                     if r.starts_with("BLOCKED:")
                         || matches!(
                             r,
-                            "SAFETY"
-                                | "RECITATION"
-                                | "PROHIBITED_CONTENT"
-                                | "BLOCKLIST"
-                                | "SPII"
-                                | "IMAGE_SAFETY"
+                            "SAFETY" | "RECITATION" | "PROHIBITED_CONTENT" | "BLOCKLIST" | "SPII" | "IMAGE_SAFETY"
                         ) =>
                 {
                     "refusal"
@@ -525,10 +515,7 @@ impl GeminiClient {
         let base = endpoint.base_url.trim().trim_end_matches('/');
         if base.is_empty() {
             return Err((
-                LlmError::NotConfigured(format!(
-                    "no address is set for provider `{}`",
-                    request.provider
-                )),
+                LlmError::NotConfigured(format!("no address is set for provider `{}`", request.provider)),
                 None,
             ));
         }
@@ -681,9 +668,8 @@ mod tests {
             }),
         ];
         let payload: String = sse_chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{payload}"
-        );
+        let response =
+            format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{payload}");
         let (addr, recorded) = serve(vec![response]).await;
         let client = GeminiClient::new(Arc::new(move |_| Endpoint {
             base_url: addr.clone(),
@@ -699,7 +685,9 @@ mod tests {
                     session: "s1".into(),
                     model: "gemini-2.5-pro".into(),
                     system: String::new(),
-                    messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "find rust files" }] })],
+                    messages: vec![
+                        json!({ "role": "user", "content": [{ "type": "text", "text": "find rust files" }] }),
+                    ],
                     tools: vec![],
                     effort: "medium".into(),
                 },
@@ -721,7 +709,10 @@ mod tests {
             seen.push(d);
         }
         assert!(seen.iter().any(|d| matches!(d, StreamDelta::ThinkingDelta { .. })));
-        assert!(seen.iter().any(|d| matches!(d, StreamDelta::ToolUseStart { name, .. } if name == "find_files")));
+        assert!(
+            seen.iter()
+                .any(|d| matches!(d, StreamDelta::ToolUseStart { name, .. } if name == "find_files"))
+        );
 
         let raw_reqs = recorded.await.unwrap();
         assert!(raw_reqs[0].to_lowercase().contains("x-goog-api-key: gem-test-key"));
@@ -775,7 +766,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(turn.stop_reason.as_deref(), Some("end_turn"));
-        assert_eq!(turn.content, vec![json!({ "type": "text", "text": "full recovered answer" })]);
+        assert_eq!(
+            turn.content,
+            vec![json!({ "type": "text", "text": "full recovered answer" })]
+        );
 
         let mut deltas = Vec::new();
         while let Ok(d) = rx.try_recv() {

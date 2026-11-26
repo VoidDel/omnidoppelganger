@@ -76,15 +76,26 @@ pub fn parse_config(text: &str) -> Result<BTreeMap<String, ServerConfig>, String
     if text.trim().is_empty() {
         return Ok(BTreeMap::new());
     }
-    let file: File = serde_json::from_str(text).map_err(|error| format!("not valid JSON for a server list: {error}"))?;
+    let file: File =
+        serde_json::from_str(text).map_err(|error| format!("not valid JSON for a server list: {error}"))?;
     for (name, server) in &file.servers {
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err(format!("the server name `{name}` may only hold letters, digits, `-`, and `_`"));
+            return Err(format!(
+                "the server name `{name}` may only hold letters, digits, `-`, and `_`"
+            ));
         }
-        let command = server.command.as_deref().is_some_and(|command| !command.trim().is_empty());
-        let url = server.url.as_deref().is_some_and(|url| url.starts_with("http://") || url.starts_with("https://"));
+        let command = server
+            .command
+            .as_deref()
+            .is_some_and(|command| !command.trim().is_empty());
+        let url = server
+            .url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("http://") || url.starts_with("https://"));
         if command == url {
-            return Err(format!("the server `{name}` needs either a `command` or an http(s) `url`, and not both"));
+            return Err(format!(
+                "the server `{name}` needs either a `command` or an http(s) `url`, and not both"
+            ));
         }
     }
     Ok(file.servers)
@@ -128,8 +139,13 @@ struct LineWire {
 }
 
 impl LineWire {
-    fn new(reader: impl AsyncRead + Send + Unpin + 'static, writer: impl AsyncWrite + Send + Unpin + 'static, child: Option<tokio::process::Child>) -> Self {
-        let writer: Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>> = Arc::new(tokio::sync::Mutex::new(Box::new(writer)));
+    fn new(
+        reader: impl AsyncRead + Send + Unpin + 'static,
+        writer: impl AsyncWrite + Send + Unpin + 'static,
+        child: Option<tokio::process::Child>,
+    ) -> Self {
+        let writer: Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>> =
+            Arc::new(tokio::sync::Mutex::new(Box::new(writer)));
         let pending: Pending = Arc::default();
         let stderr = Arc::new(Mutex::new(String::new()));
         let closed: Arc<Mutex<Option<String>>> = Arc::default();
@@ -138,14 +154,18 @@ impl LineWire {
             let mut lines = BufReader::new(reader).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 // Anything that is not a JSON-RPC message (a stray log line) is skipped.
-                let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
                 let id = message["id"].as_u64();
                 if message.get("method").is_some() {
                     // The server asks the client something. Only a ping is answered; this client offers nothing else.
                     if message.get("id").is_some() {
                         let reply = match message["method"].as_str() {
                             Some("ping") => json!({ "jsonrpc": "2.0", "id": message["id"], "result": {} }),
-                            _ => json!({ "jsonrpc": "2.0", "id": message["id"], "error": { "code": -32601, "message": "this client does not offer that" } }),
+                            _ => {
+                                json!({ "jsonrpc": "2.0", "id": message["id"], "error": { "code": -32601, "message": "this client does not offer that" } })
+                            }
                         };
                         let mut writer = answering.lock().await;
                         let _ = writer.write_all(format!("{reply}\n").as_bytes()).await;
@@ -157,27 +177,46 @@ impl LineWire {
             }
             // The stream ended: nobody will answer what is still waiting.
             let tail = lock(&noted).trim().to_string();
-            let why = if tail.is_empty() { "the server closed the connection".to_string() } else { format!("the server closed the connection: {tail}") };
+            let why = if tail.is_empty() {
+                "the server closed the connection".to_string()
+            } else {
+                format!("the server closed the connection: {tail}")
+            };
             // Said first, so a request that arrives after this finds it.
             *lock(&ended) = Some(why.clone());
             for (_, sender) in lock(&waiting).drain() {
                 let _ = sender.send(Err(why.clone()));
             }
         });
-        Self { writer, pending, stderr, closed, _child: child }
+        Self {
+            writer,
+            pending,
+            stderr,
+            closed,
+            _child: child,
+        }
     }
 
     async fn send(&self, message: &Value) -> Result<(), String> {
         let mut writer = self.writer.lock().await;
-        writer.write_all(format!("{message}\n").as_bytes()).await.map_err(|error| format!("cannot write to the server: {error}"))?;
-        writer.flush().await.map_err(|error| format!("cannot write to the server: {error}"))
+        writer
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .map_err(|error| format!("cannot write to the server: {error}"))?;
+        writer
+            .flush()
+            .await
+            .map_err(|error| format!("cannot write to the server: {error}"))
     }
 }
 
 /// The result of a JSON-RPC response, or its error as text.
 fn outcome(message: &Value) -> Result<Value, String> {
     match message.get("error") {
-        Some(error) => Err(error["message"].as_str().map(str::to_string).unwrap_or_else(|| error.to_string())),
+        Some(error) => Err(error["message"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| error.to_string())),
         None => Ok(message["result"].clone()),
     }
 }
@@ -196,7 +235,11 @@ struct HttpWire {
 impl HttpWire {
     /// Post one message. A request (with `id`) returns its response; a notification returns `Null`.
     async fn post(&self, message: &Value) -> Result<Value, String> {
-        let mut request = self.http.post(&self.url).header("accept", "application/json, text/event-stream").json(message);
+        let mut request = self
+            .http
+            .post(&self.url)
+            .header("accept", "application/json, text/event-stream")
+            .json(message);
         for (name, value) in &self.headers {
             request = request.header(name, value);
         }
@@ -206,24 +249,52 @@ impl HttpWire {
         if let Some(version) = lock(&self.version).clone() {
             request = request.header("mcp-protocol-version", version);
         }
-        let mut response = request.send().await.map_err(|error| format!("cannot reach the server: {error}"))?;
+        let mut response = request
+            .send()
+            .await
+            .map_err(|error| format!("cannot reach the server: {error}"))?;
         let status = response.status();
         if !status.is_success() {
             let body: String = response.text().await.unwrap_or_default().chars().take(300).collect();
-            return Err(format!("the server answered HTTP {}{}", status.as_u16(), if body.trim().is_empty() { String::new() } else { format!(": {}", body.trim()) }));
+            return Err(format!(
+                "the server answered HTTP {}{}",
+                status.as_u16(),
+                if body.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", body.trim())
+                }
+            ));
         }
-        if let Some(session) = response.headers().get("mcp-session-id").and_then(|value| value.to_str().ok()) {
+        if let Some(session) = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+        {
             *lock(&self.session) = Some(session.to_string());
         }
-        let Some(id) = message.get("id") else { return Ok(Value::Null) };
-        let streamed = response.headers().get("content-type").and_then(|value| value.to_str().ok()).is_some_and(|kind| kind.starts_with("text/event-stream"));
+        let Some(id) = message.get("id") else {
+            return Ok(Value::Null);
+        };
+        let streamed = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|kind| kind.starts_with("text/event-stream"));
         if !streamed {
-            let answer: Value = response.json().await.map_err(|error| format!("the server's answer is not JSON: {error}"))?;
+            let answer: Value = response
+                .json()
+                .await
+                .map_err(|error| format!("the server's answer is not JSON: {error}"))?;
             return outcome(&answer);
         }
         // The stream may carry other messages first; the response is the one with this request's id.
         let mut parser = SseParser::default();
-        while let Some(chunk) = response.chunk().await.map_err(|error| format!("the server's answer broke off: {error}"))? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("the server's answer broke off: {error}"))?
+        {
             for event in parser.feed(&chunk) {
                 if let Ok(answer) = serde_json::from_str::<Value>(&event.data)
                     && answer.get("method").is_none()
@@ -280,7 +351,9 @@ impl Server {
                         }
                         return Err(error);
                     }
-                    receiver.await.unwrap_or_else(|_| Err("the server closed the connection".to_string()))
+                    receiver
+                        .await
+                        .unwrap_or_else(|_| Err("the server closed the connection".to_string()))
                 }
             }
         };
@@ -290,7 +363,10 @@ impl Server {
                 if let Wire::Lines(wire) = &self.wire {
                     lock(&wire.pending).remove(&id);
                 }
-                Err(format!("the server did not answer `{method}` within {} seconds", timeout.as_secs()))
+                Err(format!(
+                    "the server did not answer `{method}` within {} seconds",
+                    timeout.as_secs()
+                ))
             }
         }
     }
@@ -305,7 +381,12 @@ impl Server {
 
     /// Shake hands and list the server's tools, each request given `timeout` to be answered.
     async fn open(wire: Wire, timeout: Duration) -> Result<Self, String> {
-        let mut server = Self { wire, next: AtomicU64::new(0), tools: Vec::new(), resources: false };
+        let mut server = Self {
+            wire,
+            next: AtomicU64::new(0),
+            tools: Vec::new(),
+            resources: false,
+        };
         let hello = json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": { "name": "omnidoppelganger", "version": env!("CARGO_PKG_VERSION") } });
         let welcome = server.request("initialize", hello, timeout).await?;
         if let (Wire::Http(wire), Some(version)) = (&server.wire, welcome["protocolVersion"].as_str()) {
@@ -319,12 +400,22 @@ impl Server {
         }
         let mut cursor: Option<String> = None;
         loop {
-            let params = cursor.as_ref().map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
             let page = server.request("tools/list", params, timeout).await?;
             for tool in page["tools"].as_array().map(Vec::as_slice).unwrap_or_default() {
                 let Some(name) = tool["name"].as_str() else { continue };
-                let schema = if tool["inputSchema"].is_object() { tool["inputSchema"].clone() } else { json!({ "type": "object" }) };
-                server.tools.push(McpTool { name: name.to_string(), description: tool["description"].as_str().unwrap_or_default().to_string(), input_schema: schema });
+                let schema = if tool["inputSchema"].is_object() {
+                    tool["inputSchema"].clone()
+                } else {
+                    json!({ "type": "object" })
+                };
+                server.tools.push(McpTool {
+                    name: name.to_string(),
+                    description: tool["description"].as_str().unwrap_or_default().to_string(),
+                    input_schema: schema,
+                });
             }
             cursor = page["nextCursor"].as_str().map(str::to_string);
             if cursor.is_none() {
@@ -334,26 +425,55 @@ impl Server {
     }
 
     /// Connect to a server over a pair of streams that carry one message per line.
-    pub async fn over(reader: impl AsyncRead + Send + Unpin + 'static, writer: impl AsyncWrite + Send + Unpin + 'static) -> Result<Self, String> {
+    pub async fn over(
+        reader: impl AsyncRead + Send + Unpin + 'static,
+        writer: impl AsyncWrite + Send + Unpin + 'static,
+    ) -> Result<Self, String> {
         Self::open(Wire::Lines(LineWire::new(reader, writer, None)), CONNECT_TIMEOUT).await
     }
 
     /// Start or reach the server `config` describes.
     pub async fn connect(config: &ServerConfig) -> Result<Self, String> {
         if let Some(url) = &config.url {
-            let http = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).build().map_err(|error| error.to_string())?;
-            let wire = HttpWire { http, url: url.clone(), headers: config.headers.clone(), session: Mutex::new(None), version: Mutex::new(None) };
+            let http = reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .build()
+                .map_err(|error| error.to_string())?;
+            let wire = HttpWire {
+                http,
+                url: url.clone(),
+                headers: config.headers.clone(),
+                session: Mutex::new(None),
+                version: Mutex::new(None),
+            };
             return Self::open(Wire::Http(wire), CONNECT_TIMEOUT).await;
         }
         let program = config.command.as_deref().unwrap_or_default();
         let mut command = tokio::process::Command::new(find_program(program));
-        command.args(&config.args).envs(&config.env).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        command
+            .args(&config.args)
+            .envs(&config.env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
-        let mut child = command.spawn().map_err(|error| format!("cannot start `{program}`: {error}"))?;
-        let stdin = child.stdin.take().ok_or_else(|| format!("cannot attach stdin for `{program}`"))?;
-        let stdout = child.stdout.take().ok_or_else(|| format!("cannot attach stdout for `{program}`"))?;
-        let errors = child.stderr.take().ok_or_else(|| format!("cannot attach stderr for `{program}`"))?;
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("cannot start `{program}`: {error}"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("cannot attach stdin for `{program}`"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| format!("cannot attach stdout for `{program}`"))?;
+        let errors = child
+            .stderr
+            .take()
+            .ok_or_else(|| format!("cannot attach stderr for `{program}`"))?;
         let wire = LineWire::new(stdout, stdin, Some(child));
         // Servers log to stderr; the last of it explains a server that exits at once.
         let noted = wire.stderr.clone();
@@ -378,7 +498,9 @@ impl Server {
         let mut listed = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
-            let params = cursor.as_ref().map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
             let page = self.request("resources/list", params, CONNECT_TIMEOUT).await?;
             listed.extend(page["resources"].as_array().cloned().unwrap_or_default());
             cursor = page["nextCursor"].as_str().map(str::to_string);
@@ -388,7 +510,12 @@ impl Server {
             }
         }
         // Not every server has templates; one that does not may answer with an error.
-        let templates = self.request("resources/templates/list", json!({}), CONNECT_TIMEOUT).await.ok().and_then(|page| page["resourceTemplates"].as_array().cloned()).unwrap_or_default();
+        let templates = self
+            .request("resources/templates/list", json!({}), CONNECT_TIMEOUT)
+            .await
+            .ok()
+            .and_then(|page| page["resourceTemplates"].as_array().cloned())
+            .unwrap_or_default();
         Ok((listed, templates))
     }
 
@@ -409,29 +536,51 @@ impl Server {
                     read.images.push((kind.to_string(), blob.to_string()));
                     parts.push(format!("[a {kind} picture, shown to you here]"));
                 } else {
-                    parts.push(format!("[{} bytes of {} that are not text: {}]", blob.len() / 4 * 3, if kind.is_empty() { "data" } else { kind }, content["uri"].as_str().unwrap_or(uri)));
+                    parts.push(format!(
+                        "[{} bytes of {} that are not text: {}]",
+                        blob.len() / 4 * 3,
+                        if kind.is_empty() { "data" } else { kind },
+                        content["uri"].as_str().unwrap_or(uri)
+                    ));
                 }
             }
         }
         let mut text = parts.join("\n");
         if text.chars().count() > RESULT_CHARS {
             let total = text.chars().count();
-            text = format!("{}\n[... the resource is {total} characters; it is cut at {RESULT_CHARS} ...]", text.chars().take(RESULT_CHARS).collect::<String>());
+            text = format!(
+                "{}\n[... the resource is {total} characters; it is cut at {RESULT_CHARS} ...]",
+                text.chars().take(RESULT_CHARS).collect::<String>()
+            );
         }
-        read.text = if text.is_empty() { "(the resource is empty)".to_string() } else { text };
+        read.text = if text.is_empty() {
+            "(the resource is empty)".to_string()
+        } else {
+            text
+        };
         Ok(read)
     }
 
     /// Call a tool, keeping returned images so multimodal models can inspect screenshots.
     pub async fn call(&self, tool: &str, arguments: &Value, cancel: &CancellationToken) -> CallResult {
-        let arguments = if arguments.is_object() { arguments.clone() } else { json!({}) };
+        let arguments = if arguments.is_object() {
+            arguments.clone()
+        } else {
+            json!({})
+        };
         let answer = tokio::select! {
             answer = self.request("tools/call", json!({ "name": tool, "arguments": arguments }), CALL_TIMEOUT) => answer,
             () = cancel.cancelled() => Err("the call was cancelled".to_string()),
         };
         let result = match answer {
             Ok(result) => result,
-            Err(error) => return CallResult { content: format!("The tool call failed: {error}"), is_error: true, images: Vec::new() },
+            Err(error) => {
+                return CallResult {
+                    content: format!("The tool call failed: {error}"),
+                    is_error: true,
+                    images: Vec::new(),
+                };
+            }
         };
         let mut images = Vec::new();
         let parts: Vec<String> = result["content"]
@@ -449,10 +598,16 @@ impl Server {
                         images.push((kind.to_string(), data.to_string()));
                         format!("[a {kind} picture, shown to you here]")
                     } else {
-                        format!("[{} returned by the tool; it is not shown here]", if kind.is_empty() { "image" } else { kind })
+                        format!(
+                            "[{} returned by the tool; it is not shown here]",
+                            if kind.is_empty() { "image" } else { kind }
+                        )
                     }
                 }
-                Some("audio") => format!("[{} returned by the tool; it is not shown here]", part["mimeType"].as_str().unwrap_or("audio")),
+                Some("audio") => format!(
+                    "[{} returned by the tool; it is not shown here]",
+                    part["mimeType"].as_str().unwrap_or("audio")
+                ),
                 Some("resource") => {
                     let resource = &part["resource"];
                     if let Some(text) = resource["text"].as_str() {
@@ -480,12 +635,19 @@ impl Server {
         }
         if content.chars().count() > RESULT_CHARS {
             let total = content.chars().count();
-            content = format!("{}\n[... the result is {total} characters; it is cut at {RESULT_CHARS} ...]", content.chars().take(RESULT_CHARS).collect::<String>());
+            content = format!(
+                "{}\n[... the result is {total} characters; it is cut at {RESULT_CHARS} ...]",
+                content.chars().take(RESULT_CHARS).collect::<String>()
+            );
         }
         if content.is_empty() {
             content = "(the tool returned nothing)".to_string();
         }
-        CallResult { content, is_error: result["isError"].as_bool().unwrap_or(false), images }
+        CallResult {
+            content,
+            is_error: result["isError"].as_bool().unwrap_or(false),
+            images,
+        }
     }
 }
 
@@ -497,10 +659,17 @@ fn find_program(name: &str) -> PathBuf {
         return given.to_path_buf();
     }
     let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    let directories = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect::<Vec<_>>()).unwrap_or_default();
+    let directories = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
     directories
         .iter()
-        .flat_map(|directory| extensions.split(';').filter(|extension| !extension.is_empty()).map(move |extension| directory.join(format!("{name}{extension}"))))
+        .flat_map(|directory| {
+            extensions
+                .split(';')
+                .filter(|extension| !extension.is_empty())
+                .map(move |extension| directory.join(format!("{name}{extension}")))
+        })
         .find(|candidate| candidate.is_file())
         .unwrap_or_else(|| given.to_path_buf())
 }
@@ -527,8 +696,21 @@ pub struct ServerStatus {
 /// The name a server's tool goes by among the model's tools: only the
 /// characters and the length every provider accepts.
 pub fn exposed_name(server: &str, tool: &str) -> String {
-    let clean = |text: &str| text.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect::<String>();
-    format!("mcp__{}__{}", clean(server), clean(tool)).chars().take(NAME_CHARS).collect()
+    let clean = |text: &str| {
+        text.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+    };
+    format!("mcp__{}__{}", clean(server), clean(tool))
+        .chars()
+        .take(NAME_CHARS)
+        .collect()
 }
 
 /// The server a tool name of the model's belongs to, and the rest of the name; `None` for a built-in tool.
@@ -555,13 +737,25 @@ pub struct McpHub {
 impl McpHub {
     /// A hub for the servers listed in the file at `path`. Nothing connects until [`McpHub::reload`].
     pub fn new(path: impl Into<PathBuf>, runtime: tokio::runtime::Handle) -> Self {
-        Self { path: path.into(), runtime, slots: Arc::default(), attempts: Arc::default() }
+        Self {
+            path: path.into(),
+            runtime,
+            slots: Arc::default(),
+            attempts: Arc::default(),
+        }
     }
 
     /// Connect to `name` in the background, in place of whatever stood under that name.
     fn start(&self, name: &str, config: ServerConfig) {
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
-        lock(&self.slots).insert(name.to_string(), Entry { config: config.clone(), attempt, slot: Slot::Connecting });
+        lock(&self.slots).insert(
+            name.to_string(),
+            Entry {
+                config: config.clone(),
+                attempt,
+                slot: Slot::Connecting,
+            },
+        );
         let (slots, name) = (self.slots.clone(), name.to_string());
         self.runtime.spawn(async move {
             let slot = match Server::connect(&config).await {
@@ -585,10 +779,18 @@ impl McpHub {
     pub fn reload(&self) {
         // One switched off stays in the list, and is neither connected to nor shown as standing anywhere.
         let servers: BTreeMap<String, ServerConfig> =
-            parse_config(&std::fs::read_to_string(&self.path).unwrap_or_default()).unwrap_or_default().into_iter().filter(|(_, config)| !config.disabled).collect();
+            parse_config(&std::fs::read_to_string(&self.path).unwrap_or_default())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, config)| !config.disabled)
+                .collect();
         let dropped: Vec<Entry> = {
             let mut slots = lock(&self.slots);
-            let gone: Vec<String> = slots.iter().filter(|(name, entry)| servers.get(*name) != Some(&entry.config)).map(|(name, _)| name.clone()).collect();
+            let gone: Vec<String> = slots
+                .iter()
+                .filter(|(name, entry)| servers.get(*name) != Some(&entry.config))
+                .map(|(name, _)| name.clone())
+                .collect();
             gone.iter().filter_map(|name| slots.remove(name)).collect()
         };
         // Dropped outside the lock: ending a process need not hold up the others.
@@ -621,21 +823,36 @@ impl McpHub {
         let mut file: Value = if text.trim().is_empty() {
             json!({})
         } else {
-            serde_json::from_str(&text).map_err(|error| format!("the server list in {} is not valid JSON ({error}); the user can mend it on the 法器 page", self.path.display()))?
+            serde_json::from_str(&text).map_err(|error| {
+                format!(
+                    "the server list in {} is not valid JSON ({error}); the user can mend it on the 法器 page",
+                    self.path.display()
+                )
+            })?
         };
         if !file.is_object() {
-            return Err(format!("the server list in {} is not a JSON object; the user can mend it on the 法器 page", self.path.display()));
+            return Err(format!(
+                "the server list in {} is not a JSON object; the user can mend it on the 法器 page",
+                self.path.display()
+            ));
         }
         if !file["mcpServers"].is_object() {
             file["mcpServers"] = json!({});
         }
         if file["mcpServers"].get(name).is_some() && !replace {
-            return Err(format!("a server named `{name}` is already in the list; pass `replace` to put this one in its place"));
+            return Err(format!(
+                "a server named `{name}` is already in the list; pass `replace` to put this one in its place"
+            ));
         }
         file["mcpServers"][name] = serde_json::to_value(server).map_err(|error| error.to_string())?;
-        let text = format!("{}\n", serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?);
+        let text = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?
+        );
         // The whole list, checked as it will be read: the name, and a command or an address.
-        let config = parse_config(&text)?.remove(name).ok_or_else(|| format!("`{name}` is not in the list it was put in"))?;
+        let config = parse_config(&text)?
+            .remove(name)
+            .ok_or_else(|| format!("`{name}` is not in the list it was put in"))?;
         if let Some(directory) = self.path.parent() {
             std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         }
@@ -653,7 +870,10 @@ impl McpHub {
         let deadline = tokio::time::Instant::now() + limit;
         loop {
             let status = self.statuses().into_iter().find(|status| status.name == name);
-            if status.as_ref().is_none_or(|status| status.state != "connecting") || tokio::time::Instant::now() >= deadline || cancel.is_cancelled() {
+            if status.as_ref().is_none_or(|status| status.state != "connecting")
+                || tokio::time::Instant::now() >= deadline
+                || cancel.is_cancelled()
+            {
                 return status;
             }
             tokio::select! {
@@ -670,10 +890,19 @@ impl McpHub {
             .map(|(name, entry)| {
                 let (state, error, tools) = match &entry.slot {
                     Slot::Connecting => ("connecting", None, Vec::new()),
-                    Slot::Ready(server) => ("ready", None, server.tools.iter().map(|tool| tool.name.clone()).collect()),
+                    Slot::Ready(server) => (
+                        "ready",
+                        None,
+                        server.tools.iter().map(|tool| tool.name.clone()).collect(),
+                    ),
                     Slot::Failed(error) => ("failed", Some(error.clone()), Vec::new()),
                 };
-                ServerStatus { name: name.clone(), state: state.to_string(), error, tools }
+                ServerStatus {
+                    name: name.clone(),
+                    state: state.to_string(),
+                    error,
+                    tools,
+                }
             })
             .collect()
     }
@@ -710,19 +939,36 @@ impl McpHub {
             let slots = lock(&self.slots);
             slots.iter().find_map(|(server_name, entry)| {
                 let Slot::Ready(server) = &entry.slot else { return None };
-                server.tools.iter().find(|tool| exposed_name(server_name, &tool.name) == name).map(|tool| (server.clone(), tool.name.clone()))
+                server
+                    .tools
+                    .iter()
+                    .find(|tool| exposed_name(server_name, &tool.name) == name)
+                    .map(|tool| (server.clone(), tool.name.clone()))
             })
         };
         match found {
             Some((server, tool)) => server.call(&tool, input, cancel).await,
-            None => CallResult { content: format!("No connected MCP server offers `{name}`. The server may have stopped or been removed from the settings."), is_error: true, images: Vec::new() },
+            None => CallResult {
+                content: format!(
+                    "No connected MCP server offers `{name}`. The server may have stopped or been removed from the settings."
+                ),
+                is_error: true,
+                images: Vec::new(),
+            },
         }
     }
 
     /// Put a connected server in place directly, for tests.
     #[cfg(test)]
     pub fn insert(&self, name: &str, server: Server) {
-        lock(&self.slots).insert(name.to_string(), Entry { config: ServerConfig::default(), attempt: 0, slot: Slot::Ready(Arc::new(server)) });
+        lock(&self.slots).insert(
+            name.to_string(),
+            Entry {
+                config: ServerConfig::default(),
+                attempt: 0,
+                slot: Slot::Ready(Arc::new(server)),
+            },
+        );
     }
 
     /// Drop every connection, which ends the servers started as processes.
@@ -747,17 +993,29 @@ pub mod testing {
                 let message: Value = serde_json::from_str(&line).unwrap();
                 let id = message["id"].clone();
                 let result = match message["method"].as_str() {
-                    Some("initialize") => json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": { "resources": {} }, "serverInfo": { "name": "notes", "version": "1" } }),
+                    Some("initialize") => {
+                        json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": { "resources": {} }, "serverInfo": { "name": "notes", "version": "1" } })
+                    }
                     Some("resources/list") if message["params"]["cursor"].is_null() => json!({
                         "resources": [{ "uri": "notes://today", "name": "today", "title": "Today's notes", "mimeType": "text/markdown", "description": "What was done today." }],
                         "nextCursor": "page-2",
                     }),
-                    Some("resources/list") => json!({ "resources": [{ "uri": "notes://chart", "name": "chart", "mimeType": "image/png" }] }),
-                    Some("resources/templates/list") => json!({ "resourceTemplates": [{ "uriTemplate": "notes://day/{date}", "name": "day", "description": "One day's notes." }] }),
+                    Some("resources/list") => {
+                        json!({ "resources": [{ "uri": "notes://chart", "name": "chart", "mimeType": "image/png" }] })
+                    }
+                    Some("resources/templates/list") => {
+                        json!({ "resourceTemplates": [{ "uriTemplate": "notes://day/{date}", "name": "day", "description": "One day's notes." }] })
+                    }
                     Some("resources/read") => match message["params"]["uri"].as_str() {
-                        Some("notes://today") => json!({ "contents": [{ "uri": "notes://today", "mimeType": "text/markdown", "text": "# Today\nShipped 0.4.7." }] }),
-                        Some("notes://chart") => json!({ "contents": [{ "uri": "notes://chart", "mimeType": "image/png", "blob": "aGk=" }] }),
-                        _ => json!({ "contents": [{ "uri": "notes://data", "mimeType": "application/octet-stream", "blob": "AAAAAAAA" }] }),
+                        Some("notes://today") => {
+                            json!({ "contents": [{ "uri": "notes://today", "mimeType": "text/markdown", "text": "# Today\nShipped 0.4.7." }] })
+                        }
+                        Some("notes://chart") => {
+                            json!({ "contents": [{ "uri": "notes://chart", "mimeType": "image/png", "blob": "aGk=" }] })
+                        }
+                        _ => {
+                            json!({ "contents": [{ "uri": "notes://data", "mimeType": "application/octet-stream", "blob": "AAAAAAAA" }] })
+                        }
                     },
                     _ => continue,
                 };
@@ -779,14 +1037,18 @@ pub mod testing {
                 let message: Value = serde_json::from_str(&line).unwrap();
                 let id = message["id"].clone();
                 let result = match message["method"].as_str() {
-                    Some("initialize") => json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": { "tools": {} }, "serverInfo": { "name": "echo", "version": "1" } }),
+                    Some("initialize") => {
+                        json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": { "tools": {} }, "serverInfo": { "name": "echo", "version": "1" } })
+                    }
                     Some("tools/list") if message["params"]["cursor"].is_null() => json!({
                         "tools": [{ "name": "echo", "description": "Says it back.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } } } }],
                         "nextCursor": "page-2",
                     }),
                     Some("tools/list") => json!({ "tools": [{ "name": "fail now", "description": "Always fails." }] }),
                     Some("tools/call") => match message["params"]["name"].as_str() {
-                        Some("echo") => json!({ "content": [{ "type": "text", "text": message["params"]["arguments"]["text"] }, { "type": "image", "mimeType": "image/png", "data": "aGk=" }] }),
+                        Some("echo") => {
+                            json!({ "content": [{ "type": "text", "text": message["params"]["arguments"]["text"] }, { "type": "image", "mimeType": "image/png", "data": "aGk=" }] })
+                        }
                         _ => json!({ "content": [{ "type": "text", "text": "it broke" }], "isError": true }),
                     },
                     // Notifications and the client's answers need no reply.
@@ -795,7 +1057,9 @@ pub mod testing {
                 // A log line and a request of the server's own come before the answer: the client must cope with both.
                 let ping = json!({ "jsonrpc": "2.0", "id": 9000, "method": "ping" });
                 let reply = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-                let _ = server_write.write_all(format!("starting up...\n{ping}\n{reply}\n").as_bytes()).await;
+                let _ = server_write
+                    .write_all(format!("starting up...\n{ping}\n{reply}\n").as_bytes())
+                    .await;
             }
         });
         let (read, write) = tokio::io::split(client_side);
@@ -840,11 +1104,23 @@ mod tests {
         let servers = parse_config(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(servers["off"].disabled && !servers["on"].disabled);
         // Written out again, the flag is kept where it is set and left out where it is not.
-        assert_eq!(serde_json::to_value(&servers["off"]).unwrap(), json!({ "command": "odg-no-such-program", "disabled": true }));
-        assert_eq!(serde_json::to_value(&servers["on"]).unwrap(), json!({ "url": "http://127.0.0.1:9/mcp" }));
+        assert_eq!(
+            serde_json::to_value(&servers["off"]).unwrap(),
+            json!({ "command": "odg-no-such-program", "disabled": true })
+        );
+        assert_eq!(
+            serde_json::to_value(&servers["on"]).unwrap(),
+            json!({ "url": "http://127.0.0.1:9/mcp" })
+        );
         let hub = McpHub::new(&path, tokio::runtime::Handle::current());
         hub.reload();
-        assert_eq!(hub.statuses().iter().map(|status| status.name.as_str()).collect::<Vec<_>>(), ["on"]);
+        assert_eq!(
+            hub.statuses()
+                .iter()
+                .map(|status| status.name.as_str())
+                .collect::<Vec<_>>(),
+            ["on"]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -852,23 +1128,58 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mcp.json");
         let entry = |args: &str| format!(r#"{{ "command": "odg-no-such-program", "args": ["{args}"] }}"#);
-        let list = |servers: &[(&str, String)]| format!(r#"{{ "mcpServers": {{ {} }} }}"#, servers.iter().map(|(name, entry)| format!(r#""{name}": {entry}"#)).collect::<Vec<_>>().join(", "));
-        std::fs::write(&path, list(&[("kept", entry("a")), ("changed", entry("a")), ("switched", entry("a")), ("removed", entry("a"))])).unwrap();
+        let list = |servers: &[(&str, String)]| {
+            format!(
+                r#"{{ "mcpServers": {{ {} }} }}"#,
+                servers
+                    .iter()
+                    .map(|(name, entry)| format!(r#""{name}": {entry}"#))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        std::fs::write(
+            &path,
+            list(&[
+                ("kept", entry("a")),
+                ("changed", entry("a")),
+                ("switched", entry("a")),
+                ("removed", entry("a")),
+            ]),
+        )
+        .unwrap();
         let hub = McpHub::new(&path, tokio::runtime::Handle::current());
         hub.reload();
         for name in ["kept", "changed", "switched", "removed"] {
-            hub.settled(name, Duration::from_secs(20), &CancellationToken::new()).await.unwrap();
+            hub.settled(name, Duration::from_secs(20), &CancellationToken::new())
+                .await
+                .unwrap();
         }
         let attempt = |name: &str| hub.slots.lock().unwrap().get(name).map(|entry| entry.attempt);
         let before = attempt("kept");
         let switched_off = r#"{ "command": "odg-no-such-program", "args": ["a"], "disabled": true }"#.to_string();
-        hub.save_config(&list(&[("kept", entry("a")), ("changed", entry("b")), ("switched", switched_off), ("new", entry("a"))])).unwrap();
+        hub.save_config(&list(&[
+            ("kept", entry("a")),
+            ("changed", entry("b")),
+            ("switched", switched_off),
+            ("new", entry("a")),
+        ]))
+        .unwrap();
         // The one left as it was keeps its connection; the changed and the new are connected afresh.
         assert_eq!(attempt("kept"), before);
         assert!(attempt("changed") > before && attempt("new") > before);
         // The one switched off and the one taken out are let go.
-        assert_eq!(hub.statuses().iter().map(|status| status.name.as_str()).collect::<Vec<_>>(), ["changed", "kept", "new"]);
-        let status = hub.settled("changed", Duration::from_secs(20), &CancellationToken::new()).await.unwrap();
+        assert_eq!(
+            hub.statuses()
+                .iter()
+                .map(|status| status.name.as_str())
+                .collect::<Vec<_>>(),
+            ["changed", "kept", "new"]
+        );
+        let status = hub
+            .settled("changed", Duration::from_secs(20), &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(status.state, "failed");
     }
 
@@ -876,28 +1187,67 @@ mod tests {
     async fn adds_a_server_to_the_list_and_connects_to_it_alone() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mcp.json");
-        std::fs::write(&path, r#"{ "note": "mine", "mcpServers": { "kept": { "url": "http://127.0.0.1:9/mcp" } } }"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{ "note": "mine", "mcpServers": { "kept": { "url": "http://127.0.0.1:9/mcp" } } }"#,
+        )
+        .unwrap();
         let hub = McpHub::new(&path, tokio::runtime::Handle::current());
         hub.reload();
-        let missing = ServerConfig { command: Some("odg-no-such-program".into()), args: vec!["--stdio".into()], ..Default::default() };
+        let missing = ServerConfig {
+            command: Some("odg-no-such-program".into()),
+            args: vec!["--stdio".into()],
+            ..Default::default()
+        };
         hub.add("broken", &missing, false).unwrap();
         // It is connected to at once, and says how it went.
-        let status = hub.settled("broken", Duration::from_secs(20), &CancellationToken::new()).await.unwrap();
+        let status = hub
+            .settled("broken", Duration::from_secs(20), &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(status.state, "failed");
         assert!(status.error.unwrap_or_default().contains("cannot start"));
         // The list keeps what it held, and the server the user had is still there.
         let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(file["note"], "mine");
-        assert_eq!(file["mcpServers"]["broken"], json!({ "command": "odg-no-such-program", "args": ["--stdio"] }));
+        assert_eq!(
+            file["mcpServers"]["broken"],
+            json!({ "command": "odg-no-such-program", "args": ["--stdio"] })
+        );
         assert!(file["mcpServers"]["kept"].is_object() && hub.statuses().iter().any(|status| status.name == "kept"));
         // Not over one already there, unless asked to; and nothing the list could not hold is written.
         assert!(hub.add("broken", &missing, false).unwrap_err().contains("replace"));
-        hub.add("broken", &ServerConfig { url: Some("https://example.com/mcp".into()), ..Default::default() }, true).unwrap();
+        hub.add(
+            "broken",
+            &ServerConfig {
+                url: Some("https://example.com/mcp".into()),
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
         assert!(hub.add("bad name", &missing, false).is_err());
-        assert!(hub.add("both", &ServerConfig { command: Some("x".into()), url: Some("https://x".into()), ..Default::default() }, false).is_err());
+        assert!(
+            hub.add(
+                "both",
+                &ServerConfig {
+                    command: Some("x".into()),
+                    url: Some("https://x".into()),
+                    ..Default::default()
+                },
+                false
+            )
+            .is_err()
+        );
         let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(file["mcpServers"].as_object().unwrap().keys().collect::<Vec<_>>(), ["broken", "kept"]);
-        assert_eq!(file["mcpServers"]["broken"], json!({ "url": "https://example.com/mcp" }));
+        assert_eq!(
+            file["mcpServers"].as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["broken", "kept"]
+        );
+        assert_eq!(
+            file["mcpServers"]["broken"],
+            json!({ "url": "https://example.com/mcp" })
+        );
         // A list that cannot be read is not written over.
         std::fs::write(&path, "{ not json").unwrap();
         assert!(hub.add("other", &missing, false).unwrap_err().contains("法器"));
@@ -908,22 +1258,60 @@ mod tests {
     async fn lists_and_calls_a_servers_tools_over_a_line_connection() {
         let server = testing::echo_server().await;
         // Both pages of the list arrived.
-        assert_eq!(server.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["echo", "fail now"]);
+        assert_eq!(
+            server.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
+            ["echo", "fail now"]
+        );
         assert_eq!(server.tools[1].input_schema, json!({ "type": "object" }));
         let cancel = CancellationToken::new();
         let said = server.call("echo", &json!({ "text": "分身" }), &cancel).await;
-        assert_eq!(said, CallResult { content: "分身\n[a image/png picture, shown to you here]".into(), is_error: false, images: vec![("image/png".into(), "aGk=".into())] });
-        assert_eq!(server.call("fail now", &json!({}), &cancel).await, CallResult { content: "it broke".into(), is_error: true, images: Vec::new() });
+        assert_eq!(
+            said,
+            CallResult {
+                content: "分身\n[a image/png picture, shown to you here]".into(),
+                is_error: false,
+                images: vec![("image/png".into(), "aGk=".into())]
+            }
+        );
+        assert_eq!(
+            server.call("fail now", &json!({}), &cancel).await,
+            CallResult {
+                content: "it broke".into(),
+                is_error: true,
+                images: Vec::new()
+            }
+        );
 
         let hub = McpHub::new("unused.json", tokio::runtime::Handle::current());
         hub.insert("echo", server);
         let specs = hub.specs();
         assert_eq!(specs[0]["name"], "mcp__echo__echo");
         assert_eq!(specs[1]["name"], "mcp__echo__fail_now");
-        assert!(specs[0]["description"].as_str().unwrap().starts_with("[From the MCP server `echo`] Says it back."));
-        assert_eq!(hub.call("mcp__echo__fail_now", &json!({}), &cancel).await.content, "it broke");
-        assert!(hub.call("mcp__gone__x", &json!({}), &cancel).await.content.starts_with("No connected MCP server offers"));
-        assert_eq!(hub.statuses(), [ServerStatus { name: "echo".into(), state: "ready".into(), error: None, tools: vec!["echo".into(), "fail now".into()] }]);
+        assert!(
+            specs[0]["description"]
+                .as_str()
+                .unwrap()
+                .starts_with("[From the MCP server `echo`] Says it back.")
+        );
+        assert_eq!(
+            hub.call("mcp__echo__fail_now", &json!({}), &cancel).await.content,
+            "it broke"
+        );
+        assert!(
+            hub.call("mcp__gone__x", &json!({}), &cancel)
+                .await
+                .content
+                .starts_with("No connected MCP server offers")
+        );
+        assert_eq!(
+            hub.statuses(),
+            [ServerStatus {
+                name: "echo".into(),
+                state: "ready".into(),
+                error: None,
+                tools: vec!["echo".into(), "fail now".into()]
+            }]
+        );
     }
 
     #[tokio::test]
@@ -931,7 +1319,10 @@ mod tests {
         use crate::testing::{event_stream, serve};
         let json_reply = |body: Value, extra: &str| {
             let body = body.to_string();
-            format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
         };
         let (address, requests) = serve(vec![
             json_reply(json!({ "jsonrpc": "2.0", "id": 1, "result": { "protocolVersion": "2025-03-26", "capabilities": { "tools": {} } } }), "mcp-session-id: s-1\r\n"),
@@ -941,23 +1332,53 @@ mod tests {
             event_stream(&[json!({ "jsonrpc": "2.0", "method": "notifications/progress" }), json!({ "jsonrpc": "2.0", "id": 3, "result": { "content": [{ "type": "text", "text": "3" }] } })], false),
         ])
         .await;
-        let config = ServerConfig { url: Some(format!("{address}/mcp")), headers: [("authorization".to_string(), "Bearer t".to_string())].into(), ..Default::default() };
+        let config = ServerConfig {
+            url: Some(format!("{address}/mcp")),
+            headers: [("authorization".to_string(), "Bearer t".to_string())].into(),
+            ..Default::default()
+        };
         let server = Server::connect(&config).await.unwrap();
         assert_eq!(server.tools[0].name, "add");
-        assert_eq!(server.call("add", &json!({ "a": 1, "b": 2 }), &CancellationToken::new()).await, CallResult { content: "3".into(), is_error: false, images: Vec::new() });
+        assert_eq!(
+            server
+                .call("add", &json!({ "a": 1, "b": 2 }), &CancellationToken::new())
+                .await,
+            CallResult {
+                content: "3".into(),
+                is_error: false,
+                images: Vec::new()
+            }
+        );
 
         let requests = requests.await.unwrap();
         let lower: Vec<String> = requests.iter().map(|request| request.to_lowercase()).collect();
-        assert!(lower[0].starts_with("post /mcp ") && lower[0].contains("authorization: bearer t") && lower[0].contains("accept: application/json, text/event-stream"));
+        assert!(
+            lower[0].starts_with("post /mcp ")
+                && lower[0].contains("authorization: bearer t")
+                && lower[0].contains("accept: application/json, text/event-stream")
+        );
         // The session and the agreed protocol revision go back on every later request.
-        assert!(lower[2].contains("mcp-session-id: s-1") && lower[2].contains("mcp-protocol-version: 2025-03-26"), "{}", lower[2]);
+        assert!(
+            lower[2].contains("mcp-session-id: s-1") && lower[2].contains("mcp-protocol-version: 2025-03-26"),
+            "{}",
+            lower[2]
+        );
         assert!(requests[3].contains("\"name\":\"add\""));
     }
 
     #[tokio::test]
     async fn a_server_that_cannot_start_or_answer_says_why() {
-        let missing = ServerConfig { command: Some("odg-no-such-program".into()), ..Default::default() };
-        assert!(Server::connect(&missing).await.err().unwrap().starts_with("cannot start `odg-no-such-program`"));
+        let missing = ServerConfig {
+            command: Some("odg-no-such-program".into()),
+            ..Default::default()
+        };
+        assert!(
+            Server::connect(&missing)
+                .await
+                .err()
+                .unwrap()
+                .starts_with("cannot start `odg-no-such-program`")
+        );
 
         // A process that exits without speaking the protocol: its stderr is the explanation.
         let (program, args): (&str, Vec<String>) = if cfg!(windows) {
@@ -965,7 +1386,11 @@ mod tests {
         } else {
             ("sh", vec!["-c".into(), "echo no such module >&2".into()])
         };
-        let dies = ServerConfig { command: Some(program.into()), args, ..Default::default() };
+        let dies = ServerConfig {
+            command: Some(program.into()),
+            args,
+            ..Default::default()
+        };
         let error = Server::connect(&dies).await.err().unwrap();
         assert!(error.starts_with("the server closed the connection"), "{error}");
     }
@@ -975,15 +1400,36 @@ mod tests {
         let server = testing::resource_server().await;
         assert!(server.resources && server.tools.is_empty());
         let (resources, templates) = server.list_resources(200).await.unwrap();
-        assert_eq!(resources.iter().map(|resource| resource["uri"].as_str().unwrap()).collect::<Vec<_>>(), ["notes://today", "notes://chart"]);
+        assert_eq!(
+            resources
+                .iter()
+                .map(|resource| resource["uri"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["notes://today", "notes://chart"]
+        );
         assert_eq!(templates[0]["uriTemplate"], "notes://day/{date}");
         assert_eq!(server.list_resources(1).await.unwrap().0.len(), 1);
         let cancel = CancellationToken::new();
-        assert_eq!(server.read_resource("notes://today", &cancel).await.unwrap(), ReadResource { text: "# Today\nShipped 0.4.7.".into(), images: Vec::new() });
+        assert_eq!(
+            server.read_resource("notes://today", &cancel).await.unwrap(),
+            ReadResource {
+                text: "# Today\nShipped 0.4.7.".into(),
+                images: Vec::new()
+            }
+        );
         let chart = server.read_resource("notes://chart", &cancel).await.unwrap();
-        assert_eq!((chart.text.as_str(), chart.images), ("[a image/png picture, shown to you here]", vec![("image/png".to_string(), "aGk=".to_string())]));
+        assert_eq!(
+            (chart.text.as_str(), chart.images),
+            (
+                "[a image/png picture, shown to you here]",
+                vec![("image/png".to_string(), "aGk=".to_string())]
+            )
+        );
         let data = server.read_resource("notes://data", &cancel).await.unwrap();
-        assert_eq!(data.text, "[6 bytes of application/octet-stream that are not text: notes://data]");
+        assert_eq!(
+            data.text,
+            "[6 bytes of application/octet-stream that are not text: notes://data]"
+        );
         // A server without the capability is not taken to have resources.
         assert!(!testing::echo_server().await.resources);
     }

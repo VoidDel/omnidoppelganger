@@ -20,11 +20,14 @@ use crate::jobs::Jobs;
 
 pub use commands::{InlineShellOutput, SENSITIVE_ENV_VARS, run_inline_shell, shell};
 pub(crate) use commands::{kill_tree, strip_ansi};
-pub use extras::{ASK_USER, DelegateTask, OPTIONS, PRESENT_PLAN, QUESTIONS, SUBAGENTS, TODO_STATES, answered, delegate_tasks, questions, todo_items};
+pub use extras::{
+    ASK_USER, DelegateTask, OPTIONS, PRESENT_PLAN, QUESTIONS, SUBAGENTS, TODO_STATES, answered, delegate_tasks,
+    questions, todo_items,
+};
 pub use files::edits_files;
-pub(crate) use files::{LineDiff, line_diff};
 #[cfg(test)]
 use files::picture;
+pub(crate) use files::{LineDiff, line_diff};
 pub use specs::{ask_user_spec, delegate_spec, image_spec, mcp_resource_specs, present_plan_spec, search_spec, specs};
 
 pub(crate) const READ_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -73,17 +76,31 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub(crate) fn ok(content: impl Into<String>, meta: Value) -> Self {
-        Self { content: content.into(), is_error: false, meta, images: Vec::new() }
+        Self {
+            content: content.into(),
+            is_error: false,
+            meta,
+            images: Vec::new(),
+        }
     }
 
     pub fn error(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: true, meta: Value::Null, images: Vec::new() }
+        Self {
+            content: content.into(),
+            is_error: true,
+            meta: Value::Null,
+            images: Vec::new(),
+        }
     }
 }
 
 /// Resolve a tool's path argument against the workspace, folding `.` and `..` without touching the disk.
 pub fn resolve(workspace: &Path, path: &str) -> PathBuf {
-    let joined = if Path::new(path).is_absolute() { PathBuf::from(path) } else { workspace.join(path) };
+    let joined = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        workspace.join(path)
+    };
     let mut resolved = PathBuf::new();
     for component in joined.components() {
         match component {
@@ -129,9 +146,7 @@ fn real_path_inner(path: &Path, hops: usize) -> Option<PathBuf> {
             Component::RootDir => current.push(component.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                if !missing
-                    && let Ok(canonical) = current.canonicalize()
-                {
+                if !missing && let Ok(canonical) = current.canonicalize() {
                     current = canonical;
                 }
                 let _ = current.pop();
@@ -170,9 +185,7 @@ fn real_path_inner(path: &Path, hops: usize) -> Option<PathBuf> {
             }
         }
     }
-    if !missing
-        && let Ok(canonical) = current.canonicalize()
-    {
+    if !missing && let Ok(canonical) = current.canonicalize() {
         return Some(canonical);
     }
     (!current.as_os_str().is_empty()).then_some(current)
@@ -191,8 +204,17 @@ pub fn inside_workspace(workspace: &Path, path: &Path) -> bool {
 /// and reads configuration from there, so writing to it can run code later.
 pub fn in_git_directory(workspace: &Path, path: &Path) -> bool {
     let Some(full) = real_path(path) else { return true };
-    let below = workspace.canonicalize().ok().and_then(|root| full.strip_prefix(root).ok().map(Path::to_path_buf)).unwrap_or(full);
-    below.components().any(|component| component.as_os_str().to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git")))
+    let below = workspace
+        .canonicalize()
+        .ok()
+        .and_then(|root| full.strip_prefix(root).ok().map(Path::to_path_buf))
+        .unwrap_or(full);
+    below.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case(".git"))
+    })
 }
 
 /// The branch checked out in the workspace, read from Git's own files so no
@@ -214,7 +236,10 @@ pub fn git_branch(workspace: &Path) -> Option<String> {
 }
 
 pub(crate) fn display(workspace: &Path, path: &Path) -> String {
-    path.strip_prefix(workspace).unwrap_or(path).to_string_lossy().replace('\\', "/")
+    path.strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// Resolved working directory requested by `run_command`'s `cwd` parameter, when given and non-empty.
@@ -224,14 +249,19 @@ pub(crate) fn command_cwd(input: &Value, workspace: &Path) -> Option<PathBuf> {
 }
 
 pub(super) fn string_arg<'a>(input: &'a Value, name: &str) -> Result<&'a str, ToolOutput> {
-    input[name].as_str().ok_or_else(|| ToolOutput::error(format!("`{name}` is required and must be a string.")))
+    input[name]
+        .as_str()
+        .ok_or_else(|| ToolOutput::error(format!("`{name}` is required and must be a string.")))
 }
 
 pub(super) fn clip(line: &str) -> String {
     if line.chars().count() <= LINE_CHARS {
         line.to_string()
     } else {
-        format!("{}… [line cut at {LINE_CHARS} characters]", line.chars().take(LINE_CHARS).collect::<String>())
+        format!(
+            "{}… [line cut at {LINE_CHARS} characters]",
+            line.chars().take(LINE_CHARS).collect::<String>()
+        )
     }
 }
 
@@ -272,12 +302,18 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "write_file" => run_blocking_tool(input, context, files::write_file).await,
         "delete_file" => run_blocking_tool(input, context, files::delete_file).await,
         "language_server" => match &context.lsp {
-            Some(hub) => crate::lsp::server_tool(hub, input, &context.cancel).await.map_err(ToolOutput::error),
+            Some(hub) => crate::lsp::server_tool(hub, input, &context.cancel)
+                .await
+                .map_err(ToolOutput::error),
             None => Err(ToolOutput::error("Language servers are not available here.")),
         },
         "code_nav" => match &context.lsp {
-            Some(hub) => crate::lsp::navigate(hub, &context.workspace, input, &context.cancel).await.map_err(ToolOutput::error),
-            None => Err(ToolOutput::error("Code navigation is not available here. Use `search` instead.")),
+            Some(hub) => crate::lsp::navigate(hub, &context.workspace, input, &context.cancel)
+                .await
+                .map_err(ToolOutput::error),
+            None => Err(ToolOutput::error(
+                "Code navigation is not available here. Use `search` instead.",
+            )),
         },
         "move_file" => run_blocking_tool(input, context, files::move_file).await,
         "search" => files::search(input, context).await,
@@ -298,16 +334,28 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "web_search" => match (string_arg(input, "query"), &context.search) {
             (Ok(query), Some(config)) => {
                 let found = crate::web::search(config, query, input, &context.cancel).await;
-                Ok(ToolOutput { content: found.content, is_error: found.is_error, meta: found.meta, images: Vec::new() })
+                Ok(ToolOutput {
+                    content: found.content,
+                    is_error: found.is_error,
+                    meta: found.meta,
+                    images: Vec::new(),
+                })
             }
-            (Ok(_), None) => Err(ToolOutput::error("Web search is not set up: it needs a GLM (Zhipu) API key saved in the settings.")),
+            (Ok(_), None) => Err(ToolOutput::error(
+                "Web search is not set up: it needs a GLM (Zhipu) API key saved in the settings.",
+            )),
             (Err(error), _) => Err(error),
         },
         "fetch_url" => match string_arg(input, "url") {
             Ok(url) => {
                 let offset = usize::try_from(input["offset"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
                 let fetched = crate::web::fetch(url, offset, &context.cancel).await;
-                Ok(ToolOutput { content: fetched.content, is_error: fetched.is_error, meta: fetched.meta, images: Vec::new() })
+                Ok(ToolOutput {
+                    content: fetched.content,
+                    is_error: fetched.is_error,
+                    meta: fetched.meta,
+                    images: Vec::new(),
+                })
             }
             Err(error) => Err(error),
         },
@@ -320,11 +368,33 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
             Some(hub) => {
                 let result = hub.call(other, input, &context.cancel).await;
                 let seen = context.vision != Some(false);
-                let images: Vec<Image> = if seen { result.images.iter().map(|(media_type, data)| Image { media_type: media_type.clone(), data: data.clone() }).collect() } else { Vec::new() };
-                let meta = if result.images.is_empty() { json!({ "mcp": true }) } else { json!({ "mcp": true, "pictures": result.images.len() }) };
-                Ok(ToolOutput { content: result.content, is_error: result.is_error, meta, images })
+                let images: Vec<Image> = if seen {
+                    result
+                        .images
+                        .iter()
+                        .map(|(media_type, data)| Image {
+                            media_type: media_type.clone(),
+                            data: data.clone(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let meta = if result.images.is_empty() {
+                    json!({ "mcp": true })
+                } else {
+                    json!({ "mcp": true, "pictures": result.images.len() })
+                };
+                Ok(ToolOutput {
+                    content: result.content,
+                    is_error: result.is_error,
+                    meta,
+                    images,
+                })
             }
-            None => Err(ToolOutput::error(format!("No MCP server is connected, so `{other}` cannot be called."))),
+            None => Err(ToolOutput::error(format!(
+                "No MCP server is connected, so `{other}` cannot be called."
+            ))),
         },
         other => Err(ToolOutput::error(format!("Unknown tool `{other}`."))),
     };

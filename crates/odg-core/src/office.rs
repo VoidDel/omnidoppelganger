@@ -131,11 +131,7 @@ fn walk_reader<R: BufRead>(
 
 /// Stream an XML part directly out of `archive`, bounded at [`PART_BYTES`] (64 MB).
 /// Returns `Ok(false)` when `name` is absent from the archive.
-fn walk_part(
-    archive: &mut Archive,
-    name: &str,
-    visit: impl FnMut(Step) -> ControlFlow<()>,
-) -> Result<bool, DocError> {
+fn walk_part(archive: &mut Archive, name: &str, visit: impl FnMut(Step) -> ControlFlow<()>) -> Result<bool, DocError> {
     let Ok(file) = archive.by_name(name) else {
         return Ok(false);
     };
@@ -202,9 +198,17 @@ fn flow_part(archive: &mut Archive, name: &str, how: &Flow) -> Result<Option<(bo
                     }
                     "r" if open => in_run = true,
                     "t" if open => in_text = true,
-                    "fld" if open => in_number = attribute(element, "type", false).is_some_and(|kind| kind == "slidenum"),
-                    "tab" if in_run => paragraphs.last_mut().into_iter().for_each(|(_, words)| words.push('\t')),
-                    "br" | "cr" => paragraphs.last_mut().into_iter().for_each(|(_, words)| words.push('\n')),
+                    "fld" if open => {
+                        in_number = attribute(element, "type", false).is_some_and(|kind| kind == "slidenum")
+                    }
+                    "tab" if in_run => paragraphs
+                        .last_mut()
+                        .into_iter()
+                        .for_each(|(_, words)| words.push('\t')),
+                    "br" | "cr" => paragraphs
+                        .last_mut()
+                        .into_iter()
+                        .for_each(|(_, words)| words.push('\n')),
                     "tr" if open => rows.push(Vec::new()),
                     "tc" if open => cells.push(String::new()),
                     _ => {}
@@ -282,7 +286,8 @@ fn heading_styles(archive: &mut Archive) -> HashMap<String, usize> {
                 let level = if name == "title" {
                     Some(1)
                 } else {
-                    name.strip_prefix("heading").and_then(|level| level.trim().parse::<usize>().ok())
+                    name.strip_prefix("heading")
+                        .and_then(|level| level.trim().parse::<usize>().ok())
                 };
                 if let (Some(id), Some(level)) = (&id, level.filter(|level| (1..=6).contains(level))) {
                     levels.insert(id.clone(), level);
@@ -300,8 +305,15 @@ fn heading_styles(archive: &mut Archive) -> HashMap<String, usize> {
 pub(crate) fn word(bytes: &[u8]) -> Result<String, DocError> {
     let mut archive = archive(bytes)?;
     let headings = heading_styles(&mut archive);
-    let (_, body) = flow_part(&mut archive, "word/document.xml", &Flow { headings: Some(&headings), blank_lines: true })?
-        .ok_or(DocError::Unreadable)?;
+    let (_, body) = flow_part(
+        &mut archive,
+        "word/document.xml",
+        &Flow {
+            headings: Some(&headings),
+            blank_lines: true,
+        },
+    )?
+    .ok_or(DocError::Unreadable)?;
     Ok(body)
 }
 
@@ -373,7 +385,10 @@ pub(crate) fn slides(bytes: &[u8]) -> Result<(usize, String), DocError> {
             .filter_map(|name| {
                 let name = name.ok()?;
                 Some((
-                    name.strip_prefix("ppt/slides/slide")?.strip_suffix(".xml")?.parse().ok()?,
+                    name.strip_prefix("ppt/slides/slide")?
+                        .strip_suffix(".xml")?
+                        .parse()
+                        .ok()?,
                     name.to_string(),
                 ))
             })
@@ -381,17 +396,26 @@ pub(crate) fn slides(bytes: &[u8]) -> Result<(usize, String), DocError> {
         numbered.sort();
         order = numbered.into_iter().map(|(_, name)| name).collect();
     }
-    let drawing = Flow { headings: None, blank_lines: false };
+    let drawing = Flow {
+        headings: None,
+        blank_lines: false,
+    };
     let mut out = String::new();
     for (at, path) in order.iter().enumerate() {
-        let Some((hidden, words)) = flow_part(&mut archive, path, &drawing)? else { continue };
+        let Some((hidden, words)) = flow_part(&mut archive, path, &drawing)? else {
+            continue;
+        };
         out.push_str(&format!(
             "[slide {} of {}{}]\n",
             at + 1,
             order.len(),
             if hidden { ", hidden" } else { "" }
         ));
-        out.push_str(if words.is_empty() { "(no text on this slide)" } else { &words });
+        out.push_str(if words.is_empty() {
+            "(no text on this slide)"
+        } else {
+            &words
+        });
         out.push('\n');
         let notes_path = links(&mut archive, path)
             .into_values()
@@ -615,7 +639,10 @@ fn render_dense_range(
             for (offset, row) in range.rows().enumerate() {
                 let cells: Vec<String> = row.iter().map(cell).collect();
                 let non_empty_in_row = cells.iter().filter(|c| !c.is_empty()).count();
-                let used = cells.iter().rposition(|cell| !cell.is_empty()).map_or(0, |last| last + 1);
+                let used = cells
+                    .iter()
+                    .rposition(|cell| !cell.is_empty())
+                    .map_or(0, |last| last + 1);
                 if used > 0 {
                     let row_1based = top as usize + 1 + offset;
                     if let Some(prev) = prev_emitted_row
@@ -668,7 +695,11 @@ pub(crate) fn sheets(bytes: &[u8]) -> Result<(usize, String), DocError> {
     let mut approx_bytes = 0usize;
 
     for (at, sheet) in sheets.iter().enumerate() {
-        let hidden = if matches!(sheet.visible, SheetVisible::Visible) { "" } else { ", hidden" };
+        let hidden = if matches!(sheet.visible, SheetVisible::Visible) {
+            ""
+        } else {
+            ", hidden"
+        };
         let head = format!("[sheet {} of {}: {}{hidden}", at + 1, sheets.len(), sheet.name);
 
         let keep_going = match &mut book {
@@ -694,12 +725,16 @@ pub(crate) fn sheets(bytes: &[u8]) -> Result<(usize, String), DocError> {
                     if read_ok || !sparse.rows.is_empty() {
                         sparse.render_into(&head, &mut out)
                     } else {
-                        out.push_str(&format!("{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"));
+                        out.push_str(&format!(
+                            "{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"
+                        ));
                         true
                     }
                 }
                 Err(_) => {
-                    out.push_str(&format!("{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"));
+                    out.push_str(&format!(
+                        "{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"
+                    ));
                     true
                 }
             },
@@ -725,26 +760,34 @@ pub(crate) fn sheets(bytes: &[u8]) -> Result<(usize, String), DocError> {
                     if read_ok || !sparse.rows.is_empty() {
                         sparse.render_into(&head, &mut out)
                     } else {
-                        out.push_str(&format!("{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"));
+                        out.push_str(&format!(
+                            "{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"
+                        ));
                         true
                     }
                 }
                 Err(_) => {
-                    out.push_str(&format!("{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"));
+                    out.push_str(&format!(
+                        "{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"
+                    ));
                     true
                 }
             },
             Sheets::Xls(xls) => match xls.worksheet_range(&sheet.name) {
                 Ok(range) => render_dense_range(&head, &range, &mut total_cells, &mut out),
                 Err(_) => {
-                    out.push_str(&format!("{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"));
+                    out.push_str(&format!(
+                        "{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"
+                    ));
                     true
                 }
             },
             Sheets::Ods(ods) => match ods.worksheet_range(&sheet.name) {
                 Ok(range) => render_dense_range(&head, &range, &mut total_cells, &mut out),
                 Err(_) => {
-                    out.push_str(&format!("{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"));
+                    out.push_str(&format!(
+                        "{head}]\n(not a sheet of cells: a chart, or a sheet of an old kind)\n"
+                    ));
                     true
                 }
             },
@@ -796,11 +839,21 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert_eq!(count, 1);
-        assert!(elapsed < std::time::Duration::from_millis(50), "sparse xlsx took {elapsed:?} (>= 50ms)");
-        assert!(text.contains("[sheet 1 of 1: Sparse; rows 1-1048576, columns A-XFD]"), "{text}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "sparse xlsx took {elapsed:?} (>= 50ms)"
+        );
+        assert!(
+            text.contains("[sheet 1 of 1: Sparse; rows 1-1048576, columns A-XFD]"),
+            "{text}"
+        );
         assert!(text.contains("1\tORIGIN"), "{text}");
         assert!(text.contains("... [rows 2-1048575 empty] ..."), "{text}");
         assert!(text.contains("1048576\t") && text.contains("FAR_CORNER"), "{text}");
-        assert!(text.len() < 512, "sparse output must stay compact: {} bytes", text.len());
+        assert!(
+            text.len() < 512,
+            "sparse output must stay compact: {} bytes",
+            text.len()
+        );
     }
 }

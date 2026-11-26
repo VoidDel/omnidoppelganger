@@ -133,10 +133,7 @@ pub async fn language_servers(app: State<'_, App>) -> Result<Vec<LanguageServerV
 }
 
 #[tauri::command]
-pub async fn install_language_server(
-    app: State<'_, App>,
-    key: String,
-) -> Result<Vec<LanguageServerView>, String> {
+pub async fn install_language_server(app: State<'_, App>, key: String) -> Result<Vec<LanguageServerView>, String> {
     let language = odg_core::lsp::language_by_key(&key).ok_or("没有这种语言")?;
     let root = app.lsp.root().ok_or("这里不能下载语言服务")?.to_path_buf();
     odg_core::lsp::install(&root, language, &tokio_util::sync::CancellationToken::new()).await?;
@@ -144,10 +141,7 @@ pub async fn install_language_server(
 }
 
 #[tauri::command]
-pub async fn remove_language_server(
-    app: State<'_, App>,
-    key: String,
-) -> Result<Vec<LanguageServerView>, String> {
+pub async fn remove_language_server(app: State<'_, App>, key: String) -> Result<Vec<LanguageServerView>, String> {
     let language = odg_core::lsp::language_by_key(&key).ok_or("没有这种语言")?;
     let root = app.lsp.root().ok_or("这里没有下载的语言服务")?.to_path_buf();
     app.lsp.shutdown_language(language.key).await;
@@ -181,11 +175,7 @@ pub async fn read_job_output(
 }
 
 #[tauri::command]
-pub async fn stop_job(
-    app: State<'_, App>,
-    id: String,
-    job_id: String,
-) -> Result<odg_core::jobs::JobSnapshot, String> {
+pub async fn stop_job(app: State<'_, App>, id: String, job_id: String) -> Result<odg_core::jobs::JobSnapshot, String> {
     let session = app.get_loaded(&id).ok_or_else(|| "会话尚未加载。".to_string())?;
     session
         .jobs()
@@ -195,12 +185,7 @@ pub async fn stop_job(
 }
 
 #[tauri::command]
-pub async fn write_job_input(
-    app: State<'_, App>,
-    id: String,
-    job_id: String,
-    text: String,
-) -> Result<(), String> {
+pub async fn write_job_input(app: State<'_, App>, id: String, job_id: String, text: String) -> Result<(), String> {
     let session = app.get_loaded(&id).ok_or_else(|| "会话尚未加载。".to_string())?;
     session.jobs().write(&job_id, &text, false).await
 }
@@ -441,15 +426,9 @@ pub async fn run_inline_shell_with_sandbox(
         writable: odg_core::sandbox::roots(cwd, &extra),
     };
     let (program, shell_args, _) = odg_core::tools::shell();
-    let cmd = odg_core::sandbox::command(program, &sandbox)
-        .map_err(|e| format!("无法在沙箱中启动终端命令：{e}"))?;
+    let cmd = odg_core::sandbox::command(program, &sandbox).map_err(|e| format!("无法在沙箱中启动终端命令：{e}"))?;
     #[cfg(target_os = "macos")]
-    let mut cmd = enforce_macos_inline_workspace_denies(
-        cmd,
-        cwd,
-        git_dir.as_deref(),
-        common_git_dir.as_deref(),
-    );
+    let mut cmd = enforce_macos_inline_workspace_denies(cmd, cwd, git_dir.as_deref(), common_git_dir.as_deref());
     #[cfg(not(target_os = "macos"))]
     let mut cmd = {
         let _ = (&git_dir, &common_git_dir);

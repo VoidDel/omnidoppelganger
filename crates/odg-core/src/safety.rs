@@ -26,7 +26,11 @@ pub enum Dialect {
 impl Dialect {
     /// The dialect of [`crate::tools::shell`] on this machine.
     pub fn of_this_machine() -> Self {
-        if cfg!(windows) { Dialect::PowerShell } else { Dialect::Posix }
+        if cfg!(windows) {
+            Dialect::PowerShell
+        } else {
+            Dialect::Posix
+        }
     }
 }
 
@@ -77,9 +81,45 @@ fn scan(command: &str, dialect: Dialect, workspace: &Path) -> Result<Vec<Segment
 /// Programs that run whatever code their arguments carry, or start another program: approving one for
 /// good would approve anything.
 const RUNS_ANYTHING: &[&str] = &[
-    "sh", "bash", "zsh", "fish", "dash", "cmd", "powershell", "pwsh", "python", "python3", "py", "node", "deno", "bun", "ruby", "perl", "php",
-    "lua", "iex", "invoke-expression", "invoke-command", "icm", "start-process", "saps", "start", "invoke-item", "ii", "sudo", "env", "xargs",
-    "eval", "exec", "nohup", "time", "source", ".", "call", "npx", "dlx",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "python",
+    "python3",
+    "py",
+    "node",
+    "deno",
+    "bun",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "iex",
+    "invoke-expression",
+    "invoke-command",
+    "icm",
+    "start-process",
+    "saps",
+    "start",
+    "invoke-item",
+    "ii",
+    "sudo",
+    "env",
+    "xargs",
+    "eval",
+    "exec",
+    "nohup",
+    "time",
+    "source",
+    ".",
+    "call",
+    "npx",
+    "dlx",
 ];
 
 fn normalized_program_base(name: &str) -> String {
@@ -99,7 +139,10 @@ pub fn runs_arbitrary_code(name: &str, args: &[&str]) -> bool {
     if RUNS_ANYTHING.contains(&base.as_str()) {
         return true;
     }
-    if ["python", "ruby", "perl", "php", "lua"].iter().any(|prefix| base.starts_with(prefix)) {
+    if ["python", "ruby", "perl", "php", "lua"]
+        .iter()
+        .any(|prefix| base.starts_with(prefix))
+    {
         return true;
     }
     if matches!(
@@ -128,7 +171,11 @@ pub fn runs_arbitrary_code(name: &str, args: &[&str]) -> bool {
     ) {
         return true;
     }
-    if base == "find" && args.iter().any(|arg| *arg == "-delete" || arg.starts_with("-exec") || arg.starts_with("-ok")) {
+    if base == "find"
+        && args
+            .iter()
+            .any(|arg| *arg == "-delete" || arg.starts_with("-exec") || arg.starts_with("-ok"))
+    {
         return true;
     }
     false
@@ -147,7 +194,10 @@ pub fn extract_grant_subcommand<'a>(name: &str, args: &'a [&'a str]) -> Result<O
             && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     };
     match base.as_str() {
-        "find" => Err("find cannot be approved for good because flags across its arguments can delete files or run commands".into()),
+        "find" => Err(
+            "find cannot be approved for good because flags across its arguments can delete files or run commands"
+                .into(),
+        ),
         "git" => {
             let mut at = 0;
             while let Some(&arg) = args.get(at).filter(|arg| arg.starts_with('-')) {
@@ -171,13 +221,23 @@ pub fn extract_grant_subcommand<'a>(name: &str, args: &'a [&'a str]) -> Result<O
             Ok(Some(sub))
         }
         "cargo" => {
-            if args.iter().any(|arg| *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "-C") {
+            if args
+                .iter()
+                .any(|arg| *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "-C")
+            {
                 return Err("cargo --config, -Z, and -C cannot be approved for good".into());
             }
             let mut at = 0;
             while let Some(&arg) = args.get(at) {
-                let toolchain = arg.starts_with('+') && arg.len() > 1 && arg[1..].chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
-                if toolchain || matches!(arg, "-q" | "--quiet" | "-v" | "-vv" | "--verbose" | "--locked" | "--offline" | "--frozen") {
+                let toolchain = arg.starts_with('+')
+                    && arg.len() > 1
+                    && arg[1..].chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+                if toolchain
+                    || matches!(
+                        arg,
+                        "-q" | "--quiet" | "-v" | "-vv" | "--verbose" | "--locked" | "--offline" | "--frozen"
+                    )
+                {
                     at += 1;
                 } else if arg.starts_with('-') || arg.starts_with('+') {
                     return Err(format!("cargo {arg} cannot be approved as a standing grant"));
@@ -196,7 +256,10 @@ pub fn extract_grant_subcommand<'a>(name: &str, args: &'a [&'a str]) -> Result<O
             Ok(Some(sub))
         }
         "npm" | "pnpm" | "yarn" | "bun" => {
-            if args.iter().any(|arg| *arg == "--script-shell" || arg.starts_with("--script-shell=")) {
+            if args
+                .iter()
+                .any(|arg| *arg == "--script-shell" || arg.starts_with("--script-shell="))
+            {
                 return Err(format!("{name} --script-shell runs an arbitrary shell"));
             }
             let mut at = 0;
@@ -206,7 +269,9 @@ pub fn extract_grant_subcommand<'a>(name: &str, args: &'a [&'a str]) -> Result<O
                         return Err(format!("{name} {arg} without a value"));
                     }
                     at += 2;
-                } else if ["--filter=", "--dir=", "--prefix=", "--cwd="].iter().any(|p| arg.starts_with(p))
+                } else if ["--filter=", "--dir=", "--prefix=", "--cwd="]
+                    .iter()
+                    .any(|p| arg.starts_with(p))
                     || matches!(arg, "-s" | "--silent" | "-w" | "--workspace" | "--workspaces")
                 {
                     at += 1;
@@ -225,7 +290,10 @@ pub fn extract_grant_subcommand<'a>(name: &str, args: &'a [&'a str]) -> Result<O
             Ok(Some(sub))
         }
         "go" => {
-            if args.iter().any(|arg| *arg == "-toolexec" || arg.starts_with("-toolexec=")) {
+            if args
+                .iter()
+                .any(|arg| *arg == "-toolexec" || arg.starts_with("-toolexec="))
+            {
                 return Err("go -toolexec runs an arbitrary program".into());
             }
             let sub = args
@@ -259,7 +327,9 @@ pub fn extract_grant_subcommand<'a>(name: &str, args: &'a [&'a str]) -> Result<O
                         }
                         at += 2;
                     }
-                    ("kubectl", _) if arg.starts_with("--namespace=") || (arg.starts_with("-n") && arg.len() > 2) => at += 1,
+                    ("kubectl", _) if arg.starts_with("--namespace=") || (arg.starts_with("-n") && arg.len() > 2) => {
+                        at += 1
+                    }
                     ("brew" | "apt", "-q" | "--quiet" | "-v" | "--verbose" | "-qq") => at += 1,
                     ("docker", "-D" | "--debug") => at += 1,
                     ("docker", "-l" | "--log-level") => {
@@ -294,16 +364,25 @@ pub fn extract_grant_subcommand<'a>(name: &str, args: &'a [&'a str]) -> Result<O
 pub fn grants_needed(command: &str, dialect: Dialect, workspace: &Path, auto: bool) -> Result<Vec<String>, String> {
     let mut grants: Vec<String> = Vec::new();
     for segment in &scan(command, dialect, workspace)? {
-        let Some((name, rest)) = command_of(segment, dialect)? else { continue };
+        let Some((name, rest)) = command_of(segment, dialect)? else {
+            continue;
+        };
         let args: Vec<&str> = rest.iter().map(String::as_str).collect();
         if auto && check_program(&name, &args, dialect).is_ok() {
             continue;
         }
         if runs_arbitrary_code(&name, &args) {
-            return Err(format!("{name} runs whatever it is given, so it is approved one time at a time"));
+            return Err(format!(
+                "{name} runs whatever it is given, so it is approved one time at a time"
+            ));
         }
-        let subcommand = extract_grant_subcommand(&name, &args)?
-            .map(|word| if dialect == Dialect::PowerShell { word.to_lowercase() } else { word.to_string() });
+        let subcommand = extract_grant_subcommand(&name, &args)?.map(|word| {
+            if dialect == Dialect::PowerShell {
+                word.to_lowercase()
+            } else {
+                word.to_string()
+            }
+        });
         let grant = match subcommand {
             Some(subcommand) => format!("command:{name} {subcommand}"),
             None => format!("command:{name}"),
@@ -374,11 +453,33 @@ struct Scanner<'a> {
 
 /// Methods that only compute a value from a string or a list, whatever object they are called on.
 const PURE_METHODS: &[&str] = &[
-    "trim", "trimstart", "trimend", "tostring", "tolower", "toupper", "tolowerinvariant", "toupperinvariant", "substring", "split", "contains",
-    "startswith", "endswith", "indexof", "lastindexof", "padleft", "padright", "equals", "compareto", "gettype", "tochararray", "normalize",
+    "trim",
+    "trimstart",
+    "trimend",
+    "tostring",
+    "tolower",
+    "toupper",
+    "tolowerinvariant",
+    "toupperinvariant",
+    "substring",
+    "split",
+    "contains",
+    "startswith",
+    "endswith",
+    "indexof",
+    "lastindexof",
+    "padleft",
+    "padright",
+    "equals",
+    "compareto",
+    "gettype",
+    "tochararray",
+    "normalize",
 ];
 
-const CURLY_QUOTES: &[char] = &['\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}', '\u{201c}', '\u{201d}', '\u{201e}'];
+const CURLY_QUOTES: &[char] = &[
+    '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}', '\u{201c}', '\u{201d}', '\u{201e}',
+];
 /// PowerShell reads these as a hyphen, so a flag spelled with one would slip past the flag checks.
 const DASHES: &[char] = &['\u{2013}', '\u{2014}', '\u{2015}'];
 
@@ -431,9 +532,14 @@ impl Scanner<'_> {
                 '$' if self.peek(1) == Some('{') => self.braced_variable()?,
                 '(' | '{' => {
                     let string_method = self.reject_call()?;
-                    let array_literal = c == '(' && self.dialect == Dialect::PowerShell && !self.word.quoted && self.word.bare.ends_with('@');
+                    let array_literal = c == '('
+                        && self.dialect == Dialect::PowerShell
+                        && !self.word.quoted
+                        && self.word.bare.ends_with('@');
                     if c == '{' {
-                        self.braces.push(self.dialect == Dialect::PowerShell && !self.word.quoted && self.word.bare.ends_with('@'));
+                        self.braces.push(
+                            self.dialect == Dialect::PowerShell && !self.word.quoted && self.word.bare.ends_with('@'),
+                        );
                     }
                     self.end_word()?;
                     self.end_segment()?;
@@ -532,7 +638,9 @@ impl Scanner<'_> {
                 }
                 Some('`') => return Err("a backtick escapes or substitutes what follows".into()),
                 // sh reads \" as a quote inside the string, PowerShell as the string's end.
-                Some('\\') if self.peek(1) == Some('"') => return Err("\\\" inside a string reads differently in each shell".into()),
+                Some('\\') if self.peek(1) == Some('"') => {
+                    return Err("\\\" inside a string reads differently in each shell".into());
+                }
                 Some('$') if self.peek(1) == Some('(') => {
                     // The string goes on after the subexpression, whose commands are checked on their own.
                     let word = std::mem::take(&mut self.word);
@@ -600,7 +708,11 @@ impl Scanner<'_> {
         if pure_static(bare) {
             return Ok(!bare.to_lowercase().contains("path]::"));
         }
-        let method = bare.rsplit('.').next().filter(|_| bare.contains('.')).filter(|name| !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'));
+        let method = bare
+            .rsplit('.')
+            .next()
+            .filter(|_| bare.contains('.'))
+            .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'));
         if let Some(method) = method {
             let method = method.to_lowercase();
             // FileInfo.Replace replaces files; on a property such as `$_.FullName` it is the string's.
@@ -639,11 +751,18 @@ impl Scanner<'_> {
             self.at += 1;
         }
         let start = self.at;
-        while self.peek(0).is_some_and(|c| !c.is_whitespace() && !";|&()'\"".contains(c)) {
+        while self
+            .peek(0)
+            .is_some_and(|c| !c.is_whitespace() && !";|&()'\"".contains(c))
+        {
             self.at += 1;
         }
         let target: String = self.chars[start..self.at].iter().collect();
-        if ["$null", "/dev/null", "nul"].contains(&target.to_lowercase().as_str()) { Ok(()) } else { Err(format!("> writes output to {target:?}")) }
+        if ["$null", "/dev/null", "nul"].contains(&target.to_lowercase().as_str()) {
+            Ok(())
+        } else {
+            Err(format!("> writes output to {target:?}"))
+        }
     }
 
     fn end_word(&mut self) -> Result<(), String> {
@@ -665,7 +784,10 @@ impl Scanner<'_> {
             || has_windows_drive_path(&word.text);
         let pattern = match self.dialect {
             Dialect::PowerShell => {
-                let after_pattern_op = self.segment.last().is_some_and(|previous| !previous.quoted && takes_pattern(&previous.bare));
+                let after_pattern_op = self
+                    .segment
+                    .last()
+                    .is_some_and(|previous| !previous.quoted && takes_pattern(&previous.bare));
                 let in_array_regex = self.array_parens.last() == Some(&self.parens)
                     && word.starts_quoted
                     && looks_like_pattern(&word)
@@ -691,8 +813,15 @@ impl Scanner<'_> {
         let mut segment = std::mem::take(&mut self.segment);
         // In a hashtable, `Name = value` names the value; the value is checked like any other.
         // Only there: elsewhere `del = x` runs del with the arguments `=` and `x`.
-        let key = |word: &Word| !word.quoted && !word.bare.is_empty() && word.bare.chars().all(|c| c.is_alphanumeric() || c == '_');
-        if self.braces.last() == Some(&true) && segment.len() >= 2 && key(&segment[0]) && segment[1].bare == "=" && !segment[1].quoted {
+        let key = |word: &Word| {
+            !word.quoted && !word.bare.is_empty() && word.bare.chars().all(|c| c.is_alphanumeric() || c == '_')
+        };
+        if self.braces.last() == Some(&true)
+            && segment.len() >= 2
+            && key(&segment[0])
+            && segment[1].bare == "="
+            && !segment[1].quoted
+        {
             segment.drain(..2);
         }
         if !segment.is_empty() {
@@ -706,56 +835,129 @@ impl Scanner<'_> {
 /// none, and start nothing. `*` is every member of the type.
 const PURE_STATICS: &[(&str, &[&str])] = &[
     ("math", &["*"]),
-    ("regex", &["escape", "unescape", "ismatch", "match", "matches", "replace", "split"]),
-    ("string", &["join", "isnullorempty", "isnullorwhitespace", "format", "concat", "compare", "equals", "empty"]),
-    ("char", &["isdigit", "isletter", "isletterordigit", "iswhitespace", "isupper", "islower", "toupper", "tolower"]),
+    (
+        "regex",
+        &["escape", "unescape", "ismatch", "match", "matches", "replace", "split"],
+    ),
+    (
+        "string",
+        &[
+            "join",
+            "isnullorempty",
+            "isnullorwhitespace",
+            "format",
+            "concat",
+            "compare",
+            "equals",
+            "empty",
+        ],
+    ),
+    (
+        "char",
+        &[
+            "isdigit",
+            "isletter",
+            "isletterordigit",
+            "iswhitespace",
+            "isupper",
+            "islower",
+            "toupper",
+            "tolower",
+        ],
+    ),
     ("int", &["parse", "tryparse", "maxvalue", "minvalue"]),
     ("int32", &["parse", "tryparse", "maxvalue", "minvalue"]),
     ("int64", &["parse", "tryparse", "maxvalue", "minvalue"]),
     ("long", &["parse", "tryparse", "maxvalue", "minvalue"]),
     ("double", &["parse", "tryparse", "maxvalue", "minvalue"]),
     ("decimal", &["parse", "tryparse", "round"]),
-    ("convert", &["toint32", "toint64", "todouble", "tostring", "toboolean", "tobase64string", "frombase64string"]),
-    ("timespan", &["fromseconds", "fromminutes", "fromhours", "fromdays", "frommilliseconds", "zero"]),
+    (
+        "convert",
+        &[
+            "toint32",
+            "toint64",
+            "todouble",
+            "tostring",
+            "toboolean",
+            "tobase64string",
+            "frombase64string",
+        ],
+    ),
+    (
+        "timespan",
+        &[
+            "fromseconds",
+            "fromminutes",
+            "fromhours",
+            "fromdays",
+            "frommilliseconds",
+            "zero",
+        ],
+    ),
     ("datetime", &["now", "utcnow", "today", "parse"]),
     ("guid", &["newguid", "empty"]),
     // The path's own text only: none of these looks at the disk.
-    ("io.path", &["getfilename", "getfilenamewithoutextension", "getextension", "getdirectoryname", "combine", "join", "getrelativepath", "ispathrooted", "directoryseparatorchar"]),
+    (
+        "io.path",
+        &[
+            "getfilename",
+            "getfilenamewithoutextension",
+            "getextension",
+            "getdirectoryname",
+            "combine",
+            "join",
+            "getrelativepath",
+            "ispathrooted",
+            "directoryseparatorchar",
+        ],
+    ),
 ];
 
 /// Whether a word that holds `::` is `[Type]::Member` for a member of [`PURE_STATICS`], and nothing after it.
 fn pure_static(bare: &str) -> bool {
     let lower = bare.to_lowercase();
-    let Some((type_part, member)) = lower.split_once("]::") else { return false };
-    let Some(name) = type_part.strip_prefix('[') else { return false };
+    let Some((type_part, member)) = lower.split_once("]::") else {
+        return false;
+    };
+    let Some(name) = type_part.strip_prefix('[') else {
+        return false;
+    };
     let name = name.strip_prefix("system.").unwrap_or(name);
     let plain = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || c == '_');
-    plain(member) && PURE_STATICS.iter().any(|(kind, members)| *kind == name && (members.contains(&"*") || members.contains(&member)))
+    plain(member)
+        && PURE_STATICS
+            .iter()
+            .any(|(kind, members)| *kind == name && (members.contains(&"*") || members.contains(&member)))
 }
 
 /// Whether a quoted word is a regular expression rather than a path: it escapes a character that only a
 /// pattern needs escaped, like the `\(` of `'\.unwrap\(\)'`, which no path is written with.
 fn looks_like_pattern(word: &Word) -> bool {
     let chars: Vec<char> = word.text.chars().collect();
-    word.quoted && chars.windows(2).any(|pair| pair[0] == '\\' && "()[]{}+^$|?*".contains(pair[1]))
+    word.quoted
+        && chars
+            .windows(2)
+            .any(|pair| pair[0] == '\\' && "()[]{}+^$|?*".contains(pair[1]))
 }
 
 /// PowerShell operators and parameters whose operand is a pattern or a value to compare, never a path.
 fn takes_pattern(word: &str) -> bool {
     let word = word.to_lowercase();
-    let Some(name) = word.strip_prefix('-') else { return false };
+    let Some(name) = word.strip_prefix('-') else {
+        return false;
+    };
     // -cmatch and -imatch are -match with the case made explicit.
-    let name = name.strip_prefix(['c', 'i']).filter(|rest| OPERATORS.contains(rest)).unwrap_or(name);
+    let name = name
+        .strip_prefix(['c', 'i'])
+        .filter(|rest| OPERATORS.contains(rest))
+        .unwrap_or(name);
     OPERATORS.contains(&name) || name == "pattern"
 }
 
 const OPERATORS: &[&str] = &["eq", "ne", "match", "notmatch", "like", "notlike", "replace", "split"];
 
 fn is_verbatim_or_device_path(text: &str) -> bool {
-    text.starts_with(r"\\?\")
-        || text.starts_with(r"\\.\")
-        || text.starts_with("//?/")
-        || text.starts_with("//./")
+    text.starts_with(r"\\?\") || text.starts_with(r"\\.\") || text.starts_with("//?/") || text.starts_with("//./")
 }
 
 fn has_windows_drive_path(text: &str) -> bool {
@@ -782,16 +984,41 @@ fn starts_like_attached_path(s: &str) -> bool {
 }
 
 const GREP_VALUE_FLAGS: &[&str] = &[
-    "-A", "-B", "-C", "-m", "-g", "-t", "-T", "-M", "-j",
-    "--after-context", "--before-context", "--context", "--max-count",
-    "--glob", "--iglob", "--type", "--type-not", "--max-columns",
-    "--threads", "--color", "--colors", "--include", "--exclude", "--exclude-dir",
+    "-A",
+    "-B",
+    "-C",
+    "-m",
+    "-g",
+    "-t",
+    "-T",
+    "-M",
+    "-j",
+    "--after-context",
+    "--before-context",
+    "--context",
+    "--max-count",
+    "--glob",
+    "--iglob",
+    "--type",
+    "--type-not",
+    "--max-columns",
+    "--threads",
+    "--color",
+    "--colors",
+    "--include",
+    "--exclude",
+    "--exclude-dir",
 ];
 
 fn is_posix_grep_pattern_slot(segment: &[Word], current: &Word) -> bool {
     let mut idx = 0;
     while let Some(w) = segment.get(idx) {
-        if !w.quoted && matches!(w.text.as_str(), "if" | "then" | "elif" | "else" | "while" | "until" | "do" | "!") {
+        if !w.quoted
+            && matches!(
+                w.text.as_str(),
+                "if" | "then" | "elif" | "else" | "while" | "until" | "do" | "!"
+            )
+        {
             idx += 1;
         } else {
             break;
@@ -800,7 +1027,12 @@ fn is_posix_grep_pattern_slot(segment: &[Word], current: &Word) -> bool {
     let Some(cmd) = segment.get(idx) else {
         return false;
     };
-    if cmd.quoted || !matches!(normalized_program_base(&cmd.text).as_str(), "grep" | "egrep" | "fgrep" | "rg") {
+    if cmd.quoted
+        || !matches!(
+            normalized_program_base(&cmd.text).as_str(),
+            "grep" | "egrep" | "fgrep" | "rg"
+        )
+    {
         return false;
     }
     let args = &segment[idx + 1..];
@@ -863,14 +1095,26 @@ fn is_posix_grep_pattern_slot(segment: &[Word], current: &Word) -> bool {
 }
 
 /// Variables that hold a path outside the workspace.
-const OUTSIDE_VARIABLES: &[&str] = &["$home", "${home}", "$env:", "${env:", "$profile", "$pshome", "$tmpdir", "${tmpdir}", "$oldpwd"];
+const OUTSIDE_VARIABLES: &[&str] = &[
+    "$home",
+    "${home}",
+    "$env:",
+    "${env:",
+    "$profile",
+    "$pshome",
+    "$tmpdir",
+    "${tmpdir}",
+    "$oldpwd",
+];
 
 fn check_single_path_part(part: &str, dialect: Dialect, workspace: &Path) -> Result<(), String> {
     if is_verbatim_or_device_path(part) {
         let stripped = &part[4..];
         if stripped.is_empty()
             || stripped.eq_ignore_ascii_case("unc")
-            || stripped.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("unc\\") || p.eq_ignore_ascii_case("unc/"))
+            || stripped
+                .get(..4)
+                .is_some_and(|p| p.eq_ignore_ascii_case("unc\\") || p.eq_ignore_ascii_case("unc/"))
             || stripped.split(['/', '\\']).any(|component| component == "..")
         {
             return Err(format!("{part} is outside the workspace"));
@@ -885,11 +1129,16 @@ fn check_single_path_part(part: &str, dialect: Dialect, workspace: &Path) -> Res
         return Err(format!("{part} climbs out of the workspace"));
     }
     // `C:`, and in PowerShell any drive: `env:` holds the environment, API keys included.
-    let prefix = part.find(':').map(|colon| &part[..colon]).filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()));
+    let prefix = part
+        .find(':')
+        .map(|colon| &part[..colon])
+        .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()));
     // `Rust: 3 files` is text, not a drive: a path has no space after its colon.
     let drive = prefix.is_some_and(|name| {
         let after = &part[name.len() + 1..];
-        (name.len() == 1 || dialect == Dialect::PowerShell) && !after.starts_with("//") && !after.starts_with(char::is_whitespace)
+        (name.len() == 1 || dialect == Dialect::PowerShell)
+            && !after.starts_with("//")
+            && !after.starts_with(char::is_whitespace)
     });
     if part.starts_with('~') || part.starts_with('/') || part.starts_with('\\') || drive {
         let path = Path::new(part);
@@ -938,15 +1187,21 @@ fn check_segment(segment: &[Word], dialect: Dialect) -> Result<(), String> {
 fn command_of(segment: &[Word], dialect: Dialect) -> Result<Option<(String, Vec<String>)>, String> {
     let mut words: Vec<Word> = segment.to_vec();
     loop {
-        let Some(first) = words.first().cloned() else { return Ok(None) };
+        let Some(first) = words.first().cloned() else {
+            return Ok(None);
+        };
         match dialect {
             Dialect::PowerShell => {
                 // `$x = …` and `$x += …`: what follows is checked as its own command. Only
                 // a variable: `del = x` runs del with the arguments `=` and `x`.
-                let is_name = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ':');
+                let is_name =
+                    |text: &str| !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ':');
                 let variable = |text: &str| text.strip_prefix('$').is_some_and(is_name);
                 let assignment = ["=", "+=", "-=", "*=", "/=", "%=", "??="];
-                if !first.quoted && variable(&first.bare) && words.get(1).is_some_and(|op| assignment.contains(&op.bare.as_str())) {
+                if !first.quoted
+                    && variable(&first.bare)
+                    && words.get(1).is_some_and(|op| assignment.contains(&op.bare.as_str()))
+                {
                     words.drain(..2);
                     continue;
                 }
@@ -963,7 +1218,14 @@ fn command_of(segment: &[Word], dialect: Dialect) -> Result<Option<(String, Vec<
                     } else {
                         // A quoted value right after `=` is a string, not a command.
                         let starts_quoted = first.quoted && bare.is_empty();
-                        words[0] = Word { text, bare, quoted: first.quoted, starts_quoted, started: true, ..Word::default() };
+                        words[0] = Word {
+                            text,
+                            bare,
+                            quoted: first.quoted,
+                            starts_quoted,
+                            started: true,
+                            ..Word::default()
+                        };
                     }
                     continue;
                 }
@@ -984,17 +1246,32 @@ fn command_of(segment: &[Word], dialect: Dialect) -> Result<Option<(String, Vec<
             }
         }
 
-        let name = if dialect == Dialect::PowerShell { first.text.to_lowercase().trim_end_matches(".exe").to_string() } else { first.text.clone() };
+        let name = if dialect == Dialect::PowerShell {
+            first.text.to_lowercase().trim_end_matches(".exe").to_string()
+        } else {
+            first.text.clone()
+        };
         let rest: Vec<String> = words[1..].iter().map(|word| word.text.clone()).collect();
         match (dialect, name.as_str()) {
             // Keywords followed by a command: check that command.
-            (Dialect::PowerShell, "if" | "elseif" | "else" | "while" | "do" | "for" | "try" | "catch" | "finally" | "switch" | "until")
+            (
+                Dialect::PowerShell,
+                "if" | "elseif" | "else" | "while" | "do" | "for" | "try" | "catch" | "finally" | "switch" | "until",
+            )
             | (Dialect::Posix, "if" | "then" | "elif" | "else" | "while" | "until" | "do" | "!") => {
                 words.remove(0);
                 continue;
             }
-            (Dialect::PowerShell, "return" | "break" | "continue" | "exit") | (Dialect::Posix, "fi" | "done" | "esac" | "exit" | "return" | "break" | "continue") => {
-                return if rest.iter().all(|word| word.chars().all(|c| c.is_ascii_digit() || c == '$')) { Ok(None) } else { Err(format!("{name} with arguments")) };
+            (Dialect::PowerShell, "return" | "break" | "continue" | "exit")
+            | (Dialect::Posix, "fi" | "done" | "esac" | "exit" | "return" | "break" | "continue") => {
+                return if rest
+                    .iter()
+                    .all(|word| word.chars().all(|c| c.is_ascii_digit() || c == '$'))
+                {
+                    Ok(None)
+                } else {
+                    Err(format!("{name} with arguments"))
+                };
             }
             _ => return Ok(Some((name, rest))),
         }
@@ -1003,36 +1280,171 @@ fn command_of(segment: &[Word], dialect: Dialect) -> Result<Option<(String, Vec<
 
 /// Programs that only read, whatever their arguments.
 const READERS: &[&str] = &[
-    "ls", "dir", "cat", "type", "head", "tail", "wc", "grep", "egrep", "fgrep", "tree", "pwd", "echo", "printf", "which", "where", "whoami", "file", "stat",
-    "du", "df", "cut", "tr", "diff", "cmp", "comm", "basename", "dirname", "realpath", "readlink", "true", "false", "test", "nl", "md5sum", "sha1sum",
-    "sha256sum", "sha512sum", "cksum", "cd", "pushd", "popd", "uname", "xxd", "od", "hexdump",
+    "ls",
+    "dir",
+    "cat",
+    "type",
+    "head",
+    "tail",
+    "wc",
+    "grep",
+    "egrep",
+    "fgrep",
+    "tree",
+    "pwd",
+    "echo",
+    "printf",
+    "which",
+    "where",
+    "whoami",
+    "file",
+    "stat",
+    "du",
+    "df",
+    "cut",
+    "tr",
+    "diff",
+    "cmp",
+    "comm",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "true",
+    "false",
+    "test",
+    "nl",
+    "md5sum",
+    "sha1sum",
+    "sha256sum",
+    "sha512sum",
+    "cksum",
+    "cd",
+    "pushd",
+    "popd",
+    "uname",
+    "xxd",
+    "od",
+    "hexdump",
 ];
 
 /// PowerShell commands that only read or format what passes through them, and their aliases.
 const POWERSHELL_READERS: &[&str] = &[
-    "get-childitem", "gci", "get-content", "gc", "select-object", "select", "where-object", "?", "measure-object", "measure", "sort-object",
-    "group-object", "group", "select-string", "sls", "format-table", "ft", "format-list", "fl", "format-wide", "fw", "out-string", "out-null",
-    "out-host", "oh", "out-default", "get-item", "gi", "get-itemproperty", "gp", "get-location", "gl", "test-path", "resolve-path", "rvpa",
-    "split-path", "join-path", "get-command", "gcm", "get-help", "help", "write-output", "write", "write-host", "get-date", "get-filehash",
-    "compare-object", "convertto-json", "convertfrom-json", "convertto-csv", "convertfrom-csv", "get-unique", "gu", "get-member", "gm",
-    "get-process", "gps", "get-service", "gsv", "get-variable", "gv", "set-location", "sl", "chdir", "push-location", "pop-location",
-    "measure-command", "get-psdrive", "gdr", "get-host", "get-culture",
+    "get-childitem",
+    "gci",
+    "get-content",
+    "gc",
+    "select-object",
+    "select",
+    "where-object",
+    "?",
+    "measure-object",
+    "measure",
+    "sort-object",
+    "group-object",
+    "group",
+    "select-string",
+    "sls",
+    "format-table",
+    "ft",
+    "format-list",
+    "fl",
+    "format-wide",
+    "fw",
+    "out-string",
+    "out-null",
+    "out-host",
+    "oh",
+    "out-default",
+    "get-item",
+    "gi",
+    "get-itemproperty",
+    "gp",
+    "get-location",
+    "gl",
+    "test-path",
+    "resolve-path",
+    "rvpa",
+    "split-path",
+    "join-path",
+    "get-command",
+    "gcm",
+    "get-help",
+    "help",
+    "write-output",
+    "write",
+    "write-host",
+    "get-date",
+    "get-filehash",
+    "compare-object",
+    "convertto-json",
+    "convertfrom-json",
+    "convertto-csv",
+    "convertfrom-csv",
+    "get-unique",
+    "gu",
+    "get-member",
+    "gm",
+    "get-process",
+    "gps",
+    "get-service",
+    "gsv",
+    "get-variable",
+    "gv",
+    "set-location",
+    "sl",
+    "chdir",
+    "push-location",
+    "pop-location",
+    "measure-command",
+    "get-psdrive",
+    "gdr",
+    "get-host",
+    "get-culture",
 ];
 
 /// Tools that check, format, or test the project; any arguments.
-const PROJECT_TOOLS: &[&str] = &["tsc", "vitest", "jest", "eslint", "prettier", "biome", "vue-tsc", "rustfmt", "ruff", "mypy", "pytest", "black", "gofmt"];
+const PROJECT_TOOLS: &[&str] = &[
+    "tsc", "vitest", "jest", "eslint", "prettier", "biome", "vue-tsc", "rustfmt", "ruff", "mypy", "pytest", "black",
+    "gofmt",
+];
 
 /// Package-manager scripts that build, check, or test.
-const SCRIPTS: &[&str] = &["test", "t", "tst", "build", "lint", "typecheck", "type-check", "check", "format", "fmt"];
+const SCRIPTS: &[&str] = &[
+    "test",
+    "t",
+    "tst",
+    "build",
+    "lint",
+    "typecheck",
+    "type-check",
+    "check",
+    "format",
+    "fmt",
+];
 
 fn check_program(name: &str, args: &[&str], dialect: Dialect) -> Result<(), String> {
     let refuse = |why: &str| Err(format!("{name} {why}"));
-    let has = |flags: &[&str]| args.iter().any(|arg| flags.iter().any(|flag| arg == flag || arg.starts_with(&format!("{flag}="))));
+    let has = |flags: &[&str]| {
+        args.iter().any(|arg| {
+            flags
+                .iter()
+                .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+        })
+    };
     match name {
-        "find" if has(&["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]) => refuse("with that action changes files or runs commands"),
+        "find"
+            if has(&[
+                "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls",
+            ]) =>
+        {
+            refuse("with that action changes files or runs commands")
+        }
         "find" => Ok(()),
         "sort" if has(&["-o", "--output"]) => refuse("-o writes a file"),
-        "sort" | "uniq" if args.iter().filter(|arg| !arg.starts_with('-')).count() > 1 => refuse("with two files writes the second"),
+        "sort" | "uniq" if args.iter().filter(|arg| !arg.starts_with('-')).count() > 1 => {
+            refuse("with two files writes the second")
+        }
         "sort" | "uniq" => Ok(()),
         "date" if has(&["-s", "--set"]) => refuse("-s sets the clock"),
         "date" => Ok(()),
@@ -1055,10 +1467,21 @@ fn check_program(name: &str, args: &[&str], dialect: Dialect) -> Result<(), Stri
             Some("build" | "test" | "format" | "--version" | "--info" | "--list-sdks" | "--list-runtimes") => Ok(()),
             _ => refuse("with that subcommand can change the project"),
         },
-        "rustc" | "node" | "python" | "python3" | "rustup" if !args.is_empty() && args.iter().all(|arg| ["--version", "-V", "-vV", "-v"].contains(arg)) => Ok(()),
+        "rustc" | "node" | "python" | "python3" | "rustup"
+            if !args.is_empty() && args.iter().all(|arg| ["--version", "-V", "-vV", "-v"].contains(arg)) =>
+        {
+            Ok(())
+        }
         // ForEach-Object with a name calls that method on every object it gets.
         "foreach-object" | "%" | "foreach" if dialect == Dialect::PowerShell => {
-            if args.iter().all(|arg| arg.starts_with('-') && !arg.to_lowercase().starts_with("-m")) { Ok(()) } else { refuse("with a member name calls a method") }
+            if args
+                .iter()
+                .all(|arg| arg.starts_with('-') && !arg.to_lowercase().starts_with("-m"))
+            {
+                Ok(())
+            } else {
+                refuse("with a member name calls a method")
+            }
         }
         _ if READERS.contains(&name) || PROJECT_TOOLS.contains(&name) => Ok(()),
         _ if dialect == Dialect::PowerShell && POWERSHELL_READERS.contains(&name) => Ok(()),
@@ -1068,12 +1491,26 @@ fn check_program(name: &str, args: &[&str], dialect: Dialect) -> Result<(), Stri
 
 fn check_read_only_program(name: &str, args: &[&str], dialect: Dialect) -> Result<(), String> {
     let refuse = |why: &str| Err(format!("{name} {why}"));
-    let has = |flags: &[&str]| args.iter().any(|arg| flags.iter().any(|flag| arg == flag || arg.starts_with(&format!("{flag}="))));
+    let has = |flags: &[&str]| {
+        args.iter().any(|arg| {
+            flags
+                .iter()
+                .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+        })
+    };
     match name {
-        "find" if has(&["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]) => refuse("with that action changes files or runs commands"),
+        "find"
+            if has(&[
+                "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls",
+            ]) =>
+        {
+            refuse("with that action changes files or runs commands")
+        }
         "find" => Ok(()),
         "sort" if has(&["-o", "--output"]) => refuse("-o writes a file"),
-        "sort" | "uniq" if args.iter().filter(|arg| !arg.starts_with('-')).count() > 1 => refuse("with two files writes the second"),
+        "sort" | "uniq" if args.iter().filter(|arg| !arg.starts_with('-')).count() > 1 => {
+            refuse("with two files writes the second")
+        }
         "sort" | "uniq" => Ok(()),
         "date" if has(&["-s", "--set"]) => refuse("-s sets the clock"),
         "date" => Ok(()),
@@ -1082,11 +1519,17 @@ fn check_read_only_program(name: &str, args: &[&str], dialect: Dialect) -> Resul
         "jq" => check_jq(args),
         "git" => check_git(args),
         "cargo" => {
-            if args.iter().any(|arg| *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "--open") {
+            if args.iter().any(|arg| {
+                *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "--open"
+            }) {
                 return Err("cargo --config, -Z, and --open can run or open other programs".into());
             }
             let Some(subcommand) = args.iter().find(|arg| !arg.starts_with('-') && !arg.starts_with('+')) else {
-                return if args.iter().any(|arg| ["--version", "-V", "--list"].contains(arg)) { Ok(()) } else { Err("cargo without a subcommand".into()) };
+                return if args.iter().any(|arg| ["--version", "-V", "--list"].contains(arg)) {
+                    Ok(())
+                } else {
+                    Err("cargo without a subcommand".into())
+                };
             };
             match *subcommand {
                 "version" | "locate-project" => Ok(()),
@@ -1097,7 +1540,22 @@ fn check_read_only_program(name: &str, args: &[&str], dialect: Dialect) -> Resul
         "npm" | "pnpm" | "yarn" | "bun" => {
             let mut at = 0;
             while let Some(arg) = args.get(at).filter(|arg| arg.starts_with('-')) {
-                at += if ["--filter", "-F", "--dir", "-C", "--prefix", "--cwd", "-w", "--workspace"].contains(arg) { 2 } else { 1 };
+                at += if [
+                    "--filter",
+                    "-F",
+                    "--dir",
+                    "-C",
+                    "--prefix",
+                    "--cwd",
+                    "-w",
+                    "--workspace",
+                ]
+                .contains(arg)
+                {
+                    2
+                } else {
+                    1
+                };
             }
             match args.get(at).copied() {
                 Some("ls" | "list" | "why") => Ok(()),
@@ -1114,9 +1572,20 @@ fn check_read_only_program(name: &str, args: &[&str], dialect: Dialect) -> Resul
             Some("--version" | "--info" | "--list-sdks" | "--list-runtimes") => Ok(()),
             _ => refuse("with that subcommand is not read-only"),
         },
-        "rustc" | "node" | "python" | "python3" | "rustup" if !args.is_empty() && args.iter().all(|arg| ["--version", "-V", "-vV", "-v"].contains(arg)) => Ok(()),
+        "rustc" | "node" | "python" | "python3" | "rustup"
+            if !args.is_empty() && args.iter().all(|arg| ["--version", "-V", "-vV", "-v"].contains(arg)) =>
+        {
+            Ok(())
+        }
         "foreach-object" | "%" | "foreach" if dialect == Dialect::PowerShell => {
-            if args.iter().all(|arg| arg.starts_with('-') && !arg.to_lowercase().starts_with("-m")) { Ok(()) } else { refuse("with a member name calls a method") }
+            if args
+                .iter()
+                .all(|arg| arg.starts_with('-') && !arg.to_lowercase().starts_with("-m"))
+            {
+                Ok(())
+            } else {
+                refuse("with a member name calls a method")
+            }
         }
         _ if READERS.contains(&name) => Ok(()),
         _ if dialect == Dialect::PowerShell && POWERSHELL_READERS.contains(&name) => Ok(()),
@@ -1136,40 +1605,93 @@ fn check_git(args: &[&str]) -> Result<(), String> {
     }
     let Some(&subcommand) = args.get(at) else { return Ok(()) };
     let rest = &args[at + 1..];
-    if rest.iter().any(|arg| arg.starts_with("--output") || arg.starts_with("--ext-diff") || arg.starts_with("--open-files-in-pager") || (arg.starts_with("-O") && subcommand == "grep")) {
-        return Err(format!("git {subcommand} with that option writes a file or runs a program"));
+    if rest.iter().any(|arg| {
+        arg.starts_with("--output")
+            || arg.starts_with("--ext-diff")
+            || arg.starts_with("--open-files-in-pager")
+            || (arg.starts_with("-O") && subcommand == "grep")
+    }) {
+        return Err(format!(
+            "git {subcommand} with that option writes a file or runs a program"
+        ));
     }
-    let only = |allowed: &[&str]| rest.iter().all(|arg| allowed.contains(arg) || arg.starts_with("--sort=") || arg.starts_with("--format="));
+    let only = |allowed: &[&str]| {
+        rest.iter()
+            .all(|arg| allowed.contains(arg) || arg.starts_with("--sort=") || arg.starts_with("--format="))
+    };
     let allowed = match subcommand {
-        "status" | "log" | "diff" | "show" | "blame" | "annotate" | "shortlog" | "describe" | "rev-parse" | "rev-list" | "ls-files" | "ls-tree" | "cat-file"
-        | "grep" | "whatchanged" | "show-ref" | "show-branch" | "name-rev" | "merge-base" | "count-objects" | "var" | "version" | "check-ignore"
-        | "for-each-ref" | "help" => true,
-        "branch" => only(&["-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "-l", "--list", "--show-current", "--no-color", "--color=never"]),
+        "status" | "log" | "diff" | "show" | "blame" | "annotate" | "shortlog" | "describe" | "rev-parse"
+        | "rev-list" | "ls-files" | "ls-tree" | "cat-file" | "grep" | "whatchanged" | "show-ref" | "show-branch"
+        | "name-rev" | "merge-base" | "count-objects" | "var" | "version" | "check-ignore" | "for-each-ref"
+        | "help" => true,
+        "branch" => only(&[
+            "-a",
+            "--all",
+            "-r",
+            "--remotes",
+            "-v",
+            "-vv",
+            "--verbose",
+            "-l",
+            "--list",
+            "--show-current",
+            "--no-color",
+            "--color=never",
+        ]),
         "tag" => only(&["-l", "--list", "-n"]),
         "remote" => rest.is_empty() || only(&["-v", "--verbose"]) || matches!(rest.first(), Some(&"show" | &"get-url")),
-        "stash" | "worktree" => matches!(rest.first(), Some(&"list")) || (subcommand == "stash" && matches!(rest.first(), Some(&"show"))),
+        "stash" | "worktree" => {
+            matches!(rest.first(), Some(&"list")) || (subcommand == "stash" && matches!(rest.first(), Some(&"show")))
+        }
         "reflog" => rest.first().is_none_or(|arg| *arg == "show" || arg.starts_with('-')),
         "submodule" => matches!(rest.first(), Some(&"status")),
         "config" => {
-            let reads = rest.iter().any(|arg| ["--get", "--get-all", "--get-regexp", "--list", "-l"].contains(arg));
-            let writes = rest.iter().any(|arg| ["--add", "--unset", "--unset-all", "--replace-all", "--edit", "-e", "--rename-section", "--remove-section"].contains(arg));
+            let reads = rest
+                .iter()
+                .any(|arg| ["--get", "--get-all", "--get-regexp", "--list", "-l"].contains(arg));
+            let writes = rest.iter().any(|arg| {
+                [
+                    "--add",
+                    "--unset",
+                    "--unset-all",
+                    "--replace-all",
+                    "--edit",
+                    "-e",
+                    "--rename-section",
+                    "--remove-section",
+                ]
+                .contains(arg)
+            });
             reads && !writes
         }
         _ => false,
     };
-    if allowed { Ok(()) } else { Err(format!("git {subcommand} can change the repository or reach the network")) }
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!(
+            "git {subcommand} can change the repository or reach the network"
+        ))
+    }
 }
 
 fn check_cargo(args: &[&str]) -> Result<(), String> {
-    if args.iter().any(|arg| *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "--open") {
+    if args
+        .iter()
+        .any(|arg| *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "--open")
+    {
         return Err("cargo --config, -Z, and --open can run or open other programs".into());
     }
     let Some(subcommand) = args.iter().find(|arg| !arg.starts_with('-') && !arg.starts_with('+')) else {
-        return if args.iter().any(|arg| ["--version", "-V", "--list"].contains(arg)) { Ok(()) } else { Err("cargo without a subcommand".into()) };
+        return if args.iter().any(|arg| ["--version", "-V", "--list"].contains(arg)) {
+            Ok(())
+        } else {
+            Err("cargo without a subcommand".into())
+        };
     };
     match *subcommand {
-        "build" | "b" | "check" | "c" | "test" | "t" | "clippy" | "fmt" | "doc" | "d" | "tree" | "metadata" | "bench" | "version" | "search" | "locate-project" | "pkgid"
-        | "verify-project" => Ok(()),
+        "build" | "b" | "check" | "c" | "test" | "t" | "clippy" | "fmt" | "doc" | "d" | "tree" | "metadata"
+        | "bench" | "version" | "search" | "locate-project" | "pkgid" | "verify-project" => Ok(()),
         "nextest" if args.iter().any(|arg| *arg == "run" || *arg == "list") => Ok(()),
         other => Err(format!("cargo {other} can publish, install, run, or delete")),
     }
@@ -1179,10 +1701,29 @@ fn check_package_manager(name: &str, args: &[&str]) -> Result<(), String> {
     let mut at = 0;
     while let Some(arg) = args.get(at).filter(|arg| arg.starts_with('-')) {
         // These take a value: the package or directory to work in.
-        at += if ["--filter", "-F", "--dir", "-C", "--prefix", "--cwd", "-w", "--workspace"].contains(arg) { 2 } else { 1 };
+        at += if [
+            "--filter",
+            "-F",
+            "--dir",
+            "-C",
+            "--prefix",
+            "--cwd",
+            "-w",
+            "--workspace",
+        ]
+        .contains(arg)
+        {
+            2
+        } else {
+            1
+        };
     }
     let Some(&subcommand) = args.get(at) else {
-        return if args.iter().any(|arg| ["--version", "-v"].contains(arg)) { Ok(()) } else { Err(format!("{name} without a command installs packages")) };
+        return if args.iter().any(|arg| ["--version", "-v"].contains(arg)) {
+            Ok(())
+        } else {
+            Err(format!("{name} without a command installs packages"))
+        };
     };
     let next = args.get(at + 1).copied();
     let allowed = match subcommand {
@@ -1191,7 +1732,11 @@ fn check_package_manager(name: &str, args: &[&str]) -> Result<(), String> {
         "ls" | "list" | "why" | "outdated" => true,
         script => SCRIPTS.contains(&script),
     };
-    if allowed { Ok(()) } else { Err(format!("{name} {subcommand} can install packages or run any script")) }
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!("{name} {subcommand} can install packages or run any script"))
+    }
 }
 
 fn jq_filter_reads_env(filter: &str) -> bool {
@@ -1232,10 +1777,22 @@ fn check_jq(args: &[&str]) -> Result<(), String> {
         if !after_double_dash && arg.starts_with('-') && arg != "-" {
             if matches!(
                 arg,
-                "-f" | "--from-file" | "-L" | "--library-path" | "--rawfile" | "--slurpfile" | "--argfile" | "--run-tests"
-            ) || ["--from-file=", "--library-path=", "--rawfile=", "--slurpfile=", "--argfile="]
-                .iter()
-                .any(|prefix| arg.starts_with(prefix))
+                "-f" | "--from-file"
+                    | "-L"
+                    | "--library-path"
+                    | "--rawfile"
+                    | "--slurpfile"
+                    | "--argfile"
+                    | "--run-tests"
+            ) || [
+                "--from-file=",
+                "--library-path=",
+                "--rawfile=",
+                "--slurpfile=",
+                "--argfile=",
+            ]
+            .iter()
+            .any(|prefix| arg.starts_with(prefix))
                 || arg.starts_with("-f")
                 || arg.starts_with("-L")
             {
@@ -1257,10 +1814,25 @@ fn check_jq(args: &[&str]) -> Result<(), String> {
                     }
                     at += 2;
                 }
-                "--null-input" | "--raw-input" | "--slurp" | "--compact-output" | "--raw-output" | "--raw-output0"
-                | "--join-output" | "--ascii-output" | "--color-output" | "--monochrome-output" | "--sort-keys"
-                | "--tab" | "--unbuffered" | "--stream" | "--stream-errors" | "--seq" | "--exit-status"
-                | "--version" | "--help" => {
+                "--null-input"
+                | "--raw-input"
+                | "--slurp"
+                | "--compact-output"
+                | "--raw-output"
+                | "--raw-output0"
+                | "--join-output"
+                | "--ascii-output"
+                | "--color-output"
+                | "--monochrome-output"
+                | "--sort-keys"
+                | "--tab"
+                | "--unbuffered"
+                | "--stream"
+                | "--stream-errors"
+                | "--seq"
+                | "--exit-status"
+                | "--version"
+                | "--help" => {
                     at += 1;
                 }
                 _ if !arg.starts_with("--") && arg[1..].chars().all(|c| "cnesrRCMSaj0Vhb".contains(c)) => {
@@ -1327,7 +1899,11 @@ mod tests {
             r#"$dirs = "zip","7z"; foreach ($d in $dirs) { $files = Get-ChildItem "crates\$d\src" -Filter *.rs -Recurse; foreach ($f in $files) { $n = 0; foreach ($line in (Get-Content $f.FullName)) { $n++; if ($line -match '\b(unsafe|unwrap\(\))\b') { "$(Split-Path $f -Leaf):$n`: $($line.Trim())" } } } }"#,
             r#""a `"quoted`" word and a `$dollar""#,
         ] {
-            assert!(passes(command, Dialect::PowerShell, workspace), "{command}: {:?}", check(command, Dialect::PowerShell, workspace));
+            assert!(
+                passes(command, Dialect::PowerShell, workspace),
+                "{command}: {:?}",
+                check(command, Dialect::PowerShell, workspace)
+            );
         }
         for command in [
             "ls -la src && cat Cargo.toml | head -20",
@@ -1337,7 +1913,11 @@ mod tests {
             "find . -name '*.rs' -not -path './target/*' 2>/dev/null || true",
             "if test -f Cargo.toml; then cargo check; fi",
         ] {
-            assert!(passes(command, Dialect::Posix, workspace), "{command}: {:?}", check(command, Dialect::Posix, workspace));
+            assert!(
+                passes(command, Dialect::Posix, workspace),
+                "{command}: {:?}",
+                check(command, Dialect::Posix, workspace)
+            );
         }
     }
 
@@ -1450,7 +2030,11 @@ mod tests {
         for dialect in [Dialect::PowerShell, Dialect::Posix] {
             assert!(passes(&format!("ls '{inside}'"), dialect, &workspace), "{inside}");
             assert!(!passes(&format!("ls '{beside}'"), dialect, &workspace), "{beside}");
-            assert!(!passes(&format!("cargo test --target-dir='{beside}'"), dialect, &workspace));
+            assert!(!passes(
+                &format!("cargo test --target-dir='{beside}'"),
+                dialect,
+                &workspace
+            ));
         }
     }
 
@@ -1458,11 +2042,38 @@ mod tests {
     fn read_only_check_allows_pure_inspection_and_rejects_builds_formatters_and_writes() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path();
-        for command in ["ls -la src", "git status --short && git log --oneline -5", "git diff HEAD~1", "rg 'fn main' src | wc -l", "cargo metadata --no-deps", "pnpm list --depth 0", "rustc --version"] {
-            assert!(check_read_only(command, Dialect::Posix, workspace).is_ok(), "{command}: {:?}", check_read_only(command, Dialect::Posix, workspace));
+        for command in [
+            "ls -la src",
+            "git status --short && git log --oneline -5",
+            "git diff HEAD~1",
+            "rg 'fn main' src | wc -l",
+            "cargo metadata --no-deps",
+            "pnpm list --depth 0",
+            "rustc --version",
+        ] {
+            assert!(
+                check_read_only(command, Dialect::Posix, workspace).is_ok(),
+                "{command}: {:?}",
+                check_read_only(command, Dialect::Posix, workspace)
+            );
         }
-        for command in ["cargo test", "cargo fmt", "cargo build", "cargo metadata", "prettier -w src", "eslint --fix src", "pnpm test", "rm -rf target", "echo hi > out.txt", "git commit -m x", "cat ../secret.txt"] {
-            assert!(check_read_only(command, Dialect::Posix, workspace).is_err(), "{command} passed read-only check");
+        for command in [
+            "cargo test",
+            "cargo fmt",
+            "cargo build",
+            "cargo metadata",
+            "prettier -w src",
+            "eslint --fix src",
+            "pnpm test",
+            "rm -rf target",
+            "echo hi > out.txt",
+            "git commit -m x",
+            "cat ../secret.txt",
+        ] {
+            assert!(
+                check_read_only(command, Dialect::Posix, workspace).is_err(),
+                "{command} passed read-only check"
+            );
         }
     }
 
@@ -1485,25 +2096,63 @@ mod tests {
             "echo \"${foo\"",
         ] {
             assert!(check(cmd, Dialect::Posix, workspace).is_err(), "{cmd} passed check");
-            assert!(check_read_only(cmd, Dialect::Posix, workspace).is_err(), "{cmd} passed check_read_only");
-            assert!(grants_needed(cmd, Dialect::Posix, workspace, false).is_err(), "{cmd} passed grants_needed(false)");
-            assert!(grants_needed(cmd, Dialect::Posix, workspace, true).is_err(), "{cmd} passed grants_needed(true)");
+            assert!(
+                check_read_only(cmd, Dialect::Posix, workspace).is_err(),
+                "{cmd} passed check_read_only"
+            );
+            assert!(
+                grants_needed(cmd, Dialect::Posix, workspace, false).is_err(),
+                "{cmd} passed grants_needed(false)"
+            );
+            assert!(
+                grants_needed(cmd, Dialect::Posix, workspace, true).is_err(),
+                "{cmd} passed grants_needed(true)"
+            );
         }
-        for ps_cmd in ["Write-Output ${env:USERPROFILE}", "Get-Content ${c:\\secret.txt}", "Write-Output \"${env:SECRET}\""] {
-            assert!(check(ps_cmd, Dialect::PowerShell, workspace).is_err(), "{ps_cmd} passed PowerShell check");
-            assert!(check_read_only(ps_cmd, Dialect::PowerShell, workspace).is_err(), "{ps_cmd} passed PowerShell check_read_only");
-            assert!(grants_needed(ps_cmd, Dialect::PowerShell, workspace, false).is_err(), "{ps_cmd} passed PowerShell grants_needed");
+        for ps_cmd in [
+            "Write-Output ${env:USERPROFILE}",
+            "Get-Content ${c:\\secret.txt}",
+            "Write-Output \"${env:SECRET}\"",
+        ] {
+            assert!(
+                check(ps_cmd, Dialect::PowerShell, workspace).is_err(),
+                "{ps_cmd} passed PowerShell check"
+            );
+            assert!(
+                check_read_only(ps_cmd, Dialect::PowerShell, workspace).is_err(),
+                "{ps_cmd} passed PowerShell check_read_only"
+            );
+            assert!(
+                grants_needed(ps_cmd, Dialect::PowerShell, workspace, false).is_err(),
+                "{ps_cmd} passed PowerShell grants_needed"
+            );
         }
 
         // Bare ASCII variable identifiers still pass, while OUTSIDE_VARIABLES like ${HOME} still fail.
-        for safe in ["echo ${CARGO_PKG_VERSION}", "echo \"${CARGO_PKG_VERSION}\"", "echo ${_BUILD_ID_2}"] {
+        for safe in [
+            "echo ${CARGO_PKG_VERSION}",
+            "echo \"${CARGO_PKG_VERSION}\"",
+            "echo ${_BUILD_ID_2}",
+        ] {
             assert!(check(safe, Dialect::Posix, workspace).is_ok(), "{safe} failed check");
-            assert!(check_read_only(safe, Dialect::Posix, workspace).is_ok(), "{safe} failed check_read_only");
+            assert!(
+                check_read_only(safe, Dialect::Posix, workspace).is_ok(),
+                "{safe} failed check_read_only"
+            );
         }
         for outside in ["cat ${HOME}", "cat \"${HOME}\"", "ls ${TMPDIR}"] {
-            assert!(check(outside, Dialect::Posix, workspace).is_err(), "{outside} passed check");
-            assert!(check_read_only(outside, Dialect::Posix, workspace).is_err(), "{outside} passed check_read_only");
-            assert!(grants_needed(outside, Dialect::Posix, workspace, false).is_err(), "{outside} passed grants_needed");
+            assert!(
+                check(outside, Dialect::Posix, workspace).is_err(),
+                "{outside} passed check"
+            );
+            assert!(
+                check_read_only(outside, Dialect::Posix, workspace).is_err(),
+                "{outside} passed check_read_only"
+            );
+            assert!(
+                grants_needed(outside, Dialect::Posix, workspace, false).is_err(),
+                "{outside} passed grants_needed"
+            );
         }
     }
 
@@ -1513,11 +2162,31 @@ mod tests {
         let workspace = directory.path();
         std::fs::create_dir_all(workspace.join("sub")).unwrap();
 
-        assert_eq!(grants_needed("git --no-pager push", Dialect::Posix, workspace, false), Ok(vec!["command:git push".into()]));
-        assert_eq!(grants_needed("git -P --no-optional-locks -C sub status", Dialect::Posix, workspace, false), Ok(vec!["command:git status".into()]));
-        assert_eq!(grants_needed("cargo +nightly -q --locked test", Dialect::Posix, workspace, false), Ok(vec!["command:cargo test".into()]));
-        assert_eq!(grants_needed("pnpm --filter app -s build", Dialect::Posix, workspace, false), Ok(vec!["command:pnpm build".into()]));
-        assert_eq!(grants_needed("kubectl -n default get pods", Dialect::Posix, workspace, false), Ok(vec!["command:kubectl get".into()]));
+        assert_eq!(
+            grants_needed("git --no-pager push", Dialect::Posix, workspace, false),
+            Ok(vec!["command:git push".into()])
+        );
+        assert_eq!(
+            grants_needed(
+                "git -P --no-optional-locks -C sub status",
+                Dialect::Posix,
+                workspace,
+                false
+            ),
+            Ok(vec!["command:git status".into()])
+        );
+        assert_eq!(
+            grants_needed("cargo +nightly -q --locked test", Dialect::Posix, workspace, false),
+            Ok(vec!["command:cargo test".into()])
+        );
+        assert_eq!(
+            grants_needed("pnpm --filter app -s build", Dialect::Posix, workspace, false),
+            Ok(vec!["command:pnpm build".into()])
+        );
+        assert_eq!(
+            grants_needed("kubectl -n default get pods", Dialect::Posix, workspace, false),
+            Ok(vec!["command:kubectl get".into()])
+        );
 
         for unapprovable in [
             "git",
@@ -1579,8 +2248,14 @@ mod tests {
             r"Select-String -Pattern '\\?\C:\Windows\win.ini' src/a.rs",
             r"Select-String -Pattern 'C:\Windows\win.ini' src/a.rs",
         ] {
-            assert!(check(ps_bad, Dialect::PowerShell, workspace).is_err(), "{ps_bad} passed PowerShell check");
-            assert!(check_read_only(ps_bad, Dialect::PowerShell, workspace).is_err(), "{ps_bad} passed PowerShell check_read_only");
+            assert!(
+                check(ps_bad, Dialect::PowerShell, workspace).is_err(),
+                "{ps_bad} passed PowerShell check"
+            );
+            assert!(
+                check_read_only(ps_bad, Dialect::PowerShell, workspace).is_err(),
+                "{ps_bad} passed PowerShell check_read_only"
+            );
         }
 
         for posix_bad in [
@@ -1602,8 +2277,14 @@ mod tests {
             "jq --rawfile s /etc/passwd -n '$s'",
             "jq -L . '.' package.json",
         ] {
-            assert!(check(posix_bad, Dialect::Posix, workspace).is_err(), "{posix_bad} passed Posix check");
-            assert!(check_read_only(posix_bad, Dialect::Posix, workspace).is_err(), "{posix_bad} passed Posix check_read_only");
+            assert!(
+                check(posix_bad, Dialect::Posix, workspace).is_err(),
+                "{posix_bad} passed Posix check"
+            );
+            assert!(
+                check_read_only(posix_bad, Dialect::Posix, workspace).is_err(),
+                "{posix_bad} passed Posix check_read_only"
+            );
         }
 
         for posix_good in [
@@ -1613,7 +2294,11 @@ mod tests {
             r"rg '\.unwrap\(\)' src",
             r"grep -e '\(foo|bar\)' src",
         ] {
-            assert!(check(posix_good, Dialect::Posix, workspace).is_ok(), "{posix_good}: {:?}", check(posix_good, Dialect::Posix, workspace));
+            assert!(
+                check(posix_good, Dialect::Posix, workspace).is_ok(),
+                "{posix_good}: {:?}",
+                check(posix_good, Dialect::Posix, workspace)
+            );
             assert!(
                 check_read_only(posix_good, Dialect::Posix, workspace).is_ok(),
                 "{posix_good}: {:?}",

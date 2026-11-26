@@ -17,7 +17,9 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::{AssistantTurn, Attempt, EndpointSource, LlmError, LlmRequest, StreamDelta, http_failure, with_retries};
+use crate::llm::{
+    AssistantTurn, Attempt, EndpointSource, LlmError, LlmRequest, StreamDelta, http_failure, with_retries,
+};
 use crate::providers::{Flavor, Protocol, effort_for};
 use crate::sse::SseParser;
 
@@ -82,7 +84,11 @@ fn chat_messages_inner(system: &str, messages: &[Value], require_reasoning_field
                 .chain(of("image"))
                 .map(|block| {
                     let source = &block["source"];
-                    let url = format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default());
+                    let url = format!(
+                        "data:{};base64,{}",
+                        source["media_type"].as_str().unwrap_or_default(),
+                        source["data"].as_str().unwrap_or_default()
+                    );
                     json!({ "type": "image_url", "image_url": { "url": url } })
                 })
                 .collect();
@@ -159,10 +165,19 @@ impl ChatAccumulator {
     pub fn apply(&mut self, chunk: &Value) -> Result<Vec<StreamDelta>, LlmError> {
         if chunk["error"].is_object() {
             let error = &chunk["error"];
-            let kind = error["type"].as_str().or_else(|| error["code"].as_str()).unwrap_or("stream_error").to_string();
+            let kind = error["type"]
+                .as_str()
+                .or_else(|| error["code"].as_str())
+                .unwrap_or("stream_error")
+                .to_string();
             let message = error["message"].as_str().unwrap_or("no message").to_string();
             // An error in the middle of a stream is the server's trouble, not the request's.
-            return Err(LlmError::Api { status: None, kind, message, retryable: true });
+            return Err(LlmError::Api {
+                status: None,
+                kind,
+                message,
+                retryable: true,
+            });
         }
         if let Some(model) = chunk["model"].as_str().filter(|model| !model.is_empty()) {
             self.model = model.to_string();
@@ -171,15 +186,23 @@ impl ChatAccumulator {
             self.usage = chunk["usage"].clone();
         }
         let mut deltas = Vec::new();
-        let Some(choice) = chunk["choices"].as_array().and_then(|choices| choices.first()) else { return Ok(deltas) };
+        let Some(choice) = chunk["choices"].as_array().and_then(|choices| choices.first()) else {
+            return Ok(deltas);
+        };
         let delta = &choice["delta"];
         if let Some(text) = delta["reasoning_content"].as_str().filter(|text| !text.is_empty()) {
             self.reasoning.push_str(text);
-            deltas.push(StreamDelta::ThinkingDelta { index: THINKING, text: text.to_string() });
+            deltas.push(StreamDelta::ThinkingDelta {
+                index: THINKING,
+                text: text.to_string(),
+            });
         }
         if let Some(text) = delta["content"].as_str().filter(|text| !text.is_empty()) {
             self.text.push_str(text);
-            deltas.push(StreamDelta::TextDelta { index: TEXT, text: text.to_string() });
+            deltas.push(StreamDelta::TextDelta {
+                index: TEXT,
+                text: text.to_string(),
+            });
         }
         for fragment in delta["tool_calls"].as_array().map(Vec::as_slice).unwrap_or_default() {
             let position = self.call_for(fragment);
@@ -193,12 +216,19 @@ impl ChatAccumulator {
             }
             if !call.started && !call.name.is_empty() {
                 call.started = true;
-                deltas.push(StreamDelta::ToolUseStart { index: TOOLS + position, id: call.id.clone(), name: call.name.clone() });
+                deltas.push(StreamDelta::ToolUseStart {
+                    index: TOOLS + position,
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                });
             }
             match &fragment["function"]["arguments"] {
                 Value::String(partial) if !partial.is_empty() => {
                     call.arguments.push_str(partial);
-                    deltas.push(StreamDelta::ToolInputDelta { index: TOOLS + position, partial: partial.clone() });
+                    deltas.push(StreamDelta::ToolInputDelta {
+                        index: TOOLS + position,
+                        partial: partial.clone(),
+                    });
                 }
                 object @ Value::Object(_) => call.object = Some(object.clone()),
                 _ => {}
@@ -236,7 +266,11 @@ impl ChatAccumulator {
         found.unwrap_or_else(|| {
             let next_pos = self.calls.len();
             let id = format!("chat_call_{}_{next_pos}", uuid::Uuid::now_v7().simple());
-            self.calls.push(Call { index, id, ..Default::default() });
+            self.calls.push(Call {
+                index,
+                id,
+                ..Default::default()
+            });
             next_pos
         })
     }
@@ -256,7 +290,9 @@ impl ChatAccumulator {
             "content_filter" | "sensitive" => "refusal",
             // These end a stream that failed on the server's side: worth another try.
             "network_error" | "insufficient_system_resource" | "aborted" => {
-                return Err(LlmError::Network(format!("the provider stopped the response: {reason}")));
+                return Err(LlmError::Network(format!(
+                    "the provider stopped the response: {reason}"
+                )));
             }
             "model_context_window_exceeded" => {
                 return Err(LlmError::Api {
@@ -275,7 +311,8 @@ impl ChatAccumulator {
             ..Default::default()
         };
         if !self.reasoning.is_empty() {
-            turn.content.push(json!({ "type": "thinking", "thinking": self.reasoning }));
+            turn.content
+                .push(json!({ "type": "thinking", "thinking": self.reasoning }));
         }
         if !self.text.is_empty() {
             turn.content.push(json!({ "type": "text", "text": self.text }));
@@ -299,7 +336,9 @@ impl ChatAccumulator {
                     }
                 },
             };
-            turn.content.push(json!({ "type": "tool_use", "id": id, "name": call.name, "input": input, "arguments": arguments }));
+            turn.content.push(
+                json!({ "type": "tool_use", "id": id, "name": call.name, "input": input, "arguments": arguments }),
+            );
         }
         turn.invalid_tool_inputs = invalid;
         Ok(turn)
@@ -313,11 +352,20 @@ pub struct ChatClient {
 
 impl ChatClient {
     pub fn new(endpoints: EndpointSource) -> Result<Self, LlmError> {
-        let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).build().map_err(|error| LlmError::Network(error.to_string()))?;
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| LlmError::Network(error.to_string()))?;
         Ok(Self { http, endpoints })
     }
 
-    pub async fn stream(&self, flavor: Flavor, request: LlmRequest, deltas: UnboundedSender<StreamDelta>, cancel: CancellationToken) -> Result<AssistantTurn, LlmError> {
+    pub async fn stream(
+        &self,
+        flavor: Flavor,
+        request: LlmRequest,
+        deltas: UnboundedSender<StreamDelta>,
+        cancel: CancellationToken,
+    ) -> Result<AssistantTurn, LlmError> {
         with_retries(&deltas, &cancel, || {
             let (request, deltas, cancel) = (&request, &deltas, &cancel);
             async move {
@@ -329,20 +377,28 @@ impl ChatClient {
         .await
     }
 
-    async fn attempt(&self, flavor: Flavor, request: &LlmRequest, deltas: &UnboundedSender<StreamDelta>, cancel: &CancellationToken, forwarded: &mut bool) -> Attempt {
+    async fn attempt(
+        &self,
+        flavor: Flavor,
+        request: &LlmRequest,
+        deltas: &UnboundedSender<StreamDelta>,
+        cancel: &CancellationToken,
+        forwarded: &mut bool,
+    ) -> Attempt {
         let endpoint = (self.endpoints)(&request.provider);
         if endpoint.base_url.trim().is_empty() {
-            return Err((LlmError::NotConfigured(format!("no address is set for provider `{}`", request.provider)), None));
+            return Err((
+                LlmError::NotConfigured(format!("no address is set for provider `{}`", request.provider)),
+                None,
+            ));
         }
-        let key = endpoint.key.filter(|key| !key.trim().is_empty()).ok_or((LlmError::MissingKey, None))?;
+        let key = endpoint
+            .key
+            .filter(|key| !key.trim().is_empty())
+            .ok_or((LlmError::MissingKey, None))?;
         let url = format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/'));
         let mut body = request_body(flavor, request);
-        let send = self
-            .http
-            .post(&url)
-            .bearer_auth(key.trim())
-            .json(&body)
-            .send();
+        let send = self.http.post(&url).bearer_auth(key.trim()).json(&body).send();
         let mut response = tokio::select! {
             response = send => response.map_err(|error| (LlmError::Network(error.to_string()), None))?,
             () = cancel.cancelled() => return Err((LlmError::Cancelled, None)),
@@ -351,13 +407,10 @@ impl ChatClient {
             if response.status().as_u16() == 400 && !*forwarded && body.get("stream_options").is_some() {
                 match check_bad_request_stream_options(response).await {
                     Ok(()) => {
-                        body.as_object_mut().expect("the body is an object").remove("stream_options");
-                        let retry_send = self
-                            .http
-                            .post(&url)
-                            .bearer_auth(key.trim())
-                            .json(&body)
-                            .send();
+                        body.as_object_mut()
+                            .expect("the body is an object")
+                            .remove("stream_options");
+                        let retry_send = self.http.post(&url).bearer_auth(key.trim()).json(&body).send();
                         response = tokio::select! {
                             response = retry_send => response.map_err(|error| (LlmError::Network(error.to_string()), None))?,
                             () = cancel.cancelled() => return Err((LlmError::Cancelled, None)),
@@ -395,7 +448,8 @@ impl ChatClient {
                 if raw == "[DONE]" {
                     break 'read;
                 }
-                let data: Value = serde_json::from_str(raw).map_err(|error| (LlmError::Protocol(format!("a chunk is not JSON: {error}")), None))?;
+                let data: Value = serde_json::from_str(raw)
+                    .map_err(|error| (LlmError::Protocol(format!("a chunk is not JSON: {error}")), None))?;
                 for delta in accumulator.apply(&data).map_err(|error| (error, None))? {
                     *forwarded = true;
                     let _ = deltas.send(delta);
@@ -403,7 +457,10 @@ impl ChatClient {
             }
         }
         if !accumulator.finished() {
-            return Err((LlmError::Network("the stream ended before the message was complete".to_string()), None));
+            return Err((
+                LlmError::Network("the stream ended before the message was complete".to_string()),
+                None,
+            ));
         }
         accumulator.finish().map_err(|error| (error, None))
     }
@@ -414,7 +471,13 @@ impl ChatClient {
 /// or reconstruct the exact `(LlmError, Option<Duration>)` failure otherwise.
 async fn check_bad_request_stream_options(response: reqwest::Response) -> Result<(), (LlmError, Option<Duration>)> {
     let status = response.status().as_u16();
-    let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
     let retry_after = header("retry-after")
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
@@ -432,10 +495,26 @@ async fn check_bad_request_stream_options(response: reqwest::Response) -> Result
         Value::Number(number) => Some(number.to_string()),
         _ => None,
     };
-    let kind = text(&error["type"]).or_else(|| text(&error["code"])).unwrap_or_else(|| "http_error".to_string());
-    let message = text(&error["message"]).unwrap_or_else(|| if body.trim().is_empty() { format!("HTTP {status}") } else { body.chars().take(500).collect() });
+    let kind = text(&error["type"])
+        .or_else(|| text(&error["code"]))
+        .unwrap_or_else(|| "http_error".to_string());
+    let message = text(&error["message"]).unwrap_or_else(|| {
+        if body.trim().is_empty() {
+            format!("HTTP {status}")
+        } else {
+            body.chars().take(500).collect()
+        }
+    });
     let retryable = should_retry.as_deref() == Some("true");
-    Err((LlmError::Api { status: Some(status), kind, message, retryable }, retry_after))
+    Err((
+        LlmError::Api {
+            status: Some(status),
+            kind,
+            message,
+            retryable,
+        },
+        retry_after,
+    ))
 }
 
 #[cfg(test)]
@@ -462,9 +541,13 @@ mod tests {
             delta(json!({ "role": "assistant", "reasoning_content": "先看" })),
             delta(json!({ "reasoning_content": "文件。" })),
             delta(json!({ "content": "我读一下。" })),
-            delta(json!({ "tool_calls": [{ "index": 0, "id": "call_a", "type": "function", "function": { "name": "read_file", "arguments": "" } }] })),
+            delta(
+                json!({ "tool_calls": [{ "index": 0, "id": "call_a", "type": "function", "function": { "name": "read_file", "arguments": "" } }] }),
+            ),
             delta(json!({ "tool_calls": [{ "index": 0, "function": { "arguments": "{\"path\": \"src/" } }] })),
-            delta(json!({ "tool_calls": [{ "index": 1, "id": "call_b", "type": "function", "function": { "name": "search", "arguments": "{\"pattern\":\"x\"}" } }] })),
+            delta(
+                json!({ "tool_calls": [{ "index": 1, "id": "call_b", "type": "function", "function": { "name": "search", "arguments": "{\"pattern\":\"x\"}" } }] }),
+            ),
             delta(json!({ "tool_calls": [{ "index": 0, "function": { "arguments": "日志.rs\"}" } }] })),
             json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }], "usage": { "prompt_tokens": 10, "completion_tokens": 5 } }),
         ]);
@@ -472,37 +555,64 @@ mod tests {
         assert_eq!(turn.stop_reason.as_deref(), Some("tool_use"));
         assert_eq!(turn.model, "deepseek-v4-pro");
         assert_eq!(turn.usage["prompt_tokens"], 10);
-        assert_eq!(turn.content, vec![
-            json!({ "type": "thinking", "thinking": "先看文件。" }),
-            json!({ "type": "text", "text": "我读一下。" }),
-            json!({ "type": "tool_use", "id": "call_a", "name": "read_file", "input": { "path": "src/日志.rs" }, "arguments": "{\"path\": \"src/日志.rs\"}" }),
-            json!({ "type": "tool_use", "id": "call_b", "name": "search", "input": { "pattern": "x" }, "arguments": "{\"pattern\":\"x\"}" }),
-        ]);
+        assert_eq!(
+            turn.content,
+            vec![
+                json!({ "type": "thinking", "thinking": "先看文件。" }),
+                json!({ "type": "text", "text": "我读一下。" }),
+                json!({ "type": "tool_use", "id": "call_a", "name": "read_file", "input": { "path": "src/日志.rs" }, "arguments": "{\"path\": \"src/日志.rs\"}" }),
+                json!({ "type": "tool_use", "id": "call_b", "name": "search", "input": { "pattern": "x" }, "arguments": "{\"pattern\":\"x\"}" }),
+            ]
+        );
         assert!(turn.invalid_tool_inputs.is_empty());
-        assert_eq!(deltas.first(), Some(&StreamDelta::ThinkingDelta { index: THINKING, text: "先看".into() }));
-        assert!(deltas.contains(&StreamDelta::ToolUseStart { index: TOOLS + 1, id: "call_b".into(), name: "search".into() }));
+        assert_eq!(
+            deltas.first(),
+            Some(&StreamDelta::ThinkingDelta {
+                index: THINKING,
+                text: "先看".into()
+            })
+        );
+        assert!(deltas.contains(&StreamDelta::ToolUseStart {
+            index: TOOLS + 1,
+            id: "call_b".into(),
+            name: "search".into()
+        }));
     }
 
     #[test]
     fn handles_calls_without_an_index_and_arguments_sent_as_an_object() {
         // Kimi's schema has no `index`; GLM may send arguments whole, even as an object.
         let (turn, _) = replay(&[
-            delta(json!({ "tool_calls": [{ "id": "a", "function": { "name": "read_file", "arguments": "{\"path\":" } }] })),
+            delta(
+                json!({ "tool_calls": [{ "id": "a", "function": { "name": "read_file", "arguments": "{\"path\":" } }] }),
+            ),
             delta(json!({ "tool_calls": [{ "function": { "arguments": "\"a\"}" } }] })),
-            delta(json!({ "tool_calls": [{ "id": "b", "function": { "name": "search", "arguments": { "pattern": "y" } } }] })),
-            delta(json!({ "tool_calls": [{ "id": "c", "function": { "name": "edit_file", "arguments": "{\"path\": \"a" } }] })),
+            delta(
+                json!({ "tool_calls": [{ "id": "b", "function": { "name": "search", "arguments": { "pattern": "y" } } }] }),
+            ),
+            delta(
+                json!({ "tool_calls": [{ "id": "c", "function": { "name": "edit_file", "arguments": "{\"path\": \"a" } }] }),
+            ),
             json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
         ]);
         let turn = turn.unwrap();
         let inputs: Vec<&Value> = turn.content.iter().map(|block| &block["input"]).collect();
-        assert_eq!(inputs, [&json!({ "path": "a" }), &json!({ "pattern": "y" }), &json!({})]);
+        assert_eq!(
+            inputs,
+            [&json!({ "path": "a" }), &json!({ "pattern": "y" }), &json!({})]
+        );
         assert_eq!(turn.content[1]["arguments"], "{\"pattern\":\"y\"}");
-        assert_eq!(turn.invalid_tool_inputs.get("c").map(String::as_str), Some("{\"path\": \"a"));
+        assert_eq!(
+            turn.invalid_tool_inputs.get("c").map(String::as_str),
+            Some("{\"path\": \"a")
+        );
     }
 
     #[test]
     fn maps_finish_reasons_and_reports_failures() {
-        let finish = |reason: &str| replay(&[json!({ "choices": [{ "delta": { "content": "x" }, "finish_reason": reason }] })]).0;
+        let finish = |reason: &str| {
+            replay(&[json!({ "choices": [{ "delta": { "content": "x" }, "finish_reason": reason }] })]).0
+        };
         assert_eq!(finish("stop").unwrap().stop_reason.as_deref(), Some("end_turn"));
         assert_eq!(finish("length").unwrap().stop_reason.as_deref(), Some("max_tokens"));
         assert_eq!(finish("sensitive").unwrap().stop_reason.as_deref(), Some("refusal"));
@@ -510,7 +620,9 @@ mod tests {
         assert!(!finish("model_context_window_exceeded").unwrap_err().retryable());
 
         let mut accumulator = ChatAccumulator::default();
-        let error = accumulator.apply(&json!({ "error": { "message": "busy", "code": "1305" } })).unwrap_err();
+        let error = accumulator
+            .apply(&json!({ "error": { "message": "busy", "code": "1305" } }))
+            .unwrap_err();
         assert!(matches!(error, LlmError::Api { ref kind, .. } if kind == "1305"));
         assert!(!accumulator.finished());
     }
@@ -540,18 +652,21 @@ mod tests {
                 { "type": "text", "text": "also b" },
             ] }),
         ];
-        assert_eq!(chat_messages("sys", &messages), vec![
-            json!({ "role": "system", "content": "sys" }),
-            json!({ "role": "user", "content": "read a" }),
-            json!({
-                "role": "assistant",
-                "content": "",
-                "reasoning_content": "先读。",
-                "tool_calls": [{ "id": "call_a", "type": "function", "function": { "name": "read_file", "arguments": "{\"path\": \"a\"}" } }],
-            }),
-            json!({ "role": "tool", "tool_call_id": "call_a", "content": "1\thi" }),
-            json!({ "role": "user", "content": "also b" }),
-        ]);
+        assert_eq!(
+            chat_messages("sys", &messages),
+            vec![
+                json!({ "role": "system", "content": "sys" }),
+                json!({ "role": "user", "content": "read a" }),
+                json!({
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "先读。",
+                    "tool_calls": [{ "id": "call_a", "type": "function", "function": { "name": "read_file", "arguments": "{\"path\": \"a\"}" } }],
+                }),
+                json!({ "role": "tool", "tool_call_id": "call_a", "content": "1\thi" }),
+                json!({ "role": "user", "content": "also b" }),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -559,40 +674,101 @@ mod tests {
         use crate::testing::{error, event_stream, serve};
         let (address, server) = serve(vec![
             error(429, r#"{"error":{"code":"1305","message":"该模型当前访问量过大"}}"#),
-            event_stream(&[delta(json!({ "content": "你好" })), json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] })], true),
+            event_stream(
+                &[
+                    delta(json!({ "content": "你好" })),
+                    json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] }),
+                ],
+                true,
+            ),
         ])
         .await;
         let base_url = format!("{address}/v1/");
-        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: base_url.clone(), key: Some("sk-test".into()) })).unwrap();
+        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint {
+            base_url: base_url.clone(),
+            key: Some("sk-test".into()),
+        }))
+        .unwrap();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        let turn = client.stream(Flavor::Glm, request(vec![]), sender, CancellationToken::new()).await.unwrap();
+        let turn = client
+            .stream(Flavor::Glm, request(vec![]), sender, CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(turn.content, vec![json!({ "type": "text", "text": "你好" })]);
         assert_eq!(turn.stop_reason.as_deref(), Some("end_turn"));
-        assert_eq!(receiver.recv().await, Some(StreamDelta::TextDelta { index: TEXT, text: "你好".into() }));
+        assert_eq!(
+            receiver.recv().await,
+            Some(StreamDelta::TextDelta {
+                index: TEXT,
+                text: "你好".into()
+            })
+        );
 
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 2);
-        assert!(requests[1].starts_with("POST /v1/chat/completions HTTP/1.1"), "{}", requests[1]);
-        assert!(requests[1].to_ascii_lowercase().contains("authorization: bearer sk-test"));
+        assert!(
+            requests[1].starts_with("POST /v1/chat/completions HTTP/1.1"),
+            "{}",
+            requests[1]
+        );
+        assert!(
+            requests[1]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer sk-test")
+        );
         assert!(requests[1].contains("\"reasoning_effort\":\"max\""));
     }
 
     #[tokio::test]
     async fn does_not_retry_a_rejected_request_and_needs_an_address_and_key() {
         use crate::testing::{error, serve};
-        let (address, server) = serve(vec![error(400, r#"{"error":{"message":"bad model","type":"invalid_request_error"}}"#)]).await;
-        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: address.clone(), key: Some("k".into()) })).unwrap();
+        let (address, server) = serve(vec![error(
+            400,
+            r#"{"error":{"message":"bad model","type":"invalid_request_error"}}"#,
+        )])
+        .await;
+        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint {
+            base_url: address.clone(),
+            key: Some("k".into()),
+        }))
+        .unwrap();
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        let error = client.stream(Flavor::DeepSeek, request(vec![]), sender, CancellationToken::new()).await.unwrap_err();
+        let error = client
+            .stream(Flavor::DeepSeek, request(vec![]), sender, CancellationToken::new())
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "invalid_request_error: bad model");
         assert_eq!(server.await.unwrap().len(), 1);
 
-        let unset = |endpoint: crate::llm::Endpoint| ChatClient::new(std::sync::Arc::new(move |_: &str| endpoint.clone())).unwrap();
+        let unset = |endpoint: crate::llm::Endpoint| {
+            ChatClient::new(std::sync::Arc::new(move |_: &str| endpoint.clone())).unwrap()
+        };
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        let no_address = unset(crate::llm::Endpoint { base_url: String::new(), key: Some("k".into()) });
-        assert!(matches!(no_address.stream(Flavor::Generic, request(vec![]), sender.clone(), CancellationToken::new()).await, Err(LlmError::NotConfigured(_))));
-        let no_key = unset(crate::llm::Endpoint { base_url: "http://127.0.0.1:9".into(), key: None });
-        assert_eq!(no_key.stream(Flavor::Generic, request(vec![]), sender, CancellationToken::new()).await, Err(LlmError::MissingKey));
+        let no_address = unset(crate::llm::Endpoint {
+            base_url: String::new(),
+            key: Some("k".into()),
+        });
+        assert!(matches!(
+            no_address
+                .stream(
+                    Flavor::Generic,
+                    request(vec![]),
+                    sender.clone(),
+                    CancellationToken::new()
+                )
+                .await,
+            Err(LlmError::NotConfigured(_))
+        ));
+        let no_key = unset(crate::llm::Endpoint {
+            base_url: "http://127.0.0.1:9".into(),
+            key: None,
+        });
+        assert_eq!(
+            no_key
+                .stream(Flavor::Generic, request(vec![]), sender, CancellationToken::new())
+                .await,
+            Err(LlmError::MissingKey)
+        );
     }
 
     #[test]
@@ -600,7 +776,10 @@ mod tests {
         let deepseek = request_body(Flavor::DeepSeek, &request(vec![]));
         assert_eq!(deepseek["reasoning_effort"], "high");
         assert_eq!(deepseek["stream_options"], json!({ "include_usage": true }));
-        assert_eq!(deepseek["tools"][0], json!({ "type": "function", "function": { "name": "read_file", "description": "d", "parameters": { "type": "object" } } }));
+        assert_eq!(
+            deepseek["tools"][0],
+            json!({ "type": "function", "function": { "name": "read_file", "description": "d", "parameters": { "type": "object" } } })
+        );
         assert!(deepseek.get("prompt_cache_key").is_none());
         // Kimi and GLM fix their sampling parameters; none may be sent.
         assert!(deepseek.get("temperature").is_none());
@@ -645,8 +824,15 @@ mod tests {
         for flavor in [Flavor::DeepSeek, Flavor::Kimi] {
             let body = request_body(flavor, &req);
             assert_eq!(body["messages"][2]["role"], "assistant");
-            assert_eq!(body["messages"][2]["reasoning_content"], json!(""), "{flavor:?} must inject empty reasoning_content on carried tool_calls");
-            assert!(body["messages"][4].get("reasoning_content").is_none(), "{flavor:?} need not inject reasoning_content when tool_calls are absent");
+            assert_eq!(
+                body["messages"][2]["reasoning_content"],
+                json!(""),
+                "{flavor:?} must inject empty reasoning_content on carried tool_calls"
+            );
+            assert!(
+                body["messages"][4].get("reasoning_content").is_none(),
+                "{flavor:?} need not inject reasoning_content when tool_calls are absent"
+            );
         }
 
         for flavor in [Flavor::Generic, Flavor::Glm] {
@@ -663,18 +849,26 @@ mod tests {
             delta(json!({ "content": "兼容老网关" })),
             json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] })
         );
-        let ok_stream = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
+        let ok_stream =
+            format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
         let (address, server) = serve(vec![
             error(400, r#"{"error":{"message":"Unknown parameter: 'stream_options'.","type":"invalid_request_error","param":"stream_options"}}"#),
             ok_stream,
         ])
         .await;
         let base_url = format!("{address}/v1");
-        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: base_url.clone(), key: Some("sk-local".into()) })).unwrap();
+        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint {
+            base_url: base_url.clone(),
+            key: Some("sk-local".into()),
+        }))
+        .unwrap();
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut req = request(vec![]);
         req.provider = "custom".into();
-        let turn = client.stream(Flavor::Generic, req, sender, CancellationToken::new()).await.unwrap();
+        let turn = client
+            .stream(Flavor::Generic, req, sender, CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(turn.content, vec![json!({ "type": "text", "text": "兼容老网关" })]);
 
         let requests = server.await.unwrap();
@@ -685,29 +879,49 @@ mod tests {
 
     #[test]
     fn sends_images_as_parts_of_the_users_content() {
-        let image = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
+        let image =
+            json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
         let part = json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,aGk=" } });
-        let messages = chat_messages("sys", &[json!({ "role": "user", "content": [image.clone(), { "type": "text", "text": "what is this?" }] })]);
-        assert_eq!(messages[1], json!({ "role": "user", "content": [part.clone(), { "type": "text", "text": "what is this?" }] }));
+        let messages = chat_messages(
+            "sys",
+            &[json!({ "role": "user", "content": [image.clone(), { "type": "text", "text": "what is this?" }] })],
+        );
+        assert_eq!(
+            messages[1],
+            json!({ "role": "user", "content": [part.clone(), { "type": "text", "text": "what is this?" }] })
+        );
         // A picture alone, sent while tools ran: the tool results first, then the picture.
         let result = json!({ "type": "tool_result", "tool_use_id": "c1", "content": "ok", "is_error": false });
         let messages = chat_messages("sys", &[json!({ "role": "user", "content": [result, image] })]);
         assert_eq!(messages[1]["role"], "tool");
         assert_eq!(messages[2], json!({ "role": "user", "content": [part] }));
         // Without pictures the content stays a plain string.
-        let plain = chat_messages("sys", &[json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })]);
+        let plain = chat_messages(
+            "sys",
+            &[json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })],
+        );
         assert_eq!(plain[1], json!({ "role": "user", "content": "hi" }));
     }
 
     #[test]
     fn a_picture_a_tool_returned_follows_the_tool_messages_as_the_users() {
-        let picture = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
+        let picture =
+            json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } });
         let read = json!({ "type": "tool_result", "tool_use_id": "c1", "content": [{ "type": "text", "text": "a.png is a PNG picture." }, picture], "is_error": false });
         let plain = json!({ "type": "tool_result", "tool_use_id": "c2", "content": "ok", "is_error": false });
-        let messages = chat_messages("sys", &[json!({ "role": "user", "content": [read, plain, { "type": "text", "text": "and this" }] })]);
+        let messages = chat_messages(
+            "sys",
+            &[json!({ "role": "user", "content": [read, plain, { "type": "text", "text": "and this" }] })],
+        );
         // Each tool message has its words alone; the picture comes after them, said to be what they returned.
-        assert_eq!(messages[1], json!({ "role": "tool", "tool_call_id": "c1", "content": "a.png is a PNG picture." }));
-        assert_eq!(messages[2], json!({ "role": "tool", "tool_call_id": "c2", "content": "ok" }));
+        assert_eq!(
+            messages[1],
+            json!({ "role": "tool", "tool_call_id": "c1", "content": "a.png is a PNG picture." })
+        );
+        assert_eq!(
+            messages[2],
+            json!({ "role": "tool", "tool_call_id": "c2", "content": "ok" })
+        );
         assert_eq!(
             messages[3],
             json!({ "role": "user", "content": [
@@ -720,11 +934,15 @@ mod tests {
     #[test]
     fn idless_tool_calls_generate_unique_non_empty_ids_across_steps() {
         let (turn1, deltas1) = replay(&[
-            delta(json!({ "tool_calls": [{ "index": 0, "function": { "name": "read_file", "arguments": "{\"path\":\"a\"}" } }] })),
+            delta(
+                json!({ "tool_calls": [{ "index": 0, "function": { "name": "read_file", "arguments": "{\"path\":\"a\"}" } }] }),
+            ),
             json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
         ]);
         let (turn2, deltas2) = replay(&[
-            delta(json!({ "tool_calls": [{ "index": 0, "function": { "name": "edit_file", "arguments": "{\"path\":\"a\"}" } }] })),
+            delta(
+                json!({ "tool_calls": [{ "index": 0, "function": { "name": "edit_file", "arguments": "{\"path\":\"a\"}" } }] }),
+            ),
             json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
         ]);
         let id1 = turn1.unwrap().content[0]["id"].as_str().unwrap().to_string();
@@ -732,7 +950,15 @@ mod tests {
         assert!(!id1.is_empty() && !id2.is_empty());
         assert_ne!(id1, id2);
         assert!(id1.len() <= 64 && id2.len() <= 64);
-        assert!(deltas1.contains(&StreamDelta::ToolUseStart { index: TOOLS, id: id1, name: "read_file".into() }));
-        assert!(deltas2.contains(&StreamDelta::ToolUseStart { index: TOOLS, id: id2, name: "edit_file".into() }));
+        assert!(deltas1.contains(&StreamDelta::ToolUseStart {
+            index: TOOLS,
+            id: id1,
+            name: "read_file".into()
+        }));
+        assert!(deltas2.contains(&StreamDelta::ToolUseStart {
+            index: TOOLS,
+            id: id2,
+            name: "edit_file".into()
+        }));
     }
 }

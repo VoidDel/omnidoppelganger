@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use crate::events::Event;
 use crate::llm::{StreamDelta, Tokens};
 
-use super::parser::{clean_tool_result, estimate_edit_lines, parse_plus_minus_lines, parse_unified_diff, strip_agy_timestamp_envelope};
+use super::parser::{
+    clean_tool_result, estimate_edit_lines, parse_plus_minus_lines, parse_unified_diff, strip_agy_timestamp_envelope,
+};
 use super::{CliEvent, CliKind, Sink, TurnParams};
 
 struct StartedTool {
@@ -222,7 +224,13 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
             CliEvent::Init { conversation_id } => {
                 self.record_conv(conversation_id)?;
             }
-            CliEvent::AgentText { conversation_id, delta, done, usage, tokens } => {
+            CliEvent::AgentText {
+                conversation_id,
+                delta,
+                done,
+                usage,
+                tokens,
+            } => {
                 self.record_conv(conversation_id)?;
                 if !delta.is_empty() {
                     self.active_text.push_str(&delta);
@@ -234,7 +242,12 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                     self.stash_pending_usage(usage, t);
                 }
             }
-            CliEvent::ToolStart { conversation_id, call_key, name, mut input } => {
+            CliEvent::ToolStart {
+                conversation_id,
+                call_key,
+                name,
+                mut input,
+            } => {
                 self.record_conv(conversation_id)?;
                 self.flush_text(Value::Null, None)?;
                 let target = relativize_tool_input(self.params.workspace, &mut input);
@@ -245,13 +258,14 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                 {
                     self.known_files.insert(path.clone(), bytes);
                 }
-                let (file_existed_at_start, before_bytes) = if matches!(name.as_str(), "edit_file" | "write_file" | "delete_file") {
-                    let existed = target.as_ref().is_some_and(|(p, _)| p.is_file());
-                    let bytes = target.as_ref().and_then(|(p, _)| read_file_bytes_capped(p));
-                    (existed, bytes)
-                } else {
-                    (false, None)
-                };
+                let (file_existed_at_start, before_bytes) =
+                    if matches!(name.as_str(), "edit_file" | "write_file" | "delete_file") {
+                        let existed = target.as_ref().is_some_and(|(p, _)| p.is_file());
+                        let bytes = target.as_ref().and_then(|(p, _)| read_file_bytes_capped(p));
+                        (existed, bytes)
+                    } else {
+                        (false, None)
+                    };
                 let tool_use_id = format!("{}-{}-{call_key}", self.backend_key, self.params.turn);
                 if !self.started_tools.contains_key(&call_key) {
                     let (tool_usage, tool_tokens) = match self.pending_usage.take() {
@@ -281,7 +295,14 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                     );
                 }
             }
-            CliEvent::ToolDone { conversation_id, call_key, name, mut input, output, is_error } => {
+            CliEvent::ToolDone {
+                conversation_id,
+                call_key,
+                name,
+                mut input,
+                output,
+                is_error,
+            } => {
                 self.record_conv(conversation_id)?;
                 let (started, had_start) = match self.started_tools.remove(&call_key) {
                     Some(mut existing) => {
@@ -316,7 +337,9 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                             None => (Value::Null, None),
                         };
                         self.sink.log(Event::AssistantMessage {
-                            content: vec![json!({ "type": "tool_use", "id": id, "name": resolved_name, "input": input })],
+                            content: vec![
+                                json!({ "type": "tool_use", "id": id, "name": resolved_name, "input": input }),
+                            ],
                             stop_reason: Some("tool_use".to_string()),
                             model: self.params.model.clone(),
                             usage: tool_usage,
@@ -384,7 +407,14 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                     images: Vec::new(),
                 })?;
             }
-            CliEvent::Result { conversation_id, success, response, error, usage, tokens } => {
+            CliEvent::Result {
+                conversation_id,
+                success,
+                response,
+                error,
+                usage,
+                tokens,
+            } => {
                 self.record_conv(conversation_id)?;
                 // Compute unrecorded token remainder: if `Result` carries cumulative turn tokens, subtract
                 // `accounted_tokens` (and discard any unlogged `pending_usage` superseded by the summary);
@@ -436,30 +466,47 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
         Ok(())
     }
 
-    fn enrich_file_edit(&mut self, call_key: &str, started: &StartedTool, had_start: bool, clean_output: &mut String, meta: &mut Value) {
+    fn enrich_file_edit(
+        &mut self,
+        call_key: &str,
+        started: &StartedTool,
+        had_start: bool,
+        clean_output: &mut String,
+        meta: &mut Value,
+    ) {
         maybe_block_in_place(|| self.enrich_file_edit_sync(call_key, started, had_start, clean_output, meta));
     }
 
-    fn enrich_file_edit_sync(&mut self, call_key: &str, started: &StartedTool, had_start: bool, clean_output: &mut String, meta: &mut Value) {
-        let Some((ref resolved, ref shown)) = started.target else { return };
+    fn enrich_file_edit_sync(
+        &mut self,
+        call_key: &str,
+        started: &StartedTool,
+        had_start: bool,
+        clean_output: &mut String,
+        meta: &mut Value,
+    ) {
+        let Some((ref resolved, ref shown)) = started.target else {
+            return;
+        };
         let after_bytes = read_file_bytes_capped(resolved);
         let prior_known = self.known_files.get(resolved).cloned();
 
-        let (created, prev_bytes, verified_for_undo): (bool, Option<&[u8]>, bool) = if had_start && !started.file_existed_at_start {
-            let exists_now = after_bytes.is_some() || resolved.is_file();
-            (exists_now, None, after_bytes.is_some())
-        } else if let Some(ref b) = started.before_bytes
-            && after_bytes.as_deref() != Some(b.as_slice())
-        {
-            (false, Some(b.as_slice()), after_bytes.is_some())
-        } else if let Some(ref k) = prior_known
-            && after_bytes.as_deref() != Some(k.as_slice())
-        {
-            (false, Some(k.as_slice()), after_bytes.is_some())
-        } else {
-            let guessed_created = !had_start && started.name == "write_file" && prior_known.is_none();
-            (guessed_created, None, false)
-        };
+        let (created, prev_bytes, verified_for_undo): (bool, Option<&[u8]>, bool) =
+            if had_start && !started.file_existed_at_start {
+                let exists_now = after_bytes.is_some() || resolved.is_file();
+                (exists_now, None, after_bytes.is_some())
+            } else if let Some(ref b) = started.before_bytes
+                && after_bytes.as_deref() != Some(b.as_slice())
+            {
+                (false, Some(b.as_slice()), after_bytes.is_some())
+            } else if let Some(ref k) = prior_known
+                && after_bytes.as_deref() != Some(k.as_slice())
+            {
+                (false, Some(k.as_slice()), after_bytes.is_some())
+            } else {
+                let guessed_created = !had_start && started.name == "write_file" && prior_known.is_none();
+                (guessed_created, None, false)
+            };
 
         let computed_diff = if created && verified_for_undo {
             after_bytes
@@ -468,14 +515,19 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                 .map(|after_str| crate::tools::line_diff("", &after_str.replace("\r\n", "\n")))
         } else if let (Some(prev), Some(after)) = (prev_bytes, after_bytes.as_deref()) {
             match (std::str::from_utf8(prev), std::str::from_utf8(after)) {
-                (Ok(before_str), Ok(after_str)) => Some(crate::tools::line_diff(&before_str.replace("\r\n", "\n"), &after_str.replace("\r\n", "\n"))),
+                (Ok(before_str), Ok(after_str)) => Some(crate::tools::line_diff(
+                    &before_str.replace("\r\n", "\n"),
+                    &after_str.replace("\r\n", "\n"),
+                )),
                 _ => None,
             }
         } else {
-            started.input["diff"]
-                .as_str()
-                .and_then(parse_unified_diff)
-                .or_else(|| clean_output.contains("@@ -").then(|| parse_unified_diff(clean_output)).flatten())
+            started.input["diff"].as_str().and_then(parse_unified_diff).or_else(|| {
+                clean_output
+                    .contains("@@ -")
+                    .then(|| parse_unified_diff(clean_output))
+                    .flatten()
+            })
         };
 
         let mut transcript_summary: Option<String> = None;
@@ -546,7 +598,9 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
     }
 
     fn enrich_file_delete_sync(&mut self, started: &StartedTool, clean_output: &mut String, meta: &mut Value) {
-        let Some((ref resolved, ref shown)) = started.target else { return };
+        let Some((ref resolved, ref shown)) = started.target else {
+            return;
+        };
         let prior_known = self.known_files.remove(resolved);
         let prev_bytes = started.before_bytes.as_deref().or(prior_known.as_deref());
         let abs_file = resolved.to_string_lossy().into_owned();
@@ -637,7 +691,12 @@ fn canonical_relative_path(workspace: &Path, path: &Path) -> Option<String> {
 }
 
 fn relativize_tool_input(workspace: &Path, input: &mut Value) -> Option<(PathBuf, String)> {
-    let raw = input.get("path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty())?.to_string();
+    let raw = input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|p| !p.is_empty())?
+        .to_string();
     let (resolved, shown) = resolve_workspace_path(workspace, &raw);
     if let Some(obj) = input.as_object_mut() {
         obj.insert("path".to_string(), Value::String(shown.clone()));
@@ -691,7 +750,11 @@ fn read_transcript_tail(path: &Path) -> Option<String> {
 /// Fallback for `agy --output-format stream-json`, which omits `Target`/`Replacement` and `tool_info.output`
 /// on `edit_file` stdout events while recording `"Made N replacement(s) in ... (+A/-R lines)."` in its local
 /// `transcript.jsonl` under `~/.gemini/antigravity-cli/brain/<conv_id>/.system_generated/logs/transcript.jsonl`.
-pub(super) fn lookup_agy_transcript_edit_in(home: &Path, conv_id: &str, call_key: &str) -> Option<(usize, usize, String)> {
+pub(super) fn lookup_agy_transcript_edit_in(
+    home: &Path,
+    conv_id: &str,
+    call_key: &str,
+) -> Option<(usize, usize, String)> {
     let conv = conv_id.trim();
     if conv.is_empty() || conv.len() > 128 || !conv.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return None;
@@ -701,17 +764,28 @@ pub(super) fn lookup_agy_transcript_edit_in(home: &Path, conv_id: &str, call_key
     let needle_spaced = format!("\"step_index\": {step_index}");
     maybe_block_in_place(|| {
         for root in [".gemini/antigravity-cli/brain", ".gemini/antigravity/brain"] {
-            let path = home.join(root).join(conv).join(".system_generated").join("logs").join("transcript.jsonl");
-            let Some(content) = read_transcript_tail(&path) else { continue };
+            let path = home
+                .join(root)
+                .join(conv)
+                .join(".system_generated")
+                .join("logs")
+                .join("transcript.jsonl");
+            let Some(content) = read_transcript_tail(&path) else {
+                continue;
+            };
             for line in content.lines().rev() {
                 if !line.contains(&needle_tight) && !line.contains(&needle_spaced) {
                     continue;
                 }
-                let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+                let Ok(v) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
                 if v["step_index"].as_u64() != Some(step_index) {
                     continue;
                 }
-                let Some(raw_text) = v["content"].as_str() else { continue };
+                let Some(raw_text) = v["content"].as_str() else {
+                    continue;
+                };
                 let cleaned = strip_agy_timestamp_envelope(raw_text);
                 if let Some((added, removed)) = parse_plus_minus_lines(&cleaned) {
                     return Some((added, removed, cleaned));

@@ -122,7 +122,10 @@ pub(super) async fn send(writer: &Writer, message: &Value) -> Result<(), String>
         .write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
         .await
         .map_err(|error| format!("the server stopped reading: {error}"))?;
-    writer.flush().await.map_err(|error| format!("the server stopped reading: {error}"))
+    writer
+        .flush()
+        .await
+        .map_err(|error| format!("the server stopped reading: {error}"))
 }
 
 /// Read one LSP message, enforcing [`MAX_FRAME_BYTES`] (64 MB) on `Content-Length`.
@@ -244,7 +247,10 @@ impl Client {
                         match (method, message.get("id")) {
                             // An answer to a request of ours.
                             (None, Some(id)) => {
-                                let Some(sender) = id.as_i64().and_then(|id| pending.lock().unwrap().remove(&id)) else { continue };
+                                let Some(sender) = id.as_i64().and_then(|id| pending.lock().unwrap().remove(&id))
+                                else {
+                                    continue;
+                                };
                                 let answer = match message.get("error") {
                                     Some(error) => Err(RpcError {
                                         code: error["code"].as_i64().unwrap_or(0),
@@ -265,7 +271,9 @@ impl Client {
                                             "result": items.iter().map(|item| if item["section"].as_str() == Some(program) { settings(program) } else { Value::Null }).collect::<Vec<_>>()
                                         })
                                     }
-                                    "workspace/workspaceFolders" => json!({ "jsonrpc": "2.0", "id": id, "result": folder }),
+                                    "workspace/workspaceFolders" => {
+                                        json!({ "jsonrpc": "2.0", "id": id, "result": folder })
+                                    }
                                     "window/workDoneProgress/create"
                                     | "client/registerCapability"
                                     | "client/unregisterCapability"
@@ -276,7 +284,9 @@ impl Client {
                                     | "workspace/codeLens/refresh" => {
                                         json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null })
                                     }
-                                    _ => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": format!("{method} is not supported") } }),
+                                    _ => {
+                                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": format!("{method} is not supported") } })
+                                    }
                                 };
                                 let _ = reply_tx.send(answer);
                             }
@@ -300,7 +310,10 @@ impl Client {
                                     "experimental/serverStatus" => watch.quiescent = params["quiescent"].as_bool(),
                                     "textDocument/publishDiagnostics" => {
                                         if let Some(document) = params["uri"].as_str() {
-                                            watch.diagnostics.insert(document.to_string(), params["diagnostics"].as_array().cloned().unwrap_or_default());
+                                            watch.diagnostics.insert(
+                                                document.to_string(),
+                                                params["diagnostics"].as_array().cloned().unwrap_or_default(),
+                                            );
                                         }
                                     }
                                     _ => {}
@@ -322,7 +335,10 @@ impl Client {
                 }
             }
             for (_, sender) in pending.lock().unwrap().drain() {
-                let _ = sender.send(Err(RpcError { code: 0, message: close_reason.clone() }));
+                let _ = sender.send(Err(RpcError {
+                    code: 0,
+                    message: close_reason.clone(),
+                }));
             }
             changed.notify_waiters();
         });
@@ -411,7 +427,10 @@ impl Client {
         cancel: &CancellationToken,
     ) -> Result<Value, RpcError> {
         if cancel.is_cancelled() {
-            return Err(RpcError { code: 0, message: "Cancelled.".to_string() });
+            return Err(RpcError {
+                code: 0,
+                message: "Cancelled.".to_string(),
+            });
         }
         if let Some(why) = self.watch.lock().unwrap().closed.clone() {
             return Err(RpcError { code: 0, message: why });
@@ -564,8 +583,18 @@ impl Client {
 
     /// The diagnostics of a document: asked for where the server answers that, or else as it publishes them, waited
     /// for at most `most`.
-    pub(super) async fn diagnostics(&self, document: &str, most: Duration, cancel: &CancellationToken) -> Result<Vec<Value>, String> {
-        let pulled = self.capabilities.lock().unwrap().get("diagnosticProvider").is_some_and(|provider| !provider.is_null());
+    pub(super) async fn diagnostics(
+        &self,
+        document: &str,
+        most: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Value>, String> {
+        let pulled = self
+            .capabilities
+            .lock()
+            .unwrap()
+            .get("diagnosticProvider")
+            .is_some_and(|provider| !provider.is_null());
         if pulled {
             let answer = self
                 .request(

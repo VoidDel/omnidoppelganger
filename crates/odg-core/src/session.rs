@@ -134,24 +134,49 @@ impl SessionStore {
 
     /// The store a log is kept in.
     pub fn of(log: &SessionLog) -> Self {
-        let root = log.path().parent().and_then(Path::parent).expect("a log sits in its session's directory, inside the store");
+        let root = log
+            .path()
+            .parent()
+            .and_then(Path::parent)
+            .expect("a log sits in its session's directory, inside the store");
         Self::new(root)
     }
 
     /// Create a session whose agent works in `workspace` with `model` from `provider`.
     pub fn create(&self, workspace: &Path, provider: &str, model: &str) -> Result<SessionLog, SessionError> {
-        self.create_with(NewSession { workspace, provider, model, parent: None, worktree: None, schedule: None, aside: None })
+        self.create_with(NewSession {
+            workspace,
+            provider,
+            model,
+            parent: None,
+            worktree: None,
+            schedule: None,
+            aside: None,
+        })
     }
 
     /// Create a session: a subagent's, one that works in a worktree, one a schedule starts, a side conversation, or a plain one.
     pub fn create_with(&self, new: NewSession) -> Result<SessionLog, SessionError> {
-        let NewSession { workspace, provider, model, parent, worktree, schedule, aside } = new;
+        let NewSession {
+            workspace,
+            provider,
+            model,
+            parent,
+            worktree,
+            schedule,
+            aside,
+        } = new;
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
         fs::create_dir_all(&directory)?;
         let path = directory.join(FILE_NAME);
         let file = OpenOptions::new().create_new(true).append(true).open(&path)?;
-        let mut log = SessionLog { id: id.clone(), path, events: Vec::new(), file };
+        let mut log = SessionLog {
+            id: id.clone(),
+            path,
+            events: Vec::new(),
+            file,
+        };
         log.append(Event::SessionCreated {
             id,
             workspace: workspace.to_string_lossy().into_owned(),
@@ -179,29 +204,64 @@ impl SessionStore {
     /// they are now, and the snapshots that undo the copied turns' edits stay
     /// with the session that made them: see [`crate::undo::plan`].
     pub fn fork(&self, events: &[Envelope], before: Option<u64>) -> Result<SessionLog, SessionError> {
-        let Some(Event::SessionCreated { id: source, workspace, provider, model, parent, worktree, schedule, aside, .. }) = events.first().map(|envelope| &envelope.event) else {
+        let Some(Event::SessionCreated {
+            id: source,
+            workspace,
+            provider,
+            model,
+            parent,
+            worktree,
+            schedule,
+            aside,
+            ..
+        }) = events.first().map(|envelope| &envelope.event)
+        else {
             return Err(SessionError::Refused("the session to fork has no header".to_string()));
         };
         if parent.is_some() {
-            return Err(SessionError::Refused("a subagent's session cannot be forked; fork the session of the agent that set it off".to_string()));
+            return Err(SessionError::Refused(
+                "a subagent's session cannot be forked; fork the session of the agent that set it off".to_string(),
+            ));
         }
         if aside.is_some() {
-            return Err(SessionError::Refused("a side conversation cannot be forked".to_string()));
+            return Err(SessionError::Refused(
+                "a side conversation cannot be forked".to_string(),
+            ));
         }
-        let starts = |wanted: u64| events.iter().position(|envelope| matches!(envelope.event, Event::TurnStart { turn } if turn == wanted));
+        let starts = |wanted: u64| {
+            events
+                .iter()
+                .position(|envelope| matches!(envelope.event, Event::TurnStart { turn } if turn == wanted))
+        };
         let end = match before.or_else(|| open_turn(events)) {
-            Some(turn) => starts(turn).ok_or_else(|| SessionError::Refused(format!("this session has no turn {turn} to fork before")))?,
+            Some(turn) => starts(turn)
+                .ok_or_else(|| SessionError::Refused(format!("this session has no turn {turn} to fork before")))?,
             None => events.len(),
         };
         let copied = &events[1..end];
-        let turn = copied.iter().filter_map(|envelope| if let Event::TurnStart { turn } = envelope.event { Some(turn) } else { None }).max().unwrap_or(0);
+        let turn = copied
+            .iter()
+            .filter_map(|envelope| {
+                if let Event::TurnStart { turn } = envelope.event {
+                    Some(turn)
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0);
 
         let id = uuid::Uuid::now_v7().to_string();
         let directory = self.root.join(&id);
         fs::create_dir_all(&directory)?;
         let path = directory.join(FILE_NAME);
         let file = OpenOptions::new().create_new(true).append(true).open(&path)?;
-        let mut log = SessionLog { id: id.clone(), path, events: Vec::new(), file };
+        let mut log = SessionLog {
+            id: id.clone(),
+            path,
+            events: Vec::new(),
+            file,
+        };
         log.append(Event::SessionCreated {
             id,
             workspace: workspace.clone(),
@@ -211,7 +271,10 @@ impl SessionStore {
             parent: None,
             worktree: worktree.clone(),
             schedule: schedule.clone(),
-            fork: Some(Fork { session: source.clone(), turn }),
+            fork: Some(Fork {
+                session: source.clone(),
+                turn,
+            }),
             aside: None,
         })?;
         for envelope in copied {
@@ -224,7 +287,11 @@ impl SessionStore {
         // An id is one directory name; anything else could point outside the store.
         let plain = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
         let path = self.root.join(id).join(FILE_NAME);
-        if plain && path.is_file() { Ok(path) } else { Err(SessionError::NotFound(id.to_string())) }
+        if plain && path.is_file() {
+            Ok(path)
+        } else {
+            Err(SessionError::NotFound(id.to_string()))
+        }
     }
 
     /// The `snapshots` directory beside session `id`'s log, when `id` names a stored session.
@@ -235,7 +302,9 @@ impl SessionStore {
     /// The source session id when `id` was forked from another session, read from its header alone.
     pub fn fork_source(&self, id: &str) -> Option<String> {
         let path = self.path(id).ok()?;
-        let line = std::io::BufRead::lines(std::io::BufReader::new(File::open(path).ok()?)).next()?.ok()?;
+        let line = std::io::BufRead::lines(std::io::BufReader::new(File::open(path).ok()?))
+            .next()?
+            .ok()?;
         let envelope: Envelope = serde_json::from_str(&line).ok()?;
         match envelope.event {
             Event::SessionCreated { fork: Some(fork), .. } => Some(fork.session),
@@ -246,7 +315,11 @@ impl SessionStore {
     /// Remove a session for good: its log and the file snapshots beside it.
     /// The caller must have no open handle on it.
     pub fn delete(&self, id: &str) -> Result<(), SessionError> {
-        let directory = self.path(id)?.parent().expect("the log sits in the session's directory").to_path_buf();
+        let directory = self
+            .path(id)?
+            .parent()
+            .expect("the log sits in the session's directory")
+            .to_path_buf();
         self.invalidate_cache(id);
         Ok(fs::remove_dir_all(directory)?)
     }
@@ -254,7 +327,10 @@ impl SessionStore {
     /// Whether the session's title, workspace, or anything the user or the
     /// agent said holds `query`; see [`matches`]. Reads only.
     pub fn search(&self, id: &str, query: &str) -> bool {
-        self.path(id).ok().and_then(|path| parse(&path, &fs::read(&path).ok()?).ok()).is_some_and(|(events, _)| matches(&events, query))
+        self.path(id)
+            .ok()
+            .and_then(|path| parse(&path, &fs::read(&path).ok()?).ok())
+            .is_some_and(|(events, _)| matches(&events, query))
     }
 
     /// Open a stored session for appending. A final line cut off by a crash is dropped.
@@ -271,7 +347,12 @@ impl SessionStore {
             self.invalidate_cache(id);
         }
         let file = OpenOptions::new().append(true).open(&path)?;
-        Ok(SessionLog { id: id.to_string(), path, events, file })
+        Ok(SessionLog {
+            id: id.to_string(),
+            path,
+            events,
+            file,
+        })
     }
 
     /// Read a stored session's summary without changing its file, so it is
@@ -321,8 +402,13 @@ impl SessionStore {
 
     /// Ids of every stored session, in no particular order.
     pub fn ids(&self) -> Vec<String> {
-        let Ok(entries) = fs::read_dir(&self.root) else { return Vec::new() };
-        entries.filter_map(Result::ok).filter_map(|entry| entry.file_name().into_string().ok()).collect()
+        let Ok(entries) = fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect()
     }
 
     /// Summaries of every readable session, most recently updated first. Reads only.
@@ -353,12 +439,18 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<(Vec<Envelope>, usize), SessionErr
             _ if index + 1 == lines.len() => break,
             Ok(_) => unreachable!("only the last line can lack a newline"),
             Err(message) => {
-                return Err(SessionError::Damaged { path: path.display().to_string(), line: index + 1, message });
+                return Err(SessionError::Damaged {
+                    path: path.display().to_string(),
+                    line: index + 1,
+                    message,
+                });
             }
         }
     }
     match events.first().map(|envelope| &envelope.event) {
-        Some(Event::SessionCreated { format, .. }) if *format > FORMAT_VERSION => Err(SessionError::FutureFormat(*format)),
+        Some(Event::SessionCreated { format, .. }) if *format > FORMAT_VERSION => {
+            Err(SessionError::FutureFormat(*format))
+        }
         Some(Event::SessionCreated { .. }) => Ok((events, good_bytes)),
         _ => Err(SessionError::MissingHeader(path.display().to_string())),
     }
@@ -387,19 +479,28 @@ impl SessionLog {
     /// The workspace recorded when the session was created, and the provider and model it is on now.
     pub fn header(&self) -> (PathBuf, String, String) {
         match &self.events[0].event {
-            Event::SessionCreated { workspace, .. } => (PathBuf::from(workspace), provider(&self.events), model(&self.events)),
+            Event::SessionCreated { workspace, .. } => {
+                (PathBuf::from(workspace), provider(&self.events), model(&self.events))
+            }
             _ => unreachable!("create and open both guarantee the header"),
         }
     }
 
     /// Append one event and flush it to disk before returning it.
     pub fn append(&mut self, event: Event) -> io::Result<Envelope> {
-        self.append_at(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true), event)
+        self.append_at(
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            event,
+        )
     }
 
     /// Append an event that happened at `ts`: now, or when it is copied from another log, then.
     fn append_at(&mut self, ts: String, event: Event) -> io::Result<Envelope> {
-        let envelope = Envelope { seq: self.events.len() as u64 + 1, ts, event };
+        let envelope = Envelope {
+            seq: self.events.len() as u64 + 1,
+            ts,
+            event,
+        };
         let mut line = serde_json::to_vec(&envelope).map_err(io::Error::other)?;
         line.push(b'\n');
         self.file.write_all(&line)?;
@@ -411,7 +512,9 @@ impl SessionLog {
     /// Close a turn that a crash left open: answer every unanswered tool call
     /// and end the turn as `interrupted`. Returns the appended events.
     pub fn repair_tail(&mut self) -> io::Result<Vec<Envelope>> {
-        let Some(turn) = open_turn(&self.events) else { return Ok(Vec::new()) };
+        let Some(turn) = open_turn(&self.events) else {
+            return Ok(Vec::new());
+        };
         let mut appended = Vec::new();
         for (tool_use_id, tool) in unanswered_tool_uses(&self.events) {
             appended.push(self.append(Event::ToolResult {
@@ -423,7 +526,11 @@ impl SessionLog {
                 images: Vec::new(),
             })?);
         }
-        appended.push(self.append(Event::TurnEnd { turn, reason: "interrupted".to_string(), error: None })?);
+        appended.push(self.append(Event::TurnEnd {
+            turn,
+            reason: "interrupted".to_string(),
+            error: None,
+        })?);
         Ok(appended)
     }
 }
@@ -458,7 +565,9 @@ pub fn unanswered_tool_uses(events: &[Envelope]) -> Vec<(String, String)> {
                     open.remove(pos);
                 }
             }
-            Event::ContextCompacted { kept_from_turn: None, .. } => {
+            Event::ContextCompacted {
+                kept_from_turn: None, ..
+            } => {
                 open.clear();
             }
             _ => {}
@@ -501,7 +610,9 @@ struct PrescanMeta<'a> {
 /// `AsideBriefed` without cloning historical Base64 images or tool result payloads.
 fn prescan_metadata_before_replay(events: &[Envelope]) -> PrescanMeta<'_> {
     let mut speaker = match events.first().map(|envelope| &envelope.event) {
-        Some(Event::SessionCreated { provider, .. }) => provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
+        Some(Event::SessionCreated { provider, .. }) => {
+            provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string())
+        }
         _ => DEFAULT_PROVIDER.to_string(),
     };
     let mut planning = false;
@@ -514,9 +625,15 @@ fn prescan_metadata_before_replay(events: &[Envelope]) -> PrescanMeta<'_> {
                 planning = *mode == Mode::Plan;
                 brief = None;
             }
-            Event::ModelChanged { provider: Some(provider), .. } => speaker = provider.clone(),
+            Event::ModelChanged {
+                provider: Some(provider),
+                ..
+            } => speaker = provider.clone(),
             Event::AssistantMessage { content, .. } if !content.is_empty() => {
-                for block in content.iter().filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos") {
+                for block in content
+                    .iter()
+                    .filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos")
+                {
                     if let Ok(items) = crate::tools::todo_items(&block["input"]) {
                         todos = Some(items);
                     }
@@ -536,11 +653,17 @@ fn prescan_metadata_before_replay(events: &[Envelope]) -> PrescanMeta<'_> {
 /// Compute the index in `events` from which [`derive_messages`] must construct full message
 /// blocks so its output is 100% identical to replaying from index `0`.
 fn derive_replay_start(events: &[Envelope]) -> usize {
-    let Some(compacted_idx) = events.iter().rposition(|e| matches!(e.event, Event::ContextCompacted { .. })) else {
+    let Some(compacted_idx) = events
+        .iter()
+        .rposition(|e| matches!(e.event, Event::ContextCompacted { .. }))
+    else {
         return 0;
     };
     let base_start = match &events[compacted_idx].event {
-        Event::ContextCompacted { kept_from_turn: Some(k), .. } => events[..compacted_idx]
+        Event::ContextCompacted {
+            kept_from_turn: Some(k),
+            ..
+        } => events[..compacted_idx]
             .iter()
             .rposition(|e| matches!(e.event, Event::TurnStart { turn } if turn == *k))
             .unwrap_or(compacted_idx),
@@ -566,7 +689,9 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
         prescan_metadata_before_replay(&events[..replay_start])
     } else {
         let initial_speaker = match events.first().map(|envelope| &envelope.event) {
-            Some(Event::SessionCreated { provider, .. }) => provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
+            Some(Event::SessionCreated { provider, .. }) => {
+                provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string())
+            }
             _ => DEFAULT_PROVIDER.to_string(),
         };
         PrescanMeta {
@@ -591,7 +716,13 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 current_turn_msg_start = messages.len();
             }
             Event::AsideBriefed { brief: told } => brief = Some(told),
-            Event::UserMessage { text: said, mode, images, files, .. } => {
+            Event::UserMessage {
+                text: said,
+                mode,
+                images,
+                files,
+                ..
+            } => {
                 if (*mode == Mode::Plan) != planning {
                     planning = !planning;
                     pending.push(text(if planning { PLAN_ON } else { PLAN_OFF }));
@@ -612,31 +743,56 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     unanswered.push(block);
                 }
             }
-            Event::FilesRestored { turn, restored, skipped } => {
+            Event::FilesRestored {
+                turn,
+                restored,
+                skipped,
+            } => {
                 let mut told = format!("[The user undid your file changes from turn {turn} on.");
                 if !restored.is_empty() {
-                    told.push_str(&format!(" Back to what they held before those changes, or removed if you had created them: {}.", restored.join(", ")));
+                    told.push_str(&format!(
+                        " Back to what they held before those changes, or removed if you had created them: {}.",
+                        restored.join(", ")
+                    ));
                 }
                 if !skipped.is_empty() {
-                    told.push_str(&format!(" Left as they are, because they changed after your last edit: {}.", skipped.join(", ")));
+                    told.push_str(&format!(
+                        " Left as they are, because they changed after your last edit: {}.",
+                        skipped.join(", ")
+                    ));
                 }
                 told.push_str(" Read a file again before relying on what it held.]");
                 pending.push(text(&told));
             }
             Event::ArtifactRestored { path, version, .. } => {
-                let told = format!("[The user restored {path} to version v{version}. Read it again before relying on what it held.]");
+                let told = format!(
+                    "[The user restored {path} to version v{version}. Read it again before relying on what it held.]"
+                );
                 pending.push(text(&told));
             }
-            Event::ModelChanged { provider: Some(provider), .. } => speaker = provider.clone(),
-            Event::ContextCompacted { summary, kept_from_turn, .. } => {
+            Event::ModelChanged {
+                provider: Some(provider),
+                ..
+            } => speaker = provider.clone(),
+            Event::ContextCompacted {
+                summary,
+                kept_from_turn,
+                ..
+            } => {
                 let mut header = vec![text(&format!("{COMPACTED}\n\n{summary}"))];
                 if planning {
                     header.push(text(PLAN_ON));
                 }
                 // The list is the model's own bookkeeping; a summary cannot be trusted to carry it whole.
                 if let Some(todos) = todos.as_ref().filter(|todos| !todos.is_empty()) {
-                    let lines: Vec<String> = todos.iter().map(|(item, status)| format!("- [{status}] {item}")).collect();
-                    header.push(text(&format!("[Your to-do list as you last wrote it; update it with `update_todos` as you go.]\n{}", lines.join("\n"))));
+                    let lines: Vec<String> = todos
+                        .iter()
+                        .map(|(item, status)| format!("- [{status}] {item}"))
+                        .collect();
+                    header.push(text(&format!(
+                        "[Your to-do list as you last wrote it; update it with `update_todos` as you go.]\n{}",
+                        lines.join("\n")
+                    )));
                 }
                 let retained = kept_from_turn
                     .and_then(|turn| turn_starts.get(&turn).copied())
@@ -690,8 +846,18 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     pending.extend(unanswered.iter().cloned());
                 }
             }
-            Event::ToolResult { tool_use_id, content, is_error, images, .. } => {
-                let words = if content.is_empty() { "(no output)" } else { content.as_str() };
+            Event::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                images,
+                ..
+            } => {
+                let words = if content.is_empty() {
+                    "(no output)"
+                } else {
+                    content.as_str()
+                };
                 // With pictures the content is a list: the words, then each picture. A provider that takes
                 // no pictures in a tool result moves them to the user's turn; see `openai_chat`.
                 let content = if images.is_empty() {
@@ -707,9 +873,9 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     messages.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
                     false
                 } else if messages.last().is_some_and(|m| m["role"] == "assistant")
-                    && spoken
-                        .last()
-                        .is_some_and(|(idx, spk)| *idx >= current_turn_msg_start && *idx == messages.len() - 1 && spk == &speaker)
+                    && spoken.last().is_some_and(|(idx, spk)| {
+                        *idx >= current_turn_msg_start && *idx == messages.len() - 1 && spk == &speaker
+                    })
                 {
                     if let Some(existing) = messages.last_mut().and_then(|m| m["content"].as_array_mut()) {
                         existing.extend(content.iter().cloned());
@@ -725,7 +891,10 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     messages.push(json!({ "role": "assistant", "content": content }));
                 }
                 unanswered.clear();
-                for block in content.iter().filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos") {
+                for block in content
+                    .iter()
+                    .filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos")
+                {
                     // A list the tool refused is not the list.
                     if let Ok(items) = crate::tools::todo_items(&block["input"]) {
                         todos = Some(items);
@@ -759,20 +928,25 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
             let mut local_renamed: HashMap<String, VecDeque<String>> = HashMap::new();
             let mut any_renamed = false;
             let content = carried(
-                messages[at]["content"].as_array().map(Vec::as_slice).unwrap_or_default(),
+                messages[at]["content"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
                 &mut used_ids,
                 &mut local_renamed,
                 &mut any_renamed,
             );
             messages[at]["content"] = Value::Array(content);
-            if any_renamed
-                && let Some(next_user) = messages.get_mut(at + 1).filter(|m| m["role"] == "user")
-            {
+            if any_renamed && let Some(next_user) = messages.get_mut(at + 1).filter(|m| m["role"] == "user") {
                 for block in next_user["content"].as_array_mut().into_iter().flatten() {
                     if block["type"] == "tool_result"
                         && let Some(raw_id) = block["tool_use_id"].as_str()
                         && let Some(queue) = local_renamed.get_mut(raw_id)
-                        && let Some(new_id) = if queue.len() > 1 { queue.pop_front() } else { queue.front().cloned() }
+                        && let Some(new_id) = if queue.len() > 1 {
+                            queue.pop_front()
+                        } else {
+                            queue.front().cloned()
+                        }
                     {
                         block["tool_use_id"] = json!(new_id);
                     }
@@ -795,7 +969,13 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 fn normalize_tool_id(raw_id: &str, used_ids: &mut HashSet<String>) -> String {
     let mut sanitized: String = raw_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if sanitized.is_empty() {
         sanitized = "call".to_string();
@@ -881,11 +1061,14 @@ pub fn read_instructions(workspace: &Path) -> Option<(String, String)> {
 
 /// The instructions in force: the last ones loaded, unless that file has since gone.
 pub fn instructions(events: &[Envelope]) -> Option<(&str, &str)> {
-    events.iter().rev().find_map(|envelope| match &envelope.event {
-        Event::InstructionsLoaded { path, content } => Some((path.as_str(), content.as_str())),
-        _ => None,
-    })
-    .filter(|(_, content)| !content.is_empty())
+    events
+        .iter()
+        .rev()
+        .find_map(|envelope| match &envelope.event {
+            Event::InstructionsLoaded { path, content } => Some((path.as_str(), content.as_str())),
+            _ => None,
+        })
+        .filter(|(_, content)| !content.is_empty())
 }
 
 /// Id of the session whose agent set this one off as a subagent, if one did.
@@ -950,7 +1133,10 @@ pub fn external_session<'a>(events: &'a [Envelope], backend: &str) -> Option<&'a
         events
     };
     own_events.iter().rev().find_map(|envelope| match &envelope.event {
-        Event::ExternalSession { backend: kind, session_id } if kind == backend => Some(session_id.as_str()),
+        Event::ExternalSession {
+            backend: kind,
+            session_id,
+        } if kind == backend => Some(session_id.as_str()),
         _ => None,
     })
 }
@@ -964,13 +1150,22 @@ pub fn report(events: &[Envelope]) -> (String, String, Option<String>) {
         .rev()
         .find_map(|envelope| match &envelope.event {
             Event::AssistantMessage { content, .. } => {
-                let text: Vec<&str> = content.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect();
+                let text: Vec<&str> = content
+                    .iter()
+                    .filter(|block| block["type"] == "text")
+                    .filter_map(|block| block["text"].as_str())
+                    .collect();
                 Some(text.join("\n")).filter(|text| !text.trim().is_empty())
             }
             _ => None,
         })
         .unwrap_or_default();
-    let ended = match events.iter().rev().find(|envelope| matches!(envelope.event, Event::TurnStart { .. } | Event::TurnEnd { .. })).map(|envelope| &envelope.event) {
+    let ended = match events
+        .iter()
+        .rev()
+        .find(|envelope| matches!(envelope.event, Event::TurnStart { .. } | Event::TurnEnd { .. }))
+        .map(|envelope| &envelope.event)
+    {
         Some(Event::TurnEnd { reason, error, .. }) => (reason.clone(), error.clone()),
         _ => ("running".to_string(), None),
     };
@@ -995,8 +1190,13 @@ pub fn provider(events: &[Envelope]) -> String {
         .iter()
         .rev()
         .find_map(|envelope| match &envelope.event {
-            Event::ModelChanged { provider: Some(provider), .. } => Some(provider.clone()),
-            Event::SessionCreated { provider, .. } => Some(provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string())),
+            Event::ModelChanged {
+                provider: Some(provider),
+                ..
+            } => Some(provider.clone()),
+            Event::SessionCreated { provider, .. } => {
+                Some(provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()))
+            }
             _ => None,
         })
         .unwrap_or_else(|| DEFAULT_PROVIDER.to_string())
@@ -1045,11 +1245,17 @@ fn json_slice_serialized_len(content: &[Value]) -> usize {
 }
 
 fn context_estimate_start(events: &[Envelope]) -> (usize, u64, bool) {
-    let Some(compacted_idx) = events.iter().rposition(|e| matches!(e.event, Event::ContextCompacted { .. })) else {
+    let Some(compacted_idx) = events
+        .iter()
+        .rposition(|e| matches!(e.event, Event::ContextCompacted { .. }))
+    else {
         return (0, 0, false);
     };
     match &events[compacted_idx].event {
-        Event::ContextCompacted { kept_from_turn: Some(from_turn), .. } => {
+        Event::ContextCompacted {
+            kept_from_turn: Some(from_turn),
+            ..
+        } => {
             let mut earliest_kept: Option<usize> = None;
             let mut turn_before: Option<u64> = None;
             let mut answered_before = false;
@@ -1070,13 +1276,18 @@ fn context_estimate_start(events: &[Envelope]) -> (usize, u64, bool) {
                 Some(start_idx) => (start_idx, turn_before.unwrap_or(0), answered_before),
                 None => {
                     // `from_turn` has no `TurnStart`: check whether the active turn before `compacted_idx` was answered.
-                    let last_ts = events[..compacted_idx].iter().rposition(|e| matches!(e.event, Event::TurnStart { .. }));
+                    let last_ts = events[..compacted_idx]
+                        .iter()
+                        .rposition(|e| matches!(e.event, Event::TurnStart { .. }));
                     let search_from = last_ts.map_or(0, |i| i + 1);
                     let cur_turn = last_ts.map_or(0, |i| match events[i].event {
                         Event::TurnStart { turn } => turn,
                         _ => 0,
                     });
-                    if events[search_from..compacted_idx].iter().any(|e| matches!(e.event, Event::AssistantMessage { .. })) {
+                    if events[search_from..compacted_idx]
+                        .iter()
+                        .any(|e| matches!(e.event, Event::AssistantMessage { .. }))
+                    {
                         (compacted_idx, cur_turn, true)
                     } else {
                         (last_ts.unwrap_or(0), 0, false)
@@ -1129,7 +1340,11 @@ pub fn context_estimate(events: &[Envelope]) -> u64 {
                 turn_answered = false;
                 unanswered_added = 0;
             }
-            Event::ContextCompacted { summary, kept_from_turn, .. } => {
+            Event::ContextCompacted {
+                summary,
+                kept_from_turn,
+                ..
+            } => {
                 let retained: u64 = match kept_from_turn {
                     Some(from_turn) => turn_added
                         .iter()
@@ -1141,20 +1356,33 @@ pub fn context_estimate(events: &[Envelope]) -> u64 {
                 turn_added.clear();
                 estimate = guess(summary) + retained + if !turn_answered { unanswered_added } else { 0 };
             }
-            Event::AssistantMessage { tokens: Some(tokens), content, .. } => {
+            Event::AssistantMessage {
+                tokens: Some(tokens),
+                content,
+                ..
+            } => {
                 turn_answered = true;
                 estimate = tokens.input + tokens.output;
                 *turn_added.entry(current_turn).or_default() += json_slice_serialized_len(content) as u64 / 3;
             }
-            Event::AssistantMessage { content, tokens: None, .. } => {
+            Event::AssistantMessage {
+                content, tokens: None, ..
+            } => {
                 turn_answered = true;
                 let g = json_slice_serialized_len(content) as u64 / 3;
                 estimate += g;
                 *turn_added.entry(current_turn).or_default() += g;
             }
             // A picture's cost depends on its size and the provider; this is a middling guess until the next count.
-            Event::UserMessage { text, images, files, .. } => {
-                let g = guess(text) + 1500 * images.len() as u64 + files.iter().map(|file| guess(&crate::events::attached_text(file))).sum::<u64>();
+            Event::UserMessage {
+                text, images, files, ..
+            } => {
+                let g = guess(text)
+                    + 1500 * images.len() as u64
+                    + files
+                        .iter()
+                        .map(|file| guess(&crate::events::attached_text(file)))
+                        .sum::<u64>();
                 estimate += g;
                 *turn_added.entry(current_turn).or_default() += g;
                 if !turn_answered {
@@ -1191,33 +1419,60 @@ pub fn transcript(events: &[Envelope], max_bytes: usize) -> String {
         let tail: String = text.chars().skip(count - max / 2).collect();
         format!("{head}\n[... {} characters omitted ...]\n{tail}", count - max)
     };
-    let start = events.iter().rposition(|envelope| matches!(envelope.event, Event::ContextCompacted { .. })).unwrap_or(0);
+    let start = events
+        .iter()
+        .rposition(|envelope| matches!(envelope.event, Event::ContextCompacted { .. }))
+        .unwrap_or(0);
     let mut parts: Vec<String> = Vec::new();
     for envelope in &events[start..] {
         match &envelope.event {
             Event::ContextCompacted { summary, .. } => parts.push(format!("SUMMARY OF EARLIER WORK:\n{summary}")),
-            Event::UserMessage { text, images, files, .. } => {
+            Event::UserMessage {
+                text, images, files, ..
+            } => {
                 // What was attached is named, not shown: the files are where they were, to be read again.
                 let mut said = String::from("USER:\n");
                 if !images.is_empty() {
                     said.push_str(&format!("[attached {} image(s), not shown here]\n", images.len()));
                 }
                 if !files.is_empty() {
-                    said.push_str(&format!("[attached files, not shown here: {}]\n", files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>().join(", ")));
+                    said.push_str(&format!(
+                        "[attached files, not shown here: {}]\n",
+                        files
+                            .iter()
+                            .map(|file| file.path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 parts.push(said + text);
             }
             Event::AssistantMessage { content, .. } => {
                 for block in content {
                     match block["type"].as_str() {
-                        Some("text") => parts.push(format!("ASSISTANT:\n{}", block["text"].as_str().unwrap_or_default())),
-                        Some("tool_use") => parts.push(format!("ASSISTANT CALLED {}:\n{}", block["name"].as_str().unwrap_or_default(), cut(&block["input"].to_string(), 600))),
+                        Some("text") => {
+                            parts.push(format!("ASSISTANT:\n{}", block["text"].as_str().unwrap_or_default()))
+                        }
+                        Some("tool_use") => parts.push(format!(
+                            "ASSISTANT CALLED {}:\n{}",
+                            block["name"].as_str().unwrap_or_default(),
+                            cut(&block["input"].to_string(), 600)
+                        )),
                         _ => {}
                     }
                 }
             }
-            Event::ToolResult { tool, content, is_error, .. } => {
-                parts.push(format!("RESULT OF {tool}{}:\n{}", if *is_error { " (failed)" } else { "" }, cut(content, 2000)));
+            Event::ToolResult {
+                tool,
+                content,
+                is_error,
+                ..
+            } => {
+                parts.push(format!(
+                    "RESULT OF {tool}{}:\n{}",
+                    if *is_error { " (failed)" } else { "" },
+                    cut(content, 2000)
+                ));
             }
             _ => {}
         }
@@ -1233,7 +1488,11 @@ pub fn transcript(events: &[Envelope], max_bytes: usize) -> String {
         at
     };
     let (head, tail) = (boundary(max_bytes / 5), boundary(whole.len() - max_bytes * 4 / 5));
-    format!("{}\n\n[... the middle of the conversation is omitted ...]\n\n{}", &whole[..head], &whole[tail..])
+    format!(
+        "{}\n\n[... the middle of the conversation is omitted ...]\n\n{}",
+        &whole[..head],
+        &whole[tail..]
+    )
 }
 
 /// Whether the session's title, workspace, or anything the user or the agent
@@ -1247,7 +1506,9 @@ pub fn matches(events: &[Envelope], query: &str) -> bool {
             Event::SessionCreated { workspace, .. } => holds(workspace),
             Event::SessionRenamed { title } => holds(title),
             Event::UserMessage { text, .. } => holds(text),
-            Event::AssistantMessage { content, .. } => content.iter().any(|block| block["type"] == "text" && block["text"].as_str().is_some_and(holds)),
+            Event::AssistantMessage { content, .. } => content
+                .iter()
+                .any(|block| block["type"] == "text" && block["text"].as_str().is_some_and(holds)),
             _ => false,
         })
 }
@@ -1269,11 +1530,15 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
             .iter()
             .find_map(|envelope| match &envelope.event {
                 // A message of pictures alone is titled as such.
-                Event::UserMessage { text, images, .. } if text.trim().is_empty() && !images.is_empty() => Some("[images]".to_string()),
-                // And one of files alone, by the first of them.
-                Event::UserMessage { text, files, .. } if text.trim().is_empty() && !files.is_empty() => {
-                    Some(std::path::Path::new(&files[0].path).file_name().map_or_else(|| "[files]".to_string(), |name| name.to_string_lossy().into_owned()))
+                Event::UserMessage { text, images, .. } if text.trim().is_empty() && !images.is_empty() => {
+                    Some("[images]".to_string())
                 }
+                // And one of files alone, by the first of them.
+                Event::UserMessage { text, files, .. } if text.trim().is_empty() && !files.is_empty() => Some(
+                    std::path::Path::new(&files[0].path)
+                        .file_name()
+                        .map_or_else(|| "[files]".to_string(), |name| name.to_string_lossy().into_owned()),
+                ),
                 Event::UserMessage { text, .. } => Some(text.split_whitespace().collect::<Vec<_>>().join(" ")),
                 _ => None,
             })
@@ -1295,7 +1560,9 @@ pub fn summarize(events: &[Envelope]) -> SessionSummary {
             Event::ApprovalRequested { tool_use_id, .. } | Event::QuestionAsked { tool_use_id, .. } => {
                 requested.insert(tool_use_id);
             }
-            Event::ApprovalResolved { tool_use_id, .. } | Event::QuestionAnswered { tool_use_id, .. } | Event::ToolResult { tool_use_id, .. } => {
+            Event::ApprovalResolved { tool_use_id, .. }
+            | Event::QuestionAnswered { tool_use_id, .. }
+            | Event::ToolResult { tool_use_id, .. } => {
                 requested.remove(tool_use_id.as_str());
             }
             _ => {}
@@ -1343,69 +1610,159 @@ mod tests {
     }
 
     fn assistant(content: Vec<Value>) -> Event {
-        Event::AssistantMessage { content, stop_reason: Some("tool_use".into()), model: "m".into(), usage: json!({}), tokens: None }
+        Event::AssistantMessage {
+            content,
+            stop_reason: Some("tool_use".into()),
+            model: "m".into(),
+            usage: json!({}),
+            tokens: None,
+        }
     }
 
     #[test]
     fn reopens_what_it_appended() {
         let (_directory, store) = store();
-        let mut log = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
+        let mut log = store
+            .create(Path::new("/work"), "anthropic", "claude-opus-5-5")
+            .unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "hello".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
+        log.append(Event::UserMessage {
+            text: "hello".into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
         let id = log.id().to_string();
         let written = log.events().to_vec();
         drop(log);
 
         let reopened = store.open(&id).unwrap();
         assert_eq!(reopened.events(), written.as_slice());
-        assert_eq!(reopened.events().iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2, 3]);
-        assert_eq!(reopened.header(), (PathBuf::from("/work"), "anthropic".to_string(), "claude-opus-5-5".to_string()));
+        assert_eq!(
+            reopened.events().iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            reopened.header(),
+            (
+                PathBuf::from("/work"),
+                "anthropic".to_string(),
+                "claude-opus-5-5".to_string()
+            )
+        );
     }
 
     #[test]
     fn sends_what_another_provider_answered_plainly_and_a_providers_own_as_it_was() {
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "claude").unwrap();
-        let said = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] };
+        let said = |text: &str| Event::UserMessage {
+            text: text.into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        };
         let signed = json!({ "type": "thinking", "thinking": "hm", "signature": "sig" });
         log.append(said("one")).unwrap();
-        log.append(assistant(vec![signed.clone(), json!({ "type": "text", "text": "from claude" })])).unwrap();
-        log.append(Event::ModelChanged { model: "deepseek-chat".into(), provider: Some("deepseek".into()) }).unwrap();
+        log.append(assistant(vec![
+            signed.clone(),
+            json!({ "type": "text", "text": "from claude" }),
+        ]))
+        .unwrap();
+        log.append(Event::ModelChanged {
+            model: "deepseek-chat".into(),
+            provider: Some("deepseek".into()),
+        })
+        .unwrap();
         log.append(said("two")).unwrap();
         // Reasoning alone, as a provider may answer when cut off: it keeps its place in the conversation.
-        log.append(assistant(vec![json!({ "type": "thinking", "thinking": "deep thoughts" })])).unwrap();
+        log.append(assistant(vec![
+            json!({ "type": "thinking", "thinking": "deep thoughts" }),
+        ]))
+        .unwrap();
         log.append(said("three")).unwrap();
-        log.append(assistant(vec![json!({ "type": "text", "text": "from deepseek" })])).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "from deepseek" })]))
+            .unwrap();
         // A model of the same provider moves nothing; back on Anthropic, its own answer goes as it was.
-        log.append(Event::ModelChanged { model: "deepseek-reasoner".into(), provider: None }).unwrap();
+        log.append(Event::ModelChanged {
+            model: "deepseek-reasoner".into(),
+            provider: None,
+        })
+        .unwrap();
         assert_eq!(provider(log.events()), "deepseek");
-        log.append(Event::ModelChanged { model: "claude".into(), provider: Some("anthropic".into()) }).unwrap();
+        log.append(Event::ModelChanged {
+            model: "claude".into(),
+            provider: Some("anthropic".into()),
+        })
+        .unwrap();
         log.append(said("four")).unwrap();
         let messages = derive_messages(log.events());
-        assert_eq!(messages[1]["content"], json!([signed, { "type": "text", "text": "from claude" }]));
+        assert_eq!(
+            messages[1]["content"],
+            json!([signed, { "type": "text", "text": "from claude" }])
+        );
         assert_eq!(messages[3]["content"], json!([{ "type": "text", "text": "…" }]));
-        assert_eq!(messages[5]["content"], json!([{ "type": "text", "text": "from deepseek" }]));
-        assert_eq!((provider(log.events()), summarize(log.events()).provider), ("anthropic".to_string(), "anthropic".to_string()));
+        assert_eq!(
+            messages[5]["content"],
+            json!([{ "type": "text", "text": "from deepseek" }])
+        );
+        assert_eq!(
+            (provider(log.events()), summarize(log.events()).provider),
+            ("anthropic".to_string(), "anthropic".to_string())
+        );
         // The move is written in the log only when it is to another provider.
-        let lines: Vec<Value> = log.events().iter().map(|envelope| serde_json::to_value(envelope).unwrap()).collect();
-        let moves: Vec<&Value> = lines.iter().filter(|line| line["type"] == "model/changed").map(|line| &line["data"]).collect();
-        assert_eq!(moves, [&json!({ "model": "deepseek-chat", "provider": "deepseek" }), &json!({ "model": "deepseek-reasoner" }), &json!({ "model": "claude", "provider": "anthropic" })]);
+        let lines: Vec<Value> = log
+            .events()
+            .iter()
+            .map(|envelope| serde_json::to_value(envelope).unwrap())
+            .collect();
+        let moves: Vec<&Value> = lines
+            .iter()
+            .filter(|line| line["type"] == "model/changed")
+            .map(|line| &line["data"])
+            .collect();
+        assert_eq!(
+            moves,
+            [
+                &json!({ "model": "deepseek-chat", "provider": "deepseek" }),
+                &json!({ "model": "deepseek-reasoner" }),
+                &json!({ "model": "claude", "provider": "anthropic" })
+            ]
+        );
     }
 
     #[test]
     fn writes_the_current_format_and_names_the_provider_unless_it_is_anthropic() {
         let (_directory, store) = store();
         let header = |log: &SessionLog| serde_json::to_value(&log.events()[0]).unwrap()["data"].clone();
-        let anthropic = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
+        let anthropic = store
+            .create(Path::new("/work"), "anthropic", "claude-opus-5-5")
+            .unwrap();
         assert_eq!(header(&anthropic)["format"], FORMAT_VERSION);
         assert!(header(&anthropic).get("provider").is_none());
         let deepseek = store.create(Path::new("/work"), "deepseek", "deepseek-v4-pro").unwrap();
-        assert_eq!((header(&deepseek)["format"].as_u64(), header(&deepseek)["provider"].as_str()), (Some(u64::from(FORMAT_VERSION)), Some("deepseek")));
+        assert_eq!(
+            (
+                header(&deepseek)["format"].as_u64(),
+                header(&deepseek)["provider"].as_str()
+            ),
+            (Some(u64::from(FORMAT_VERSION)), Some("deepseek"))
+        );
 
         let id = deepseek.id().to_string();
         drop(deepseek);
         let reopened = store.open(&id).unwrap();
-        assert_eq!(reopened.header(), (PathBuf::from("/work"), "deepseek".to_string(), "deepseek-v4-pro".to_string()));
+        assert_eq!(
+            reopened.header(),
+            (
+                PathBuf::from("/work"),
+                "deepseek".to_string(),
+                "deepseek-v4-pro".to_string()
+            )
+        );
         assert_eq!(store.peek(&id).unwrap().provider, "deepseek");
     }
 
@@ -1417,12 +1774,21 @@ mod tests {
         let (id, path) = (log.id().to_string(), log.path().to_path_buf());
         drop(log);
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(br#"{"seq":3,"ts":"2026-01-01T00:00:00Z","type":"user/mess"#).unwrap();
+        file.write_all(br#"{"seq":3,"ts":"2026-01-01T00:00:00Z","type":"user/mess"#)
+            .unwrap();
         drop(file);
 
         let mut reopened = store.open(&id).unwrap();
         assert_eq!(reopened.events().len(), 2);
-        reopened.append(Event::UserMessage { text: "again".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
+        reopened
+            .append(Event::UserMessage {
+                text: "again".into(),
+                steering: false,
+                mode: Mode::Edit,
+                images: vec![],
+                files: vec![],
+            })
+            .unwrap();
         drop(reopened);
         assert_eq!(store.open(&id).unwrap().events().len(), 3);
     }
@@ -1434,7 +1800,8 @@ mod tests {
         let (id, path) = (log.id().to_string(), log.path().to_path_buf());
         // Another handle is halfway through appending a line.
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(br#"{"seq":2,"ts":"2026-01-01T00:00:00Z","type":"turn/st"#).unwrap();
+        file.write_all(br#"{"seq":2,"ts":"2026-01-01T00:00:00Z","type":"turn/st"#)
+            .unwrap();
         let before = fs::read(&path).unwrap();
 
         assert_eq!(store.list().len(), 1);
@@ -1475,20 +1842,45 @@ mod tests {
         let thinking = json!({ "type": "thinking", "thinking": "", "signature": "sig" });
         let call = json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a" } });
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "read a".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
+        log.append(Event::UserMessage {
+            text: "read a".into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
         log.append(assistant(vec![thinking.clone(), call.clone()])).unwrap();
-        log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: String::new(), is_error: false, meta: Value::Null, images: Vec::new() }).unwrap();
-        log.append(Event::UserMessage { text: "also b".into(), steering: true, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
+        log.append(Event::ToolResult {
+            tool_use_id: "t1".into(),
+            tool: "read_file".into(),
+            content: String::new(),
+            is_error: false,
+            meta: Value::Null,
+            images: Vec::new(),
+        })
+        .unwrap();
+        log.append(Event::UserMessage {
+            text: "also b".into(),
+            steering: true,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
 
         let messages = derive_messages(log.events());
-        assert_eq!(messages, vec![
-            json!({ "role": "user", "content": [{ "type": "text", "text": "read a" }] }),
-            json!({ "role": "assistant", "content": [thinking, call] }),
-            json!({ "role": "user", "content": [
+        assert_eq!(
+            messages,
+            vec![
+                json!({ "role": "user", "content": [{ "type": "text", "text": "read a" }] }),
+                json!({ "role": "assistant", "content": [thinking, call] }),
+                json!({ "role": "user", "content": [
                 { "type": "tool_result", "tool_use_id": "t1", "content": "(no output)", "is_error": false },
                 { "type": "text", "text": "also b" },
             ] }),
-        ]);
+            ]
+        );
     }
 
     #[test]
@@ -1496,14 +1888,36 @@ mod tests {
         let (directory, store) = store();
         let mut log = store.create(Path::new("/work/Parser"), "anthropic", "m").unwrap();
         let id = log.id().to_string();
-        log.append(Event::UserMessage { text: "fix the tokenizer".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
-        log.append(assistant(vec![json!({ "type": "text", "text": "The lexer drops a byte." }), json!({ "type": "tool_use", "id": "t", "name": "read_file", "input": { "path": "secret.rs" } })])).unwrap();
+        log.append(Event::UserMessage {
+            text: "fix the tokenizer".into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
+        log.append(assistant(vec![
+            json!({ "type": "text", "text": "The lexer drops a byte." }),
+            json!({ "type": "tool_use", "id": "t", "name": "read_file", "input": { "path": "secret.rs" } }),
+        ]))
+        .unwrap();
         assert_eq!(summarize(log.events()).title, "fix the tokenizer");
-        log.append(Event::SessionRenamed { title: "Lexer bug".into() }).unwrap();
+        log.append(Event::SessionRenamed {
+            title: "Lexer bug".into(),
+        })
+        .unwrap();
         assert_eq!(summarize(log.events()).title, "Lexer bug");
 
         // The title, the workspace, and what was said match in any letter case; tool calls do not.
-        for (query, found) in [("lexer BUG", true), ("parser", true), ("TOKENIZER", true), ("drops a byte", true), ("  ", true), ("secret.rs", false), ("nothing", false)] {
+        for (query, found) in [
+            ("lexer BUG", true),
+            ("parser", true),
+            ("TOKENIZER", true),
+            ("drops a byte", true),
+            ("  ", true),
+            ("secret.rs", false),
+            ("nothing", false),
+        ] {
             assert_eq!(matches(log.events(), query), found, "{query}");
             assert_eq!(store.search(&id, query), found, "{query}");
         }
@@ -1515,7 +1929,10 @@ mod tests {
         // An id that is not a plain name never reaches the disk.
         std::fs::write(directory.path().join("keep.txt"), "x").unwrap();
         assert!(matches!(store.delete(".."), Err(SessionError::NotFound(_))));
-        assert!(matches!(store.delete(&format!("{id}/../{id}")), Err(SessionError::NotFound(_))));
+        assert!(matches!(
+            store.delete(&format!("{id}/../{id}")),
+            Err(SessionError::NotFound(_))
+        ));
         store.delete(&id).unwrap();
         assert!(store.ids().iter().all(|other| other != &id) && directory.path().join("keep.txt").exists());
         assert!(matches!(store.open(&id), Err(SessionError::NotFound(_))));
@@ -1526,42 +1943,88 @@ mod tests {
         use crate::llm::Tokens;
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
-        let user = |text: &str, steering| Event::UserMessage { text: text.into(), steering, mode: Mode::Plan, images: vec![], files: vec![] };
+        let user = |text: &str, steering| Event::UserMessage {
+            text: text.into(),
+            steering,
+            mode: Mode::Plan,
+            images: vec![],
+            files: vec![],
+        };
         let counted = |input, output| Event::AssistantMessage {
             content: vec![json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a" } })],
             stop_reason: Some("tool_use".into()),
             model: "m".into(),
             usage: json!({}),
-            tokens: Some(Tokens { input, cached: 0, output }),
+            tokens: Some(Tokens {
+                input,
+                cached: 0,
+                output,
+            }),
         };
-        let result = |content: &str| Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: content.into(), is_error: false, meta: Value::Null, images: Vec::new() };
+        let result = |content: &str| Event::ToolResult {
+            tool_use_id: "t1".into(),
+            tool: "read_file".into(),
+            content: content.into(),
+            is_error: false,
+            meta: Value::Null,
+            images: Vec::new(),
+        };
         log.append(user("read a", false)).unwrap();
         log.append(counted(1000, 50)).unwrap();
         log.append(result(&"x".repeat(300))).unwrap();
         log.append(user("and hurry", true)).unwrap();
         // The last request's own count, plus a guess for what was added since.
         assert_eq!(context_estimate(log.events()), 1050 + 100 + 3);
-        assert!(transcript(log.events(), 10_000).contains("USER:
+        assert!(transcript(log.events(), 10_000).contains(
+            "USER:
 read a
 
-ASSISTANT CALLED read_file:"));
+ASSISTANT CALLED read_file:"
+        ));
         let short = transcript(log.events(), 100);
-        assert!(short.len() < 200 && short.starts_with("USER:") && short.contains("omitted") && short.ends_with("and hurry"), "{short}");
+        assert!(
+            short.len() < 200
+                && short.starts_with("USER:")
+                && short.contains("omitted")
+                && short.ends_with("and hurry"),
+            "{short}"
+        );
 
-        log.append(Event::ContextCompacted { summary: "Read a; it holds x.".into(), tokens_before: 1153, focus: None, kept_from_turn: None, tokens: None }).unwrap();
+        log.append(Event::ContextCompacted {
+            summary: "Read a; it holds x.".into(),
+            tokens_before: 1153,
+            focus: None,
+            kept_from_turn: None,
+            tokens: None,
+        })
+        .unwrap();
         // Only the summary goes back, then plan mode (still on), then what the model had not answered.
         // (No to-do list was written in this conversation, so none is carried over.)
         let texts = |events: &[Envelope]| -> Vec<String> {
-            derive_messages(events).iter().flat_map(|message| message["content"].as_array().unwrap().clone()).filter_map(|block| block["text"].as_str().map(str::to_string)).collect()
+            derive_messages(events)
+                .iter()
+                .flat_map(|message| message["content"].as_array().unwrap().clone())
+                .filter_map(|block| block["text"].as_str().map(str::to_string))
+                .collect()
         };
         assert_eq!(derive_messages(log.events()).len(), 1);
-        assert_eq!(texts(log.events()), [format!("{COMPACTED}
+        assert_eq!(
+            texts(log.events()),
+            [
+                format!(
+                    "{COMPACTED}
 
-Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
+Read a; it holds x."
+                ),
+                PLAN_ON.to_string(),
+                "and hurry".to_string()
+            ]
+        );
         assert_eq!(context_estimate(log.events()), "Read a; it holds x.".len() as u64 / 3);
 
         // What follows the compaction is replayed as usual.
-        log.append(assistant(vec![json!({ "type": "text", "text": "on it" })])).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "on it" })]))
+            .unwrap();
         log.append(user("thanks", false)).unwrap();
         let messages = derive_messages(log.events());
         assert_eq!(messages.len(), 3);
@@ -1573,28 +2036,71 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         use crate::events::{Attached, Image};
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
-        let png = Image { media_type: "image/png".into(), data: "aGVsbG8=".into() };
-        let notes = Attached { path: "/x/notes.md".into(), bytes: 4, content: Some("one\n".into()), document: None, parts: None, is_dir: false };
-        let big = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None, document: None, parts: None, is_dir: false };
-        log.append(Event::UserMessage { text: "compare them".into(), steering: false, mode: Mode::Edit, images: vec![png], files: vec![notes.clone(), big.clone()] }).unwrap();
+        let png = Image {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        let notes = Attached {
+            path: "/x/notes.md".into(),
+            bytes: 4,
+            content: Some("one\n".into()),
+            document: None,
+            parts: None,
+            is_dir: false,
+        };
+        let big = Attached {
+            path: "/x/big.log".into(),
+            bytes: 300_000,
+            content: None,
+            document: None,
+            parts: None,
+            is_dir: false,
+        };
+        log.append(Event::UserMessage {
+            text: "compare them".into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![png],
+            files: vec![notes.clone(), big.clone()],
+        })
+        .unwrap();
         let content = derive_messages(log.events())[0]["content"].clone();
         assert_eq!(content[0]["type"], "image");
         assert_eq!(
             content[1],
             json!({ "type": "text", "text": "<attached_file path=\"/x/notes.md\">\n[File path: /x/notes.md]\none\n</attached_file>" })
         );
-        assert!(content[2]["text"].as_str().unwrap().starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">"));
+        assert!(
+            content[2]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">")
+        );
         assert_eq!(content[3], json!({ "type": "text", "text": "compare them" }));
         // The log line carries the files; a message without any reads as before.
         let line = |event: &Event| serde_json::to_value(event).unwrap()["data"].clone();
-        assert_eq!(line(&log.events()[1].event)["files"], json!([{ "path": "/x/notes.md", "bytes": 4, "content": "one\n" }, { "path": "/x/big.log", "bytes": 300_000 }]));
+        assert_eq!(
+            line(&log.events()[1].event)["files"],
+            json!([{ "path": "/x/notes.md", "bytes": 4, "content": "one\n" }, { "path": "/x/big.log", "bytes": 300_000 }])
+        );
         // A summary names what was attached without repeating it, and counts it towards the context.
         assert!(transcript(log.events(), 10_000).contains("[attached files, not shown here: /x/notes.md, /x/big.log]"));
         assert!(context_estimate(log.events()) > 20);
         // Files alone: a message of their blocks, titled by the first.
         let mut alone = store.create(Path::new("/work"), "anthropic", "m").unwrap();
-        alone.append(Event::UserMessage { text: String::new(), steering: false, mode: Mode::Edit, images: vec![], files: vec![notes] }).unwrap();
-        assert_eq!(derive_messages(alone.events())[0]["content"].as_array().unwrap().len(), 1);
+        alone
+            .append(Event::UserMessage {
+                text: String::new(),
+                steering: false,
+                mode: Mode::Edit,
+                images: vec![],
+                files: vec![notes],
+            })
+            .unwrap();
+        assert_eq!(
+            derive_messages(alone.events())[0]["content"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(summarize(alone.events()).title, "notes.md");
     }
 
@@ -1603,13 +2109,29 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         use crate::events::Image;
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
-        let png = Image { media_type: "image/png".into(), data: "aGVsbG8=".into() };
-        let shot = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![png.clone()], files: vec![] };
+        let png = Image {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        let shot = |text: &str| Event::UserMessage {
+            text: text.into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![png.clone()],
+            files: vec![],
+        };
         log.append(shot("what is wrong here?")).unwrap();
-        let block = json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGVsbG8=" } });
-        assert_eq!(derive_messages(log.events())[0]["content"], json!([block, { "type": "text", "text": "what is wrong here?" }]));
+        let block =
+            json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGVsbG8=" } });
+        assert_eq!(
+            derive_messages(log.events())[0]["content"],
+            json!([block, { "type": "text", "text": "what is wrong here?" }])
+        );
         assert_eq!(context_estimate(log.events()), 1500 + 6);
-        assert!(transcript(log.events(), 1000).starts_with("USER:\n[attached 1 image(s), not shown here]\nwhat is wrong here?"));
+        assert!(
+            transcript(log.events(), 1000)
+                .starts_with("USER:\n[attached 1 image(s), not shown here]\nwhat is wrong here?")
+        );
 
         // Pictures alone: no empty text block, and the session is titled for what it holds.
         let mut alone = store.create(Path::new("/work"), "anthropic", "m").unwrap();
@@ -1619,17 +2141,46 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
 
         // What cannot be sent is refused before it is logged: too many, an unknown format, not base64, too large.
         use crate::events::{IMAGE_BASE64_BYTES, IMAGES_PER_MESSAGE, check_images};
-        let of = |media_type: &str, data: String| Image { media_type: media_type.into(), data };
+        let of = |media_type: &str, data: String| Image {
+            media_type: media_type.into(),
+            data,
+        };
         assert!(check_images(std::slice::from_ref(&png)).is_ok() && check_images(&[]).is_ok());
-        assert!(check_images(&vec![png.clone(); IMAGES_PER_MESSAGE + 1]).unwrap_err().contains("at most"));
-        assert!(check_images(&[of("image/svg+xml", "aGk=".into())]).unwrap_err().contains("only PNG"));
-        assert!(check_images(&[of("image/png", "not base64!".into())]).unwrap_err().contains("not base64"));
+        assert!(
+            check_images(&vec![png.clone(); IMAGES_PER_MESSAGE + 1])
+                .unwrap_err()
+                .contains("at most")
+        );
+        assert!(
+            check_images(&[of("image/svg+xml", "aGk=".into())])
+                .unwrap_err()
+                .contains("only PNG")
+        );
+        assert!(
+            check_images(&[of("image/png", "not base64!".into())])
+                .unwrap_err()
+                .contains("not base64")
+        );
         assert!(check_images(&[of("image/png", String::new())]).is_err());
-        assert!(check_images(&[of("image/png", "A".repeat(IMAGE_BASE64_BYTES + 1))]).unwrap_err().contains("larger"));
+        assert!(
+            check_images(&[of("image/png", "A".repeat(IMAGE_BASE64_BYTES + 1))])
+                .unwrap_err()
+                .contains("larger")
+        );
 
         // The field is left out of a message without pictures, and read as none when absent.
         let line = |event: &Event| serde_json::to_value(event).unwrap()["data"].clone();
-        assert!(line(&Event::UserMessage { text: "x".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).get("images").is_none());
+        assert!(
+            line(&Event::UserMessage {
+                text: "x".into(),
+                steering: false,
+                mode: Mode::Edit,
+                images: vec![],
+                files: vec![]
+            })
+            .get("images")
+            .is_none()
+        );
         assert_eq!(line(&shot("x"))["images"][0]["media_type"], "image/png");
     }
 
@@ -1637,21 +2188,60 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     fn carries_the_todo_list_across_a_compaction() {
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
-        let listed = |todos: Value| assistant(vec![json!({ "type": "tool_use", "id": "t", "name": "update_todos", "input": { "todos": todos } })]);
-        let result = Event::ToolResult { tool_use_id: "t".into(), tool: "update_todos".into(), content: "ok".into(), is_error: false, meta: Value::Null, images: Vec::new() };
-        log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
-        log.append(listed(json!([{ "text": "read", "status": "pending" }]))).unwrap();
+        let listed = |todos: Value| {
+            assistant(vec![
+                json!({ "type": "tool_use", "id": "t", "name": "update_todos", "input": { "todos": todos } }),
+            ])
+        };
+        let result = Event::ToolResult {
+            tool_use_id: "t".into(),
+            tool: "update_todos".into(),
+            content: "ok".into(),
+            is_error: false,
+            meta: Value::Null,
+            images: Vec::new(),
+        };
+        log.append(Event::UserMessage {
+            text: "go".into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
+        log.append(listed(json!([{ "text": "read", "status": "pending" }])))
+            .unwrap();
         log.append(result.clone()).unwrap();
         // The latest list counts; one the tool would refuse does not replace it.
-        log.append(listed(json!([{ "text": "read", "status": "done" }, { "text": "fix", "status": "in_progress" }]))).unwrap();
+        log.append(listed(
+            json!([{ "text": "read", "status": "done" }, { "text": "fix", "status": "in_progress" }]),
+        ))
+        .unwrap();
         log.append(result.clone()).unwrap();
-        log.append(listed(json!([{ "text": "bad", "status": "unknown" }]))).unwrap();
+        log.append(listed(json!([{ "text": "bad", "status": "unknown" }])))
+            .unwrap();
         log.append(result).unwrap();
-        log.append(Event::ContextCompacted { summary: "Summary.".into(), tokens_before: 9, focus: None, kept_from_turn: None, tokens: None }).unwrap();
+        log.append(Event::ContextCompacted {
+            summary: "Summary.".into(),
+            tokens_before: 9,
+            focus: None,
+            kept_from_turn: None,
+            tokens: None,
+        })
+        .unwrap();
         let messages = derive_messages(log.events());
-        let texts: Vec<&str> = messages[0]["content"].as_array().unwrap().iter().filter_map(|block| block["text"].as_str()).collect();
+        let texts: Vec<&str> = messages[0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect();
         assert_eq!(texts.len(), 2);
-        assert!(texts[1].ends_with("as you go.]\n- [done] read\n- [in_progress] fix"), "{}", texts[1]);
+        assert!(
+            texts[1].ends_with("as you go.]\n- [done] read\n- [in_progress] fix"),
+            "{}",
+            texts[1]
+        );
     }
 
     #[test]
@@ -1659,7 +2249,13 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         let says = |text: &str| assistant(vec![json!({ "type": "text", "text": text })]);
-        let user = |text: &str, mode| Event::UserMessage { text: text.into(), steering: false, mode, images: vec![], files: vec![] };
+        let user = |text: &str, mode| Event::UserMessage {
+            text: text.into(),
+            steering: false,
+            mode,
+            images: vec![],
+            files: vec![],
+        };
         for event in [
             user("look first", Mode::Plan),
             says("plan"),
@@ -1674,21 +2270,33 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let texts: Vec<Vec<String>> = derive_messages(log.events())
             .iter()
             .filter(|message| message["role"] == "user")
-            .map(|message| message["content"].as_array().unwrap().iter().map(|block| block["text"].as_str().unwrap().to_string()).collect())
+            .map(|message| {
+                message["content"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|block| block["text"].as_str().unwrap().to_string())
+                    .collect()
+            })
             .collect();
-        assert_eq!(texts, [
-            vec![PLAN_ON.to_string(), "look first".into()],
-            vec!["and the tests?".into()],
-            vec![PLAN_OFF.to_string(), "go".into()],
-            vec!["thanks".into()],
-        ]);
+        assert_eq!(
+            texts,
+            [
+                vec![PLAN_ON.to_string(), "look first".into()],
+                vec!["and the tests?".into()],
+                vec![PLAN_OFF.to_string(), "go".into()],
+                vec!["thanks".into()],
+            ]
+        );
         assert_eq!(summarize(log.events()).mode, Mode::Edit);
 
         // Edit mode is written as no mode at all, which is how logs from before modes read.
         let line = |event: &Event| serde_json::to_value(event).unwrap()["data"].clone();
         assert!(line(&user("x", Mode::Edit)).get("mode").is_none());
         assert_eq!(line(&user("x", Mode::Plan))["mode"], "plan");
-        let old: Event = serde_json::from_value(json!({ "type": "user/message", "data": { "text": "x", "steering": false } })).unwrap();
+        let old: Event =
+            serde_json::from_value(json!({ "type": "user/message", "data": { "text": "x", "steering": false } }))
+                .unwrap();
         assert_eq!(old, user("x", Mode::Edit));
     }
 
@@ -1697,12 +2305,28 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/work"), "anthropic", "m").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
-        log.append(Event::UserMessage { text: "go".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
+        log.append(Event::UserMessage {
+            text: "go".into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
         log.append(assistant(vec![
             json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": {} }),
             json!({ "type": "tool_use", "id": "t2", "name": "run_command", "input": {} }),
-        ])).unwrap();
-        log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "x".into(), is_error: false, meta: Value::Null, images: Vec::new() }).unwrap();
+        ]))
+        .unwrap();
+        log.append(Event::ToolResult {
+            tool_use_id: "t1".into(),
+            tool: "read_file".into(),
+            content: "x".into(),
+            is_error: false,
+            meta: Value::Null,
+            images: Vec::new(),
+        })
+        .unwrap();
         log.append(Event::ApprovalRequested {
             tool_use_id: "t2".into(),
             tool: "run_command".into(),
@@ -1716,7 +2340,9 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
 
         let appended = log.repair_tail().unwrap();
         assert_eq!(appended.len(), 2);
-        assert!(matches!(&appended[0].event, Event::ToolResult { tool_use_id, is_error: true, .. } if tool_use_id == "t2"));
+        assert!(
+            matches!(&appended[0].event, Event::ToolResult { tool_use_id, is_error: true, .. } if tool_use_id == "t2")
+        );
         assert!(matches!(&appended[1].event, Event::TurnEnd { turn: 1, reason, .. } if reason == "interrupted"));
         assert!(unanswered_tool_uses(log.events()).is_empty());
         let summary = summarize(log.events());
@@ -1728,11 +2354,33 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     fn summarizes_title_and_lists_newest_first() {
         let (_directory, store) = store();
         let mut first = store.create(Path::new("/a"), "anthropic", "m").unwrap();
-        first.append(Event::UserMessage { text: "  fix   the\nparser ".into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
+        first
+            .append(Event::UserMessage {
+                text: "  fix   the\nparser ".into(),
+                steering: false,
+                mode: Mode::Edit,
+                images: vec![],
+                files: vec![],
+            })
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let mut second = store.create(Path::new("/b"), "anthropic", "m").unwrap();
-        second.append(Event::UserMessage { text: "x".repeat(50), steering: false, mode: Mode::Edit, images: vec![], files: vec![] }).unwrap();
-        second.append(Event::ApprovalResolved { tool_use_id: "none".into(), decision: Decision::Deny, timed_out: false }).unwrap();
+        second
+            .append(Event::UserMessage {
+                text: "x".repeat(50),
+                steering: false,
+                mode: Mode::Edit,
+                images: vec![],
+                files: vec![],
+            })
+            .unwrap();
+        second
+            .append(Event::ApprovalResolved {
+                tool_use_id: "none".into(),
+                decision: Decision::Deny,
+                timed_out: false,
+            })
+            .unwrap();
 
         let list = store.list();
         assert_eq!(list.len(), 2);
@@ -1745,33 +2393,78 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     fn a_fork_starts_as_a_copy_of_the_conversation_up_to_a_turn() {
         let (_directory, store) = store();
         let mut log = store.create(Path::new("/a"), "anthropic", "m").unwrap();
-        let said = |text: &str| Event::UserMessage { text: text.into(), steering: false, mode: Mode::Edit, images: vec![], files: vec![] };
-        let edited = Event::ToolResult { tool_use_id: "t1".into(), tool: "edit_file".into(), content: "ok".into(), is_error: false, meta: json!({ "file": "/a/x.txt", "path": "x.txt", "after": "1-0" }), images: Vec::new() };
+        let said = |text: &str| Event::UserMessage {
+            text: text.into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![],
+        };
+        let edited = Event::ToolResult {
+            tool_use_id: "t1".into(),
+            tool: "edit_file".into(),
+            content: "ok".into(),
+            is_error: false,
+            meta: json!({ "file": "/a/x.txt", "path": "x.txt", "after": "1-0" }),
+            images: Vec::new(),
+        };
         for event in [
             Event::TurnStart { turn: 1 },
             said("first"),
-            assistant(vec![json!({ "type": "tool_use", "id": "t1", "name": "edit_file", "input": {} })]),
+            assistant(vec![
+                json!({ "type": "tool_use", "id": "t1", "name": "edit_file", "input": {} }),
+            ]),
             edited,
-            Event::TurnEnd { turn: 1, reason: "completed".into(), error: None },
+            Event::TurnEnd {
+                turn: 1,
+                reason: "completed".into(),
+                error: None,
+            },
             Event::SessionRenamed { title: "named".into() },
             Event::TurnStart { turn: 2 },
             said("second"),
-            Event::TurnEnd { turn: 2, reason: "completed".into(), error: None },
+            Event::TurnEnd {
+                turn: 2,
+                reason: "completed".into(),
+                error: None,
+            },
             Event::TurnStart { turn: 3 },
             said("third"),
         ] {
             log.append(event).unwrap();
         }
-        let kinds = |log: &SessionLog| log.events().iter().map(|envelope| serde_json::to_value(envelope).unwrap()["type"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let kinds = |log: &SessionLog| {
+            log.events()
+                .iter()
+                .map(|envelope| {
+                    serde_json::to_value(envelope).unwrap()["type"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        };
 
         // Before turn 2: the first turn and what came between the two, each event at its old time and place.
         let fork = store.fork(log.events(), Some(2)).unwrap();
         assert_eq!(kinds(&fork), kinds(&log)[..7]);
         assert_eq!(fork.events()[1..], log.events()[1..7]);
         let summary = summarize(fork.events());
-        assert_eq!(summary.fork, Some(Fork { session: log.id().to_string(), turn: 1 }));
-        assert_eq!((summary.title.as_str(), summary.workspace.as_str(), summary.turn_open), ("named", "/a", false));
-        assert_eq!(summary.updated_at, summary.created_at, "a fork is as new as its header, not as old as what it copied");
+        assert_eq!(
+            summary.fork,
+            Some(Fork {
+                session: log.id().to_string(),
+                turn: 1
+            })
+        );
+        assert_eq!(
+            (summary.title.as_str(), summary.workspace.as_str(), summary.turn_open),
+            ("named", "/a", false)
+        );
+        assert_eq!(
+            summary.updated_at, summary.created_at,
+            "a fork is as new as its header, not as old as what it copied"
+        );
         assert_ne!(fork.id(), log.id());
         // It reopens like any session, and goes on from there by itself.
         let fork_id = fork.id().to_string();
@@ -1785,24 +2478,87 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
 
         // The whole conversation, less the turn that is still running; and before the first turn, nothing but the header.
         let whole = store.fork(log.events(), None).unwrap();
-        assert_eq!((kinds(&whole).len(), summarize(whole.events()).fork.unwrap().turn), (10, 2));
+        assert_eq!(
+            (kinds(&whole).len(), summarize(whole.events()).fork.unwrap().turn),
+            (10, 2)
+        );
         let bare = store.fork(log.events(), Some(1)).unwrap();
-        assert_eq!((bare.events().len(), summarize(bare.events()).fork.unwrap().turn), (1, 0));
+        assert_eq!(
+            (bare.events().len(), summarize(bare.events()).fork.unwrap().turn),
+            (1, 0)
+        );
 
-        assert!(store.fork(log.events(), Some(9)).err().unwrap().to_string().contains("no turn 9"));
-        let child = store.create_with(NewSession { workspace: Path::new("/a"), provider: "anthropic", model: "m", parent: Some(log.id()), worktree: None, schedule: None, aside: None }).unwrap();
-        assert!(store.fork(child.events(), None).err().unwrap().to_string().contains("subagent"));
+        assert!(
+            store
+                .fork(log.events(), Some(9))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("no turn 9")
+        );
+        let child = store
+            .create_with(NewSession {
+                workspace: Path::new("/a"),
+                provider: "anthropic",
+                model: "m",
+                parent: Some(log.id()),
+                worktree: None,
+                schedule: None,
+                aside: None,
+            })
+            .unwrap();
+        assert!(
+            store
+                .fork(child.events(), None)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("subagent")
+        );
     }
 
     #[test]
     fn a_subagents_session_names_its_parent_and_reports_how_it_ended() {
         let (_directory, store) = store();
         let parent = store.create(Path::new("/a"), "anthropic", "m").unwrap();
-        let tree = Worktree { origin: "/a".into(), branch: "odg/1".into(), checkout: "/w".into() };
-        let mut child = store.create_with(NewSession { workspace: Path::new("/w"), provider: "anthropic", model: "m", parent: Some(parent.id()), worktree: Some(tree.clone()), schedule: None, aside: None }).unwrap();
-        let timed = store.create_with(NewSession { workspace: Path::new("/a"), provider: "anthropic", model: "m", parent: None, worktree: None, schedule: Some("nightly"), aside: None }).unwrap();
-        assert_eq!((summarize(timed.events()).schedule.as_deref(), summarize(child.events()).schedule), (Some("nightly"), None));
-        assert_eq!((summarize(child.events()).worktree, summarize(parent.events()).worktree), (Some(tree), None));
+        let tree = Worktree {
+            origin: "/a".into(),
+            branch: "odg/1".into(),
+            checkout: "/w".into(),
+        };
+        let mut child = store
+            .create_with(NewSession {
+                workspace: Path::new("/w"),
+                provider: "anthropic",
+                model: "m",
+                parent: Some(parent.id()),
+                worktree: Some(tree.clone()),
+                schedule: None,
+                aside: None,
+            })
+            .unwrap();
+        let timed = store
+            .create_with(NewSession {
+                workspace: Path::new("/a"),
+                provider: "anthropic",
+                model: "m",
+                parent: None,
+                worktree: None,
+                schedule: Some("nightly"),
+                aside: None,
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                summarize(timed.events()).schedule.as_deref(),
+                summarize(child.events()).schedule
+            ),
+            (Some("nightly"), None)
+        );
+        assert_eq!(
+            (summarize(child.events()).worktree, summarize(parent.events()).worktree),
+            (Some(tree), None)
+        );
         assert_eq!(super::parent(child.events()), Some(parent.id()));
         assert_eq!(super::parent(parent.events()), None);
         assert_eq!(summarize(child.events()).parent.as_deref(), Some(parent.id()));
@@ -1814,54 +2570,133 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
 
         assert_eq!(report(child.events()), (String::new(), "running".to_string(), None));
         child.append(Event::TurnStart { turn: 1 }).unwrap();
-        child.append(assistant(vec![json!({ "type": "text", "text": "Looking." }), json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": {} })])).unwrap();
-        child.append(assistant(vec![json!({ "type": "text", "text": "It is fine." })])).unwrap();
-        assert_eq!(report(child.events()), ("It is fine.".to_string(), "running".to_string(), None));
-        child.append(Event::TurnEnd { turn: 1, reason: "error".into(), error: Some("no key".into()) }).unwrap();
-        assert_eq!(report(child.events()), ("It is fine.".to_string(), "error".to_string(), Some("no key".to_string())));
+        child
+            .append(assistant(vec![
+                json!({ "type": "text", "text": "Looking." }),
+                json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": {} }),
+            ]))
+            .unwrap();
+        child
+            .append(assistant(vec![json!({ "type": "text", "text": "It is fine." })]))
+            .unwrap();
+        assert_eq!(
+            report(child.events()),
+            ("It is fine.".to_string(), "running".to_string(), None)
+        );
+        child
+            .append(Event::TurnEnd {
+                turn: 1,
+                reason: "error".into(),
+                error: Some("no key".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            report(child.events()),
+            (
+                "It is fine.".to_string(),
+                "error".to_string(),
+                Some("no key".to_string())
+            )
+        );
     }
 
     #[test]
     fn a_picture_a_tool_returned_goes_to_the_model_inside_its_result() {
         let (_directory, store) = store();
-        let mut log = store.create(Path::new("/work"), "anthropic", "claude-opus-5-5").unwrap();
-        log.append(Event::UserMessage { text: "look".into(), steering: false, mode: Mode::Edit, images: Vec::new(), files: Vec::new() }).unwrap();
-        log.append(assistant(vec![json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a.png" } })])).unwrap();
-        let image = crate::events::Image { media_type: "image/png".into(), data: "aGk=".into() };
+        let mut log = store
+            .create(Path::new("/work"), "anthropic", "claude-opus-5-5")
+            .unwrap();
+        log.append(Event::UserMessage {
+            text: "look".into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: Vec::new(),
+            files: Vec::new(),
+        })
+        .unwrap();
+        log.append(assistant(vec![
+            json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": "a.png" } }),
+        ]))
+        .unwrap();
+        let image = crate::events::Image {
+            media_type: "image/png".into(),
+            data: "aGk=".into(),
+        };
         let before = context_estimate(log.events());
-        log.append(Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "a.png is a PNG picture.".into(), is_error: false, meta: Value::Null, images: vec![image] }).unwrap();
+        log.append(Event::ToolResult {
+            tool_use_id: "t1".into(),
+            tool: "read_file".into(),
+            content: "a.png is a PNG picture.".into(),
+            is_error: false,
+            meta: Value::Null,
+            images: vec![image],
+        })
+        .unwrap();
         let messages = derive_messages(log.events());
         assert_eq!(
             messages.last().unwrap()["content"][0]["content"],
             json!([{ "type": "text", "text": "a.png is a PNG picture." }, { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } }])
         );
         // A picture is counted as one in a message is, not by the length of its base64.
-        assert_eq!(context_estimate(log.events()) - before, "a.png is a PNG picture.".len() as u64 / 3 + 1500);
+        assert_eq!(
+            context_estimate(log.events()) - before,
+            "a.png is a PNG picture.".len() as u64 / 3 + 1500
+        );
     }
 
     #[test]
     fn forked_cli_session_does_not_reuse_source_external_session_id() {
         let (_directory, store) = store();
-        let mut source = store.create(Path::new("/work"), "antigravity", "gemini-4-neon").unwrap();
+        let mut source = store
+            .create(Path::new("/work"), "antigravity", "gemini-4-neon")
+            .unwrap();
         source.append(Event::TurnStart { turn: 1 }).unwrap();
-        source.append(Event::UserMessage { text: "hi".into(), steering: false, mode: Mode::Auto, images: Vec::new(), files: Vec::new() }).unwrap();
-        source.append(Event::ExternalSession { backend: "antigravity".into(), session_id: "src-conv-1".into() }).unwrap();
-        source.append(assistant(vec![json!({ "type": "text", "text": "hello" })])).unwrap();
-        source.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        source
+            .append(Event::UserMessage {
+                text: "hi".into(),
+                steering: false,
+                mode: Mode::Auto,
+                images: Vec::new(),
+                files: Vec::new(),
+            })
+            .unwrap();
+        source
+            .append(Event::ExternalSession {
+                backend: "antigravity".into(),
+                session_id: "src-conv-1".into(),
+            })
+            .unwrap();
+        source
+            .append(assistant(vec![json!({ "type": "text", "text": "hello" })]))
+            .unwrap();
+        source
+            .append(Event::TurnEnd {
+                turn: 1,
+                reason: "completed".into(),
+                error: None,
+            })
+            .unwrap();
 
         let mut forked = store.fork(source.events(), None).unwrap();
         assert_eq!(external_session(source.events(), "antigravity"), Some("src-conv-1"));
         assert_eq!(external_session(forked.events(), "antigravity"), None);
 
         forked.append(Event::TurnStart { turn: 2 }).unwrap();
-        forked.append(Event::ExternalSession { backend: "antigravity".into(), session_id: "fork-conv-2".into() }).unwrap();
+        forked
+            .append(Event::ExternalSession {
+                backend: "antigravity".into(),
+                session_id: "fork-conv-2".into(),
+            })
+            .unwrap();
         assert_eq!(external_session(forked.events(), "antigravity"), Some("fork-conv-2"));
     }
 
     #[test]
     fn mid_turn_compaction_with_kept_from_turn_preserves_pending_tool_results() {
         let (_directory, store) = store();
-        let mut log = store.create(Path::new("/work"), "anthropic", "claude-sonnet-5-5").unwrap();
+        let mut log = store
+            .create(Path::new("/work"), "anthropic", "claude-sonnet-5-5")
+            .unwrap();
         let user = |text: &str, steering| Event::UserMessage {
             text: text.into(),
             steering,
@@ -1873,14 +2708,26 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         // Turn 1
         log.append(Event::TurnStart { turn: 1 }).unwrap();
         log.append(user("turn 1 question", false)).unwrap();
-        log.append(assistant(vec![json!({ "type": "text", "text": "turn 1 answer" })])).unwrap();
-        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "turn 1 answer" })]))
+            .unwrap();
+        log.append(Event::TurnEnd {
+            turn: 1,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
 
         // Turn 2
         log.append(Event::TurnStart { turn: 2 }).unwrap();
         log.append(user("turn 2 question", false)).unwrap();
-        log.append(assistant(vec![json!({ "type": "text", "text": "turn 2 answer" })])).unwrap();
-        log.append(Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "turn 2 answer" })]))
+            .unwrap();
+        log.append(Event::TurnEnd {
+            turn: 2,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
 
         // Turn 3 mid-turn: tool call + ToolResult + steering UserMessage + ContextCompacted(kept_from_turn: Some(2))
         log.append(Event::TurnStart { turn: 3 }).unwrap();
@@ -1938,18 +2785,31 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
 
         // Also verify inserted_header == 1 offset when kept_msgs begins with an assistant message
         // and the session later switches providers (`carried` must rewrite the shifted assistant slot).
-        let mut alt = store.create(Path::new("/work"), "anthropic", "claude-sonnet-5-5").unwrap();
+        let mut alt = store
+            .create(Path::new("/work"), "anthropic", "claude-sonnet-5-5")
+            .unwrap();
         alt.append(Event::TurnStart { turn: 1 }).unwrap();
         alt.append(user("first", false)).unwrap();
-        alt.append(assistant(vec![json!({ "type": "text", "text": "ans 1" })])).unwrap();
-        alt.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        alt.append(assistant(vec![json!({ "type": "text", "text": "ans 1" })]))
+            .unwrap();
+        alt.append(Event::TurnEnd {
+            turn: 1,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
         alt.append(Event::TurnStart { turn: 2 }).unwrap();
         alt.append(assistant(vec![
             json!({ "type": "thinking", "thinking": "secret", "signature": "sig" }),
             json!({ "type": "text", "text": "ans 2 without prior user msg" }),
         ]))
         .unwrap();
-        alt.append(Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }).unwrap();
+        alt.append(Event::TurnEnd {
+            turn: 2,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
         alt.append(Event::ContextCompacted {
             summary: "Summary.".into(),
             tokens_before: 500,
@@ -1958,12 +2818,19 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             tokens: None,
         })
         .unwrap();
-        alt.append(Event::ModelChanged { model: "deepseek-chat".into(), provider: Some("deepseek".into()) }).unwrap();
+        alt.append(Event::ModelChanged {
+            model: "deepseek-chat".into(),
+            provider: Some("deepseek".into()),
+        })
+        .unwrap();
         alt.append(user("next", false)).unwrap();
         let alt_msgs = derive_messages(alt.events());
         assert_eq!(alt_msgs[0]["role"], "user");
         assert_eq!(alt_msgs[1]["role"], "assistant");
-        assert_eq!(alt_msgs[1]["content"], json!([{ "type": "text", "text": "ans 2 without prior user msg" }]));
+        assert_eq!(
+            alt_msgs[1]["content"],
+            json!([{ "type": "text", "text": "ans 2 without prior user msg" }])
+        );
     }
 
     #[test]
@@ -1988,7 +2855,12 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             images: vec![],
         })
         .unwrap();
-        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        log.append(Event::TurnEnd {
+            turn: 1,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
 
         log.append(Event::TurnStart { turn: 2 }).unwrap();
         log.append(assistant(vec![json!({
@@ -2058,11 +2930,21 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         log.append(tool_result("", "out-empty")).unwrap();
         log.append(tool_result(&overlong_a, "out-long-a")).unwrap();
         log.append(tool_result(&overlong_b, "out-long-b")).unwrap();
-        log.append(assistant(vec![json!({ "type": "text", "text": "done turn 1" })])).unwrap();
-        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "done turn 1" })]))
+            .unwrap();
+        log.append(Event::TurnEnd {
+            turn: 1,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
 
         // Turn 2 switches to `openrouter` (current speaker) and ALSO emits `functions.read:0`.
-        log.append(Event::ModelChanged { model: "moonshotai/kimi-k3".into(), provider: Some("openrouter".into()) }).unwrap();
+        log.append(Event::ModelChanged {
+            model: "moonshotai/kimi-k3".into(),
+            provider: Some("openrouter".into()),
+        })
+        .unwrap();
         log.append(Event::TurnStart { turn: 2 }).unwrap();
         log.append(said("turn 2")).unwrap();
         log.append(assistant(vec![
@@ -2070,8 +2952,14 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         ]))
         .unwrap();
         log.append(tool_result("functions.read:0", "out-turn2")).unwrap();
-        log.append(assistant(vec![json!({ "type": "text", "text": "done turn 2" })])).unwrap();
-        log.append(Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "done turn 2" })]))
+            .unwrap();
+        log.append(Event::TurnEnd {
+            turn: 2,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
 
         log.append(Event::TurnStart { turn: 3 }).unwrap();
         log.append(said("turn 3")).unwrap();
@@ -2091,7 +2979,10 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             .iter()
             .map(|b| b["tool_use_id"].as_str().unwrap())
             .collect();
-        assert_eq!(t1_calls, t1_results, "Turn 1 tool_use and tool_result ids must pair 1-to-1");
+        assert_eq!(
+            t1_calls, t1_results,
+            "Turn 1 tool_use and tool_result ids must pair 1-to-1"
+        );
         assert_eq!(t1_calls[0], "functions_read_0");
         assert_eq!(t1_calls[1], "a_1");
         assert_eq!(t1_calls[2], "a_1_2");
@@ -2101,7 +2992,10 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         assert_ne!(t1_calls[4], t1_calls[5]);
         for id in &t1_calls {
             assert!(!id.is_empty() && id.len() <= 64, "invalid length for {id}");
-            assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'), "invalid chars in {id}");
+            assert!(
+                id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "invalid chars in {id}"
+            );
         }
 
         // Turn 2 (`messages[5]` assistant, `messages[6]` user) was spoken by `openrouter == speaker`:
@@ -2146,7 +3040,11 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             stop_reason: Some("end_turn".into()),
             model: "opus".into(),
             usage: json!({}),
-            tokens: Some(Tokens { input: 100, cached: 20, output: 15 }),
+            tokens: Some(Tokens {
+                input: 100,
+                cached: 20,
+                output: 15,
+            }),
         })
         .unwrap();
         log.append(Event::ToolResult {
@@ -2167,11 +3065,21 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             images: vec![],
         })
         .unwrap();
-        log.append(assistant(vec![json!({ "type": "text", "text": "Both look good." })])).unwrap();
-        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "Both look good." })]))
+            .unwrap();
+        log.append(Event::TurnEnd {
+            turn: 1,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
 
         // Switch from CLI to native Anthropic API and continue.
-        log.append(Event::ModelChanged { model: "claude-opus-5-5".into(), provider: Some("anthropic".into()) }).unwrap();
+        log.append(Event::ModelChanged {
+            model: "claude-opus-5-5".into(),
+            provider: Some("anthropic".into()),
+        })
+        .unwrap();
         log.append(Event::TurnStart { turn: 2 }).unwrap();
         log.append(Event::UserMessage {
             text: "continue".into(),
@@ -2202,7 +3110,10 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             ])
         );
         assert_eq!(messages[3]["role"], "assistant");
-        assert_eq!(messages[3]["content"], json!([{ "type": "text", "text": "Both look good." }]));
+        assert_eq!(
+            messages[3]["content"],
+            json!([{ "type": "text", "text": "Both look good." }])
+        );
         assert_eq!(messages[4]["role"], "user");
     }
 
@@ -2211,7 +3122,9 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         let mut messages = Vec::new();
         let mut pending: Vec<Value> = Vec::new();
         let mut speaker = match events.first().map(|envelope| &envelope.event) {
-            Some(Event::SessionCreated { provider, .. }) => provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
+            Some(Event::SessionCreated { provider, .. }) => {
+                provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string())
+            }
             _ => DEFAULT_PROVIDER.to_string(),
         };
         let mut spoken: Vec<(usize, String)> = Vec::new();
@@ -2228,7 +3141,13 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                     current_turn_msg_start = messages.len();
                 }
                 Event::AsideBriefed { brief: told } => brief = Some(told),
-                Event::UserMessage { text: said, mode, images, files, .. } => {
+                Event::UserMessage {
+                    text: said,
+                    mode,
+                    images,
+                    files,
+                    ..
+                } => {
                     if (*mode == Mode::Plan) != planning {
                         planning = !planning;
                         pending.push(text(if planning { PLAN_ON } else { PLAN_OFF }));
@@ -2246,30 +3165,55 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                         unanswered.push(block);
                     }
                 }
-                Event::FilesRestored { turn, restored, skipped } => {
+                Event::FilesRestored {
+                    turn,
+                    restored,
+                    skipped,
+                } => {
                     let mut told = format!("[The user undid your file changes from turn {turn} on.");
                     if !restored.is_empty() {
-                        told.push_str(&format!(" Back to what they held before those changes, or removed if you had created them: {}.", restored.join(", ")));
+                        told.push_str(&format!(
+                            " Back to what they held before those changes, or removed if you had created them: {}.",
+                            restored.join(", ")
+                        ));
                     }
                     if !skipped.is_empty() {
-                        told.push_str(&format!(" Left as they are, because they changed after your last edit: {}.", skipped.join(", ")));
+                        told.push_str(&format!(
+                            " Left as they are, because they changed after your last edit: {}.",
+                            skipped.join(", ")
+                        ));
                     }
                     told.push_str(" Read a file again before relying on what it held.]");
                     pending.push(text(&told));
                 }
                 Event::ArtifactRestored { path, version, .. } => {
-                    let told = format!("[The user restored {path} to version v{version}. Read it again before relying on what it held.]");
+                    let told = format!(
+                        "[The user restored {path} to version v{version}. Read it again before relying on what it held.]"
+                    );
                     pending.push(text(&told));
                 }
-                Event::ModelChanged { provider: Some(provider), .. } => speaker = provider.clone(),
-                Event::ContextCompacted { summary, kept_from_turn, .. } => {
+                Event::ModelChanged {
+                    provider: Some(provider),
+                    ..
+                } => speaker = provider.clone(),
+                Event::ContextCompacted {
+                    summary,
+                    kept_from_turn,
+                    ..
+                } => {
                     let mut header = vec![text(&format!("{COMPACTED}\n\n{summary}"))];
                     if planning {
                         header.push(text(PLAN_ON));
                     }
                     if let Some(todos) = todos.as_ref().filter(|todos| !todos.is_empty()) {
-                        let lines: Vec<String> = todos.iter().map(|(item, status)| format!("- [{status}] {item}")).collect();
-                        header.push(text(&format!("[Your to-do list as you last wrote it; update it with `update_todos` as you go.]\n{}", lines.join("\n"))));
+                        let lines: Vec<String> = todos
+                            .iter()
+                            .map(|(item, status)| format!("- [{status}] {item}"))
+                            .collect();
+                        header.push(text(&format!(
+                            "[Your to-do list as you last wrote it; update it with `update_todos` as you go.]\n{}",
+                            lines.join("\n")
+                        )));
                     }
                     let retained = kept_from_turn
                         .and_then(|turn| turn_starts.get(&turn).copied())
@@ -2320,8 +3264,18 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                         pending.extend(unanswered.iter().cloned());
                     }
                 }
-                Event::ToolResult { tool_use_id, content, is_error, images, .. } => {
-                    let words = if content.is_empty() { "(no output)" } else { content.as_str() };
+                Event::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                    images,
+                    ..
+                } => {
+                    let words = if content.is_empty() {
+                        "(no output)"
+                    } else {
+                        content.as_str()
+                    };
                     let content = if images.is_empty() {
                         json!(words)
                     } else {
@@ -2335,9 +3289,9 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                         messages.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
                         false
                     } else if messages.last().is_some_and(|m| m["role"] == "assistant")
-                        && spoken
-                            .last()
-                            .is_some_and(|(idx, spk)| *idx >= current_turn_msg_start && *idx == messages.len() - 1 && spk == &speaker)
+                        && spoken.last().is_some_and(|(idx, spk)| {
+                            *idx >= current_turn_msg_start && *idx == messages.len() - 1 && spk == &speaker
+                        })
                     {
                         if let Some(existing) = messages.last_mut().and_then(|m| m["content"].as_array_mut()) {
                             existing.extend(content.iter().cloned());
@@ -2353,7 +3307,10 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                         messages.push(json!({ "role": "assistant", "content": content }));
                     }
                     unanswered.clear();
-                    for block in content.iter().filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos") {
+                    for block in content
+                        .iter()
+                        .filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos")
+                    {
                         if let Ok(items) = crate::tools::todo_items(&block["input"]) {
                             todos = Some(items);
                         }
@@ -2382,20 +3339,25 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                 let mut local_renamed: HashMap<String, VecDeque<String>> = HashMap::new();
                 let mut any_renamed = false;
                 let content = carried(
-                    messages[at]["content"].as_array().map(Vec::as_slice).unwrap_or_default(),
+                    messages[at]["content"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
                     &mut used_ids,
                     &mut local_renamed,
                     &mut any_renamed,
                 );
                 messages[at]["content"] = Value::Array(content);
-                if any_renamed
-                    && let Some(next_user) = messages.get_mut(at + 1).filter(|m| m["role"] == "user")
-                {
+                if any_renamed && let Some(next_user) = messages.get_mut(at + 1).filter(|m| m["role"] == "user") {
                     for block in next_user["content"].as_array_mut().into_iter().flatten() {
                         if block["type"] == "tool_result"
                             && let Some(raw_id) = block["tool_use_id"].as_str()
                             && let Some(queue) = local_renamed.get_mut(raw_id)
-                            && let Some(new_id) = if queue.len() > 1 { queue.pop_front() } else { queue.front().cloned() }
+                            && let Some(new_id) = if queue.len() > 1 {
+                                queue.pop_front()
+                            } else {
+                                queue.front().cloned()
+                            }
                         {
                             block["tool_use_id"] = json!(new_id);
                         }
@@ -2420,7 +3382,11 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                     turn_answered = false;
                     unanswered_added = 0;
                 }
-                Event::ContextCompacted { summary, kept_from_turn, .. } => {
+                Event::ContextCompacted {
+                    summary,
+                    kept_from_turn,
+                    ..
+                } => {
                     let retained: u64 = match kept_from_turn {
                         Some(from_turn) => turn_added
                             .iter()
@@ -2432,19 +3398,32 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                     turn_added.clear();
                     estimate = guess(summary) + retained + if !turn_answered { unanswered_added } else { 0 };
                 }
-                Event::AssistantMessage { tokens: Some(tokens), content, .. } => {
+                Event::AssistantMessage {
+                    tokens: Some(tokens),
+                    content,
+                    ..
+                } => {
                     turn_answered = true;
                     estimate = tokens.input + tokens.output;
                     *turn_added.entry(current_turn).or_default() += guess(&Value::Array(content.clone()).to_string());
                 }
-                Event::AssistantMessage { content, tokens: None, .. } => {
+                Event::AssistantMessage {
+                    content, tokens: None, ..
+                } => {
                     turn_answered = true;
                     let g = guess(&Value::Array(content.clone()).to_string());
                     estimate += g;
                     *turn_added.entry(current_turn).or_default() += g;
                 }
-                Event::UserMessage { text, images, files, .. } => {
-                    let g = guess(text) + 1500 * images.len() as u64 + files.iter().map(|file| guess(&crate::events::attached_text(file))).sum::<u64>();
+                Event::UserMessage {
+                    text, images, files, ..
+                } => {
+                    let g = guess(text)
+                        + 1500 * images.len() as u64
+                        + files
+                            .iter()
+                            .map(|file| guess(&crate::events::attached_text(file)))
+                            .sum::<u64>();
                     estimate += g;
                     *turn_added.entry(current_turn).or_default() += g;
                     if !turn_answered {
@@ -2482,18 +3461,21 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             });
         }
 
-        push(&mut events, Event::SessionCreated {
-            id: "s-perf".into(),
-            workspace: "/work".into(),
-            provider: Some("moonshot".into()),
-            model: "kimi-k3.1-pro".into(),
-            format: FORMAT_VERSION,
-            parent: None,
-            worktree: None,
-            schedule: None,
-            fork: None,
-            aside: None,
-        });
+        push(
+            &mut events,
+            Event::SessionCreated {
+                id: "s-perf".into(),
+                workspace: "/work".into(),
+                provider: Some("moonshot".into()),
+                model: "kimi-k3.1-pro".into(),
+                format: FORMAT_VERSION,
+                parent: None,
+                worktree: None,
+                schedule: None,
+                fork: None,
+                aside: None,
+            },
+        );
 
         let big_image = Image {
             media_type: "image/png".into(),
@@ -2505,18 +3487,24 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         for turn in 1..=120u64 {
             push(&mut events, Event::TurnStart { turn });
             let mode = if turn >= 50 { Mode::Plan } else { Mode::Auto };
-            push(&mut events, Event::UserMessage {
-                text: format!("turn {turn}"),
-                steering: false,
-                mode,
-                images: vec![big_image.clone()],
-                files: vec![],
-            });
+            push(
+                &mut events,
+                Event::UserMessage {
+                    text: format!("turn {turn}"),
+                    steering: false,
+                    mode,
+                    images: vec![big_image.clone()],
+                    files: vec![],
+                },
+            );
             if turn == 40 {
-                push(&mut events, Event::ModelChanged {
-                    model: "deepseek-v4-pro".into(),
-                    provider: Some("deepseek".into()),
-                });
+                push(
+                    &mut events,
+                    Event::ModelChanged {
+                        model: "deepseek-v4-pro".into(),
+                        provider: Some("deepseek".into()),
+                    },
+                );
             }
             let call_id = format!("functions.read:{turn}");
             let mut blocks = vec![json!({
@@ -2538,73 +3526,121 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
                     }
                 }));
             }
-            push(&mut events, Event::AssistantMessage {
-                content: blocks,
-                stop_reason: Some("tool_use".into()),
-                model: "deepseek-v4-pro".into(),
-                usage: json!({}),
-                tokens: Some(Tokens { input: 20_000 + turn * 100, cached: 10_000, output: 150 }),
-            });
-            push(&mut events, Event::ToolResult {
-                tool_use_id: call_id,
-                tool: "read_file".into(),
-                content: big_tool_out.clone(),
-                is_error: false,
-                meta: Value::Null,
-                images: vec![big_image.clone()],
-            });
-            push(&mut events, Event::AssistantMessage {
-                content: vec![json!({ "type": "text", "text": format!("finished turn {turn}") })],
-                stop_reason: Some("end_turn".into()),
-                model: "deepseek-v4-pro".into(),
-                usage: json!({}),
-                tokens: Some(Tokens { input: 25_000 + turn * 100, cached: 12_000, output: 80 }),
-            });
-            push(&mut events, Event::TurnEnd { turn, reason: "completed".into(), error: None });
+            push(
+                &mut events,
+                Event::AssistantMessage {
+                    content: blocks,
+                    stop_reason: Some("tool_use".into()),
+                    model: "deepseek-v4-pro".into(),
+                    usage: json!({}),
+                    tokens: Some(Tokens {
+                        input: 20_000 + turn * 100,
+                        cached: 10_000,
+                        output: 150,
+                    }),
+                },
+            );
+            push(
+                &mut events,
+                Event::ToolResult {
+                    tool_use_id: call_id,
+                    tool: "read_file".into(),
+                    content: big_tool_out.clone(),
+                    is_error: false,
+                    meta: Value::Null,
+                    images: vec![big_image.clone()],
+                },
+            );
+            push(
+                &mut events,
+                Event::AssistantMessage {
+                    content: vec![json!({ "type": "text", "text": format!("finished turn {turn}") })],
+                    stop_reason: Some("end_turn".into()),
+                    model: "deepseek-v4-pro".into(),
+                    usage: json!({}),
+                    tokens: Some(Tokens {
+                        input: 25_000 + turn * 100,
+                        cached: 12_000,
+                        output: 80,
+                    }),
+                },
+            );
+            push(
+                &mut events,
+                Event::TurnEnd {
+                    turn,
+                    reason: "completed".into(),
+                    error: None,
+                },
+            );
         }
 
         // Case 1: `kept_from_turn: Some(119)` + provider switch in tail + steering message.
         push(&mut events, Event::TurnStart { turn: 121 });
-        push(&mut events, Event::UserMessage {
-            text: "inspect tail".into(),
-            steering: false,
-            mode: Mode::Plan,
-            images: vec![],
-            files: vec![],
-        });
-        push(&mut events, Event::AssistantMessage {
-            content: vec![json!({ "type": "tool_use", "id": "tail:1", "name": "read_file", "input": { "path": "Cargo.toml" } })],
-            stop_reason: Some("tool_use".into()),
-            model: "deepseek-v4-pro".into(),
-            usage: json!({}),
-            tokens: Some(Tokens { input: 45_000, cached: 20_000, output: 60 }),
-        });
-        push(&mut events, Event::ToolResult {
-            tool_use_id: "tail:1".into(),
-            tool: "read_file".into(),
-            content: "[package]".into(),
-            is_error: false,
-            meta: Value::Null,
-            images: vec![],
-        });
-        push(&mut events, Event::UserMessage {
-            text: "keep going".into(),
-            steering: true,
-            mode: Mode::Plan,
-            images: vec![],
-            files: vec![],
-        });
-        push(&mut events, Event::ContextCompacted {
-            summary: "Compacted 1..118.".into(),
-            tokens_before: 45_000,
-            focus: None,
-            kept_from_turn: Some(119),
-            tokens: None,
-        });
-        push(&mut events, Event::ModelChanged {
-            model: "claude-sonnet-5-5".into(),
-            provider: Some("anthropic".into()),
-        });
+        push(
+            &mut events,
+            Event::UserMessage {
+                text: "inspect tail".into(),
+                steering: false,
+                mode: Mode::Plan,
+                images: vec![],
+                files: vec![],
+            },
+        );
+        push(
+            &mut events,
+            Event::AssistantMessage {
+                content: vec![
+                    json!({ "type": "tool_use", "id": "tail:1", "name": "read_file", "input": { "path": "Cargo.toml" } }),
+                ],
+                stop_reason: Some("tool_use".into()),
+                model: "deepseek-v4-pro".into(),
+                usage: json!({}),
+                tokens: Some(Tokens {
+                    input: 45_000,
+                    cached: 20_000,
+                    output: 60,
+                }),
+            },
+        );
+        push(
+            &mut events,
+            Event::ToolResult {
+                tool_use_id: "tail:1".into(),
+                tool: "read_file".into(),
+                content: "[package]".into(),
+                is_error: false,
+                meta: Value::Null,
+                images: vec![],
+            },
+        );
+        push(
+            &mut events,
+            Event::UserMessage {
+                text: "keep going".into(),
+                steering: true,
+                mode: Mode::Plan,
+                images: vec![],
+                files: vec![],
+            },
+        );
+        push(
+            &mut events,
+            Event::ContextCompacted {
+                summary: "Compacted 1..118.".into(),
+                tokens_before: 45_000,
+                focus: None,
+                kept_from_turn: Some(119),
+                tokens: None,
+            },
+        );
+        push(
+            &mut events,
+            Event::ModelChanged {
+                model: "claude-sonnet-5-5".into(),
+                provider: Some("anthropic".into()),
+            },
+        );
 
         assert_eq!(derive_messages(&events), naive_derive_messages_for_test(&events));
         assert_eq!(context_estimate(&events), naive_context_estimate_for_test(&events));
@@ -2616,16 +3652,23 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
             let c = context_estimate(&events);
             assert!(!m.is_empty() && c > 0);
         }
-        assert!(started.elapsed() < std::time::Duration::from_millis(500), "tail replay took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "tail replay took {:?}",
+            started.elapsed()
+        );
 
         // Case 2: Full compaction (`kept_from_turn: None`) with unanswered steering user message.
-        push(&mut events, Event::ContextCompacted {
-            summary: "Compacted everything.".into(),
-            tokens_before: 12_000,
-            focus: None,
-            kept_from_turn: None,
-            tokens: None,
-        });
+        push(
+            &mut events,
+            Event::ContextCompacted {
+                summary: "Compacted everything.".into(),
+                tokens_before: 12_000,
+                focus: None,
+                kept_from_turn: None,
+                tokens: None,
+            },
+        );
         assert_eq!(derive_messages(&events), naive_derive_messages_for_test(&events));
         assert_eq!(context_estimate(&events), naive_context_estimate_for_test(&events));
     }
@@ -2633,7 +3676,9 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
     #[test]
     fn session_store_summary_cache_hits_unchanged_and_updates_on_append() {
         let (_directory, store) = store();
-        let mut log = store.create(Path::new("/work"), "anthropic", "claude-sonnet-5-5").unwrap();
+        let mut log = store
+            .create(Path::new("/work"), "anthropic", "claude-sonnet-5-5")
+            .unwrap();
         let id = log.id().to_string();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
         log.append(Event::UserMessage {
@@ -2654,8 +3699,16 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         assert_eq!(store.peek(&id).unwrap(), s1);
 
         // Appending changes file size, invalidating the `(mtime, len)` cache entry automatically.
-        log.append(Event::SessionRenamed { title: "renamed title".into() }).unwrap();
-        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        log.append(Event::SessionRenamed {
+            title: "renamed title".into(),
+        })
+        .unwrap();
+        log.append(Event::TurnEnd {
+            turn: 1,
+            reason: "completed".into(),
+            error: None,
+        })
+        .unwrap();
         let s2 = store.peek(&id).unwrap();
         assert_eq!(s2.title, "renamed title");
         assert!(!s2.turn_open);

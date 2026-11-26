@@ -41,15 +41,7 @@ pub const IGNORED_DIRS: &[&str] = &[
 
 /// Directories whose contents are typically gitignored build outputs or package trees:
 /// changes inside them should refresh the `FileTree` (if expanded) without spawning `git status`.
-const BUILD_OR_DEP_DIRS: &[&str] = &[
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    "out",
-    ".next",
-    "coverage",
-];
+const BUILD_OR_DEP_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "out", ".next", "coverage"];
 
 /// Internal compiler / tool scratch directories that churn thousands of files mid-build
 /// and never hold user-facing deliverables.
@@ -110,7 +102,9 @@ pub fn collect_linux_watch_dirs(target: &Path) -> Vec<(PathBuf, RecursiveMode)> 
             if out.len() >= MAX_LINUX_WATCH_DIRS {
                 break;
             }
-            let Some(name) = child.file_name().and_then(|n| n.to_str()) else { continue };
+            let Some(name) = child.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
             if name.eq_ignore_ascii_case(".git") {
                 out.push((child.clone(), RecursiveMode::NonRecursive));
                 let refs = child.join("refs");
@@ -148,7 +142,12 @@ pub fn classify_path(workspace: &Path, path: &Path) -> PathImpact {
     }
 
     let leaf = parts.last().map(String::as_str).unwrap_or("");
-    if leaf == ".DS_Store" || leaf.ends_with(".tmp") || leaf.ends_with(".swp") || leaf.ends_with(".lock") || leaf.ends_with('~') {
+    if leaf == ".DS_Store"
+        || leaf.ends_with(".tmp")
+        || leaf.ends_with(".swp")
+        || leaf.ends_with(".lock")
+        || leaf.ends_with('~')
+    {
         return PathImpact::None;
     }
 
@@ -244,10 +243,17 @@ impl Default for WorkspaceWatcher {
 
 impl WorkspaceWatcher {
     pub fn new() -> Self {
-        Self { active: Mutex::new(None) }
+        Self {
+            active: Mutex::new(None),
+        }
     }
 
-    pub fn watch<F>(&self, workspace: Option<PathBuf>, runtime: tokio::runtime::Handle, on_changed: F) -> Result<(), String>
+    pub fn watch<F>(
+        &self,
+        workspace: Option<PathBuf>,
+        runtime: tokio::runtime::Handle,
+        on_changed: F,
+    ) -> Result<(), String>
     where
         F: Fn(WorkspaceChanged) + Send + Sync + 'static,
     {
@@ -333,7 +339,10 @@ impl WorkspaceWatcher {
             callback,
         ));
 
-        *guard = Some(ActiveWatch { workspace: target, _watcher: watcher });
+        *guard = Some(ActiveWatch {
+            workspace: target,
+            _watcher: watcher,
+        });
         Ok(())
     }
 
@@ -350,30 +359,72 @@ mod tests {
     #[test]
     fn classifies_source_build_bundle_and_ephemeral_paths() {
         let root = Path::new("/tmp/demo");
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/src/main.rs")), PathImpact::TreeAndGit);
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/.gitignore")), PathImpact::TreeAndGit);
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/HEAD")), PathImpact::TreeAndGit);
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/index")), PathImpact::TreeAndGit);
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/refs/heads/main")), PathImpact::TreeAndGit);
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/src/main.rs")),
+            PathImpact::TreeAndGit
+        );
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/.gitignore")),
+            PathImpact::TreeAndGit
+        );
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/.git/HEAD")),
+            PathImpact::TreeAndGit
+        );
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/.git/index")),
+            PathImpact::TreeAndGit
+        );
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/.git/refs/heads/main")),
+            PathImpact::TreeAndGit
+        );
 
         assert_eq!(
-            classify_path(root, Path::new("/tmp/demo/target/release/bundle/nsis/OmniDoppelganger_0.7.0_x64-setup.exe")),
+            classify_path(
+                root,
+                Path::new("/tmp/demo/target/release/bundle/nsis/OmniDoppelganger_0.7.0_x64-setup.exe")
+            ),
             PathImpact::TreeOnly
         );
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/dist/index.html")), PathImpact::TreeOnly);
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/node_modules/pkg/index.js")), PathImpact::TreeOnly);
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/dist/index.html")),
+            PathImpact::TreeOnly
+        );
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/node_modules/pkg/index.js")),
+            PathImpact::TreeOnly
+        );
 
         assert_eq!(strip_verbatim(Path::new(r"\\?\D:\proj")), Path::new(r"D:\proj"));
         #[cfg(windows)]
         assert_eq!(
-            classify_path(Path::new(r"\\?\D:\proj"), Path::new(r"D:\proj\target\release\bundle\nsis\setup.exe")),
+            classify_path(
+                Path::new(r"\\?\D:\proj"),
+                Path::new(r"D:\proj\target\release\bundle\nsis\setup.exe")
+            ),
             PathImpact::TreeOnly
         );
 
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/index.lock")), PathImpact::None);
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/.git/objects/12/3456")), PathImpact::None);
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/target/release/incremental/app/s-123.bin")), PathImpact::None);
-        assert_eq!(classify_path(root, Path::new("/tmp/demo/target/debug/.fingerprint/app/invoked.timestamp")), PathImpact::None);
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/.git/index.lock")),
+            PathImpact::None
+        );
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/.git/objects/12/3456")),
+            PathImpact::None
+        );
+        assert_eq!(
+            classify_path(root, Path::new("/tmp/demo/target/release/incremental/app/s-123.bin")),
+            PathImpact::None
+        );
+        assert_eq!(
+            classify_path(
+                root,
+                Path::new("/tmp/demo/target/debug/.fingerprint/app/invoked.timestamp")
+            ),
+            PathImpact::None
+        );
         assert_eq!(classify_path(root, Path::new("/tmp/demo/.DS_Store")), PathImpact::None);
     }
 
@@ -403,7 +454,9 @@ mod tests {
                 "must not watch ignored directory {forbidden}: {paths:?}"
             );
         }
-        assert!(is_max_files_watch_error(&notify::Error::new(notify::ErrorKind::MaxFilesWatch)));
+        assert!(is_max_files_watch_error(&notify::Error::new(
+            notify::ErrorKind::MaxFilesWatch
+        )));
     }
 
     #[tokio::test]
@@ -428,7 +481,12 @@ mod tests {
 
         // Burst of 50 source edits spaced across ~100ms (crossing no 350ms quiet window) must coalesce to 1 emit!
         for i in 0..50 {
-            tx.send(if i % 5 == 0 { PathImpact::TreeOnly } else { PathImpact::TreeAndGit }).unwrap();
+            tx.send(if i % 5 == 0 {
+                PathImpact::TreeOnly
+            } else {
+                PathImpact::TreeAndGit
+            })
+            .unwrap();
             if i % 10 == 9 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -436,7 +494,11 @@ mod tests {
         drop(tx);
         handle.await.unwrap();
 
-        assert_eq!(count.load(Ordering::SeqCst), 1, "50 burst source events must coalesce into 1 callback");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "50 burst source events must coalesce into 1 callback"
+        );
         assert_eq!(*git_flags.lock().unwrap(), vec![true]);
     }
 
@@ -462,7 +524,10 @@ mod tests {
             tx.send(PathImpact::TreeAndGit).unwrap();
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
-        assert!(count.load(Ordering::SeqCst) >= 1, "max_burst ceiling must flush even while churn continues");
+        assert!(
+            count.load(Ordering::SeqCst) >= 1,
+            "max_burst ceiling must flush even while churn continues"
+        );
         drop(tx);
         handle.await.unwrap();
     }

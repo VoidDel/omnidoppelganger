@@ -129,7 +129,12 @@ fn rel_slash(workspace: &Path, target: &Path) -> String {
 
 /// Resolve a user-supplied relative path strictly inside `workspace` without following
 /// a leaf symlink outside when `follow_leaf` is false (used by rename/delete).
-pub fn resolve_confined(workspace: &Path, raw: &str, allow_root: bool, follow_leaf: bool) -> Result<(PathBuf, String), String> {
+pub fn resolve_confined(
+    workspace: &Path,
+    raw: &str,
+    allow_root: bool,
+    follow_leaf: bool,
+) -> Result<(PathBuf, String), String> {
     let canonical_root = workspace
         .canonicalize()
         .map_err(|error| format!("无法访问洞府目录 {}：{error}", workspace.display()))?;
@@ -179,7 +184,12 @@ pub fn resolve_confined(workspace: &Path, raw: &str, allow_root: bool, follow_le
 }
 
 /// List one directory inside `workspace`, sorted with folders first then case-insensitive name.
-pub fn list_directory(workspace: &Path, rel_path: &str, show_hidden: bool, show_ignored: bool) -> Result<Vec<TreeEntry>, String> {
+pub fn list_directory(
+    workspace: &Path,
+    rel_path: &str,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> Result<Vec<TreeEntry>, String> {
     let canonical_root = workspace
         .canonicalize()
         .map_err(|error| format!("无法访问洞府目录 {}：{error}", workspace.display()))?;
@@ -222,7 +232,9 @@ pub fn list_directory(workspace: &Path, rel_path: &str, show_hidden: bool, show_
             continue;
         }
         let full = item.path();
-        let Ok(sym_meta) = fs::symlink_metadata(&full) else { continue };
+        let Ok(sym_meta) = fs::symlink_metadata(&full) else {
+            continue;
+        };
         let file_type = sym_meta.file_type();
         let (kind, expandable, size, modified_ms) = if file_type.is_symlink() {
             let target_dir = inside_workspace(&canonical_root, &full)
@@ -236,7 +248,15 @@ pub fn list_directory(workspace: &Path, rel_path: &str, show_hidden: bool, show_
             (EntryKind::File, false, Some(sym_meta.len()), modified_millis(&sym_meta))
         };
         let path = rel_slash(&canonical_root, &full);
-        entries.push(TreeEntry { name, path, kind, expandable, size, modified_ms, ignored });
+        entries.push(TreeEntry {
+            name,
+            path,
+            kind,
+            expandable,
+            size,
+            modified_ms,
+            ignored,
+        });
     }
 
     entries.sort_by(|a, b| {
@@ -296,7 +316,12 @@ pub fn search_files(workspace: &Path, query: &str, limit: usize) -> Result<Vec<F
     let query_lower = query.trim().replace('\\', "/").to_lowercase();
 
     let mut walker = WalkBuilder::new(&canonical_root);
-    walker.hidden(false).git_ignore(true).git_global(true).git_exclude(true).parents(true);
+    walker
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true);
 
     let mut scored: Vec<(i32, FoundFile)> = Vec::new();
     for entry in walker.build().flatten() {
@@ -304,7 +329,11 @@ pub fn search_files(workspace: &Path, query: &str, limit: usize) -> Result<Vec<F
             continue;
         }
         let path = entry.path();
-        if path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s.eq_ignore_ascii_case(".git") || s == ".DS_Store")) {
+        if path.components().any(|c| {
+            c.as_os_str()
+                .to_str()
+                .is_some_and(|s| s.eq_ignore_ascii_case(".git") || s == ".DS_Store")
+        }) {
             continue;
         }
         let Some(ft) = entry.file_type() else { continue };
@@ -318,7 +347,11 @@ pub fn search_files(workspace: &Path, query: &str, limit: usize) -> Result<Vec<F
         let name = entry.file_name().to_string_lossy().into_owned();
         if let Some(score) = match_score(&query_lower, &name.to_lowercase(), &rel.to_lowercase()) {
             let cut = rel.rfind('/').unwrap_or(0);
-            let dir = if rel.contains('/') { rel[..cut].to_string() } else { String::new() };
+            let dir = if rel.contains('/') {
+                rel[..cut].to_string()
+            } else {
+                String::new()
+            };
             scored.push((score, FoundFile { name, path: rel, dir }));
             // When query is empty, stop walking once we have enough initial candidates.
             if query_lower.is_empty() && scored.len() >= cap {
@@ -457,15 +490,28 @@ pub fn read_file_view(workspace: &Path, rel_path: &str) -> Result<FileView, Stri
     if meta.is_dir() {
         return Err(format!("「{rel}」是文件夹，请在左侧展开查看。"));
     }
-    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| rel.clone());
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| rel.clone());
     let size = meta.len();
     let modified_ms = modified_millis(&meta);
-    let ext = file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
 
     // 1. Raster images: return safe base64 image view.
     if let Some((_, media_type)) = PICTURES.iter().find(|(kind, _)| *kind == ext) {
         if size > MAX_IMAGE_VIEW_BYTES {
-            return Ok(FileView::Binary { path: rel, name, size, modified_ms, reason: "too_large" });
+            return Ok(FileView::Binary {
+                path: rel,
+                name,
+                size,
+                modified_ms,
+                reason: "too_large",
+            });
         }
         let bytes = fs::read(&file).map_err(|error| format!("无法读取图片「{rel}」：{error}"))?;
         return Ok(FileView::Image {
@@ -499,17 +545,33 @@ pub fn read_file_view(workspace: &Path, rel_path: &str) -> Result<FileView, Stri
             name,
             size,
             modified_ms,
-            reason: if size > documents::DOCUMENT_BYTES { "too_large" } else { "binary" },
+            reason: if size > documents::DOCUMENT_BYTES {
+                "too_large"
+            } else {
+                "binary"
+            },
         });
     }
 
     // 3. Plain text & source code (including SVG, with optional image preview data).
     if size > MAX_TEXT_VIEW_BYTES {
-        return Ok(FileView::Binary { path: rel, name, size, modified_ms, reason: "too_large" });
+        return Ok(FileView::Binary {
+            path: rel,
+            name,
+            size,
+            modified_ms,
+            reason: "too_large",
+        });
     }
     let bytes = fs::read(&file).map_err(|error| format!("无法读取文件「{rel}」：{error}"))?;
     if bytes.iter().take(8192).any(|byte| *byte == 0) {
-        return Ok(FileView::Binary { path: rel, name, size, modified_ms, reason: "binary" });
+        return Ok(FileView::Binary {
+            path: rel,
+            name,
+            size,
+            modified_ms,
+            reason: "binary",
+        });
     }
     let raw_text = String::from_utf8_lossy(&bytes);
     let eol = if raw_text.contains("\r\n") { "CRLF" } else { "LF" };
@@ -569,7 +631,10 @@ mod tests {
         fs::write(&outside, "outside").unwrap();
 
         for bad in ["../secret.txt", "..", ".git", ".git/config", "sub/../../secret.txt"] {
-            assert!(list_directory(&root, bad, true, true).is_err(), "list should reject {bad}");
+            assert!(
+                list_directory(&root, bad, true, true).is_err(),
+                "list should reject {bad}"
+            );
             assert!(read_file_view(&root, bad).is_err(), "read should reject {bad}");
             assert!(create_entry(&root, bad, false).is_err(), "create should reject {bad}");
             assert!(delete_entry(&root, bad).is_err(), "delete should reject {bad}");
@@ -583,13 +648,30 @@ mod tests {
         let root = temp.path();
 
         assert_eq!(create_entry(root, "src/lib", true).unwrap(), "src/lib");
-        assert_eq!(create_entry(root, "src/lib/hello.rs", false).unwrap(), "src/lib/hello.rs");
-        assert!(create_entry(root, "src/lib/hello.rs", false).is_err(), "duplicate create must fail");
+        assert_eq!(
+            create_entry(root, "src/lib/hello.rs", false).unwrap(),
+            "src/lib/hello.rs"
+        );
+        assert!(
+            create_entry(root, "src/lib/hello.rs", false).is_err(),
+            "duplicate create must fail"
+        );
 
-        fs::write(root.join("src/lib/hello.rs"), "pub fn greet() -> &'static str {\r\n    \"hi\"\r\n}\r\n").unwrap();
+        fs::write(
+            root.join("src/lib/hello.rs"),
+            "pub fn greet() -> &'static str {\r\n    \"hi\"\r\n}\r\n",
+        )
+        .unwrap();
         let view = read_file_view(root, "src/lib/hello.rs").unwrap();
         match view {
-            FileView::Text { path, language, lines, eol, content, .. } => {
+            FileView::Text {
+                path,
+                language,
+                lines,
+                eol,
+                content,
+                ..
+            } => {
                 assert_eq!(path, "src/lib/hello.rs");
                 assert_eq!(language.as_deref(), Some("rust"));
                 assert_eq!(lines, 3);
@@ -603,7 +685,10 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path, "src/lib/hello.rs");
 
-        assert_eq!(rename_entry(root, "src/lib/hello.rs", "src/lib/main.rs").unwrap(), "src/lib/main.rs");
+        assert_eq!(
+            rename_entry(root, "src/lib/hello.rs", "src/lib/main.rs").unwrap(),
+            "src/lib/main.rs"
+        );
         assert!(!root.join("src/lib/hello.rs").exists());
         assert!(root.join("src/lib/main.rs").exists());
 

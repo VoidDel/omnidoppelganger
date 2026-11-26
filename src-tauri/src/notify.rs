@@ -89,11 +89,7 @@ pub fn build_macos_notify_command(title: &str, body: &str) -> std::process::Comm
 }
 
 #[cfg(any(target_os = "linux", test))]
-pub fn build_linux_notify_command(
-    title: &str,
-    body: &str,
-    icon: Option<&std::path::Path>,
-) -> std::process::Command {
+pub fn build_linux_notify_command(title: &str, body: &str, icon: Option<&std::path::Path>) -> std::process::Command {
     let title = sanitize_notify_text(title);
     let body = sanitize_notify_text(body);
     let mut cmd = std::process::Command::new("notify-send");
@@ -106,11 +102,7 @@ pub fn build_linux_notify_command(
 }
 
 #[cfg(any(windows, test))]
-pub fn build_windows_notify_command(
-    title: &str,
-    body: &str,
-    icon: Option<&std::path::Path>,
-) -> std::process::Command {
+pub fn build_windows_notify_command(title: &str, body: &str, icon: Option<&std::path::Path>) -> std::process::Command {
     let title = sanitize_notify_text(title);
     let body = sanitize_notify_text(body);
     let mut cmd = std::process::Command::new("powershell");
@@ -123,8 +115,7 @@ pub fn build_windows_notify_command(
         cmd.env("ODG_NOTIFY_ICON", &icon_str)
             .env("ODG_NOTIFY_ICON_URI", icon_uri);
     } else {
-        cmd.env_remove("ODG_NOTIFY_ICON")
-            .env_remove("ODG_NOTIFY_ICON_URI");
+        cmd.env_remove("ODG_NOTIFY_ICON").env_remove("ODG_NOTIFY_ICON_URI");
     }
     #[cfg(windows)]
     {
@@ -185,10 +176,7 @@ mod tests {
         let win_icon = Path::new("C:\\Users\\o'connor\\.odg\\app-icon.png");
         let win_cmd = build_windows_notify_command(untrusted_title, untrusted_body, Some(win_icon));
         assert_eq!(win_cmd.get_program(), OsStr::new("powershell"));
-        let win_args: Vec<&str> = win_cmd
-            .get_args()
-            .map(|a| a.to_str().expect("utf-8 arg"))
-            .collect();
+        let win_args: Vec<&str> = win_cmd.get_args().map(|a| a.to_str().expect("utf-8 arg")).collect();
         assert_eq!(
             win_args,
             vec!["-NoProfile", "-NonInteractive", "-Command", WIN_TOAST_SCRIPT]
@@ -228,10 +216,7 @@ mod tests {
         // macOS: static `on run argv` AppleScript + `--` positional arguments.
         let mac_cmd = build_macos_notify_command(untrusted_title, untrusted_body);
         assert_eq!(mac_cmd.get_program(), OsStr::new("osascript"));
-        let mac_args: Vec<&str> = mac_cmd
-            .get_args()
-            .map(|a| a.to_str().expect("utf-8 arg"))
-            .collect();
+        let mac_args: Vec<&str> = mac_cmd.get_args().map(|a| a.to_str().expect("utf-8 arg")).collect();
         assert_eq!(
             mac_args,
             vec!["-e", MACOS_NOTIFY_SCRIPT, "--", untrusted_body, untrusted_title]
@@ -243,10 +228,7 @@ mod tests {
         for icon in [None, Some(Path::new("/tmp/app-icon.png"))] {
             let linux_cmd = build_linux_notify_command(untrusted_title, untrusted_body, icon);
             assert_eq!(linux_cmd.get_program(), OsStr::new("notify-send"));
-            let linux_args: Vec<&str> = linux_cmd
-                .get_args()
-                .map(|a| a.to_str().expect("utf-8 arg"))
-                .collect();
+            let linux_args: Vec<&str> = linux_cmd.get_args().map(|a| a.to_str().expect("utf-8 arg")).collect();
             let title_pos = linux_args
                 .iter()
                 .position(|a| *a == untrusted_title)
@@ -258,10 +240,7 @@ mod tests {
         }
 
         // Control-character scrubbing and <= 256-char multibyte-safe truncation.
-        let dirty = format!(
-            "头\r\n行\n次\t列\0\x07\x1b\u{007f}\u{0085}{}",
-            "敕\u{2019}".repeat(200)
-        );
+        let dirty = format!("头\r\n行\n次\t列\0\x07\x1b\u{007f}\u{0085}{}", "敕\u{2019}".repeat(200));
         let cleaned = sanitize_notify_text(&dirty);
         assert_eq!(cleaned.chars().count(), NOTIFY_MAX_CHARS);
         assert!(cleaned.starts_with("头 行 次 列敕\u{2019}"));

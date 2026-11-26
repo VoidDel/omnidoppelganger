@@ -37,7 +37,11 @@ pub fn save(directory: &Path, bytes: &[u8]) -> io::Result<String> {
     let base = fingerprint(bytes);
     for attempt in 0.. {
         // Two contents can share a fingerprint; the name then gets a suffix rather than the wrong contents.
-        let name = if attempt == 0 { base.clone() } else { format!("{base}-{attempt}") };
+        let name = if attempt == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{attempt}")
+        };
         let path = directory.join(&name);
         match std::fs::read(&path) {
             Ok(existing) if existing == bytes => return Ok(name),
@@ -102,7 +106,12 @@ fn changed(meta: &serde_json::Value) -> Vec<FileUndo> {
         if after.is_none() && !gone_allowed {
             return None;
         }
-        Some(FileUndo { file: PathBuf::from(file), shown: shown.to_string(), before: change["before"].as_str().map(str::to_string), after })
+        Some(FileUndo {
+            file: PathBuf::from(file),
+            shown: shown.to_string(),
+            before: change["before"].as_str().map(str::to_string),
+            after,
+        })
     };
     match meta["changes"].as_array() {
         Some(changes) => changes.iter().filter_map(|change| one(change, true)).collect(),
@@ -122,8 +131,15 @@ pub fn plan(events: &[Envelope], turn: u64) -> Vec<FileUndo> {
     for envelope in events {
         match &envelope.event {
             Event::TurnStart { turn } => current = *turn,
-            Event::FilesRestored { turn: from, restored, .. } => edits.retain(|(turn, edit)| !(turn >= from && restored.contains(&edit.shown))),
-            Event::ToolResult { tool, is_error: false, meta, .. } if current > copied && crate::tools::edits_files(tool) => {
+            Event::FilesRestored {
+                turn: from, restored, ..
+            } => edits.retain(|(turn, edit)| !(turn >= from && restored.contains(&edit.shown))),
+            Event::ToolResult {
+                tool,
+                is_error: false,
+                meta,
+                ..
+            } if current > copied && crate::tools::edits_files(tool) => {
                 edits.extend(changed(meta).into_iter().map(|edit| (current, edit)));
             }
             _ => {}
@@ -171,11 +187,19 @@ fn restore_one(file: &FileUndo, snapshots: &Path, workspace: &Path) -> bool {
                 if let Some(parent) = file.file.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                if !crate::tools::inside_workspace(workspace, &file.file) || crate::tools::in_git_directory(workspace, &file.file) {
-                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "undo target escaped workspace"));
+                if !crate::tools::inside_workspace(workspace, &file.file)
+                    || crate::tools::in_git_directory(workspace, &file.file)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "undo target escaped workspace",
+                    ));
                 }
                 if std::fs::symlink_metadata(&file.file).is_ok_and(|meta| meta.file_type().is_symlink()) {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "refusing to restore symlink"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "refusing to restore symlink",
+                    ));
                 }
                 write_atomically(&file.file, &bytes)
             })

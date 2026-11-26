@@ -39,14 +39,25 @@ pub const IMAGE_BASE64_BYTES: usize = 5_000_000;
 /// Whether a message's pictures can be sent: few enough, of a known format, small enough, and base64.
 pub fn check_images(images: &[Image]) -> Result<(), String> {
     if images.len() > IMAGES_PER_MESSAGE {
-        return Err(format!("a message takes at most {IMAGES_PER_MESSAGE} images, not {}", images.len()));
+        return Err(format!(
+            "a message takes at most {IMAGES_PER_MESSAGE} images, not {}",
+            images.len()
+        ));
     }
     for (index, image) in images.iter().enumerate() {
         let name = format!("image {}", index + 1);
         if !IMAGE_TYPES.contains(&image.media_type.as_str()) {
-            return Err(format!("{name} is {}; only PNG, JPEG, GIF, and WebP images can be sent", image.media_type));
+            return Err(format!(
+                "{name} is {}; only PNG, JPEG, GIF, and WebP images can be sent",
+                image.media_type
+            ));
         }
-        if image.data.is_empty() || !image.data.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')) {
+        if image.data.is_empty()
+            || !image
+                .data
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+        {
             return Err(format!("{name} is not base64 data"));
         }
         if image.data.len() > IMAGE_BASE64_BYTES {
@@ -114,8 +125,14 @@ pub enum Picked {
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_dir: bool,
     },
-    Image { name: String, image: Image },
-    Refused { name: String, why: &'static str },
+    Image {
+        name: String,
+        image: Image,
+    },
+    Refused {
+        name: String,
+        why: &'static str,
+    },
 }
 
 /// The media type of a picture by its file name's ending; `None` for any other file.
@@ -134,10 +151,16 @@ pub fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let group = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
+        let group = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
         for at in 0..4 {
             // Three bytes make four characters; a last group of one or two bytes makes two or three, then padding.
-            out.push(if at <= chunk.len() { ALPHABET[(group >> (18 - 6 * at)) as usize & 63] as char } else { '=' });
+            out.push(if at <= chunk.len() {
+                ALPHABET[(group >> (18 - 6 * at)) as usize & 63] as char
+            } else {
+                '='
+            });
         }
     }
     out
@@ -154,7 +177,14 @@ pub fn attach(path: &Path) -> Result<Attached, &'static str> {
     let metadata = std::fs::metadata(path).map_err(|_| "missing")?;
     let path_str = path.to_string_lossy().into_owned();
     if metadata.is_dir() {
-        return Ok(Attached { path: path_str, bytes: 0, content: None, document: None, parts: None, is_dir: true });
+        return Ok(Attached {
+            path: path_str,
+            bytes: 0,
+            content: None,
+            document: None,
+            parts: None,
+            is_dir: true,
+        });
     }
     let bytes_len = metadata.len();
     // Gate > 50 MB files BEFORE calling `kind_of_file` so multi-GB `.zip` datasets never open `ZipArchive`.
@@ -172,13 +202,26 @@ pub fn attach(path: &Path) -> Result<Attached, &'static str> {
     // A document goes as its words when extractable and short enough; otherwise attach by path so the model can inspect it directly.
     let sniffed = match tokio::runtime::Handle::try_current() {
         Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(|| std::panic::catch_unwind(|| crate::documents::kind_of_file(path)).ok().flatten())
+            tokio::task::block_in_place(|| {
+                std::panic::catch_unwind(|| crate::documents::kind_of_file(path))
+                    .ok()
+                    .flatten()
+            })
         }
-        _ => std::panic::catch_unwind(|| crate::documents::kind_of_file(path)).ok().flatten(),
+        _ => std::panic::catch_unwind(|| crate::documents::kind_of_file(path))
+            .ok()
+            .flatten(),
     };
     if let Some(found) = sniffed {
         let Ok(kind) = found else {
-            return Ok(Attached { path: path_str, bytes: bytes_len, content: None, document: None, parts: None, is_dir: false });
+            return Ok(Attached {
+                path: path_str,
+                bytes: bytes_len,
+                content: None,
+                document: None,
+                parts: None,
+                is_dir: false,
+            });
         };
         if let Ok(read) = crate::documents::file_text(path, kind).map_err(|_| "missing")? {
             let inline = read.text.len() as u64 <= ATTACHED_INLINE_BYTES;
@@ -191,7 +234,14 @@ pub fn attach(path: &Path) -> Result<Attached, &'static str> {
                 is_dir: false,
             });
         }
-        return Ok(Attached { path: path_str, bytes: bytes_len, content: None, document: Some(kind), parts: None, is_dir: false });
+        return Ok(Attached {
+            path: path_str,
+            bytes: bytes_len,
+            content: None,
+            document: Some(kind),
+            parts: None,
+            is_dir: false,
+        });
     }
     let content = if bytes_len <= ATTACHED_INLINE_BYTES {
         let bytes = std::fs::read(path).map_err(|_| "missing")?;
@@ -199,17 +249,33 @@ pub fn attach(path: &Path) -> Result<Attached, &'static str> {
     } else {
         None
     };
-    Ok(Attached { path: path_str, bytes: bytes_len, content, document: None, parts: None, is_dir: false })
+    Ok(Attached {
+        path: path_str,
+        bytes: bytes_len,
+        content,
+        document: None,
+        parts: None,
+        is_dir: false,
+    })
 }
 
 /// What a path the user picked is, for the client to show before the message is sent.
 pub fn pick(path: &Path) -> Picked {
-    let name = path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned());
+    let name = path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     if let Some(media_type) = image_type(path) {
         match std::fs::metadata(path) {
             Ok(metadata) if metadata.is_file() && metadata.len() <= IMAGE_FILE_BYTES => {
                 return match std::fs::read(path) {
-                    Ok(bytes) => Picked::Image { name, image: Image { media_type: media_type.to_string(), data: base64(&bytes) } },
+                    Ok(bytes) => Picked::Image {
+                        name,
+                        image: Image {
+                            media_type: media_type.to_string(),
+                            data: base64(&bytes),
+                        },
+                    },
                     Err(_) => Picked::Refused { name, why: "missing" },
                 };
             }
@@ -505,7 +571,11 @@ pub enum Event {
     /// log to find the subagent's; the model reads the subagents' reports in
     /// the call's result. Since format 8.
     #[serde(rename = "subagent/started")]
-    SubagentStarted { tool_use_id: String, session: String, name: String },
+    SubagentStarted {
+        tool_use_id: String,
+        session: String,
+        name: String,
+    },
     #[serde(rename = "approval/requested")]
     ApprovalRequested {
         tool_use_id: String,
@@ -659,53 +729,168 @@ mod tests {
 
         // A small text file goes with the message, text and all.
         let small = attach(&at("notes.md")).unwrap();
-        assert_eq!((small.bytes, small.content.as_deref()), (18, Some("# 笔记\nline two\n")));
-        assert_eq!(pick(&at("notes.md")), Picked::File { path: small.path.clone(), name: "notes.md".into(), bytes: 18, inline: true, document: None, parts: None, is_dir: false });
+        assert_eq!(
+            (small.bytes, small.content.as_deref()),
+            (18, Some("# 笔记\nline two\n"))
+        );
+        assert_eq!(
+            pick(&at("notes.md")),
+            Picked::File {
+                path: small.path.clone(),
+                name: "notes.md".into(),
+                bytes: 18,
+                inline: true,
+                document: None,
+                parts: None,
+                is_dir: false
+            }
+        );
         // A large one is attached by its path alone.
         let large = attach(&at("big.log")).unwrap();
         assert_eq!((large.bytes, large.content), (ATTACHED_INLINE_BYTES + 1, None));
-        assert!(matches!(pick(&at("big.log")), Picked::File { inline: false, is_dir: false, .. }));
+        assert!(matches!(
+            pick(&at("big.log")),
+            Picked::File {
+                inline: false,
+                is_dir: false,
+                ..
+            }
+        ));
         // A binary or unsupported file is attached by its path alone so the model can inspect it directly.
         let bin = attach(&at("data.bin")).unwrap();
-        assert_eq!((bin.bytes, bin.content, bin.document, bin.is_dir), (4, None, None, false));
-        assert!(matches!(pick(&at("data.bin")), Picked::File { inline: false, document: None, is_dir: false, .. }));
+        assert_eq!(
+            (bin.bytes, bin.content, bin.document, bin.is_dir),
+            (4, None, None, false)
+        );
+        assert!(matches!(
+            pick(&at("data.bin")),
+            Picked::File {
+                inline: false,
+                document: None,
+                is_dir: false,
+                ..
+            }
+        ));
         // A folder is attached by its path alone with `is_dir: true`.
         let folder = attach(&at("folder")).unwrap();
         assert_eq!((folder.bytes, folder.content, folder.is_dir), (0, None, true));
-        assert!(matches!(pick(&at("folder")), Picked::File { inline: false, is_dir: true, .. }));
+        assert!(matches!(
+            pick(&at("folder")),
+            Picked::File {
+                inline: false,
+                is_dir: true,
+                ..
+            }
+        ));
         // A missing path or relative path is still refused.
         assert_eq!(attach(&at("gone.txt")), Err("missing"));
         assert_eq!(attach(Path::new("notes.md")), Err("missing"));
-        assert_eq!(pick(&at("gone.txt")), Picked::Refused { name: "gone.txt".into(), why: "missing" });
+        assert_eq!(
+            pick(&at("gone.txt")),
+            Picked::Refused {
+                name: "gone.txt".into(),
+                why: "missing"
+            }
+        );
         // A picture, whatever the case of its ending, is read as one, though its bytes are not text.
         match pick(&at("shot.PNG")) {
-            Picked::Image { name, image } => assert_eq!((name.as_str(), image.media_type.as_str(), image.data.as_str()), ("shot.PNG", "image/png", "iVBORwAB")),
+            Picked::Image { name, image } => assert_eq!(
+                (name.as_str(), image.media_type.as_str(), image.data.as_str()),
+                ("shot.PNG", "image/png", "iVBORwAB")
+            ),
             other => panic!("{other:?}"),
         }
-        assert!(check_images(&[Image { media_type: "image/png".into(), data: base64(&[1, 2, 3, 4]) }]).is_ok());
+        assert!(
+            check_images(&[Image {
+                media_type: "image/png".into(),
+                data: base64(&[1, 2, 3, 4])
+            }])
+            .is_ok()
+        );
     }
 
     #[test]
     fn base64_pads_what_is_not_a_multiple_of_three() {
-        assert_eq!([base64(b""), base64(b"f"), base64(b"fo"), base64(b"foo"), base64(b"foob")], ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg=="]);
+        assert_eq!(
+            [
+                base64(b""),
+                base64(b"f"),
+                base64(b"fo"),
+                base64(b"foo"),
+                base64(b"foob")
+            ],
+            ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg=="]
+        );
     }
 
     #[test]
     fn an_attached_file_is_put_to_the_model_by_name() {
-        let small = Attached { path: "/x/notes.md".into(), bytes: 9, content: Some("one\ntwo\n".into()), document: None, parts: None, is_dir: false };
-        assert_eq!(attached_text(&small), "<attached_file path=\"/x/notes.md\">\n[File path: /x/notes.md]\none\ntwo\n</attached_file>");
-        let large = Attached { path: "/x/big.log".into(), bytes: 300_000, content: None, document: None, parts: None, is_dir: false };
+        let small = Attached {
+            path: "/x/notes.md".into(),
+            bytes: 9,
+            content: Some("one\ntwo\n".into()),
+            document: None,
+            parts: None,
+            is_dir: false,
+        };
+        assert_eq!(
+            attached_text(&small),
+            "<attached_file path=\"/x/notes.md\">\n[File path: /x/notes.md]\none\ntwo\n</attached_file>"
+        );
+        let large = Attached {
+            path: "/x/big.log".into(),
+            bytes: 300_000,
+            content: None,
+            document: None,
+            parts: None,
+            is_dir: false,
+        };
         let told = attached_text(&large);
-        assert!(told.starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">\n[File path: /x/big.log]\n") && told.contains("read_file") && told.contains("without asking"), "{told}");
-        let dir = Attached { path: "/x/docs".into(), bytes: 0, content: None, document: None, parts: None, is_dir: true };
+        assert!(
+            told.starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">\n[File path: /x/big.log]\n")
+                && told.contains("read_file")
+                && told.contains("without asking"),
+            "{told}"
+        );
+        let dir = Attached {
+            path: "/x/docs".into(),
+            bytes: 0,
+            content: None,
+            document: None,
+            parts: None,
+            is_dir: true,
+        };
         let told = attached_text(&dir);
-        assert!(told.starts_with("<attached_folder path=\"/x/docs\">\n[Folder path: /x/docs]\n") && told.contains("without asking"), "{told}");
+        assert!(
+            told.starts_with("<attached_folder path=\"/x/docs\">\n[Folder path: /x/docs]\n")
+                && told.contains("without asking"),
+            "{told}"
+        );
         // A document is said to be one, carries its explicit file path, and what goes with it is its text.
         use crate::documents::Kind;
-        let sheet = Attached { path: "/x/sheet.pdf".into(), bytes: 52_000, content: Some("[page 1 of 1]\nVIN\n".into()), document: Some(Kind::Pdf), parts: Some(1), is_dir: false };
+        let sheet = Attached {
+            path: "/x/sheet.pdf".into(),
+            bytes: 52_000,
+            content: Some("[page 1 of 1]\nVIN\n".into()),
+            document: Some(Kind::Pdf),
+            parts: Some(1),
+            is_dir: false,
+        };
         let told = attached_text(&sheet);
-        assert!(told.starts_with("<attached_file path=\"/x/sheet.pdf\">\n[It is a PDF of 1 page. This is its text") && told.contains("File path: /x/sheet.pdf") && told.ends_with("[page 1 of 1]\nVIN\n</attached_file>"), "{told}");
-        let deck = Attached { path: "/x/deck.pptx".into(), bytes: 9_000_000, content: None, document: Some(Kind::PowerPoint), parts: Some(30), is_dir: false };
+        assert!(
+            told.starts_with("<attached_file path=\"/x/sheet.pdf\">\n[It is a PDF of 1 page. This is its text")
+                && told.contains("File path: /x/sheet.pdf")
+                && told.ends_with("[page 1 of 1]\nVIN\n</attached_file>"),
+            "{told}"
+        );
+        let deck = Attached {
+            path: "/x/deck.pptx".into(),
+            bytes: 9_000_000,
+            content: None,
+            document: Some(Kind::PowerPoint),
+            parts: Some(30),
+            is_dir: false,
+        };
         let told = attached_text(&deck);
         assert!(told.starts_with("<attached_file path=\"/x/deck.pptx\" bytes=\"9000000\">\n[File path: /x/deck.pptx]\nThe user attached this file, a presentation of 30 slides.") && told.contains("read_file"), "{told}");
     }
@@ -716,7 +901,11 @@ mod tests {
         use crate::pdf::tests::sample;
         let directory = tempfile::tempdir().unwrap();
         let at = |name: &str| directory.path().join(name);
-        std::fs::write(at("sheet.pdf"), sample(&[&["Pin 1 is VIN"], &["Absolute maximum 42 V"]])).unwrap();
+        std::fs::write(
+            at("sheet.pdf"),
+            sample(&[&["Pin 1 is VIN"], &["Absolute maximum 42 V"]]),
+        )
+        .unwrap();
         // Many pages of words: more than goes with a message.
         let long = vec!["A line of words that goes on for a while, sixty characters."; 40];
         std::fs::write(at("manual.pdf"), sample(&vec![long.as_slice(); 60])).unwrap();
@@ -727,20 +916,54 @@ mod tests {
 
         let sheet = attach(&at("sheet.pdf")).unwrap();
         assert_eq!((sheet.document, sheet.parts), (Some(Kind::Pdf), Some(2)));
-        assert!(sheet.content.as_deref().is_some_and(|text| text.contains("[page 2 of 2]") && text.contains("Absolute maximum 42 V")), "{sheet:?}");
-        assert!(matches!(pick(&at("sheet.pdf")), Picked::File { inline: true, document: Some(Kind::Pdf), parts: Some(2), .. }));
+        assert!(
+            sheet
+                .content
+                .as_deref()
+                .is_some_and(|text| text.contains("[page 2 of 2]") && text.contains("Absolute maximum 42 V")),
+            "{sheet:?}"
+        );
+        assert!(matches!(
+            pick(&at("sheet.pdf")),
+            Picked::File {
+                inline: true,
+                document: Some(Kind::Pdf),
+                parts: Some(2),
+                ..
+            }
+        ));
         let manual = attach(&at("manual.pdf")).unwrap();
         assert_eq!((manual.parts, manual.content), (Some(60), None));
         let word = attach(&at("说明.docx")).unwrap();
-        assert_eq!((word.document, word.parts, word.content.as_deref()), (Some(Kind::Word), None, Some("先装驱动。")));
+        assert_eq!(
+            (word.document, word.parts, word.content.as_deref()),
+            (Some(Kind::Word), None, Some("先装驱动。"))
+        );
         let scan = attach(&at("scan.pdf")).unwrap();
-        assert_eq!((scan.document, scan.parts, scan.content.as_deref()), (Some(Kind::Pdf), None, None));
+        assert_eq!(
+            (scan.document, scan.parts, scan.content.as_deref()),
+            (Some(Kind::Pdf), None, None)
+        );
         assert!(attached_text(&scan).contains("Plain text could not be extracted automatically"));
         let broken = attach(&at("broken.pdf")).unwrap();
-        assert_eq!((broken.document, broken.parts, broken.content.as_deref()), (Some(Kind::Pdf), None, None));
+        assert_eq!(
+            (broken.document, broken.parts, broken.content.as_deref()),
+            (Some(Kind::Pdf), None, None)
+        );
         let old_ppt = attach(&at("old.ppt")).unwrap();
-        assert_eq!((old_ppt.document, old_ppt.parts, old_ppt.content.as_deref()), (None, None, None));
-        assert!(matches!(pick(&at("scan.pdf")), Picked::File { inline: false, document: Some(Kind::Pdf), parts: None, .. }));
+        assert_eq!(
+            (old_ppt.document, old_ppt.parts, old_ppt.content.as_deref()),
+            (None, None, None)
+        );
+        assert!(matches!(
+            pick(&at("scan.pdf")),
+            Picked::File {
+                inline: false,
+                document: Some(Kind::Pdf),
+                parts: None,
+                ..
+            }
+        ));
 
         // > 50 MB fake `.zip` and `.docx` skip `ZipArchive` completely and attach cleanly by path.
         let huge_zip = at("huge.zip");
@@ -761,6 +984,9 @@ mod tests {
             f.set_len(crate::documents::DOCUMENT_BYTES + 1024).unwrap();
         }
         let attached_docx = attach(&huge_docx).unwrap();
-        assert_eq!((attached_docx.document, attached_docx.content), (Some(Kind::Word), None));
+        assert_eq!(
+            (attached_docx.document, attached_docx.content),
+            (Some(Kind::Word), None)
+        );
     }
 }

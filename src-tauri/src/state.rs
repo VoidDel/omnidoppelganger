@@ -521,7 +521,11 @@ impl<L: Llm + 'static> AppCore<L> {
             .ids()
             .into_iter()
             .filter(|id| !live.contains_key(id))
-            .find(|id| self.store.peek_idle(id).is_ok_and(|summary| summary.aside.as_deref() == Some(main)))
+            .find(|id| {
+                self.store
+                    .peek_idle(id)
+                    .is_ok_and(|summary| summary.aside.as_deref() == Some(main))
+            })
     }
 
     pub fn is_aside(&self, id: &str, live: &HashMap<String, Session<L>>) -> bool {
@@ -582,7 +586,10 @@ impl<L: Llm + 'static> AppCore<L> {
         grants: &Grants,
         ws_cache: &mut WorkspaceItemCache,
     ) -> SessionItem {
-        let window = self.settings.context_window(settings, &summary.provider, &summary.model).tokens;
+        let window = self
+            .settings
+            .context_window(settings, &summary.provider, &summary.model)
+            .tokens;
         let context_limit = settings.context_limit_within(window);
         let branch = ws_cache.branch(&summary.workspace);
         let vision = vision(&summary.provider, &summary.model);
@@ -640,16 +647,14 @@ impl<L: Llm + 'static> AppCore<L> {
             .ids()
             .into_iter()
             .filter_map(|id| match live.get(&id) {
-                Some(session) => Some(self.item_with_context(
-                    session.summary(),
-                    session.status(),
-                    &settings,
-                    &grants,
-                    &mut ws_cache,
-                )),
-                None => self.store.peek_idle(&id).ok().map(|summary| {
-                    self.item_with_context(summary, Status::Idle, &settings, &grants, &mut ws_cache)
-                }),
+                Some(session) => {
+                    Some(self.item_with_context(session.summary(), session.status(), &settings, &grants, &mut ws_cache))
+                }
+                None => self
+                    .store
+                    .peek_idle(&id)
+                    .ok()
+                    .map(|summary| self.item_with_context(summary, Status::Idle, &settings, &grants, &mut ws_cache)),
             })
             .filter(|item| item.summary.aside.is_none())
             .collect();
@@ -775,7 +780,10 @@ impl<L: Llm + 'static> AppCore<L> {
     pub fn fork_from(&self, source: &Session<L>, before: Option<u64>) -> Result<SessionView, String> {
         let source_events = source.snapshot();
         let abandoned_brief = before.and_then(|turn| odg_core::export::abandoned_branch_brief(&source_events, turn));
-        let log = self.store.fork(&source_events, before).map_err(|error| error.to_string())?;
+        let log = self
+            .store
+            .fork(&source_events, before)
+            .map_err(|error| error.to_string())?;
         let session = self.wrap(log)?;
         self.set_active_session(Some(session.id()));
         self.insert_loaded(session.clone());
@@ -900,14 +908,26 @@ impl<L: Llm + 'static> AppCore<L> {
                 error: Some("the session it started last is still working, so this time was passed over".to_string()),
             };
         }
-        match self.start(PathBuf::from(&schedule.workspace), schedule.isolated, Some(&schedule.name)) {
+        match self.start(
+            PathBuf::from(&schedule.workspace),
+            schedule.isolated,
+            Some(&schedule.name),
+        ) {
             Ok(session) => {
                 session.set_mode(schedule.mode);
                 let _ = session.rename(&schedule.name);
                 session.send(schedule.prompt.clone());
-                Run { at, session: Some(session.id().to_string()), error: None }
+                Run {
+                    at,
+                    session: Some(session.id().to_string()),
+                    error: None,
+                }
             }
-            Err(error) => Run { at, session: None, error: Some(error) },
+            Err(error) => Run {
+                at,
+                session: None,
+                error: Some(error),
+            },
         }
     }
 
@@ -945,7 +965,9 @@ impl<L: Llm + 'static> AppCore<L> {
 
     pub fn settings_view(&self) -> SettingsView {
         let settings = self.settings.load();
-        let context_window = self.settings.context_window(&settings, &settings.provider, &settings.model);
+        let context_window = self
+            .settings
+            .context_window(&settings, &settings.provider, &settings.model);
         let skills_dir = self.skills_dir();
         SettingsView {
             providers: settings.instances(),
@@ -988,15 +1010,22 @@ fn is_coalesceable_stream(event: &UiEvent) -> bool {
 
 fn push_or_coalesce(batch: &mut Vec<UiEvent>, next: UiEvent) {
     use odg_core::llm::StreamDelta;
-    if let Some(UiEvent::Stream { session_id: prev_sid, delta: prev_delta }) = batch.last_mut()
-        && let UiEvent::Stream { session_id: ref next_sid, delta: ref next_delta } = next
+    if let Some(UiEvent::Stream {
+        session_id: prev_sid,
+        delta: prev_delta,
+    }) = batch.last_mut()
+        && let UiEvent::Stream {
+            session_id: ref next_sid,
+            delta: ref next_delta,
+        } = next
         && prev_sid == next_sid
     {
         match (prev_delta, next_delta) {
             (StreamDelta::TextDelta { index: i1, text: acc }, StreamDelta::TextDelta { index: i2, text: more })
-            | (StreamDelta::ThinkingDelta { index: i1, text: acc }, StreamDelta::ThinkingDelta { index: i2, text: more })
-                if i1 == i2 =>
-            {
+            | (
+                StreamDelta::ThinkingDelta { index: i1, text: acc },
+                StreamDelta::ThinkingDelta { index: i2, text: more },
+            ) if i1 == i2 => {
                 acc.push_str(more);
                 return;
             }

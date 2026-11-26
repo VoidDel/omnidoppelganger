@@ -21,7 +21,13 @@ const COMMAND_TIMEOUT_LIMIT_SECONDS: u64 = 600;
 const OUTPUT_WAIT_LIMIT_SECONDS: u64 = 60;
 
 /// What a failed command printed when it was not let to write somewhere, as the systems that confine say it.
-const DENIED: &[&str] = &["permission denied", "operation not permitted", "read-only file system", "eacces", "eperm"];
+const DENIED: &[&str] = &[
+    "permission denied",
+    "operation not permitted",
+    "read-only file system",
+    "eacces",
+    "eperm",
+];
 
 /// Cloud provider API keys stripped from child shell processes so untrusted scripts or
 /// prompt-injected commands cannot exfiltrate host credentials via environment inspection.
@@ -49,7 +55,11 @@ pub fn shell() -> (&'static str, &'static [&'static str], &'static str) {
             .map(|path| std::env::split_paths(&path).any(|directory| directory.join("pwsh.exe").is_file()))
             .unwrap_or(false);
         if has_pwsh {
-            ("pwsh.exe", &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"], "PowerShell 7")
+            (
+                "pwsh.exe",
+                &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+                "PowerShell 7",
+            )
         } else {
             (
                 "powershell.exe",
@@ -80,8 +90,14 @@ async fn capture(mut pipe: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
 /// titles (OSC), and the two-character escapes. They mean nothing to the
 /// model, cost tokens in every later request, and clutter the transcript.
 pub(crate) fn strip_ansi(text: &str) -> String {
-    static ESCAPES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[0-~])").expect("valid pattern"));
-    if text.contains('\u{1b}') { ESCAPES.replace_all(text, "").into_owned() } else { text.to_string() }
+    static ESCAPES: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[0-~])").expect("valid pattern")
+    });
+    if text.contains('\u{1b}') {
+        ESCAPES.replace_all(text, "").into_owned()
+    } else {
+        text.to_string()
+    }
 }
 
 /// Stop a command and the processes it started.
@@ -101,14 +117,23 @@ pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
         // The shell leads its own process group (see `shell_command`), so this
         // reaches what it started as well: a server it launched does not live on.
-        let _ = tokio::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().await;
+        let _ = tokio::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
     }
     let _ = child.kill().await;
 }
 
 /// The shell set up to run `command_line` in `cwd`, its output piped;
 /// confined to `sandbox` when there is one. Fails when it cannot be confined.
-fn shell_command(command_line: &str, cwd: &Path, sandbox: Option<&crate::sandbox::Sandbox>) -> std::io::Result<tokio::process::Command> {
+fn shell_command(
+    command_line: &str,
+    cwd: &Path,
+    sandbox: Option<&crate::sandbox::Sandbox>,
+) -> std::io::Result<tokio::process::Command> {
     let (program, arguments, _) = shell();
     let mut command = match sandbox {
         Some(sandbox) => crate::sandbox::command(program, sandbox)?,
@@ -129,7 +154,12 @@ fn shell_command(command_line: &str, cwd: &Path, sandbox: Option<&crate::sandbox
     for var in SENSITIVE_ENV_VARS {
         command.env_remove(var);
     }
-    command.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    command
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
     // Its own process group, so stopping the command can stop everything it started.
@@ -139,7 +169,10 @@ fn shell_command(command_line: &str, cwd: &Path, sandbox: Option<&crate::sandbox
 }
 
 fn job_arg<'a>(input: &'a Value, context: &'a ToolContext) -> Result<(&'a str, &'a Arc<Jobs>), ToolOutput> {
-    let jobs = context.jobs.as_ref().ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
+    let jobs = context
+        .jobs
+        .as_ref()
+        .ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
     Ok((string_arg(input, "job")?, jobs))
 }
 
@@ -150,7 +183,10 @@ fn job_report(id: &str, report: Report) -> ToolOutput {
     if total > COMMAND_OUTPUT_CHARS {
         // The newest output says the most about where a running command stands.
         let tail: String = output.chars().skip(total - COMMAND_OUTPUT_CHARS).collect();
-        output = format!("[... {} earlier characters omitted ...]\n{tail}", total - COMMAND_OUTPUT_CHARS);
+        output = format!(
+            "[... {} earlier characters omitted ...]\n{tail}",
+            total - COMMAND_OUTPUT_CHARS
+        );
     }
     let state = match report.ended {
         None => "still running".to_string(),
@@ -158,7 +194,14 @@ fn job_report(id: &str, report: Report) -> ToolOutput {
         Some(Ended::Exited(Some(code))) => format!("exited with code {code}"),
         Some(Ended::Exited(None)) => "ended without an exit code".to_string(),
     };
-    let content = format!("{}\n[job {id}: {state}]", if output.is_empty() { "(nothing new)" } else { output.as_str() });
+    let content = format!(
+        "{}\n[job {id}: {state}]",
+        if output.is_empty() {
+            "(nothing new)"
+        } else {
+            output.as_str()
+        }
+    );
     let exit_code = match report.ended {
         Some(Ended::Exited(code)) => code,
         _ => None,
@@ -174,12 +217,19 @@ fn job_report(id: &str, report: Report) -> ToolOutput {
 
 /// A job id that names nothing: jobs do not outlive the app.
 fn no_job(id: &str) -> ToolOutput {
-    ToolOutput::error(format!("There is no background command `{id}`. Background commands end when the app closes; start it again if you need it."))
+    ToolOutput::error(format!(
+        "There is no background command `{id}`. Background commands end when the app closes; start it again if you need it."
+    ))
 }
 
 pub(super) async fn command_output(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let (id, jobs) = job_arg(input, context)?;
-    let wait = Duration::from_secs(input["wait_seconds"].as_u64().unwrap_or(0).min(OUTPUT_WAIT_LIMIT_SECONDS));
+    let wait = Duration::from_secs(
+        input["wait_seconds"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(OUTPUT_WAIT_LIMIT_SECONDS),
+    );
     let report = jobs.read(id, wait, &context.cancel).await.ok_or_else(|| no_job(id))?;
     Ok(job_report(id, report))
 }
@@ -195,10 +245,23 @@ pub(super) async fn command_input(input: &Value, context: &ToolContext) -> Resul
         text.push('\n');
     }
     jobs.write(id, &text, close).await.map_err(ToolOutput::error)?;
-    let wait = Duration::from_secs(input["wait_seconds"].as_u64().unwrap_or(2).min(OUTPUT_WAIT_LIMIT_SECONDS));
+    let wait = Duration::from_secs(
+        input["wait_seconds"]
+            .as_u64()
+            .unwrap_or(2)
+            .min(OUTPUT_WAIT_LIMIT_SECONDS),
+    );
     let report = jobs.read(id, wait, &context.cancel).await.ok_or_else(|| no_job(id))?;
     let mut output = job_report(id, report);
-    let sent = if close && text.is_empty() { "Closed its input.".to_string() } else { format!("Sent {} characters{}.", text.chars().count(), if close { " and closed its input" } else { "" }) };
+    let sent = if close && text.is_empty() {
+        "Closed its input.".to_string()
+    } else {
+        format!(
+            "Sent {} characters{}.",
+            text.chars().count(),
+            if close { " and closed its input" } else { "" }
+        )
+    };
     output.content = format!("{sent} What it printed since:\n{}", output.content);
     output.meta["sent"] = json!(text);
     output.meta["closed"] = json!(close);
@@ -213,14 +276,25 @@ pub(super) async fn stop_command(input: &Value, context: &ToolContext) -> Result
 
 pub(super) async fn run_command(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
     let command_line = string_arg(input, "command")?.to_string();
-    let timeout = Duration::from_secs(input["timeout_seconds"].as_u64().unwrap_or(COMMAND_TIMEOUT_SECONDS).clamp(1, COMMAND_TIMEOUT_LIMIT_SECONDS));
+    let timeout = Duration::from_secs(
+        input["timeout_seconds"]
+            .as_u64()
+            .unwrap_or(COMMAND_TIMEOUT_SECONDS)
+            .clamp(1, COMMAND_TIMEOUT_LIMIT_SECONDS),
+    );
     let cwd = match command_cwd(input, &context.workspace) {
         Some(dir) => {
             if !dir.exists() {
-                return Err(ToolOutput::error(format!("Working directory {} does not exist.", dir.display())));
+                return Err(ToolOutput::error(format!(
+                    "Working directory {} does not exist.",
+                    dir.display()
+                )));
             }
             if !dir.is_dir() {
-                return Err(ToolOutput::error(format!("Working directory {} is not a directory.", dir.display())));
+                return Err(ToolOutput::error(format!(
+                    "Working directory {} is not a directory.",
+                    dir.display()
+                )));
             }
             dir
         }
@@ -230,14 +304,23 @@ pub(super) async fn run_command(input: &Value, context: &ToolContext) -> Result<
     let (program, _, _) = shell();
     // The model may ask for a command to run unconfined; the user has then been asked (see `policy::check_in`).
     let sandbox = context.sandbox.as_ref().filter(|_| input["unsandboxed"] != true);
-    let mut command = shell_command(&command_line, &cwd, sandbox).map_err(|error| ToolOutput::error(format!("Cannot confine the command to the sandbox: {error}")))?;
+    let mut command = shell_command(&command_line, &cwd, sandbox)
+        .map_err(|error| ToolOutput::error(format!("Cannot confine the command to the sandbox: {error}")))?;
     if input["background"].as_bool().unwrap_or(false) {
-        let jobs = context.jobs.as_ref().ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
+        let jobs = context
+            .jobs
+            .as_ref()
+            .ok_or_else(|| ToolOutput::error("Background commands are not available here."))?;
         // Left open, for `command_input`; a command in the foreground gets none, and a prompt fails at once there.
         command.stdin(Stdio::piped());
-        let id = jobs.start(&command_line, command).map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
-        let content = format!("Started in the background as job {id}. Read what it prints with `command_output`, type into it with `command_input`, and end it with `stop_command` when it is no longer needed.");
-        let mut meta = json!({ "command": command_line, "job": id, "background": true, "sandboxed": sandbox.is_some() });
+        let id = jobs
+            .start(&command_line, command)
+            .map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
+        let content = format!(
+            "Started in the background as job {id}. Read what it prints with `command_output`, type into it with `command_input`, and end it with `stop_command` when it is no longer needed."
+        );
+        let mut meta =
+            json!({ "command": command_line, "job": id, "background": true, "sandboxed": sandbox.is_some() });
         if let Some(shown) = &shown_cwd {
             meta["cwd"] = json!(shown);
         }
@@ -245,7 +328,9 @@ pub(super) async fn run_command(input: &Value, context: &ToolContext) -> Result<
     }
 
     let started = Instant::now();
-    let mut child = command.spawn().map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| ToolOutput::error(format!("Cannot start {program}: {error}")))?;
     let stdout = tokio::spawn(capture(child.stdout.take().expect("stdout is piped")));
     let stderr = tokio::spawn(capture(child.stderr.take().expect("stderr is piped")));
 
@@ -258,10 +343,18 @@ pub(super) async fn run_command(input: &Value, context: &ToolContext) -> Result<
         kill_tree(&mut child).await;
     }
     // A grandchild can keep the pipes open after the kill, so reading gets a deadline.
-    let read = |task| async { tokio::time::timeout(Duration::from_secs(2), task).await.ok().and_then(Result::ok).unwrap_or_default() };
+    let read = |task| async {
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    };
     let (stdout, stderr): (Vec<u8>, Vec<u8>) = (read(stdout).await, read(stderr).await);
 
-    let mut output = strip_ansi(&String::from_utf8_lossy(&stdout).replace("\r\n", "\n")).trim_end().to_string();
+    let mut output = strip_ansi(&String::from_utf8_lossy(&stdout).replace("\r\n", "\n"))
+        .trim_end()
+        .to_string();
     let stderr = strip_ansi(&String::from_utf8_lossy(&stderr).replace("\r\n", "\n"));
     if !stderr.trim().is_empty() {
         if !output.is_empty() {
@@ -274,12 +367,21 @@ pub(super) async fn run_command(input: &Value, context: &ToolContext) -> Result<
         let half = COMMAND_OUTPUT_CHARS / 2;
         let head: String = output.chars().take(half).collect();
         let tail: String = output.chars().skip(total - half).collect();
-        output = format!("{head}\n[... {} characters omitted ...]\n{tail}", total - COMMAND_OUTPUT_CHARS);
+        output = format!(
+            "{head}\n[... {} characters omitted ...]\n{tail}",
+            total - COMMAND_OUTPUT_CHARS
+        );
     }
     let exit_code = status.and_then(|status| status.code());
-    let mut content = if output.is_empty() { "(no output)".to_string() } else { output.clone() };
+    let mut content = if output.is_empty() {
+        "(no output)".to_string()
+    } else {
+        output.clone()
+    };
     match (stopped, exit_code) {
-        (Some("timed out"), _) => content.push_str(&format!("\n[stopped after {} seconds: timed out]", timeout.as_secs())),
+        (Some("timed out"), _) => {
+            content.push_str(&format!("\n[stopped after {} seconds: timed out]", timeout.as_secs()))
+        }
         (Some(reason), _) => content.push_str(&format!("\n[stopped: {reason}]")),
         (None, Some(0)) => {}
         (None, Some(code)) => content.push_str(&format!("\n[exit code {code}]")),

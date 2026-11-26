@@ -60,7 +60,10 @@ fn time_of_day(text: &str) -> Result<NaiveTime, String> {
 fn moment<Tz: TimeZone>(zone: &Tz, local: NaiveDateTime) -> Option<DateTime<Utc>> {
     match zone.from_local_datetime(&local) {
         LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => Some(at.with_timezone(&Utc)),
-        LocalResult::None => zone.from_local_datetime(&(local + Duration::hours(1))).earliest().map(|at| at.with_timezone(&Utc)),
+        LocalResult::None => zone
+            .from_local_datetime(&(local + Duration::hours(1)))
+            .earliest()
+            .map(|at| at.with_timezone(&Utc)),
     }
 }
 
@@ -77,7 +80,9 @@ impl When {
                 }
             }
             When::Every { minutes } if (1..=MAX_MINUTES).contains(minutes) => Ok(()),
-            When::Every { minutes } => Err(format!("a schedule can repeat every 1 to {MAX_MINUTES} minutes, not every {minutes}")),
+            When::Every { minutes } => Err(format!(
+                "a schedule can repeat every 1 to {MAX_MINUTES} minutes, not every {minutes}"
+            )),
         }
     }
 
@@ -95,11 +100,18 @@ impl When {
                 // Today, and the seven days after: the same day of next week is the furthest it can be.
                 (0..=7)
                     .filter_map(|ahead| today.checked_add_days(Days::new(ahead)))
-                    .filter(|date| days.is_empty() || days.iter().any(|day| u32::from(*day) == date.weekday().number_from_monday()))
+                    .filter(|date| {
+                        days.is_empty()
+                            || days
+                                .iter()
+                                .any(|day| u32::from(*day) == date.weekday().number_from_monday())
+                    })
                     .filter_map(|date| moment(&zone, date.and_time(time)))
                     .find(|at| *at > now)
             }
-            When::Every { minutes } => (1..=MAX_MINUTES).contains(minutes).then(|| now + Duration::minutes(i64::from(*minutes))),
+            When::Every { minutes } => (1..=MAX_MINUTES)
+                .contains(minutes)
+                .then(|| now + Duration::minutes(i64::from(*minutes))),
         }
     }
 }
@@ -171,12 +183,18 @@ pub struct ScheduleStore {
 impl ScheduleStore {
     /// A store kept in the file at `path`, which need not exist yet.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), writing: Mutex::new(()) }
+        Self {
+            path: path.into(),
+            writing: Mutex::new(()),
+        }
     }
 
     /// Every schedule, in the order they were added. A missing or unreadable file holds none.
     pub fn all(&self) -> Vec<Schedule> {
-        std::fs::read_to_string(&self.path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
     }
 
     /// Read the list, change it, and write it back when `change` says it changed.
@@ -200,7 +218,11 @@ impl ScheduleStore {
     /// no task, its folder is not there, its times do not exist, or it is on
     /// and has no time left to run at.
     pub fn save<Tz: TimeZone>(&self, schedule: Schedule, now: &DateTime<Tz>) -> Result<Schedule, String> {
-        let mut schedule = Schedule { name: schedule.name.trim().to_string(), prompt: schedule.prompt.trim().to_string(), ..schedule };
+        let mut schedule = Schedule {
+            name: schedule.name.trim().to_string(),
+            prompt: schedule.prompt.trim().to_string(),
+            ..schedule
+        };
         if schedule.prompt.is_empty() {
             return Err("the schedule has no task: say what the agent is to do".to_string());
         }
@@ -209,21 +231,37 @@ impl ScheduleStore {
         }
         schedule.when.check()?;
         if schedule.mode == Mode::Bypass {
-            return Err("a schedule cannot run asking about nothing; that is switched on by hand, in one session".to_string());
+            return Err(
+                "a schedule cannot run asking about nothing; that is switched on by hand, in one session".to_string(),
+            );
         }
         if schedule.name.is_empty() {
-            schedule.name = schedule.prompt.lines().next().unwrap_or_default().chars().take(NAME_CHARS).collect();
+            schedule.name = schedule
+                .prompt
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(NAME_CHARS)
+                .collect();
         }
         if let When::Daily { days, .. } = &mut schedule.when {
             days.sort_unstable();
             days.dedup();
         }
         schedule.next = match schedule.enabled {
-            true => Some(stamp(&schedule.when.next_after(now).ok_or("that time has passed: pick a later one, or turn the schedule off")?)),
+            true => {
+                Some(stamp(&schedule.when.next_after(now).ok_or(
+                    "that time has passed: pick a later one, or turn the schedule off",
+                )?))
+            }
             false => None,
         };
         self.change(|schedules| {
-            match schedules.iter_mut().find(|kept| !schedule.id.is_empty() && kept.id == schedule.id) {
+            match schedules
+                .iter_mut()
+                .find(|kept| !schedule.id.is_empty() && kept.id == schedule.id)
+            {
                 Some(kept) => {
                     schedule.last = kept.last.take();
                     *kept = schedule.clone();
@@ -255,7 +293,13 @@ impl ScheduleStore {
         self.change(|schedules| {
             let mut due = Vec::new();
             for schedule in schedules.iter_mut().filter(|schedule| schedule.enabled) {
-                let Some(next) = schedule.next.as_deref().and_then(|next| DateTime::parse_from_rfc3339(next).ok()) else { continue };
+                let Some(next) = schedule
+                    .next
+                    .as_deref()
+                    .and_then(|next| DateTime::parse_from_rfc3339(next).ok())
+                else {
+                    continue;
+                };
                 if next > present {
                     continue;
                 }
@@ -287,7 +331,10 @@ mod tests {
 
     /// A moment on a clock eight hours ahead of UTC. 2026-11-19 is a Thursday.
     fn at(text: &str) -> DateTime<FixedOffset> {
-        FixedOffset::east_opt(8 * 3600).unwrap().from_local_datetime(&date_time(text).unwrap()).unwrap()
+        FixedOffset::east_opt(8 * 3600)
+            .unwrap()
+            .from_local_datetime(&date_time(text).unwrap())
+            .unwrap()
     }
 
     fn next(when: &When, now: &str) -> Option<String> {
@@ -296,38 +343,93 @@ mod tests {
 
     #[test]
     fn a_daily_time_is_next_due_today_or_on_the_next_day_it_names() {
-        let daily = When::Daily { time: "09:00".into(), days: vec![] };
+        let daily = When::Daily {
+            time: "09:00".into(),
+            days: vec![],
+        };
         // The wall clock is the user's: nine in the morning there is one at night in UTC.
-        assert_eq!(next(&daily, "2026-11-19T08:00").as_deref(), Some("2026-11-19T01:00:00Z"));
-        assert_eq!(next(&daily, "2026-11-19T09:00").as_deref(), Some("2026-11-20T01:00:00Z"), "the time itself has come, so the next is tomorrow's");
+        assert_eq!(
+            next(&daily, "2026-11-19T08:00").as_deref(),
+            Some("2026-11-19T01:00:00Z")
+        );
+        assert_eq!(
+            next(&daily, "2026-11-19T09:00").as_deref(),
+            Some("2026-11-20T01:00:00Z"),
+            "the time itself has come, so the next is tomorrow's"
+        );
         // Mondays and Fridays, asked on a Thursday, then on the Friday after its time, then on the Monday at its time.
-        let some = When::Daily { time: "09:00".into(), days: vec![1, 5] };
+        let some = When::Daily {
+            time: "09:00".into(),
+            days: vec![1, 5],
+        };
         assert_eq!(next(&some, "2026-11-19T12:00").as_deref(), Some("2026-11-20T01:00:00Z"));
         assert_eq!(next(&some, "2026-11-20T09:30").as_deref(), Some("2026-11-23T01:00:00Z"));
         assert_eq!(next(&some, "2026-11-23T09:00").as_deref(), Some("2026-11-27T01:00:00Z"));
         // One day a week, asked on that day after its time: the same day next week.
-        let thursdays = When::Daily { time: "09:00".into(), days: vec![4] };
-        assert_eq!(next(&thursdays, "2026-11-19T10:00").as_deref(), Some("2026-11-26T01:00:00Z"));
+        let thursdays = When::Daily {
+            time: "09:00".into(),
+            days: vec![4],
+        };
+        assert_eq!(
+            next(&thursdays, "2026-11-19T10:00").as_deref(),
+            Some("2026-11-26T01:00:00Z")
+        );
     }
 
     #[test]
     fn a_one_time_is_due_once_and_a_gap_counts_from_now() {
-        let once = When::Once { at: "2026-11-19T18:30".into() };
+        let once = When::Once {
+            at: "2026-11-19T18:30".into(),
+        };
         assert_eq!(next(&once, "2026-11-19T08:00").as_deref(), Some("2026-11-19T10:30:00Z"));
         assert_eq!(next(&once, "2026-11-19T18:30"), None);
-        assert_eq!(next(&When::Once { at: "2026-11-19T18:30:05".into() }, "2026-11-19T18:30").as_deref(), Some("2026-11-19T10:30:05Z"));
-        assert_eq!(next(&When::Every { minutes: 90 }, "2026-11-19T08:00").as_deref(), Some("2026-11-19T01:30:00Z"));
+        assert_eq!(
+            next(
+                &When::Once {
+                    at: "2026-11-19T18:30:05".into()
+                },
+                "2026-11-19T18:30"
+            )
+            .as_deref(),
+            Some("2026-11-19T10:30:05Z")
+        );
+        assert_eq!(
+            next(&When::Every { minutes: 90 }, "2026-11-19T08:00").as_deref(),
+            Some("2026-11-19T01:30:00Z")
+        );
     }
 
     #[test]
     fn refuses_times_that_do_not_exist() {
         for (when, said) in [
             (When::Once { at: "tomorrow".into() }, "not a date and time"),
-            (When::Once { at: "2026-02-30T09:00".into() }, "not a date and time"),
-            (When::Daily { time: "25:00".into(), days: vec![] }, "not a time of day"),
-            (When::Daily { time: "09:00".into(), days: vec![0] }, "not a day of the week"),
+            (
+                When::Once {
+                    at: "2026-02-30T09:00".into(),
+                },
+                "not a date and time",
+            ),
+            (
+                When::Daily {
+                    time: "25:00".into(),
+                    days: vec![],
+                },
+                "not a time of day",
+            ),
+            (
+                When::Daily {
+                    time: "09:00".into(),
+                    days: vec![0],
+                },
+                "not a day of the week",
+            ),
             (When::Every { minutes: 0 }, "every 1 to"),
-            (When::Every { minutes: MAX_MINUTES + 1 }, "every 1 to"),
+            (
+                When::Every {
+                    minutes: MAX_MINUTES + 1,
+                },
+                "every 1 to",
+            ),
         ] {
             let error = when.check().unwrap_err();
             assert!(error.contains(said), "{when:?}: {error}");
@@ -359,23 +461,62 @@ mod tests {
     #[test]
     fn a_schedule_is_due_when_its_time_comes_and_then_moves_on() {
         let (directory, store) = store();
-        let daily = store.save(schedule(&directory, When::Daily { time: "09:00".into(), days: vec![5, 1, 5] }), &at("2026-11-19T08:00")).unwrap();
+        let daily = store
+            .save(
+                schedule(
+                    &directory,
+                    When::Daily {
+                        time: "09:00".into(),
+                        days: vec![5, 1, 5],
+                    },
+                ),
+                &at("2026-11-19T08:00"),
+            )
+            .unwrap();
         assert!(!daily.id.is_empty());
-        assert_eq!(daily.name, "run the tests and say what failed", "a schedule without a name is named after its task's first line");
-        assert_eq!(daily.when, When::Daily { time: "09:00".into(), days: vec![1, 5] });
+        assert_eq!(
+            daily.name, "run the tests and say what failed",
+            "a schedule without a name is named after its task's first line"
+        );
+        assert_eq!(
+            daily.when,
+            When::Daily {
+                time: "09:00".into(),
+                days: vec![1, 5]
+            }
+        );
         assert_eq!(daily.next.as_deref(), Some("2026-11-20T01:00:00Z"));
-        let once = store.save(Schedule { name: "once".into(), ..schedule(&directory, When::Once { at: "2026-11-20T08:00".into() }) }, &at("2026-11-19T08:00")).unwrap();
+        let once = store
+            .save(
+                Schedule {
+                    name: "once".into(),
+                    ..schedule(
+                        &directory,
+                        When::Once {
+                            at: "2026-11-20T08:00".into(),
+                        },
+                    )
+                },
+                &at("2026-11-19T08:00"),
+            )
+            .unwrap();
         assert_eq!(store.all(), [daily.clone(), once.clone()]);
 
         assert_eq!(store.take_due(&at("2026-11-20T07:59")).unwrap(), []);
-        assert_eq!(store.take_due(&at("2026-11-20T08:00")).unwrap(), std::slice::from_ref(&once));
+        assert_eq!(
+            store.take_due(&at("2026-11-20T08:00")).unwrap(),
+            std::slice::from_ref(&once)
+        );
         // Taken, a one-time has no time left and is off; it is not due again.
         assert_eq!(store.take_due(&at("2026-11-20T08:01")).unwrap(), []);
         let kept = store.all();
         assert_eq!((kept[1].enabled, kept[1].next.as_deref()), (false, None));
 
         // The program was closed over the weekend and Monday's time: on Tuesday it is due once, and next on Friday.
-        assert_eq!(store.take_due(&at("2026-11-24T10:00")).unwrap(), std::slice::from_ref(&daily));
+        assert_eq!(
+            store.take_due(&at("2026-11-24T10:00")).unwrap(),
+            std::slice::from_ref(&daily)
+        );
         assert_eq!(store.take_due(&at("2026-11-24T10:00")).unwrap(), []);
         assert_eq!(store.all()[0].next.as_deref(), Some("2026-11-27T01:00:00Z"));
     }
@@ -384,13 +525,32 @@ mod tests {
     fn keeps_how_the_last_start_went_through_an_edit_and_forgets_a_removed_schedule() {
         let (directory, store) = store();
         let now = at("2026-11-19T08:00");
-        let saved = store.save(schedule(&directory, When::Every { minutes: 30 }), &now).unwrap();
-        let run = Run { at: "2026-11-19T00:30:00Z".into(), session: Some("s1".into()), error: None };
+        let saved = store
+            .save(schedule(&directory, When::Every { minutes: 30 }), &now)
+            .unwrap();
+        let run = Run {
+            at: "2026-11-19T00:30:00Z".into(),
+            session: Some("s1".into()),
+            error: None,
+        };
         store.record(&saved.id, run.clone()).unwrap();
 
         // An edit keeps its place and its last start. Turned off, it has no next time and is never due.
-        let edited = store.save(Schedule { name: "nightly".into(), enabled: false, last: None, ..saved.clone() }, &now).unwrap();
-        assert_eq!((edited.id.as_str(), edited.last.as_ref(), edited.next.as_deref()), (saved.id.as_str(), Some(&run), None));
+        let edited = store
+            .save(
+                Schedule {
+                    name: "nightly".into(),
+                    enabled: false,
+                    last: None,
+                    ..saved.clone()
+                },
+                &now,
+            )
+            .unwrap();
+        assert_eq!(
+            (edited.id.as_str(), edited.last.as_ref(), edited.next.as_deref()),
+            (saved.id.as_str(), Some(&run), None)
+        );
         assert_eq!(store.take_due(&at("2027-01-01T00:00")).unwrap(), []);
         assert_eq!(store.all(), [edited]);
 
@@ -404,20 +564,67 @@ mod tests {
     fn refuses_a_schedule_it_could_never_run() {
         let (directory, store) = store();
         let now = at("2026-11-19T08:00");
-        let daily = || schedule(&directory, When::Daily { time: "09:00".into(), days: vec![] });
+        let daily = || {
+            schedule(
+                &directory,
+                When::Daily {
+                    time: "09:00".into(),
+                    days: vec![],
+                },
+            )
+        };
         for (schedule, said) in [
-            (Schedule { prompt: " \n".into(), ..daily() }, "no task"),
-            (Schedule { workspace: directory.path().join("gone").to_string_lossy().into_owned(), ..daily() }, "not a directory"),
+            (
+                Schedule {
+                    prompt: " \n".into(),
+                    ..daily()
+                },
+                "no task",
+            ),
+            (
+                Schedule {
+                    workspace: directory.path().join("gone").to_string_lossy().into_owned(),
+                    ..daily()
+                },
+                "not a directory",
+            ),
             (schedule(&directory, When::Every { minutes: 0 }), "every 1 to"),
-            (schedule(&directory, When::Once { at: "2026-11-19T07:00".into() }), "time has passed"),
-            (Schedule { mode: Mode::Bypass, ..daily() }, "asking about nothing"),
+            (
+                schedule(
+                    &directory,
+                    When::Once {
+                        at: "2026-11-19T07:00".into(),
+                    },
+                ),
+                "time has passed",
+            ),
+            (
+                Schedule {
+                    mode: Mode::Bypass,
+                    ..daily()
+                },
+                "asking about nothing",
+            ),
         ] {
             let error = store.save(schedule, &now).unwrap_err();
             assert!(error.contains(said), "{error}");
         }
         assert_eq!(store.all(), []);
         // A one-time whose time has passed can still be kept, off.
-        let off = store.save(Schedule { enabled: false, ..schedule(&directory, When::Once { at: "2026-11-19T07:00".into() }) }, &now).unwrap();
+        let off = store
+            .save(
+                Schedule {
+                    enabled: false,
+                    ..schedule(
+                        &directory,
+                        When::Once {
+                            at: "2026-11-19T07:00".into(),
+                        },
+                    )
+                },
+                &now,
+            )
+            .unwrap();
         assert_eq!(off.next, None);
     }
 }

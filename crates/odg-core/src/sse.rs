@@ -66,7 +66,10 @@ impl SseParser {
                 // and if the `data` buffer is empty, return without dispatching an event.
                 let event_name = std::mem::take(&mut self.event);
                 if !self.data.is_empty() {
-                    events.push(SseEvent { event: event_name, data: self.data.join("\n") });
+                    events.push(SseEvent {
+                        event: event_name,
+                        data: self.data.join("\n"),
+                    });
                     self.data.clear();
                     self.data_bytes = 0;
                 }
@@ -128,8 +131,14 @@ mod tests {
             assert_eq!(
                 out,
                 vec![
-                    SseEvent { event: String::new(), data: "{\"ok\":1}".into() },
-                    SseEvent { event: "custom".into(), data: "line1\nline2".into() },
+                    SseEvent {
+                        event: String::new(),
+                        data: "{\"ok\":1}".into()
+                    },
+                    SseEvent {
+                        event: "custom".into(),
+                        data: "line1\nline2".into()
+                    },
                 ]
             );
         }
@@ -146,7 +155,10 @@ mod tests {
         let recovered = parser.feed(b"tail_of_oversized_line\ndata: {\"recovered\":true}\n\n");
         assert_eq!(
             recovered,
-            vec![SseEvent { event: String::new(), data: "{\"recovered\":true}".into() }]
+            vec![SseEvent {
+                event: String::new(),
+                data: "{\"recovered\":true}".into()
+            }]
         );
     }
 }

@@ -124,7 +124,10 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://api.deepseek.com",
         other_urls: &[],
         key_env: Some("DEEPSEEK_API_KEY"),
-        models: &[("deepseek-v4-pro", "DeepSeek V4 Pro"), ("deepseek-flash", "DeepSeek Flash")],
+        models: &[
+            ("deepseek-v4-pro", "DeepSeek V4 Pro"),
+            ("deepseek-flash", "DeepSeek Flash"),
+        ],
     },
     Provider {
         id: "moonshot",
@@ -133,7 +136,11 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://api.moonshot.cn/v1",
         other_urls: &[("https://api.moonshot.ai/v1", "国际站")],
         key_env: Some("MOONSHOT_API_KEY"),
-        models: &[("kimi-k3.1-pro", "Kimi K3.1 Pro"), ("kimi-k3.1-pro-highspeed", "Kimi K3.1 Pro 高速版"), ("kimi-k3", "Kimi K3")],
+        models: &[
+            ("kimi-k3.1-pro", "Kimi K3.1 Pro"),
+            ("kimi-k3.1-pro-highspeed", "Kimi K3.1 Pro 高速版"),
+            ("kimi-k3", "Kimi K3"),
+        ],
     },
     Provider {
         id: "zhipu",
@@ -142,7 +149,12 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://open.bigmodel.cn/api/paas/v4",
         other_urls: &[("https://api.z.ai/api/paas/v4", "国际站 Z.ai")],
         key_env: Some("ZHIPUAI_API_KEY"),
-        models: &[("glm-5.3", "GLM-5.3"), ("glm-5.3-flash", "GLM-5.3 Flash（能看图）"), ("glm-5.2", "GLM-5.2"), ("glm-4.7", "GLM-4.7")],
+        models: &[
+            ("glm-5.3", "GLM-5.3"),
+            ("glm-5.3-flash", "GLM-5.3 Flash（能看图）"),
+            ("glm-5.2", "GLM-5.2"),
+            ("glm-4.7", "GLM-4.7"),
+        ],
     },
     Provider {
         id: "custom",
@@ -244,7 +256,11 @@ pub const PROVIDERS: &[Provider] = &[
 /// with a key and address of its own.
 pub fn provider(id: &str) -> Option<&'static Provider> {
     PROVIDERS.iter().find(|provider| {
-        provider.id == id || id.strip_prefix(provider.id).and_then(|rest| rest.strip_prefix('-')).is_some_and(|n| !n.starts_with('0') && n.parse::<u32>().is_ok_and(|n| n >= 2))
+        provider.id == id
+            || id
+                .strip_prefix(provider.id)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some_and(|n| !n.starts_with('0') && n.parse::<u32>().is_ok_and(|n| n >= 2))
     })
 }
 
@@ -280,7 +296,11 @@ pub fn instance(id: &str, name: Option<&str>) -> Option<Instance> {
     Some(Instance {
         id: id.to_string(),
         kind: kind.id,
-        name: name.map(str::trim).filter(|name| !name.is_empty()).unwrap_or(kind.name).to_string(),
+        name: name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(kind.name)
+            .to_string(),
         protocol: kind.protocol,
         base_url: kind.base_url,
         other_urls: kind.other_urls,
@@ -302,12 +322,48 @@ pub fn resolve_auto_model(provider_id: &str, effort: &str) -> Option<String> {
             "medium" => "claude-sonnet-5-5",
             _ => "claude-opus-5-5",
         },
-        "gemini" => if fast { "gemini-2.5-flash" } else { "gemini-2.5-pro" },
-        "openai" => if fast { "gpt-6.2-sol" } else { "gpt-6.2-astra" },
-        "deepseek" => if fast { "deepseek-flash" } else { "deepseek-v4-pro" },
-        "moonshot" => if fast { "kimi-k3.1-pro-highspeed" } else { "kimi-k3.1-pro" },
-        "zhipu" => if fast { "glm-5.3-flash" } else { "glm-5.3" },
-        "openrouter" => if fast { "google/gemini-2.5-flash" } else { "anthropic/claude-sonnet-4.6" },
+        "gemini" => {
+            if fast {
+                "gemini-2.5-flash"
+            } else {
+                "gemini-2.5-pro"
+            }
+        }
+        "openai" => {
+            if fast {
+                "gpt-6.2-sol"
+            } else {
+                "gpt-6.2-astra"
+            }
+        }
+        "deepseek" => {
+            if fast {
+                "deepseek-flash"
+            } else {
+                "deepseek-v4-pro"
+            }
+        }
+        "moonshot" => {
+            if fast {
+                "kimi-k3.1-pro-highspeed"
+            } else {
+                "kimi-k3.1-pro"
+            }
+        }
+        "zhipu" => {
+            if fast {
+                "glm-5.3-flash"
+            } else {
+                "glm-5.3"
+            }
+        }
+        "openrouter" => {
+            if fast {
+                "google/gemini-2.5-flash"
+            } else {
+                "anthropic/claude-sonnet-4.6"
+            }
+        }
         _ => {
             let known = provider(provider_id)?;
             if known.models.is_empty() {
@@ -342,8 +398,15 @@ pub fn documented_window(provider: &str, model: &str) -> Option<u64> {
         ("deepseek", "deepseek-v4-pro" | "deepseek-flash") => Some(1_000_000),
         ("moonshot", "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "kimi-k3") => Some(1_048_576),
         // Zhipu's model overview, which is the only place it says: its list of models carries no sizes.
-        ("zhipu", "glm-5.3" | "glm-5.3-flash" | "glm-5.3-flashx" | "glm-5.3-flashx-legal" | "glm-5.2" | "glm-4-long") => Some(1_000_000),
-        ("zhipu", "glm-5.1" | "glm-5v-turbo" | "glm-5-turbo" | "glm-5" | "glm-4.7" | "glm-4.7-flashx" | "glm-4.7-flash" | "glm-4.6") => Some(200_000),
+        (
+            "zhipu",
+            "glm-5.3" | "glm-5.3-flash" | "glm-5.3-flashx" | "glm-5.3-flashx-legal" | "glm-5.2" | "glm-4-long",
+        ) => Some(1_000_000),
+        (
+            "zhipu",
+            "glm-5.1" | "glm-5v-turbo" | "glm-5-turbo" | "glm-5" | "glm-4.7" | "glm-4.7-flashx" | "glm-4.7-flash"
+            | "glm-4.6",
+        ) => Some(200_000),
         // Smaller than what an unlisted model is assumed to hold, so these must be said.
         ("zhipu", "glm-4.1v-thinking-flashx" | "glm-4.1v-thinking-flash") => Some(64_000),
         _ => None,
@@ -383,7 +446,10 @@ pub fn vision(provider: &str, model: &str) -> Option<bool> {
     {
         return vision(provider, &resolved);
     }
-    if matches!(self::provider(provider).map(|known| known.protocol), Some(Protocol::Cli(_))) {
+    if matches!(
+        self::provider(provider).map(|known| known.protocol),
+        Some(Protocol::Cli(_))
+    ) {
         return Some(true);
     }
     match (kind_id(provider), model) {
@@ -418,19 +484,34 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
     if base.is_empty() {
         return Err("this provider has no address yet".to_string());
     }
-    let http = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(15)).timeout(std::time::Duration::from_secs(30)).build().map_err(|error| error.to_string())?;
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|error| error.to_string())?;
     let request = match known.protocol {
-        Protocol::Anthropic => http.get(format!("{base}/v1/models?limit=1000")).header("x-api-key", key).header("anthropic-version", anthropic::API_VERSION),
-        Protocol::Gemini => http.get(format!("{base}/models?pageSize=1000")).header("x-goog-api-key", key),
+        Protocol::Anthropic => http
+            .get(format!("{base}/v1/models?limit=1000"))
+            .header("x-api-key", key)
+            .header("anthropic-version", anthropic::API_VERSION),
+        Protocol::Gemini => http
+            .get(format!("{base}/models?pageSize=1000"))
+            .header("x-goog-api-key", key),
         Protocol::Responses | Protocol::Chat(_) => http.get(format!("{base}/models")).bearer_auth(key),
         Protocol::Cli(_) => unreachable!("handled above"),
     };
-    let response = request.send().await.map_err(|error| format!("cannot reach the provider: {error}"))?;
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("cannot reach the provider: {error}"))?;
     if !response.status().is_success() {
         let (error, _) = crate::llm::http_failure(response).await;
         return Err(error.to_string());
     }
-    let listed: Value = response.json().await.map_err(|error| format!("the provider's answer is not JSON: {error}"))?;
+    let listed: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("the provider's answer is not JSON: {error}"))?;
     let models: Vec<Listed> = if known.protocol == Protocol::Gemini {
         listed["models"]
             .as_array()
@@ -447,7 +528,11 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
                 let id = raw_name.strip_prefix("models/").unwrap_or(raw_name);
                 let display = model["displayName"].as_str().filter(|s| !s.is_empty()).unwrap_or(id);
                 let context_window = model["inputTokenLimit"].as_u64().filter(|&t| t > 0);
-                Some(Listed { id: id.to_string(), name: display.to_string(), context_window })
+                Some(Listed {
+                    id: id.to_string(),
+                    name: display.to_string(),
+                    context_window,
+                })
             })
             .collect()
     } else {
@@ -458,12 +543,23 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
             .iter()
             .filter_map(|model| {
                 let id = model["id"].as_str().filter(|id| !id.is_empty())?;
-                let context_window = WINDOW_FIELDS.iter().find_map(|field| model[*field].as_u64()).filter(|tokens| *tokens > 0);
-                Some(Listed { id: id.to_string(), name: model["display_name"].as_str().unwrap_or(id).to_string(), context_window })
+                let context_window = WINDOW_FIELDS
+                    .iter()
+                    .find_map(|field| model[*field].as_u64())
+                    .filter(|tokens| *tokens > 0);
+                Some(Listed {
+                    id: id.to_string(),
+                    name: model["display_name"].as_str().unwrap_or(id).to_string(),
+                    context_window,
+                })
             })
             .collect()
     };
-    if models.is_empty() { Err("the provider listed no models".to_string()) } else { Ok(models) }
+    if models.is_empty() {
+        Err("the provider listed no models".to_string())
+    } else {
+        Ok(models)
+    }
 }
 
 /// Read a provider's `usage` object into [`Tokens`]. The providers differ in
@@ -475,20 +571,27 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
     let found = match protocol {
         Protocol::Anthropic => {
             let cached = count(&usage["cache_read_input_tokens"]);
-            Tokens { input: count(&usage["input_tokens"]) + cached + count(&usage["cache_creation_input_tokens"]), cached, output: count(&usage["output_tokens"]) }
+            Tokens {
+                input: count(&usage["input_tokens"]) + cached + count(&usage["cache_creation_input_tokens"]),
+                cached,
+                output: count(&usage["output_tokens"]),
+            }
         }
         Protocol::Gemini => Tokens {
             input: count(&usage["promptTokenCount"]),
             cached: count(&usage["cachedContentTokenCount"]),
             output: count(&usage["candidatesTokenCount"]) + count(&usage["thoughtsTokenCount"]),
         },
-        Protocol::Responses => {
-            Tokens { input: count(&usage["input_tokens"]), cached: count(&usage["input_tokens_details"]["cached_tokens"]), output: count(&usage["output_tokens"]) }
-        }
+        Protocol::Responses => Tokens {
+            input: count(&usage["input_tokens"]),
+            cached: count(&usage["input_tokens_details"]["cached_tokens"]),
+            output: count(&usage["output_tokens"]),
+        },
         Protocol::Chat(_) => Tokens {
             input: count(&usage["prompt_tokens"]),
             // DeepSeek reports the cache hit on its own field as well.
-            cached: count(&usage["prompt_tokens_details"]["cached_tokens"]).max(count(&usage["prompt_cache_hit_tokens"])),
+            cached: count(&usage["prompt_tokens_details"]["cached_tokens"])
+                .max(count(&usage["prompt_cache_hit_tokens"])),
             output: count(&usage["completion_tokens"]),
         },
         Protocol::Cli(_) => {
@@ -545,20 +648,35 @@ impl Router {
             return Ok(client.clone());
         }
         let (endpoints, key_of) = (self.endpoints.clone(), id.to_string());
-        let client = Arc::new(AnthropicClient::new(base_url.clone(), Arc::new(move || endpoints(&key_of).key))?);
+        let client = Arc::new(AnthropicClient::new(
+            base_url.clone(),
+            Arc::new(move || endpoints(&key_of).key),
+        )?);
         added.insert(id.to_string(), (base_url, client.clone()));
         Ok(client)
     }
 }
 
 impl Llm for Router {
-    async fn stream(&self, mut request: LlmRequest, deltas: UnboundedSender<StreamDelta>, cancel: CancellationToken) -> Result<AssistantTurn, LlmError> {
+    async fn stream(
+        &self,
+        mut request: LlmRequest,
+        deltas: UnboundedSender<StreamDelta>,
+        cancel: CancellationToken,
+    ) -> Result<AssistantTurn, LlmError> {
         let Some(provider) = provider(&request.provider) else {
-            return Err(LlmError::Protocol(format!("this build does not know the provider `{}`", request.provider)));
+            return Err(LlmError::Protocol(format!(
+                "this build does not know the provider `{}`",
+                request.provider
+            )));
         };
         if request.model == AUTO_MODEL {
-            request.model = resolve_auto_model(&request.provider, &request.effort)
-                .ok_or_else(|| LlmError::NotConfigured(format!("provider `{}` has no built-in auto routing target; pick a specific model", request.provider)))?;
+            request.model = resolve_auto_model(&request.provider, &request.effort).ok_or_else(|| {
+                LlmError::NotConfigured(format!(
+                    "provider `{}` has no built-in auto routing target; pick a specific model",
+                    request.provider
+                ))
+            })?;
         }
         match provider.protocol {
             // Any but the first Anthropic provider, whose address comes from the environment, has an address of its own.
@@ -570,7 +688,10 @@ impl Llm for Router {
             Protocol::Gemini => self.gemini.stream(request, deltas, cancel).await,
             Protocol::Responses => self.responses.stream(request, deltas, cancel).await,
             Protocol::Chat(flavor) => self.chat.stream(flavor, request, deltas, cancel).await,
-            Protocol::Cli(kind) => Err(LlmError::Protocol(format!("{} runs through its local CLI backend", kind.display_name()))),
+            Protocol::Cli(kind) => Err(LlmError::Protocol(format!(
+                "{} runs through its local CLI backend",
+                kind.display_name()
+            ))),
         }
     }
 }
@@ -579,12 +700,20 @@ impl Llm for Router {
 /// accept fewer. `None` sends no effort at all.
 pub fn effort_for(protocol: Protocol, effort: &str) -> Option<&'static str> {
     let level = |levels: [&'static str; 5]| {
-        let index = crate::settings::EFFORTS.iter().position(|known| *known == effort).unwrap_or(2);
+        let index = crate::settings::EFFORTS
+            .iter()
+            .position(|known| *known == effort)
+            .unwrap_or(2);
         levels[index]
     };
     match protocol {
         // These accept all five as they are.
-        Protocol::Anthropic | Protocol::Gemini | Protocol::Responses | Protocol::Cli(CliKind::Antigravity | CliKind::ClaudeCode | CliKind::Cursor) => Some(level(["low", "medium", "high", "xhigh", "max"])),
+        Protocol::Anthropic
+        | Protocol::Gemini
+        | Protocol::Responses
+        | Protocol::Cli(CliKind::Antigravity | CliKind::ClaudeCode | CliKind::Cursor) => {
+            Some(level(["low", "medium", "high", "xhigh", "max"]))
+        }
         Protocol::Cli(CliKind::Codex) => Some(level(["low", "medium", "high", "xhigh", "xhigh"])),
         // Grok 1.0.92 accepts low/high/xhigh/max (no `medium`).
         Protocol::Cli(CliKind::Grok) => Some(level(["low", "high", "high", "xhigh", "max"])),
@@ -611,16 +740,29 @@ mod tests {
             assert_eq!(provider.base_url.is_empty(), custom || cli, "{}", provider.id);
             assert_eq!(
                 provider.models.is_empty(),
-                custom || matches!(provider.id, "magpie" | "ollama" | "antigravity" | "cursor" | "grok" | "opencode"),
+                custom
+                    || matches!(
+                        provider.id,
+                        "magpie" | "ollama" | "antigravity" | "cursor" | "grok" | "opencode"
+                    ),
                 "{}",
                 provider.id
             );
         }
         assert_eq!(provider(DEFAULT_PROVIDER).unwrap().protocol, Protocol::Anthropic);
         assert_eq!(provider("gemini").unwrap().protocol, Protocol::Gemini);
-        assert_eq!(resolve_auto_model("anthropic", "low").as_deref(), Some("claude-haiku-5-5"));
-        assert_eq!(resolve_auto_model("anthropic", "high").as_deref(), Some("claude-opus-5-5"));
-        assert_eq!(resolve_auto_model("gemini", "medium").as_deref(), Some("gemini-2.5-flash"));
+        assert_eq!(
+            resolve_auto_model("anthropic", "low").as_deref(),
+            Some("claude-haiku-5-5")
+        );
+        assert_eq!(
+            resolve_auto_model("anthropic", "high").as_deref(),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(
+            resolve_auto_model("gemini", "medium").as_deref(),
+            Some("gemini-2.5-flash")
+        );
         assert_eq!(resolve_auto_model("gemini", "xhigh").as_deref(), Some("gemini-2.5-pro"));
         assert_eq!(provider("custom_anthropic").unwrap().protocol, Protocol::Anthropic);
         assert!(provider("nobody").is_none());
@@ -629,19 +771,37 @@ mod tests {
     #[test]
     fn names_another_provider_of_a_kind_by_its_number() {
         // `<kind>-<n>` from 2 is another of the kind; anything else is not, nor is one kind taken for another.
-        for (id, kind) in [("zhipu-2", "zhipu"), ("custom-17", "custom"), ("custom_anthropic-3", "custom_anthropic"), ("anthropic-2", "anthropic")] {
+        for (id, kind) in [
+            ("zhipu-2", "zhipu"),
+            ("custom-17", "custom"),
+            ("custom_anthropic-3", "custom_anthropic"),
+            ("anthropic-2", "anthropic"),
+        ] {
             assert_eq!(provider(id).map(|found| found.id), Some(kind), "{id}");
             assert!(is_added(id) && kind_id(id) == kind, "{id}");
         }
-        for id in ["zhipu-1", "zhipu-02", "zhipu-x", "zhipu-", "zhipu2", "custom_anthropic_2"] {
+        for id in [
+            "zhipu-1",
+            "zhipu-02",
+            "zhipu-x",
+            "zhipu-",
+            "zhipu2",
+            "custom_anthropic_2",
+        ] {
             assert!(provider(id).is_none(), "{id}");
         }
         assert!(!is_added("zhipu") && kind_id("nobody") == "nobody");
         // What is known of a kind's models holds for each of it.
-        assert_eq!(documented_window("zhipu-2", "glm-5.3"), documented_window("zhipu", "glm-5.3"));
+        assert_eq!(
+            documented_window("zhipu-2", "glm-5.3"),
+            documented_window("zhipu", "glm-5.3")
+        );
         assert_eq!(vision("deepseek-2", "deepseek-v4-pro"), Some(false));
         let added = instance("openai-2", Some("  公司账号 ")).unwrap();
-        assert_eq!((added.kind, added.name.as_str(), added.key_env), ("openai", "公司账号", None));
+        assert_eq!(
+            (added.kind, added.name.as_str(), added.key_env),
+            ("openai", "公司账号", None)
+        );
         let first = instance("openai", None).unwrap();
         assert_eq!((first.name.as_str(), first.key_env), ("OpenAI", Some("OPENAI_API_KEY")));
     }
@@ -651,30 +811,109 @@ mod tests {
         use serde_json::json;
         // Anthropic counts what it read from and wrote to the cache beside the prompt, not inside it.
         let anthropic = json!({ "input_tokens": 10, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 90, "output_tokens": 40 });
-        assert_eq!(tokens("anthropic", &anthropic), Some(Tokens { input: 1000, cached: 900, output: 40 }));
+        assert_eq!(
+            tokens("anthropic", &anthropic),
+            Some(Tokens {
+                input: 1000,
+                cached: 900,
+                output: 40
+            })
+        );
         let chat = json!({ "prompt_tokens": 1000, "completion_tokens": 40, "prompt_tokens_details": { "cached_tokens": 900 } });
-        assert_eq!(tokens("zhipu", &chat), Some(Tokens { input: 1000, cached: 900, output: 40 }));
+        assert_eq!(
+            tokens("zhipu", &chat),
+            Some(Tokens {
+                input: 1000,
+                cached: 900,
+                output: 40
+            })
+        );
         let deepseek = json!({ "prompt_tokens": 1000, "completion_tokens": 40, "prompt_cache_hit_tokens": 900 });
-        assert_eq!(tokens("deepseek", &deepseek), Some(Tokens { input: 1000, cached: 900, output: 40 }));
-        let responses = json!({ "input_tokens": 1000, "output_tokens": 40, "input_tokens_details": { "cached_tokens": 900 } });
-        assert_eq!(tokens("openai", &responses), Some(Tokens { input: 1000, cached: 900, output: 40 }));
+        assert_eq!(
+            tokens("deepseek", &deepseek),
+            Some(Tokens {
+                input: 1000,
+                cached: 900,
+                output: 40
+            })
+        );
+        let responses =
+            json!({ "input_tokens": 1000, "output_tokens": 40, "input_tokens_details": { "cached_tokens": 900 } });
+        assert_eq!(
+            tokens("openai", &responses),
+            Some(Tokens {
+                input: 1000,
+                cached: 900,
+                output: 40
+            })
+        );
         let gemini = json!({ "promptTokenCount": 1000, "cachedContentTokenCount": 600, "candidatesTokenCount": 30, "thoughtsTokenCount": 10 });
-        assert_eq!(tokens("gemini", &gemini), Some(Tokens { input: 1000, cached: 600, output: 40 }));
+        assert_eq!(
+            tokens("gemini", &gemini),
+            Some(Tokens {
+                input: 1000,
+                cached: 600,
+                output: 40
+            })
+        );
         let cli_claude = json!({ "input_tokens": 50, "cache_read_input_tokens": 800, "cache_creation_input_tokens": 150, "output_tokens": 60 });
-        assert_eq!(tokens("claude_code", &cli_claude), Some(Tokens { input: 1000, cached: 800, output: 60 }));
-        let cli_agy = json!({ "input_tokens": 100, "cache_read_tokens": 400, "cache_write_tokens": 200, "output_tokens": 35 });
-        assert_eq!(tokens("antigravity", &cli_agy), Some(Tokens { input: 700, cached: 400, output: 35 }));
+        assert_eq!(
+            tokens("claude_code", &cli_claude),
+            Some(Tokens {
+                input: 1000,
+                cached: 800,
+                output: 60
+            })
+        );
+        let cli_agy =
+            json!({ "input_tokens": 100, "cache_read_tokens": 400, "cache_write_tokens": 200, "output_tokens": 35 });
+        assert_eq!(
+            tokens("antigravity", &cli_agy),
+            Some(Tokens {
+                input: 700,
+                cached: 400,
+                output: 35
+            })
+        );
         let cli_codex = json!({ "input_tokens": 1000, "cached_input_tokens": 750, "output_tokens": 45 });
-        assert_eq!(tokens("codex", &cli_codex), Some(Tokens { input: 1000, cached: 750, output: 45 }));
+        assert_eq!(
+            tokens("codex", &cli_codex),
+            Some(Tokens {
+                input: 1000,
+                cached: 750,
+                output: 45
+            })
+        );
         assert_eq!(tokens("zhipu", &json!({})), None);
 
-        assert_eq!((vision("zhipu", "glm-5.3"), vision("zhipu", "glm-5.3-flash"), vision("zhipu", "glm-5.2")), (Some(false), Some(true), None));
-        assert_eq!((vision("anthropic", "claude-opus-5-5"), vision("deepseek", "deepseek-v4-pro"), vision("custom", "x")), (Some(true), Some(false), None));
+        assert_eq!(
+            (
+                vision("zhipu", "glm-5.3"),
+                vision("zhipu", "glm-5.3-flash"),
+                vision("zhipu", "glm-5.2")
+            ),
+            (Some(false), Some(true), None)
+        );
+        assert_eq!(
+            (
+                vision("anthropic", "claude-opus-5-5"),
+                vision("deepseek", "deepseek-v4-pro"),
+                vision("custom", "x")
+            ),
+            (Some(true), Some(false), None)
+        );
         assert_eq!(context_window("zhipu", "glm-4.7"), 200_000);
         assert_eq!(context_window("anthropic", "claude-opus-5-5"), 1_000_000);
         assert_eq!(context_window("zhipu", "glm-9"), UNKNOWN_CONTEXT_WINDOW);
         assert_eq!(context_window("custom", "anything"), UNKNOWN_CONTEXT_WINDOW);
-        assert_eq!((documented_window("zhipu", "glm-4.7"), documented_window("zhipu", "glm-5.3-flash"), documented_window("zhipu", "glm-9")), (Some(200_000), Some(1_000_000), None));
+        assert_eq!(
+            (
+                documented_window("zhipu", "glm-4.7"),
+                documented_window("zhipu", "glm-5.3-flash"),
+                documented_window("zhipu", "glm-9")
+            ),
+            (Some(200_000), Some(1_000_000), None)
+        );
     }
 
     #[tokio::test]
@@ -683,7 +922,10 @@ mod tests {
         use serde_json::json;
         let listing = |body: Value| {
             let body = body.to_string();
-            format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
         };
         let (address, requests) = serve(vec![
             listing(json!({ "data": [{ "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "max_input_tokens": 1_000_000, "max_tokens": 128_000 }, { "id": "claude-next", "max_input_tokens": null }], "has_more": false })),
@@ -695,30 +937,95 @@ mod tests {
             listing(json!({ "data": [] })),
         ])
         .await;
-        let named = |id: &str, name: &str, context_window: Option<u64>| Listed { id: id.to_string(), name: name.to_string(), context_window };
-        assert_eq!(list_models("anthropic", &address, Some("sk-ant")).await.unwrap(), [named("claude-opus-5-5", "Claude Opus 5.5", Some(1_000_000)), named("claude-next", "claude-next", None)]);
-        assert_eq!(list_models("zhipu", &format!("{address}/api/paas/v4/"), Some(" glm-key ")).await.unwrap(), [named("glm-5.3", "glm-5.3", None), named("glm-5.3-flash", "glm-5.3-flash", None)]);
-        assert_eq!(list_models("deepseek", &address, Some("k")).await.unwrap(), [named("deepseek-v4-pro", "deepseek-v4-pro", Some(1_048_576)), named("deepseek-flash", "deepseek-flash", None)]);
-        assert_eq!(list_models("moonshot", &address, Some("k")).await.unwrap(), [named("kimi-k3", "kimi-k3", Some(262_144))]);
-        assert_eq!(list_models("deepseek", &address, Some("k")).await.unwrap_err(), "authentication_error: bad key");
-        assert_eq!(list_models("openai", &address, Some("k")).await.unwrap_err(), "the provider listed no models");
+        let named = |id: &str, name: &str, context_window: Option<u64>| Listed {
+            id: id.to_string(),
+            name: name.to_string(),
+            context_window,
+        };
+        assert_eq!(
+            list_models("anthropic", &address, Some("sk-ant")).await.unwrap(),
+            [
+                named("claude-opus-5-5", "Claude Opus 5.5", Some(1_000_000)),
+                named("claude-next", "claude-next", None)
+            ]
+        );
+        assert_eq!(
+            list_models("zhipu", &format!("{address}/api/paas/v4/"), Some(" glm-key "))
+                .await
+                .unwrap(),
+            [
+                named("glm-5.3", "glm-5.3", None),
+                named("glm-5.3-flash", "glm-5.3-flash", None)
+            ]
+        );
+        assert_eq!(
+            list_models("deepseek", &address, Some("k")).await.unwrap(),
+            [
+                named("deepseek-v4-pro", "deepseek-v4-pro", Some(1_048_576)),
+                named("deepseek-flash", "deepseek-flash", None)
+            ]
+        );
+        assert_eq!(
+            list_models("moonshot", &address, Some("k")).await.unwrap(),
+            [named("kimi-k3", "kimi-k3", Some(262_144))]
+        );
+        assert_eq!(
+            list_models("deepseek", &address, Some("k")).await.unwrap_err(),
+            "authentication_error: bad key"
+        );
+        assert_eq!(
+            list_models("openai", &address, Some("k")).await.unwrap_err(),
+            "the provider listed no models"
+        );
         // What cannot be asked is said without a request.
-        assert!(list_models("zhipu", &address, None).await.unwrap_err().contains("no API key"));
-        assert!(list_models("custom", "", Some("k")).await.unwrap_err().contains("no address"));
+        assert!(
+            list_models("zhipu", &address, None)
+                .await
+                .unwrap_err()
+                .contains("no API key")
+        );
+        assert!(
+            list_models("custom", "", Some("k"))
+                .await
+                .unwrap_err()
+                .contains("no address")
+        );
         assert!(list_models("nobody", &address, Some("k")).await.is_err());
 
         let requests = requests.await.unwrap();
         let lower: Vec<String> = requests.iter().map(|request| request.to_lowercase()).collect();
-        assert!(lower[0].starts_with("get /v1/models?limit=1000 ") && lower[0].contains("x-api-key: sk-ant") && lower[0].contains("anthropic-version:"));
-        assert!(lower[1].starts_with("get /api/paas/v4/models ") && lower[1].contains("authorization: bearer glm-key\r\n"), "{}", lower[1]);
+        assert!(
+            lower[0].starts_with("get /v1/models?limit=1000 ")
+                && lower[0].contains("x-api-key: sk-ant")
+                && lower[0].contains("anthropic-version:")
+        );
+        assert!(
+            lower[1].starts_with("get /api/paas/v4/models ") && lower[1].contains("authorization: bearer glm-key\r\n"),
+            "{}",
+            lower[1]
+        );
     }
 
     #[test]
     fn maps_effort_to_the_levels_each_provider_accepts() {
-        let all = |protocol| crate::settings::EFFORTS.iter().map(|effort| effort_for(protocol, effort)).collect::<Vec<_>>();
-        assert_eq!(all(Protocol::Responses), [Some("low"), Some("medium"), Some("high"), Some("xhigh"), Some("max")]);
-        assert_eq!(all(Protocol::Chat(Flavor::DeepSeek)), [Some("low"), Some("high"), Some("high"), Some("high"), Some("max")]);
-        assert_eq!(all(Protocol::Chat(Flavor::Kimi)), [Some("low"), Some("high"), Some("high"), Some("max"), Some("max")]);
+        let all = |protocol| {
+            crate::settings::EFFORTS
+                .iter()
+                .map(|effort| effort_for(protocol, effort))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            all(Protocol::Responses),
+            [Some("low"), Some("medium"), Some("high"), Some("xhigh"), Some("max")]
+        );
+        assert_eq!(
+            all(Protocol::Chat(Flavor::DeepSeek)),
+            [Some("low"), Some("high"), Some("high"), Some("high"), Some("max")]
+        );
+        assert_eq!(
+            all(Protocol::Chat(Flavor::Kimi)),
+            [Some("low"), Some("high"), Some("high"), Some("max"), Some("max")]
+        );
         assert_eq!(all(Protocol::Chat(Flavor::Generic)), [None; 5]);
     }
 }

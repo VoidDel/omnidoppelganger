@@ -36,16 +36,26 @@ pub struct Skill {
 /// Split a `SKILL.md` into the name and description its opening block gives, and the instructions after it.
 fn parse(text: &str) -> (Option<String>, Option<String>, &str) {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let Some(rest) = text.strip_prefix("---") else { return (None, None, text) };
-    let Some(end) = rest.find("\n---") else { return (None, None, text) };
-    let body = rest[end + 4..].trim_start_matches(['-']).trim_start_matches(['\r', '\n']);
+    let Some(rest) = text.strip_prefix("---") else {
+        return (None, None, text);
+    };
+    let Some(end) = rest.find("\n---") else {
+        return (None, None, text);
+    };
+    let body = rest[end + 4..]
+        .trim_start_matches(['-'])
+        .trim_start_matches(['\r', '\n']);
     let field = |key: &str| {
         rest[..end].lines().find_map(|line| {
             let value = line.strip_prefix(key)?.trim_start().strip_prefix(':')?.trim();
             // A value may be quoted, as YAML allows; in double quotes, `\"` and `\\` stand for themselves.
             let value = match value.strip_prefix('"').and_then(|inner| inner.strip_suffix('"')) {
                 Some(inner) => unescape(inner),
-                None => value.strip_prefix('\'').and_then(|inner| inner.strip_suffix('\'')).unwrap_or(value).to_string(),
+                None => value
+                    .strip_prefix('\'')
+                    .and_then(|inner| inner.strip_suffix('\''))
+                    .unwrap_or(value)
+                    .to_string(),
             };
             (!value.is_empty()).then_some(value)
         })
@@ -74,9 +84,28 @@ fn read(directory: &Path) -> Option<(Skill, String)> {
     let (name, description, body) = parse(&text);
     let folder = directory.file_name()?.to_string_lossy().into_owned();
     // A skill that does not describe itself is described by how its instructions open.
-    let opening = || body.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().trim_start_matches('#').trim().to_string();
-    let description: String = description.unwrap_or_else(opening).chars().take(DESCRIPTION_CHARS).collect();
-    Some((Skill { name: name.unwrap_or(folder), description, directory: directory.to_path_buf() }, body.to_string()))
+    let opening = || {
+        body.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default()
+            .trim_start_matches('#')
+            .trim()
+            .to_string()
+    };
+    let description: String = description
+        .unwrap_or_else(opening)
+        .chars()
+        .take(DESCRIPTION_CHARS)
+        .collect();
+    Some((
+        Skill {
+            name: name.unwrap_or(folder),
+            description,
+            directory: directory.to_path_buf(),
+        },
+        body.to_string(),
+    ))
 }
 
 /// Every skill under `roots`, by name. A later root's skill replaces an earlier root's of the same name.
@@ -85,7 +114,9 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else { continue };
         for entry in entries.filter_map(Result::ok) {
-            let Some((skill, _)) = read(&entry.path()) else { continue };
+            let Some((skill, _)) = read(&entry.path()) else {
+                continue;
+            };
             skills.retain(|other| other.name != skill.name);
             skills.push(skill);
         }
@@ -97,7 +128,13 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
 
 /// What the model is told of the skills: names and descriptions.
 pub fn listing(skills: &[Skill]) -> Vec<SkillInfo> {
-    skills.iter().map(|skill| SkillInfo { name: skill.name.clone(), description: skill.description.clone() }).collect()
+    skills
+        .iter()
+        .map(|skill| SkillInfo {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+        })
+        .collect()
 }
 
 /// The instructions of the skill called `name`, as `load_skill` returns them.
@@ -105,16 +142,26 @@ pub fn load(roots: &[PathBuf], name: &str) -> Result<String, String> {
     let skills = discover(roots);
     let Some(skill) = skills.iter().find(|skill| skill.name == name) else {
         let known: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
-        return Err(if known.is_empty() { format!("There is no skill `{name}`: no skills are installed.") } else { format!("There is no skill `{name}`. The skills are: {}.", known.join(", ")) });
+        return Err(if known.is_empty() {
+            format!("There is no skill `{name}`: no skills are installed.")
+        } else {
+            format!("There is no skill `{name}`. The skills are: {}.", known.join(", "))
+        });
     };
     let (_, body) = read(&skill.directory).ok_or_else(|| format!("The skill `{name}` can no longer be read."))?;
     let mut body: String = if body.chars().count() > BODY_CHARS {
-        format!("{}\n[... the skill's instructions are cut at {BODY_CHARS} characters ...]", body.chars().take(BODY_CHARS).collect::<String>())
+        format!(
+            "{}\n[... the skill's instructions are cut at {BODY_CHARS} characters ...]",
+            body.chars().take(BODY_CHARS).collect::<String>()
+        )
     } else {
         body
     };
     // Instructions often point at files beside them; the model needs to know where that is.
-    body.push_str(&format!("\n\n[This skill's files are in {}. Read the ones it refers to from there.]", skill.directory.display()));
+    body.push_str(&format!(
+        "\n\n[This skill's files are in {}. Read the ones it refers to from there.]",
+        skill.directory.display()
+    ));
     Ok(body)
 }
 
@@ -180,8 +227,19 @@ pub fn catalog(root: &Path) -> Vec<Listed> {
         .collect();
     let own = discover(&[root.to_path_buf()])
         .into_iter()
-        .filter(|skill| !BUILTINS.iter().any(|(name, _)| skill.directory.file_name().is_some_and(|folder| folder == *name)))
-        .map(|skill| Listed { name: skill.name, description: skill.description, directory: skill.directory.display().to_string(), builtin: false, installed: true, edited: false });
+        .filter(|skill| {
+            !BUILTINS
+                .iter()
+                .any(|(name, _)| skill.directory.file_name().is_some_and(|folder| folder == *name))
+        })
+        .map(|skill| Listed {
+            name: skill.name,
+            description: skill.description,
+            directory: skill.directory.display().to_string(),
+            builtin: false,
+            installed: true,
+            edited: false,
+        });
     listed.extend(own);
     listed
 }
@@ -205,7 +263,10 @@ pub fn switch(root: &Path, name: &str, on: bool, force: bool) -> Result<(), Stri
     if !directory.exists() {
         return Ok(());
     }
-    let edited = std::fs::read_to_string(&file).is_ok_and(|held| !same_text(&held, text)) || std::fs::read_dir(&directory).map(|entries| entries.count() > 1).unwrap_or(false);
+    let edited = std::fs::read_to_string(&file).is_ok_and(|held| !same_text(&held, text))
+        || std::fs::read_dir(&directory)
+            .map(|entries| entries.count() > 1)
+            .unwrap_or(false);
     if edited && !force {
         return Err("edited".to_string());
     }
@@ -214,11 +275,15 @@ pub fn switch(root: &Path, name: &str, on: bool, force: bool) -> Result<(), Stri
 
 /// Take one of the user's own skills out of `root`, by its name: only a folder directly in `root` is ever taken.
 pub fn remove(root: &Path, name: &str) -> Result<(), String> {
-    let skill = discover(&[root.to_path_buf()]).into_iter().find(|skill| skill.name == name).ok_or_else(|| format!("There is no skill `{name}` in {}.", root.display()))?;
+    let skill = discover(&[root.to_path_buf()])
+        .into_iter()
+        .find(|skill| skill.name == name)
+        .ok_or_else(|| format!("There is no skill `{name}` in {}.", root.display()))?;
     if skill.directory.parent() != Some(root) {
         return Err(format!("{} is not in {}.", skill.directory.display(), root.display()));
     }
-    std::fs::remove_dir_all(&skill.directory).map_err(|error| format!("Cannot take away {}: {error}", skill.directory.display()))
+    std::fs::remove_dir_all(&skill.directory)
+        .map_err(|error| format!("Cannot take away {}: {error}", skill.directory.display()))
 }
 
 /// The most a skill installed may hold: instructions and the scripts and references beside them, not a project.
@@ -234,7 +299,9 @@ pub fn git_source(source: &str) -> Option<(String, Option<String>, Option<String
     if source.is_empty() || source.starts_with('-') || source.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
-    let remote = ["https://", "http://", "ssh://", "git@"].iter().any(|start| source.starts_with(start));
+    let remote = ["https://", "http://", "ssh://", "git@"]
+        .iter()
+        .any(|start| source.starts_with(start));
     if !remote {
         return None;
     }
@@ -254,8 +321,15 @@ pub fn git_source(source: &str) -> Option<(String, Option<String>, Option<String
             {
                 return None;
             }
-            let folder = rest.first().map(|folder| folder.to_string()).filter(|folder| !folder.is_empty());
-            return Some((format!("https://github.com/{owner}/{repo_clean}.git"), Some(branch.to_string()), folder));
+            let folder = rest
+                .first()
+                .map(|folder| folder.to_string())
+                .filter(|folder| !folder.is_empty());
+            return Some((
+                format!("https://github.com/{owner}/{repo_clean}.git"),
+                Some(branch.to_string()),
+                folder,
+            ));
         }
     }
     Some((source.to_string(), None, None))
@@ -266,10 +340,22 @@ fn skills_within(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
     let mut walk = vec![(root.to_path_buf(), 0)];
     while let Some((directory, depth)) = walk.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else { continue };
-        for entry in entries.filter_map(Result::ok).filter(|entry| entry.path().is_dir() && entry.file_name() != ".git") {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir() && entry.file_name() != ".git")
+        {
             if entry.path().join(FILE_NAME).is_file() {
-                found.push(entry.path().strip_prefix(root).unwrap_or(&entry.path()).to_string_lossy().replace('\\', "/"));
+                found.push(
+                    entry
+                        .path()
+                        .strip_prefix(root)
+                        .unwrap_or(&entry.path())
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
             } else if depth < 2 {
                 walk.push((entry.path(), depth + 1));
             }
@@ -287,26 +373,51 @@ pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, Strin
     let Some((skill, _)) = read(source) else {
         let within = skills_within(source);
         return Err(if within.is_empty() {
-            format!("There is no {FILE_NAME} in {}, nor in the folders below it: it is not a skill.", source.display())
+            format!(
+                "There is no {FILE_NAME} in {}, nor in the folders below it: it is not a skill.",
+                source.display()
+            )
         } else {
-            format!("There is no {FILE_NAME} at the top of {}. Skills in the folders below it: {}. Pass the one wanted as `path`.", source.display(), within.join(", "))
+            format!(
+                "There is no {FILE_NAME} at the top of {}. Skills in the folders below it: {}. Pass the one wanted as `path`.",
+                source.display(),
+                within.join(", ")
+            )
         });
     };
     // The folder takes the skill's name, in the characters any file system allows.
-    let folder: String = skill.name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect::<String>().trim_matches('-').to_string();
+    let folder: String = skill
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
     if folder.is_empty() {
         return Err(format!("The skill's name `{}` gives no folder name.", skill.name));
     }
     let destination = into.join(&folder);
     if destination.exists() && !replace {
-        return Err(format!("A skill is already installed at {}. Pass `replace` to put this one in its place.", destination.display()));
+        return Err(format!(
+            "A skill is already installed at {}. Pass `replace` to put this one in its place.",
+            destination.display()
+        ));
     }
     // What to copy, counted before anything is written.
     let mut files: Vec<PathBuf> = Vec::new();
     let mut bytes = 0u64;
     let mut walk = vec![source.to_path_buf()];
     while let Some(directory) = walk.pop() {
-        for entry in std::fs::read_dir(&directory).map_err(|error| format!("Cannot read {}: {error}", directory.display()))?.filter_map(Result::ok) {
+        for entry in std::fs::read_dir(&directory)
+            .map_err(|error| format!("Cannot read {}: {error}", directory.display()))?
+            .filter_map(Result::ok)
+        {
             let (path, kind) = (entry.path(), entry.file_type().map_err(|error| error.to_string())?);
             if entry.file_name() == ".git" || kind.is_symlink() {
                 continue;
@@ -318,7 +429,11 @@ pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, Strin
                 files.push(path);
             }
             if files.len() > INSTALL_FILES || bytes > INSTALL_BYTES {
-                return Err(format!("{} holds more than a skill does ({INSTALL_FILES} files or {} MB): it is not installed.", source.display(), INSTALL_BYTES / 1024 / 1024));
+                return Err(format!(
+                    "{} holds more than a skill does ({INSTALL_FILES} files or {} MB): it is not installed.",
+                    source.display(),
+                    INSTALL_BYTES / 1024 / 1024
+                ));
             }
         }
     }
@@ -330,19 +445,26 @@ pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, Strin
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        std::fs::copy(file, &target).map(|_| ()).map_err(|error| format!("Cannot copy {}: {error}", file.display()))
+        std::fs::copy(file, &target)
+            .map(|_| ())
+            .map_err(|error| format!("Cannot copy {}: {error}", file.display()))
     });
     let placed = copied.and_then(|()| {
         if destination.exists() {
-            std::fs::remove_dir_all(&destination).map_err(|error| format!("Cannot take away the skill at {}: {error}", destination.display()))?;
+            std::fs::remove_dir_all(&destination)
+                .map_err(|error| format!("Cannot take away the skill at {}: {error}", destination.display()))?;
         }
-        std::fs::rename(&staging, &destination).map_err(|error| format!("Cannot put the skill in {}: {error}", destination.display()))
+        std::fs::rename(&staging, &destination)
+            .map_err(|error| format!("Cannot put the skill in {}: {error}", destination.display()))
     });
     if let Err(error) = placed {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
-    Ok(Skill { directory: destination, ..skill })
+    Ok(Skill {
+        directory: destination,
+        ..skill
+    })
 }
 
 /// Remove a folder and all in it, though some files in it are read-only, as
@@ -350,7 +472,11 @@ pub fn install(source: &Path, into: &Path, replace: bool) -> Result<Skill, Strin
 fn remove_tree(root: &Path) {
     let mut walk = vec![root.to_path_buf()];
     while let Some(directory) = walk.pop() {
-        for entry in std::fs::read_dir(&directory).into_iter().flatten().filter_map(Result::ok) {
+        for entry in std::fs::read_dir(&directory)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+        {
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 walk.push(entry.path());
             } else if let Ok(metadata) = entry.metadata() {
@@ -372,7 +498,9 @@ fn validate_relative_subpath(subpath: &str) -> Result<(), String> {
         match component {
             Component::Normal(_) | Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("Skill path `{subpath}` must stay inside the source repository without `..`."));
+                return Err(format!(
+                    "Skill path `{subpath}` must stay inside the source repository without `..`."
+                ));
             }
         }
     }
@@ -423,9 +551,16 @@ async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &Cancellati
     };
     match output {
         Ok(Ok(output)) if output.status.success() => Ok(()),
-        Ok(Ok(output)) => Err(format!("`git clone {url}` failed: {}", String::from_utf8_lossy(&output.stderr).trim())),
-        Ok(Err(error)) => Err(format!("Cannot run git ({error}): it must be installed to install a skill from a repository.")),
-        Err(_) => Err(format!("`git clone {url}` took more than three minutes and was stopped.")),
+        Ok(Ok(output)) => Err(format!(
+            "`git clone {url}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+        Ok(Err(error)) => Err(format!(
+            "Cannot run git ({error}): it must be installed to install a skill from a repository."
+        )),
+        Err(_) => Err(format!(
+            "`git clone {url}` took more than three minutes and was stopped."
+        )),
     }
 }
 
@@ -433,7 +568,14 @@ async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &Cancellati
 /// [`git_source`]), fetched into a folder of its own that is taken away
 /// after, or else the folder `local` on this computer. `within` is the
 /// folder inside it that holds the skill, when that is not its top.
-pub async fn fetch(source: &str, local: PathBuf, within: Option<&str>, into: &Path, replace: bool, cancel: &CancellationToken) -> Result<Skill, String> {
+pub async fn fetch(
+    source: &str,
+    local: PathBuf,
+    within: Option<&str>,
+    into: &Path,
+    replace: bool,
+    cancel: &CancellationToken,
+) -> Result<Skill, String> {
     if let Some(within) = within {
         validate_relative_subpath(within)?;
     }
@@ -454,14 +596,23 @@ pub async fn fetch(source: &str, local: PathBuf, within: Option<&str>, into: &Pa
         None => None,
     };
     let top = match &fetched {
-        Some((_, temporary, folder)) => folder.as_ref().map_or_else(|| temporary.clone(), |folder| temporary.join(folder)),
+        Some((_, temporary, folder)) => folder
+            .as_ref()
+            .map_or_else(|| temporary.clone(), |folder| temporary.join(folder)),
         None => local.clone(),
     };
     let from = within.map_or_else(|| top.clone(), |within| top.join(within));
     if let Some((temp_holder, temporary, _)) = &fetched {
         let checked = (|| -> Result<(), String> {
-            let temp_canon = temporary.canonicalize().map_err(|e| format!("Cannot verify cloned skill directory: {e}"))?;
-            let from_canon = from.canonicalize().map_err(|_| format!("There is no skill folder at {} inside the cloned repository.", from.display()))?;
+            let temp_canon = temporary
+                .canonicalize()
+                .map_err(|e| format!("Cannot verify cloned skill directory: {e}"))?;
+            let from_canon = from.canonicalize().map_err(|_| {
+                format!(
+                    "There is no skill folder at {} inside the cloned repository.",
+                    from.display()
+                )
+            })?;
             if !from_canon.starts_with(&temp_canon) {
                 return Err("Skill path escapes the cloned repository.".to_string());
             }
@@ -487,7 +638,13 @@ pub async fn fetch(source: &str, local: PathBuf, within: Option<&str>, into: &Pa
 
 /// Whether `name` will do for a skill written here: lower-case letters, digits and `-`, as skills are named everywhere.
 pub fn valid_name(name: &str) -> bool {
-    name.len() <= 64 && !name.starts_with('-') && !name.ends_with('-') && !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    name.len() <= 64
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Write a skill of the user's own into `into`: a `SKILL.md` in a folder
@@ -495,7 +652,9 @@ pub fn valid_name(name: &str) -> bool {
 /// `replace`, and then only its `SKILL.md`: the files beside it are kept.
 pub fn write(into: &Path, name: &str, description: &str, body: &str, replace: bool) -> Result<Skill, String> {
     if !valid_name(name) {
-        return Err(format!("The name `{name}` will not do: lower-case letters, digits and `-` only, at most 64."));
+        return Err(format!(
+            "The name `{name}` will not do: lower-case letters, digits and `-` only, at most 64."
+        ));
     }
     if BUILTINS.iter().any(|(builtin, _)| *builtin == name) {
         return Err(format!("`{name}` is the name of a skill that comes with the app."));
@@ -507,13 +666,19 @@ pub fn write(into: &Path, name: &str, description: &str, body: &str, replace: bo
     }
     let directory = into.join(name);
     if directory.join(FILE_NAME).exists() && !replace {
-        return Err(format!("A skill is already installed at {}. Pass `replace` to put this one in its place.", directory.display()));
+        return Err(format!(
+            "A skill is already installed at {}. Pass `replace` to put this one in its place.",
+            directory.display()
+        ));
     }
     std::fs::create_dir_all(&directory).map_err(|error| format!("Cannot make {}: {error}", directory.display()))?;
     let quoted = description.replace('\\', "\\\\").replace('"', "\\\"");
     let text = format!("---\nname: {name}\ndescription: \"{quoted}\"\n---\n\n{}\n", body.trim());
-    std::fs::write(directory.join(FILE_NAME), text).map_err(|error| format!("Cannot write {}: {error}", directory.join(FILE_NAME).display()))?;
-    read(&directory).map(|(skill, _)| skill).ok_or_else(|| format!("{} was written and cannot be read back.", directory.display()))
+    std::fs::write(directory.join(FILE_NAME), text)
+        .map_err(|error| format!("Cannot write {}: {error}", directory.join(FILE_NAME).display()))?;
+    read(&directory)
+        .map(|(skill, _)| skill)
+        .ok_or_else(|| format!("{} was written and cannot be read back.", directory.display()))
 }
 
 #[cfg(test)]
@@ -524,7 +689,11 @@ mod tests {
     fn installs_a_skill_whole_by_its_name_and_says_where_one_is_in_a_bigger_folder() {
         let directory = tempfile::tempdir().unwrap();
         let (source, into) = (directory.path().join("downloaded"), directory.path().join("skills"));
-        skill(&source.join("skills"), "pdf", "---\nname: pdf tools\ndescription: Work with PDFs.\n---\nUse the script.\n");
+        skill(
+            &source.join("skills"),
+            "pdf",
+            "---\nname: pdf tools\ndescription: Work with PDFs.\n---\nUse the script.\n",
+        );
         std::fs::create_dir_all(source.join("skills/pdf/scripts")).unwrap();
         std::fs::write(source.join("skills/pdf/scripts/split.py"), "print('split')\n").unwrap();
         std::fs::create_dir_all(source.join("skills/pdf/.git")).unwrap();
@@ -535,16 +704,34 @@ mod tests {
         assert!(missed.contains("skills/pdf") && missed.contains("`path`"), "{missed}");
         // The skill goes in a folder named for it, scripts and all, its Git folder left behind.
         let installed = install(&source.join("skills/pdf"), &into, false).unwrap();
-        assert_eq!((installed.name.as_str(), installed.directory.clone()), ("pdf tools", into.join("pdf-tools")));
+        assert_eq!(
+            (installed.name.as_str(), installed.directory.clone()),
+            ("pdf tools", into.join("pdf-tools"))
+        );
         assert!(into.join("pdf-tools/scripts/split.py").is_file() && !into.join("pdf-tools/.git").exists());
         assert_eq!(discover(std::slice::from_ref(&into))[0].name, "pdf tools");
         // Not over one already there, unless asked to.
-        assert!(install(&source.join("skills/pdf"), &into, false).unwrap_err().contains("replace"));
-        std::fs::write(source.join("skills/pdf/SKILL.md"), "---\nname: pdf tools\ndescription: Better.\n---\nNew.\n").unwrap();
+        assert!(
+            install(&source.join("skills/pdf"), &into, false)
+                .unwrap_err()
+                .contains("replace")
+        );
+        std::fs::write(
+            source.join("skills/pdf/SKILL.md"),
+            "---\nname: pdf tools\ndescription: Better.\n---\nNew.\n",
+        )
+        .unwrap();
         install(&source.join("skills/pdf"), &into, true).unwrap();
         assert_eq!(discover(std::slice::from_ref(&into))[0].description, "Better.");
-        assert!(std::fs::read_dir(&into).unwrap().count() == 1, "nothing is left half installed");
-        assert!(install(&directory.path().join("empty"), &into, false).unwrap_err().contains("not a skill"));
+        assert!(
+            std::fs::read_dir(&into).unwrap().count() == 1,
+            "nothing is left half installed"
+        );
+        assert!(
+            install(&directory.path().join("empty"), &into, false)
+                .unwrap_err()
+                .contains("not a skill")
+        );
     }
 
     #[test]
@@ -555,30 +742,59 @@ mod tests {
         for (name, text) in BUILTINS {
             let (named, described, body) = parse(text);
             assert_eq!(named.as_deref(), Some(*name));
-            assert!(described.is_some_and(|text| !text.is_empty()) && !body.trim().is_empty(), "{name}");
+            assert!(
+                described.is_some_and(|text| !text.is_empty()) && !body.trim().is_empty(),
+                "{name}"
+            );
         }
         // None is on until switched on.
         let listed = catalog(&root);
         assert_eq!(listed.len(), BUILTINS.len());
         assert!(listed.iter().all(|skill| skill.builtin && !skill.installed));
         switch(&root, "debugging", true, false).unwrap();
-        assert_eq!(discover(std::slice::from_ref(&root)).iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["debugging"]);
-        assert!(catalog(&root).iter().any(|skill| skill.name == "debugging" && skill.installed && !skill.edited));
+        assert_eq!(
+            discover(std::slice::from_ref(&root))
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            ["debugging"]
+        );
+        assert!(
+            catalog(&root)
+                .iter()
+                .any(|skill| skill.name == "debugging" && skill.installed && !skill.edited)
+        );
         // Off takes it out; one the user changed, only when told to.
         switch(&root, "debugging", false, false).unwrap();
         assert!(!root.join("debugging").exists());
         switch(&root, "code-review", true, false).unwrap();
-        std::fs::write(root.join("code-review").join(FILE_NAME), "---\nname: code-review\ndescription: Mine now.\n---\nMy way.\n").unwrap();
-        assert!(catalog(&root).iter().any(|skill| skill.name == "code-review" && skill.edited));
+        std::fs::write(
+            root.join("code-review").join(FILE_NAME),
+            "---\nname: code-review\ndescription: Mine now.\n---\nMy way.\n",
+        )
+        .unwrap();
+        assert!(
+            catalog(&root)
+                .iter()
+                .any(|skill| skill.name == "code-review" && skill.edited)
+        );
         // Switching it on again keeps the user's text.
         switch(&root, "code-review", true, false).unwrap();
-        assert!(std::fs::read_to_string(root.join("code-review").join(FILE_NAME)).unwrap().contains("My way."));
+        assert!(
+            std::fs::read_to_string(root.join("code-review").join(FILE_NAME))
+                .unwrap()
+                .contains("My way.")
+        );
         assert_eq!(switch(&root, "code-review", false, false), Err("edited".to_string()));
         switch(&root, "code-review", false, true).unwrap();
         assert!(!root.join("code-review").exists());
         assert!(switch(&root, "nope", true, false).is_err());
         // The user's own are listed after, and can be taken away; nothing outside the directory can.
-        skill(&root, "mine", "---\nname: mine\ndescription: My own.\n---\nDo it my way.\n");
+        skill(
+            &root,
+            "mine",
+            "---\nname: mine\ndescription: My own.\n---\nDo it my way.\n",
+        );
         let own = catalog(&root).into_iter().find(|skill| !skill.builtin).unwrap();
         assert_eq!((own.name.as_str(), own.installed), ("mine", true));
         remove(&root, "mine").unwrap();
@@ -590,14 +806,41 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("skills");
         // A description with quotes, a colon and a line break comes back as one line, as it was typed.
-        let written = write(&root, "weekly-report", "Write the weekly report: \"short\",\nwith C:\\ paths", "## Steps\n\nList what shipped.\n", false).unwrap();
-        assert_eq!((written.name.as_str(), written.directory.clone()), ("weekly-report", root.join("weekly-report")));
-        assert_eq!(written.description, "Write the weekly report: \"short\", with C:\\ paths");
-        assert_eq!(load(std::slice::from_ref(&root), "weekly-report").unwrap().lines().next(), Some("## Steps"));
-        assert!(catalog(&root).iter().any(|skill| skill.name == "weekly-report" && !skill.builtin));
+        let written = write(
+            &root,
+            "weekly-report",
+            "Write the weekly report: \"short\",\nwith C:\\ paths",
+            "## Steps\n\nList what shipped.\n",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            (written.name.as_str(), written.directory.clone()),
+            ("weekly-report", root.join("weekly-report"))
+        );
+        assert_eq!(
+            written.description,
+            "Write the weekly report: \"short\", with C:\\ paths"
+        );
+        assert_eq!(
+            load(std::slice::from_ref(&root), "weekly-report")
+                .unwrap()
+                .lines()
+                .next(),
+            Some("## Steps")
+        );
+        assert!(
+            catalog(&root)
+                .iter()
+                .any(|skill| skill.name == "weekly-report" && !skill.builtin)
+        );
         // Not over one there unless asked, and then the files beside it stay.
         std::fs::write(root.join("weekly-report/template.md"), "x").unwrap();
-        assert!(write(&root, "weekly-report", "Again.", "Again.", false).unwrap_err().contains("replace"));
+        assert!(
+            write(&root, "weekly-report", "Again.", "Again.", false)
+                .unwrap_err()
+                .contains("replace")
+        );
         write(&root, "weekly-report", "Again.", "Again.", true).unwrap();
         assert!(root.join("weekly-report/template.md").is_file());
         assert_eq!(discover(std::slice::from_ref(&root))[0].description, "Again.");
@@ -605,7 +848,11 @@ mod tests {
         for name in ["Weekly", "weekly report", "-weekly", "周报", ""] {
             assert!(write(&root, name, "x", "x", false).is_err(), "{name}");
         }
-        assert!(write(&root, "debugging", "x", "x", false).unwrap_err().contains("comes with the app"));
+        assert!(
+            write(&root, "debugging", "x", "x", false)
+                .unwrap_err()
+                .contains("comes with the app")
+        );
         assert!(write(&root, "empty", "  ", "x", false).is_err() && write(&root, "empty", "x", "\n", false).is_err());
     }
 
@@ -613,17 +860,30 @@ mod tests {
     fn takes_a_github_address_to_a_folder_apart() {
         assert_eq!(
             git_source("https://github.com/anthropics/skills/tree/main/skills/pdf"),
-            Some(("https://github.com/anthropics/skills.git".into(), Some("main".into()), Some("skills/pdf".into())))
+            Some((
+                "https://github.com/anthropics/skills.git".into(),
+                Some("main".into()),
+                Some("skills/pdf".into())
+            ))
         );
-        assert_eq!(git_source("https://gitee.com/me/skill.git"), Some(("https://gitee.com/me/skill.git".into(), None, None)));
-        assert_eq!(git_source("git@github.com:me/skill.git"), Some(("git@github.com:me/skill.git".into(), None, None)));
+        assert_eq!(
+            git_source("https://gitee.com/me/skill.git"),
+            Some(("https://gitee.com/me/skill.git".into(), None, None))
+        );
+        assert_eq!(
+            git_source("git@github.com:me/skill.git"),
+            Some(("git@github.com:me/skill.git".into(), None, None))
+        );
         assert_eq!(git_source("D:\\skills\\pdf"), None);
         assert_eq!(git_source("../skills/pdf"), None);
         assert_eq!(git_source("--upload-pack=evil.git"), None);
         assert_eq!(git_source("-u./payload.git"), None);
         assert_eq!(git_source("local-repo.git"), None);
         assert_eq!(git_source("https://github.com/me/repo.git --upload-pack=evil"), None);
-        assert_eq!(git_source("https://github.com/me/repo/tree/--upload-pack=evil/skills/pdf"), None);
+        assert_eq!(
+            git_source("https://github.com/me/repo/tree/--upload-pack=evil/skills/pdf"),
+            None
+        );
     }
 
     #[tokio::test]
@@ -631,11 +891,24 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source");
         let into = directory.path().join("into");
-        skill(&directory.path().join("outside"), "escaped", "---\nname: escaped\ndescription: Bad.\n---\nNo.\n");
+        skill(
+            &directory.path().join("outside"),
+            "escaped",
+            "---\nname: escaped\ndescription: Bad.\n---\nNo.\n",
+        );
         std::fs::create_dir_all(&source).unwrap();
         let cancel = CancellationToken::new();
 
-        let err = fetch("./source", source.clone(), Some("../../outside/escaped"), &into, false, &cancel).await.unwrap_err();
+        let err = fetch(
+            "./source",
+            source.clone(),
+            Some("../../outside/escaped"),
+            &into,
+            false,
+            &cancel,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains(".."), "{err}");
 
         let err_gh = fetch(
@@ -650,9 +923,18 @@ mod tests {
         .unwrap_err();
         assert!(err_gh.contains(".."), "{err_gh}");
 
-        let err_clone = clone("--upload-pack=evil", None, &directory.path().join("clone_out"), &cancel).await.unwrap_err();
+        let err_clone = clone("--upload-pack=evil", None, &directory.path().join("clone_out"), &cancel)
+            .await
+            .unwrap_err();
         assert!(err_clone.contains("unsafe"), "{err_clone}");
-        let err_branch = clone("https://github.com/me/repo.git", Some("--upload-pack=evil"), &directory.path().join("clone_out2"), &cancel).await.unwrap_err();
+        let err_branch = clone(
+            "https://github.com/me/repo.git",
+            Some("--upload-pack=evil"),
+            &directory.path().join("clone_out2"),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
         assert!(err_branch.contains("unsafe"), "{err_branch}");
     }
 
@@ -665,25 +947,63 @@ mod tests {
     fn finds_skills_and_lets_the_workspace_replace_the_users() {
         let directory = tempfile::tempdir().unwrap();
         let (user, project) = (directory.path().join("user"), directory.path().join("project"));
-        skill(&user, "release", "---\nname: release\ndescription: \"How to cut a release.\"\n---\n\n# Releasing\nTag, then build.\n");
-        skill(&user, "review", "---\nname: code-review\ndescription: How to review a change.\n---\nRead the diff first.\n");
+        skill(
+            &user,
+            "release",
+            "---\nname: release\ndescription: \"How to cut a release.\"\n---\n\n# Releasing\nTag, then build.\n",
+        );
+        skill(
+            &user,
+            "review",
+            "---\nname: code-review\ndescription: How to review a change.\n---\nRead the diff first.\n",
+        );
         skill(&user, "plain", "# Writing changelogs\n\nKeep entries short.\n");
-        skill(&project, "release", "---\nname: release\ndescription: This project's release steps.\n---\nRun `pnpm e2e` first.\n");
+        skill(
+            &project,
+            "release",
+            "---\nname: release\ndescription: This project's release steps.\n---\nRun `pnpm e2e` first.\n",
+        );
         std::fs::create_dir_all(user.join("empty")).unwrap();
         let roots = [user.clone(), project.clone(), directory.path().join("missing")];
 
         let found = discover(&roots);
-        let listed: Vec<(&str, &str)> = found.iter().map(|skill| (skill.name.as_str(), skill.description.as_str())).collect();
+        let listed: Vec<(&str, &str)> = found
+            .iter()
+            .map(|skill| (skill.name.as_str(), skill.description.as_str()))
+            .collect();
         // By name; a skill without an opening block is named for its folder and described by its first line.
-        assert_eq!(listed, [("code-review", "How to review a change."), ("plain", "Writing changelogs"), ("release", "This project's release steps.")]);
+        assert_eq!(
+            listed,
+            [
+                ("code-review", "How to review a change."),
+                ("plain", "Writing changelogs"),
+                ("release", "This project's release steps.")
+            ]
+        );
         assert_eq!(found[2].directory, project.join("release"));
-        assert_eq!(listing(&found)[0], SkillInfo { name: "code-review".into(), description: "How to review a change.".into() });
+        assert_eq!(
+            listing(&found)[0],
+            SkillInfo {
+                name: "code-review".into(),
+                description: "How to review a change.".into()
+            }
+        );
 
         // Loading returns the instructions without the opening block, and says where the skill's files are.
         let loaded = load(&roots, "release").unwrap();
-        assert!(loaded.starts_with("Run `pnpm e2e` first.\n") && loaded.contains(&project.join("release").display().to_string()), "{loaded}");
+        assert!(
+            loaded.starts_with("Run `pnpm e2e` first.\n")
+                && loaded.contains(&project.join("release").display().to_string()),
+            "{loaded}"
+        );
         assert!(load(&roots, "code-review").unwrap().starts_with("Read the diff first."));
-        assert_eq!(load(&roots, "nope").unwrap_err(), "There is no skill `nope`. The skills are: code-review, plain, release.");
-        assert_eq!(load(&[directory.path().join("missing")], "x").unwrap_err(), "There is no skill `x`: no skills are installed.");
+        assert_eq!(
+            load(&roots, "nope").unwrap_err(),
+            "There is no skill `nope`. The skills are: code-review, plain, release."
+        );
+        assert_eq!(
+            load(&[directory.path().join("missing")], "x").unwrap_err(),
+            "There is no skill `x`: no skills are installed."
+        );
     }
 }

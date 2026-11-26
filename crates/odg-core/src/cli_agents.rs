@@ -69,10 +69,17 @@ const ALL_PROVIDER_KEY_ENVS: &[&str] = &[
 /// Return cloud provider API-key environment variables unrelated to `kind` (and `model` for OpenCode)
 /// so spawning an external CLI never leaks other providers' credentials into its process tree.
 pub(crate) fn scrubbed_env_keys(kind: CliKind, model: &str) -> Vec<&'static str> {
-    let opencode_prefix = model.trim().split_once('/').map(|(p, _)| p.to_ascii_lowercase()).unwrap_or_default();
+    let opencode_prefix = model
+        .trim()
+        .split_once('/')
+        .map(|(p, _)| p.to_ascii_lowercase())
+        .unwrap_or_default();
     let keep = |key: &str| -> bool {
         match kind {
-            CliKind::ClaudeCode => matches!(key, "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN" | "CLAUDE_CODE_OAUTH_TOKEN"),
+            CliKind::ClaudeCode => matches!(
+                key,
+                "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN" | "CLAUDE_CODE_OAUTH_TOKEN"
+            ),
             CliKind::Codex => matches!(key, "OPENAI_API_KEY" | "CODEX_API_KEY"),
             CliKind::Antigravity => matches!(key, "GEMINI_API_KEY" | "GOOGLE_API_KEY"),
             CliKind::Cursor => key == "CURSOR_API_KEY",
@@ -167,7 +174,11 @@ impl CliKind {
         }
         Ok(fallback
             .iter()
-            .map(|(id, name)| Listed { id: (*id).to_string(), name: (*name).to_string(), context_window: Some(context_window(self)) })
+            .map(|(id, name)| Listed {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
+                context_window: Some(context_window(self)),
+            })
             .collect())
     }
 }
@@ -189,7 +200,11 @@ pub fn find_named_binary(env_var: &str, bin_name: &str, extra_home_rel: &[&str])
             return Some(path);
         }
     }
-    let exe = if cfg!(windows) { format!("{bin_name}.exe") } else { bin_name.to_string() };
+    let exe = if cfg!(windows) {
+        format!("{bin_name}.exe")
+    } else {
+        bin_name.to_string()
+    };
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
             let candidate = dir.join(&exe);
@@ -296,11 +311,16 @@ impl Drop for ProcessGroupGuard {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).output();
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .creation_flags(0x0800_0000)
+                .output();
         }
         #[cfg(not(windows))]
         {
-            let _ = std::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).output();
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", "--", &format!("-{pid}")])
+                .output();
         }
     }
 }
@@ -430,7 +450,11 @@ async fn read_next_cli_line<R: AsyncRead + Unpin>(
 }
 
 /// Execute one headless streaming turn on any supported [`CliKind`].
-pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &CancellationToken) -> Result<TurnOutcome, String> {
+pub async fn run_turn<S: Sink>(
+    params: TurnParams<'_>,
+    sink: &S,
+    cancel: &CancellationToken,
+) -> Result<TurnOutcome, String> {
     run_turn_with_limits(params, None, CLI_IDLE_TIMEOUT, MAX_CLI_LINE_BYTES, sink, cancel).await
 }
 
@@ -453,7 +477,10 @@ pub(crate) async fn run_turn_with_limits<S: Sink>(
     if params.kind == CliKind::Cursor
         && !params.model.trim().is_empty()
         && params.model.trim() != "auto"
-        && models::cursor_variant_cache().lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+        && models::cursor_variant_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     {
         let _ = models::list_cursor_models(&bin).await;
     }
@@ -538,7 +565,11 @@ pub(crate) async fn run_turn_with_limits<S: Sink>(
     cmd.args(&args)
         .current_dir(params.workspace)
         .env("PWD", params.workspace)
-        .stdin(if prepared.stdin_bytes.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if prepared.stdin_bytes.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -549,7 +580,9 @@ pub(crate) async fn run_turn_with_limits<S: Sink>(
     cmd.creation_flags(0x0800_0000);
     #[cfg(unix)]
     cmd.process_group(0);
-    let mut child = cmd.spawn().map_err(|error| format!("无法启动 {}：{error}", params.kind.display_name()))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| format!("无法启动 {}：{error}", params.kind.display_name()))?;
     if let Some(bytes) = prepared.stdin_bytes
         && let Some(mut stdin_pipe) = child.stdin.take()
     {
@@ -635,11 +668,17 @@ pub(crate) async fn run_turn_with_limits<S: Sink>(
     if cancelled {
         group_guard.0 = None;
         let _ = child.wait().await;
-        return Ok(TurnOutcome { reason: "cancelled", extra_artifacts: recorder.external_artifacts });
+        return Ok(TurnOutcome {
+            reason: "cancelled",
+            extra_artifacts: recorder.external_artifacts,
+        });
     }
 
     recorder.finish()?;
-    let status = child.wait().await.map_err(|error| format!("等待 {} 结束失败：{error}", params.kind.display_name()))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("等待 {} 结束失败：{error}", params.kind.display_name()))?;
     group_guard.0 = None;
     let stderr_text = stderr_task.await.unwrap_or_default();
     if let Some(err) = recorder.result_error {
@@ -653,5 +692,8 @@ pub(crate) async fn run_turn_with_limits<S: Sink>(
             trimmed.to_string()
         });
     }
-    Ok(TurnOutcome { reason: "completed", extra_artifacts: recorder.external_artifacts })
+    Ok(TurnOutcome {
+        reason: "completed",
+        extra_artifacts: recorder.external_artifacts,
+    })
 }

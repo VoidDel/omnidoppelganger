@@ -37,7 +37,11 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
         if let Some(end) = text.find("\r\n\r\n") {
             let length = text[..end]
                 .lines()
-                .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|value| value.trim().parse::<usize>().unwrap()))
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap())
+                })
                 .unwrap_or(0);
             if bytes.len() >= end + 4 + length || read == 0 {
                 return text;
@@ -59,5 +63,8 @@ pub fn event_stream(events: &[serde_json::Value], done: bool) -> String {
 
 /// A JSON error response with the given status.
 pub fn error(status: u16, body: &str) -> String {
-    format!("HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
+    format!(
+        "HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
 }

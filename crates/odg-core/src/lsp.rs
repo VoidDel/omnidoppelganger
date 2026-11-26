@@ -31,12 +31,15 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
-pub use client::{Client, RpcError};
 use client::{CONTENT_MODIFIED, ProcessGroupGuard, SERVER_CANCELLED};
+pub use client::{Client, RpcError};
 #[cfg(test)]
 use client::{Writer, receive, receive_checked, send};
-pub use servers::{Download, LANGUAGES, Language, Located, downloaded, install, installed, language_by_key, language_for, locate, remove, server_tool};
 use servers::missing;
+pub use servers::{
+    Download, LANGUAGES, Language, Located, downloaded, install, installed, language_by_key, language_for, locate,
+    remove, server_tool,
+};
 #[cfg(test)]
 use servers::{RUST_ANALYZER, TY, TYPESCRIPT, executable, install_from, settings, unpack_program};
 
@@ -65,7 +68,13 @@ pub fn uri(path: &Path) -> String {
 /// `\\server\share\x` gives `file://server/share/x`.
 fn uri_of(text: &str) -> String {
     let text = plain_text(text).replace('\\', "/");
-    let mut encoded = String::from(if text.starts_with("//") { "file:" } else if text.starts_with('/') { "file://" } else { "file:///" });
+    let mut encoded = String::from(if text.starts_with("//") {
+        "file:"
+    } else if text.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
     for byte in text.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => encoded.push(byte as char),
@@ -90,7 +99,10 @@ fn path_text(uri: &str, windows: bool) -> Option<String> {
     let raw = rest.as_bytes();
     let mut at = 0;
     while at < raw.len() {
-        if raw[at] == b'%' && at + 3 <= raw.len() && let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&raw[at + 1..at + 3]).unwrap_or(""), 16) {
+        if raw[at] == b'%'
+            && at + 3 <= raw.len()
+            && let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&raw[at + 1..at + 3]).unwrap_or(""), 16)
+        {
             bytes.push(byte);
             at += 3;
             continue;
@@ -102,9 +114,16 @@ fn path_text(uri: &str, windows: bool) -> Option<String> {
     if !windows {
         return Some(decoded);
     }
-    let drive = decoded.len() > 3 && decoded.as_bytes()[0] == b'/' && decoded.as_bytes()[1].is_ascii_alphabetic() && decoded.as_bytes()[2] == b':';
+    let drive = decoded.len() > 3
+        && decoded.as_bytes()[0] == b'/'
+        && decoded.as_bytes()[1].is_ascii_alphabetic()
+        && decoded.as_bytes()[2] == b':';
     Some(if drive {
-        format!("{}{}", decoded[1..2].to_ascii_uppercase(), decoded[2..].replace('/', "\\"))
+        format!(
+            "{}{}",
+            decoded[1..2].to_ascii_uppercase(),
+            decoded[2..].replace('/', "\\")
+        )
     } else if decoded.starts_with('/') {
         decoded.replace('/', "\\")
     } else {
@@ -226,7 +245,9 @@ impl LspHub {
                     #[cfg(unix)]
                     command.process_group(0);
 
-                    let mut child = command.spawn().map_err(|error| format!("Cannot start {name}: {error}"))?;
+                    let mut child = command
+                        .spawn()
+                        .map_err(|error| format!("Cannot start {name}: {error}"))?;
                     group_guard.lock().unwrap().0 = child.id();
                     if startup_cancel.is_cancelled() {
                         group_guard.lock().unwrap().kill_now();
@@ -250,7 +271,9 @@ impl LspHub {
                                 said.push('\n');
                                 let excess = said.len().saturating_sub(2000);
                                 if excess > 0 {
-                                    let cut = (excess..said.len()).find(|at| said.is_char_boundary(*at)).unwrap_or(said.len());
+                                    let cut = (excess..said.len())
+                                        .find(|at| said.is_char_boundary(*at))
+                                        .unwrap_or(said.len());
                                     said.drain(..cut);
                                 }
                             }
@@ -275,7 +298,11 @@ impl LspHub {
                                 tokio::time::sleep(Duration::from_millis(200)).await;
                             }
                             let said = said.lock().unwrap().trim().to_string();
-                            let said = if said.is_empty() { String::new() } else { format!(" It said: {said}") };
+                            let said = if said.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" It said: {said}")
+                            };
                             Err(format!("{error}.{said} {}", missing(language)))
                         }
                     }
@@ -358,7 +385,10 @@ impl LspHub {
     #[cfg(test)]
     pub async fn insert(&self, root: &Path, language: &'static Language, client: Arc<Client>) {
         let cell = Arc::new(tokio::sync::OnceCell::new_with(Some(client)));
-        self.clients.lock().unwrap().insert((root.to_path_buf(), language.key), cell);
+        self.clients
+            .lock()
+            .unwrap()
+            .insert((root.to_path_buf(), language.key), cell);
     }
 }
 
@@ -376,14 +406,34 @@ struct Asked<'a> {
 }
 
 /// The operations `code_nav` offers, and whether each needs a place in the file.
-pub const OPERATIONS: &[(&str, bool)] = &[("definition", true), ("references", true), ("implementations", true), ("hover", true), ("symbols", false), ("find_symbol", false), ("diagnostics", false)];
+pub const OPERATIONS: &[(&str, bool)] = &[
+    ("definition", true),
+    ("references", true),
+    ("implementations", true),
+    ("hover", true),
+    ("symbols", false),
+    ("find_symbol", false),
+    ("diagnostics", false),
+];
 
 /// The place in a file `code_nav` was pointed at: its line (from 1), and a column found by the symbol named on it,
 /// or given (from 1). As LSP wants it: the line from 0, the column in UTF-16 code units.
 fn position(text: &str, input: &Value, shown: &str) -> Result<(u64, usize), String> {
-    let line = input["line"].as_u64().filter(|line| *line >= 1).ok_or("`line` is required for this operation: the line (from 1) where the symbol is.")?;
-    let content = text.lines().nth((line - 1) as usize).ok_or_else(|| format!("{shown} has no line {line}; it has {}.", text.lines().count()))?;
-    let column = match (input["symbol"].as_str().map(str::trim).filter(|symbol| !symbol.is_empty()), input["column"].as_u64()) {
+    let line = input["line"]
+        .as_u64()
+        .filter(|line| *line >= 1)
+        .ok_or("`line` is required for this operation: the line (from 1) where the symbol is.")?;
+    let content = text
+        .lines()
+        .nth((line - 1) as usize)
+        .ok_or_else(|| format!("{shown} has no line {line}; it has {}.", text.lines().count()))?;
+    let column = match (
+        input["symbol"]
+            .as_str()
+            .map(str::trim)
+            .filter(|symbol| !symbol.is_empty()),
+        input["column"].as_u64(),
+    ) {
         (Some(symbol), _) => {
             // The symbol as a whole word: `id` is not found inside `width`.
             let word = |c: char| c.is_alphanumeric() || c == '_';
@@ -392,7 +442,12 @@ fn position(text: &str, input: &Value, shown: &str) -> Result<(u64, usize), Stri
                 let after = content[at + symbol.len()..].chars().next();
                 !before.is_some_and(word) && !after.is_some_and(word)
             });
-            let (at, _) = found.or_else(|| content.match_indices(symbol).next()).ok_or_else(|| format!("`{symbol}` is not on line {line} of {shown}, which reads: {}", content.trim()))?;
+            let (at, _) = found.or_else(|| content.match_indices(symbol).next()).ok_or_else(|| {
+                format!(
+                    "`{symbol}` is not on line {line} of {shown}, which reads: {}",
+                    content.trim()
+                )
+            })?;
             content[..at].chars().count()
         }
         (None, Some(column)) if column >= 1 => (column - 1) as usize,
@@ -409,11 +464,18 @@ struct Lines<'a> {
 
 impl<'a> Lines<'a> {
     fn new(workspace: &'a Path) -> Self {
-        Self { workspace, files: HashMap::new() }
+        Self {
+            workspace,
+            files: HashMap::new(),
+        }
     }
 
     fn line(&mut self, path: &Path, line: usize) -> String {
-        let lines = self.files.entry(path.to_path_buf()).or_insert_with(|| std::fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).lines().map(str::to_string).collect()).unwrap_or_default());
+        let lines = self.files.entry(path.to_path_buf()).or_insert_with(|| {
+            std::fs::read(path)
+                .map(|bytes| String::from_utf8_lossy(&bytes).lines().map(str::to_string).collect())
+                .unwrap_or_default()
+        });
         lines.get(line).cloned().unwrap_or_default()
     }
 
@@ -424,7 +486,10 @@ impl<'a> Lines<'a> {
         let content = self.line(&path, line);
         let column = from_utf16(&content, start["character"].as_u64().unwrap_or(0) as usize);
         let shown = crate::tools::display(self.workspace, &path);
-        Some((format!("{shown}:{}:{}", line + 1, column + 1), content.trim().to_string()))
+        Some((
+            format!("{shown}:{}:{}", line + 1, column + 1),
+            content.trim().to_string(),
+        ))
     }
 }
 
@@ -439,7 +504,11 @@ fn locations(answer: &Value) -> Vec<(String, Value)> {
         .iter()
         .filter_map(|item| {
             let document = item["uri"].as_str().or(item["targetUri"].as_str())?;
-            let start = if item["targetSelectionRange"].is_object() { &item["targetSelectionRange"]["start"] } else { &item["range"]["start"] };
+            let start = if item["targetSelectionRange"].is_object() {
+                &item["targetSelectionRange"]["start"]
+            } else {
+                &item["range"]["start"]
+            };
             Some((document.to_string(), start.clone()))
         })
         .collect()
@@ -449,7 +518,12 @@ fn locations(answer: &Value) -> Vec<(String, Value)> {
 fn hover_text(contents: &Value) -> String {
     match contents {
         Value::String(text) => text.clone(),
-        Value::Array(parts) => parts.iter().map(hover_text).filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n\n"),
+        Value::Array(parts) => parts
+            .iter()
+            .map(hover_text)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
         Value::Object(part) => match (part.get("value"), part.get("language")) {
             (Some(Value::String(value)), Some(Value::String(language))) => format!("```{language}\n{value}\n```"),
             (Some(Value::String(value)), _) => value.clone(),
@@ -462,7 +536,32 @@ fn hover_text(contents: &Value) -> String {
 /// The LSP name of a symbol kind.
 fn kind_name(kind: u64) -> &'static str {
     const KINDS: &[&str] = &[
-        "file", "module", "namespace", "package", "class", "method", "property", "field", "constructor", "enum", "interface", "function", "variable", "constant", "string", "number", "boolean", "array", "object", "key", "null", "enum member", "struct", "event", "operator", "type parameter",
+        "file",
+        "module",
+        "namespace",
+        "package",
+        "class",
+        "method",
+        "property",
+        "field",
+        "constructor",
+        "enum",
+        "interface",
+        "function",
+        "variable",
+        "constant",
+        "string",
+        "number",
+        "boolean",
+        "array",
+        "object",
+        "key",
+        "null",
+        "enum member",
+        "struct",
+        "event",
+        "operator",
+        "type parameter",
     ];
     KINDS.get((kind as usize).wrapping_sub(1)).copied().unwrap_or("symbol")
 }
@@ -470,10 +569,26 @@ fn kind_name(kind: u64) -> &'static str {
 /// A file's outline, from `DocumentSymbol`s (nested) or `SymbolInformation`s (flat), one symbol a line.
 fn outline(symbols: &[Value], depth: usize, lines: &mut Vec<String>) {
     for symbol in symbols {
-        let start = if symbol["selectionRange"].is_object() { &symbol["selectionRange"]["start"] } else if symbol["range"].is_object() { &symbol["range"]["start"] } else { &symbol["location"]["range"]["start"] };
+        let start = if symbol["selectionRange"].is_object() {
+            &symbol["selectionRange"]["start"]
+        } else if symbol["range"].is_object() {
+            &symbol["range"]["start"]
+        } else {
+            &symbol["location"]["range"]["start"]
+        };
         let line = start["line"].as_u64().unwrap_or(0) + 1;
-        let detail = symbol["detail"].as_str().map(str::trim).filter(|detail| !detail.is_empty()).map(|detail| format!("  {detail}")).unwrap_or_default();
-        lines.push(format!("{}{} {}{detail}  (line {line})", "  ".repeat(depth), kind_name(symbol["kind"].as_u64().unwrap_or(0)), symbol["name"].as_str().unwrap_or("?")));
+        let detail = symbol["detail"]
+            .as_str()
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+            .map(|detail| format!("  {detail}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "{}{} {}{detail}  (line {line})",
+            "  ".repeat(depth),
+            kind_name(symbol["kind"].as_u64().unwrap_or(0)),
+            symbol["name"].as_str().unwrap_or("?")
+        ));
         if let Some(children) = symbol["children"].as_array() {
             outline(children, depth + 1, lines);
         }
@@ -481,18 +596,43 @@ fn outline(symbols: &[Value], depth: usize, lines: &mut Vec<String>) {
 }
 
 /// Answer `code_nav`: start or find the server for the file's language, give it the file, and ask.
-pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &CancellationToken) -> Result<crate::tools::ToolOutput, String> {
+pub async fn navigate(
+    hub: &LspHub,
+    workspace: &Path,
+    input: &Value,
+    cancel: &CancellationToken,
+) -> Result<crate::tools::ToolOutput, String> {
     // Paths come back from the server as it writes them, which is plainly: the workspace is compared with them so.
     let workspace = &plain(workspace);
     let operation = input["operation"].as_str().unwrap_or_default();
     let Some((_, placed)) = OPERATIONS.iter().find(|(name, _)| *name == operation) else {
-        return Err(format!("`operation` must be one of {}.", OPERATIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")));
+        return Err(format!(
+            "`operation` must be one of {}.",
+            OPERATIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
+        ));
     };
-    let path = crate::tools::resolve(workspace, input["path"].as_str().filter(|path| !path.trim().is_empty()).ok_or("`path` is required: the file to ask about, or for `find_symbol` any file of the language.")?);
-    let asked = Asked { operation, shown: crate::tools::display(workspace, &path), path };
+    let path = crate::tools::resolve(
+        workspace,
+        input["path"]
+            .as_str()
+            .filter(|path| !path.trim().is_empty())
+            .ok_or("`path` is required: the file to ask about, or for `find_symbol` any file of the language.")?,
+    );
+    let asked = Asked {
+        operation,
+        shown: crate::tools::display(workspace, &path),
+        path,
+    };
     let language = language_for(&asked.path).ok_or_else(|| {
-        let known: Vec<String> = LANGUAGES.iter().map(|language| format!("{} (.{})", language.name, language.extensions.join(", ."))).collect();
-        format!("{} is not of a language navigated here: {}. Use `search` instead.", asked.shown, known.join("; "))
+        let known: Vec<String> = LANGUAGES
+            .iter()
+            .map(|language| format!("{} (.{})", language.name, language.extensions.join(", .")))
+            .collect();
+        format!(
+            "{} is not of a language navigated here: {}. Use `search` instead.",
+            asked.shown,
+            known.join("; ")
+        )
     })?;
     if !asked.path.is_file() {
         return Err(format!("{} is not a file.", asked.shown));
@@ -500,7 +640,9 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
     let client = hub.client(workspace, language).await?;
     // The first question waits for the project to be indexed; `settled` is set only once indexing truly completes without cancellation.
     let first = !client.settled.load(Ordering::Acquire);
-    let ready = client.settle(if first { FIRST_SETTLE } else { LATER_SETTLE }, cancel).await;
+    let ready = client
+        .settle(if first { FIRST_SETTLE } else { LATER_SETTLE }, cancel)
+        .await;
     if cancel.is_cancelled() {
         return Err("Cancelled.".to_string());
     }
@@ -508,7 +650,11 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
         client.settled.store(true, Ordering::Release);
     }
     let (document, text) = client.sync(&asked.path).await?;
-    let place = if *placed { Some(position(&text, input, &asked.shown)?) } else { None };
+    let place = if *placed {
+        Some(position(&text, input, &asked.shown)?)
+    } else {
+        None
+    };
     let at = |(line, character): (u64, usize)| json!({ "textDocument": { "uri": document }, "position": { "line": line, "character": character } });
     let method_params = match asked.operation {
         "definition" => Some(("textDocument/definition", at(place.unwrap()))),
@@ -519,9 +665,16 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
             params["context"] = json!({ "includeDeclaration": true });
             Some(("textDocument/references", params))
         }
-        "symbols" => Some(("textDocument/documentSymbol", json!({ "textDocument": { "uri": document } }))),
+        "symbols" => Some((
+            "textDocument/documentSymbol",
+            json!({ "textDocument": { "uri": document } }),
+        )),
         "find_symbol" => {
-            let query = input["query"].as_str().map(str::trim).filter(|query| !query.is_empty()).ok_or("`query` is required for `find_symbol`: the name, or part of it, to look for.")?;
+            let query = input["query"]
+                .as_str()
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+                .ok_or("`query` is required for `find_symbol`: the name, or part of it, to look for.")?;
             Some(("workspace/symbol", json!({ "query": query })))
         }
         _ => None,
@@ -531,7 +684,11 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
     if let Some((line, _)) = place {
         meta["line"] = json!(line + 1);
     }
-    let still = if ready { "" } else { "\n[The language server was still indexing the project: the answer may be incomplete. Asking again in a while may find more.]" };
+    let still = if ready {
+        ""
+    } else {
+        "\n[The language server was still indexing the project: the answer may be incomplete. Asking again in a while may find more.]"
+    };
 
     let Some((method, params)) = method_params else {
         // Diagnostics: what the server finds wrong with the file, by its own analysis.
@@ -547,19 +704,48 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
             .filter_map(|diagnostic| {
                 let level = diagnostic["severity"].as_u64().unwrap_or(1);
                 let (place, content) = lines.place(&document, &diagnostic["range"]["start"])?;
-                let code = diagnostic["code"].as_str().map(str::to_string).or_else(|| diagnostic["code"].as_i64().map(|code| code.to_string())).map(|code| format!(" [{code}]")).unwrap_or_default();
-                let message = diagnostic["message"].as_str().unwrap_or_default().trim().replace('\n', "\n    ");
-                Some((level, format!("{} {place}{code}: {message}\n    {content}", severity(level))))
+                let code = diagnostic["code"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| diagnostic["code"].as_i64().map(|code| code.to_string()))
+                    .map(|code| format!(" [{code}]"))
+                    .unwrap_or_default();
+                let message = diagnostic["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim()
+                    .replace('\n', "\n    ");
+                Some((
+                    level,
+                    format!("{} {place}{code}: {message}\n    {content}", severity(level)),
+                ))
             })
             .collect();
         listed.sort_by_key(|(level, _)| *level);
         meta["results"] = json!(listed.len());
         meta["errors"] = json!(listed.iter().filter(|(level, _)| *level == 1).count());
-        let note = if client.program == "rust-analyzer" { "\n[rust-analyzer here runs no `cargo check`, so only what it finds by itself is listed: run `cargo check` for the compiler's full say.]" } else { "" };
-        let content = if listed.is_empty() {
-            format!("{} has no errors or warnings that {} reports.{note}{still}", asked.shown, client.program)
+        let note = if client.program == "rust-analyzer" {
+            "\n[rust-analyzer here runs no `cargo check`, so only what it finds by itself is listed: run `cargo check` for the compiler's full say.]"
         } else {
-            format!("{} problems in {}:\n{}{note}{still}", listed.len(), asked.shown, listed.into_iter().map(|(_, line)| line).take(LISTED).collect::<Vec<_>>().join("\n"))
+            ""
+        };
+        let content = if listed.is_empty() {
+            format!(
+                "{} has no errors or warnings that {} reports.{note}{still}",
+                asked.shown, client.program
+            )
+        } else {
+            format!(
+                "{} problems in {}:\n{}{note}{still}",
+                listed.len(),
+                asked.shown,
+                listed
+                    .into_iter()
+                    .map(|(_, line)| line)
+                    .take(LISTED)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
         };
         return Ok(crate::tools::ToolOutput::ok(content, meta));
     };
@@ -567,7 +753,10 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
     // The code may change under the question while the server reads it: then it is asked again.
     let mut answer = Value::Null;
     for attempt in 0..3 {
-        match client.request(method, params.clone(), Duration::from_secs(60), cancel).await {
+        match client
+            .request(method, params.clone(), Duration::from_secs(60), cancel)
+            .await
+        {
             Ok(got) => {
                 answer = got;
                 break;
@@ -598,7 +787,11 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
             let mut listed = Vec::new();
             outline(answer.as_array().map(Vec::as_slice).unwrap_or_default(), 0, &mut listed);
             meta["results"] = json!(listed.len());
-            if listed.is_empty() { format!("{} found no symbols in {}.{still}", client.program, asked.shown) } else { format!("{}:\n{}{still}", asked.shown, listed.join("\n")) }
+            if listed.is_empty() {
+                format!("{} found no symbols in {}.{still}", client.program, asked.shown)
+            } else {
+                format!("{}:\n{}{still}", asked.shown, listed.join("\n"))
+            }
         }
         "find_symbol" => {
             let mut listed = Vec::new();
@@ -609,20 +802,45 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
                     continue;
                 }
                 let start = &symbol["location"]["range"]["start"];
-                let place = if start.is_object() { lines.place(document, start).map(|(place, _)| place) } else { path_of(document).map(|path| crate::tools::display(workspace, &path)) };
-                let container = symbol["containerName"].as_str().filter(|name| !name.is_empty()).map(|name| format!(" in {name}")).unwrap_or_default();
-                listed.push(format!("{} {}{container}  {}", kind_name(symbol["kind"].as_u64().unwrap_or(0)), symbol["name"].as_str().unwrap_or("?"), place.unwrap_or_default()));
+                let place = if start.is_object() {
+                    lines.place(document, start).map(|(place, _)| place)
+                } else {
+                    path_of(document).map(|path| crate::tools::display(workspace, &path))
+                };
+                let container = symbol["containerName"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .map(|name| format!(" in {name}"))
+                    .unwrap_or_default();
+                listed.push(format!(
+                    "{} {}{container}  {}",
+                    kind_name(symbol["kind"].as_u64().unwrap_or(0)),
+                    symbol["name"].as_str().unwrap_or("?"),
+                    place.unwrap_or_default()
+                ));
                 if listed.len() == LISTED {
                     break;
                 }
             }
             meta["results"] = json!(listed.len());
-            if listed.is_empty() { format!("No symbol in the workspace matches `{}`.{still}", params["query"].as_str().unwrap_or_default()) } else { listed.join("\n") + still }
+            if listed.is_empty() {
+                format!(
+                    "No symbol in the workspace matches `{}`.{still}",
+                    params["query"].as_str().unwrap_or_default()
+                )
+            } else {
+                listed.join("\n") + still
+            }
         }
         _ => {
             let found = locations(&answer);
             meta["results"] = json!(found.len());
-            let mut listed: Vec<String> = found.iter().take(LISTED).filter_map(|(document, start)| lines.place(document, start)).map(|(place, content)| format!("{place}  {content}")).collect();
+            let mut listed: Vec<String> = found
+                .iter()
+                .take(LISTED)
+                .filter_map(|(document, start)| lines.place(document, start))
+                .map(|(place, content)| format!("{place}  {content}"))
+                .collect();
             if found.len() > LISTED {
                 listed.push(format!("… and {} more", found.len() - LISTED));
             }
@@ -631,7 +849,11 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
                 "implementations" => "Implemented at",
                 _ => "Used at",
             };
-            if listed.is_empty() { format!("{} found none.{still}", client.program) } else { format!("{what} ({}):\n{}{still}", found.len(), listed.join("\n")) }
+            if listed.is_empty() {
+                format!("{} found none.{still}", client.program)
+            } else {
+                format!("{what} ({}):\n{}{still}", found.len(), listed.join("\n"))
+            }
         }
     };
     Ok(crate::tools::ToolOutput::ok(content, meta))

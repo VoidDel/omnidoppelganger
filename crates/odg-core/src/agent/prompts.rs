@@ -28,8 +28,8 @@ pub(super) fn verdict(written: &str) -> (bool, String) {
         .trim_end_matches(['.', '。'])
         .trim_matches(|c: char| matches!(c, '*' | '`' | '_' | ' ' | '\t'))
         .trim_end_matches(['.', '。']);
-    let allowed = matches!(token.to_ascii_uppercase().as_str(), "ALLOW" | "ALLOWED")
-        || matches!(token, "允许" | "放行");
+    let allowed =
+        matches!(token.to_ascii_uppercase().as_str(), "ALLOW" | "ALLOWED") || matches!(token, "允许" | "放行");
     let reason = lines.collect::<Vec<_>>().join(" ");
     (allowed, reason)
 }
@@ -61,11 +61,24 @@ pub enum Origin {
 /// The system prompt. It changes only when the project's instructions do,
 /// so the cached prefix stays valid from one request to the next.
 /// `instructions` is the project's own file for agents, as `(name, contents)`.
-pub fn system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], origin: Origin, chat: bool) -> String {
+pub fn system_prompt(
+    workspace: &std::path::Path,
+    instructions: Option<(&str, &str)>,
+    skills: &[SkillInfo],
+    origin: Origin,
+    chat: bool,
+) -> String {
     build_system_prompt(workspace, instructions, skills, origin, chat, false)
 }
 
-pub(super) fn build_system_prompt(workspace: &std::path::Path, instructions: Option<(&str, &str)>, skills: &[SkillInfo], origin: Origin, chat: bool, read_only: bool) -> String {
+pub(super) fn build_system_prompt(
+    workspace: &std::path::Path,
+    instructions: Option<(&str, &str)>,
+    skills: &[SkillInfo],
+    origin: Origin,
+    chat: bool,
+    read_only: bool,
+) -> String {
     let subagent = origin == Origin::Agent;
     let aside = origin == Origin::Aside;
     let (_, _, shell) = tools::shell();
@@ -92,14 +105,29 @@ pub(super) fn build_system_prompt(workspace: &std::path::Path, instructions: Opt
          - Reply in the language the user writes in.",
         workspace.display(),
         std::env::consts::OS,
-        code_nav = if chat { "" } else { " In code, `code_nav` finds where a symbol is defined and used more surely than `search`." },
-        delegating = if subagent || chat || aside { "" } else { "\n- When the work splits into parts that do not depend on each other, hand the parts to subagents with `delegate`: they work at the same time and report back to you." },
-        deliver = if subagent || aside { "" } else { "\n- When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation." },
+        code_nav = if chat {
+            ""
+        } else {
+            " In code, `code_nav` finds where a symbol is defined and used more surely than `search`."
+        },
+        delegating = if subagent || chat || aside {
+            ""
+        } else {
+            "\n- When the work splits into parts that do not depend on each other, hand the parts to subagents with `delegate`: they work at the same time and report back to you."
+        },
+        deliver = if subagent || aside {
+            ""
+        } else {
+            "\n- When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation."
+        },
     );
     let offered = if skills.is_empty() {
         String::new()
     } else {
-        let lines: Vec<String> = skills.iter().map(|skill| format!("- {}: {}", skill.name, skill.description)).collect();
+        let lines: Vec<String> = skills
+            .iter()
+            .map(|skill| format!("- {}: {}", skill.name, skill.description))
+            .collect();
         format!(
             "\n\nSkills are how-tos for particular kinds of work, kept out of this prompt until needed. When a task matches one below, read it with `load_skill` before you start, and follow it.\n\n<skills>\n{}\n</skills>",
             lines.join("\n")

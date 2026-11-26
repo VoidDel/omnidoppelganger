@@ -31,7 +31,10 @@ pub struct GrantStore {
 impl GrantStore {
     /// A store kept in the file at `path`, which need not exist yet.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), writing: Mutex::new(()) }
+        Self {
+            path: path.into(),
+            writing: Mutex::new(()),
+        }
     }
 
     /// Whether an approval of this grant can be kept for good.
@@ -39,7 +42,9 @@ impl GrantStore {
         // `search` covers every web search: there is one search service, and nothing narrower to name.
         grant == "search"
             || grant == PROJECT_TRUST_GRANT
-            || ["command:", "mcp:", "mcp-resource:", "web:", "lsp:"].iter().any(|kind| grant.starts_with(kind))
+            || ["command:", "mcp:", "mcp-resource:", "web:", "lsp:"]
+                .iter()
+                .any(|kind| grant.starts_with(kind))
     }
 
     pub fn is_trusted_workspace(&self, workspace: &Path) -> bool {
@@ -56,11 +61,16 @@ impl GrantStore {
 
     /// Every kept grant. A missing or unreadable file holds none.
     pub fn all(&self) -> Grants {
-        std::fs::read_to_string(&self.path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
     }
 
     pub fn allows(&self, workspace: &Path, grant: &str) -> bool {
-        self.all().get(workspace.to_string_lossy().as_ref()).is_some_and(|grants| grants.contains(grant))
+        self.all()
+            .get(workspace.to_string_lossy().as_ref())
+            .is_some_and(|grants| grants.contains(grant))
     }
 
     fn change(&self, change: impl FnOnce(&mut Grants)) -> io::Result<()> {
@@ -71,16 +81,25 @@ impl GrantStore {
         if let Some(directory) = self.path.parent() {
             std::fs::create_dir_all(directory)?;
         }
-        write_atomically(&self.path, &serde_json::to_vec_pretty(&grants).map_err(io::Error::other)?)
+        write_atomically(
+            &self.path,
+            &serde_json::to_vec_pretty(&grants).map_err(io::Error::other)?,
+        )
     }
 
     /// Keep `grant` for `workspace`. A grant that cannot be kept is refused.
     pub fn add(&self, workspace: &Path, grant: &str) -> io::Result<()> {
         if !Self::keeps(grant) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("`{grant}` cannot be allowed for good")));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("`{grant}` cannot be allowed for good"),
+            ));
         }
         self.change(|grants| {
-            grants.entry(workspace.to_string_lossy().into_owned()).or_default().insert(grant.to_string());
+            grants
+                .entry(workspace.to_string_lossy().into_owned())
+                .or_default()
+                .insert(grant.to_string());
         })
     }
 

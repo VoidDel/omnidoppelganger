@@ -63,11 +63,7 @@ pub async fn save_mcp_config(app: State<'_, App>, config: String) -> Result<Sett
 }
 
 #[tauri::command]
-pub async fn revoke_grant(
-    app: State<'_, App>,
-    workspace: String,
-    grant: String,
-) -> Result<SettingsView, String> {
+pub async fn revoke_grant(app: State<'_, App>, workspace: String, grant: String) -> Result<SettingsView, String> {
     let core = app.0.clone();
     tokio::task::spawn_blocking(move || {
         core.grants
@@ -80,11 +76,7 @@ pub async fn revoke_grant(
 }
 
 #[tauri::command]
-pub async fn save_api_key(
-    app: State<'_, App>,
-    provider: String,
-    key: String,
-) -> Result<SettingsView, String> {
+pub async fn save_api_key(app: State<'_, App>, provider: String, key: String) -> Result<SettingsView, String> {
     let core = app.0.clone();
     tokio::task::spawn_blocking(move || {
         core.settings
@@ -131,9 +123,7 @@ pub async fn add_provider(app: State<'_, App>, kind: String, name: String) -> Re
 pub async fn remove_provider(app: State<'_, App>, id: String) -> Result<SettingsView, String> {
     let core = app.0.clone();
     tokio::task::spawn_blocking(move || {
-        core.settings
-            .remove_provider(&id)
-            .map_err(|error| error.to_string())?;
+        core.settings.remove_provider(&id).map_err(|error| error.to_string())?;
         core.reconcile_live_models();
         Ok(core.settings_view())
     })
@@ -236,7 +226,15 @@ pub async fn install_skill(
         .filter(|p| !p.is_empty());
     let local = PathBuf::from(&source);
     let cancel = tokio_util::sync::CancellationToken::new();
-    odg_core::skills::fetch(&source, local, within.as_deref(), &folder, replace == Some(true), &cancel).await?;
+    odg_core::skills::fetch(
+        &source,
+        local,
+        within.as_deref(),
+        &folder,
+        replace == Some(true),
+        &cancel,
+    )
+    .await?;
     tokio::task::spawn_blocking(move || skills_view(&folder))
         .await
         .map_err(|e| e.to_string())

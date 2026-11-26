@@ -390,7 +390,11 @@ pub fn delegate_spec() -> Value {
 
 /// The definitions of `list_mcp_resources` and `read_mcp_resource`, offered while a connected MCP server has resources.
 pub fn mcp_resource_specs(servers: &[String]) -> Vec<Value> {
-    let named = servers.iter().map(|server| format!("`{server}`")).collect::<Vec<_>>().join(", ");
+    let named = servers
+        .iter()
+        .map(|server| format!("`{server}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
     vec![
         json!({
             "name": "list_mcp_resources",

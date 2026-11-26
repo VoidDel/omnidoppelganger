@@ -36,7 +36,10 @@ pub const DEFAULT_MODEL: &str = MODELS[0].0;
 
 /// Models whose safety refusals the API can re-run on another model inside the same call.
 fn supports_server_fallback(model: &str) -> bool {
-    matches!(model, "claude-opus-5-5" | "claude-opus-5" | "claude-fable-5-2" | "claude-fable-5-1" | "claude-sonnet-5-5")
+    matches!(
+        model,
+        "claude-opus-5-5" | "claude-opus-5" | "claude-fable-5-2" | "claude-fable-5-1" | "claude-sonnet-5-5"
+    )
 }
 
 /// Rebuilds one assistant message from stream events.
@@ -75,7 +78,10 @@ impl StreamAccumulator {
                     }),
                     Some("text") => {
                         if let Some(text) = block["text"].as_str().filter(|text| !text.is_empty()) {
-                            deltas.push(StreamDelta::TextDelta { index, text: text.to_string() });
+                            deltas.push(StreamDelta::TextDelta {
+                                index,
+                                text: text.to_string(),
+                            });
                         }
                     }
                     _ => {}
@@ -86,20 +92,30 @@ impl StreamAccumulator {
                 let index = block_index(data)?;
                 let delta = &data["delta"];
                 let Some(block) = self.blocks.get_mut(index).and_then(Option::as_mut) else {
-                    return Err(LlmError::Protocol(format!("delta for content block {index} that never started")));
+                    return Err(LlmError::Protocol(format!(
+                        "delta for content block {index} that never started"
+                    )));
                 };
                 match delta["type"].as_str() {
                     Some("text_delta") => {
                         let text = delta["text"].as_str().unwrap_or_default();
                         append_string(block, "text", text);
-                        deltas.push(StreamDelta::TextDelta { index, text: text.to_string() });
+                        deltas.push(StreamDelta::TextDelta {
+                            index,
+                            text: text.to_string(),
+                        });
                     }
                     Some("thinking_delta") => {
                         let text = delta["thinking"].as_str().unwrap_or_default();
                         append_string(block, "thinking", text);
-                        deltas.push(StreamDelta::ThinkingDelta { index, text: text.to_string() });
+                        deltas.push(StreamDelta::ThinkingDelta {
+                            index,
+                            text: text.to_string(),
+                        });
                     }
-                    Some("signature_delta") => append_string(block, "signature", delta["signature"].as_str().unwrap_or_default()),
+                    Some("signature_delta") => {
+                        append_string(block, "signature", delta["signature"].as_str().unwrap_or_default())
+                    }
                     // A source the text cites, such as a page a web search found: gathered on the block, as the API sends it whole.
                     Some("citations_delta") => match block["citations"].as_array_mut() {
                         Some(citations) => citations.push(delta["citation"].clone()),
@@ -108,7 +124,10 @@ impl StreamAccumulator {
                     Some("input_json_delta") => {
                         let partial = delta["partial_json"].as_str().unwrap_or_default();
                         self.partial_json.entry(index).or_default().push_str(partial);
-                        deltas.push(StreamDelta::ToolInputDelta { index, partial: partial.to_string() });
+                        deltas.push(StreamDelta::ToolInputDelta {
+                            index,
+                            partial: partial.to_string(),
+                        });
                     }
                     _ => {}
                 }
@@ -121,7 +140,11 @@ impl StreamAccumulator {
                     let raw = self.partial_json.remove(&index).unwrap_or_default();
                     // Tool inputs stream unvalidated, so the text is parsed strictly here:
                     // anything but one JSON object is reported instead of being run.
-                    let parsed = if raw.trim().is_empty() { Ok(json!({})) } else { serde_json::from_str::<Value>(&raw) };
+                    let parsed = if raw.trim().is_empty() {
+                        Ok(json!({}))
+                    } else {
+                        serde_json::from_str::<Value>(&raw)
+                    };
                     match parsed {
                         Ok(input) if input.is_object() => block["input"] = input,
                         _ => {
@@ -168,7 +191,10 @@ impl StreamAccumulator {
 }
 
 fn block_index(data: &Value) -> Result<usize, LlmError> {
-    data["index"].as_u64().map(|index| index as usize).ok_or_else(|| LlmError::Protocol("content block event without an index".to_string()))
+    data["index"]
+        .as_u64()
+        .map(|index| index as usize)
+        .ok_or_else(|| LlmError::Protocol("content block event without an index".to_string()))
 }
 
 fn append_string(block: &mut Value, field: &str, text: &str) {
@@ -182,9 +208,17 @@ fn api_error(status: Option<u16>, error: &Value) -> LlmError {
     let kind = error["type"].as_str().unwrap_or("api_error").to_string();
     let retryable = match status {
         Some(status) => matches!(status, 408 | 409 | 429) || status >= 500,
-        None => matches!(kind.as_str(), "overloaded_error" | "api_error" | "rate_limit_error" | "timeout_error"),
+        None => matches!(
+            kind.as_str(),
+            "overloaded_error" | "api_error" | "rate_limit_error" | "timeout_error"
+        ),
     };
-    LlmError::Api { status, kind, message: error["message"].as_str().unwrap_or("no message").to_string(), retryable }
+    LlmError::Api {
+        status,
+        kind,
+        message: error["message"].as_str().unwrap_or("no message").to_string(),
+        retryable,
+    }
 }
 
 /// The JSON body of a streaming Messages request.
@@ -243,7 +277,11 @@ impl AnthropicClient {
             .connect_timeout(Duration::from_secs(30))
             .build()
             .map_err(|error| LlmError::Network(error.to_string()))?;
-        Ok(Self { http, base_url: base_url.into().trim_end_matches('/').to_string(), key })
+        Ok(Self {
+            http,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            key,
+        })
     }
 
     fn official(&self) -> bool {
@@ -258,7 +296,9 @@ impl AnthropicClient {
         cancel: &CancellationToken,
         forwarded: &mut bool,
     ) -> Attempt {
-        let key = (self.key)().filter(|key| !key.trim().is_empty()).ok_or((LlmError::MissingKey, None))?;
+        let key = (self.key)()
+            .filter(|key| !key.trim().is_empty())
+            .ok_or((LlmError::MissingKey, None))?;
         let mut builder = self
             .http
             .post(format!("{}/v1/messages", self.base_url))
@@ -301,8 +341,12 @@ impl AnthropicClient {
                 if raw.is_empty() {
                     continue;
                 }
-                let data: Value = serde_json::from_str(raw)
-                    .map_err(|error| (LlmError::Protocol(format!("event {} is not JSON: {error}", event.event)), None))?;
+                let data: Value = serde_json::from_str(raw).map_err(|error| {
+                    (
+                        LlmError::Protocol(format!("event {} is not JSON: {error}", event.event)),
+                        None,
+                    )
+                })?;
                 for delta in accumulator.apply(&data).map_err(|error| (error, None))? {
                     *forwarded = true;
                     // A closed receiver only means nobody is watching; the message still completes.
@@ -311,7 +355,10 @@ impl AnthropicClient {
             }
         }
         if !accumulator.stopped() {
-            return Err((LlmError::Network("the stream ended before the message was complete".to_string()), None));
+            return Err((
+                LlmError::Network("the stream ended before the message was complete".to_string()),
+                None,
+            ));
         }
         Ok(accumulator.finish())
     }
@@ -392,14 +439,27 @@ mod tests {
             assert_eq!(turn.model, "claude-opus-5-5");
             assert_eq!(turn.stop_reason.as_deref(), Some("tool_use"));
             assert_eq!(turn.usage, json!({ "input_tokens": 12, "output_tokens": 40 }));
-            assert_eq!(turn.content, vec![
-                json!({ "type": "thinking", "thinking": "读一下文件", "signature": "c2ln" }),
-                json!({ "type": "text", "text": "我先看看。" }),
-                json!({ "type": "tool_use", "id": "toolu_1", "name": "read_file", "input": { "path": "src/日志.rs" } }),
-            ]);
+            assert_eq!(
+                turn.content,
+                vec![
+                    json!({ "type": "thinking", "thinking": "读一下文件", "signature": "c2ln" }),
+                    json!({ "type": "text", "text": "我先看看。" }),
+                    json!({ "type": "tool_use", "id": "toolu_1", "name": "read_file", "input": { "path": "src/日志.rs" } }),
+                ]
+            );
             assert!(turn.invalid_tool_inputs.is_empty());
-            assert_eq!(deltas.first(), Some(&StreamDelta::ThinkingDelta { index: 0, text: "读一下文件".into() }));
-            assert!(deltas.contains(&StreamDelta::ToolUseStart { index: 2, id: "toolu_1".into(), name: "read_file".into() }));
+            assert_eq!(
+                deltas.first(),
+                Some(&StreamDelta::ThinkingDelta {
+                    index: 0,
+                    text: "读一下文件".into()
+                })
+            );
+            assert!(deltas.contains(&StreamDelta::ToolUseStart {
+                index: 2,
+                id: "toolu_1".into(),
+                name: "read_file".into()
+            }));
             assert_eq!(deltas.last(), Some(&StreamDelta::BlockStop { index: 2 }));
         }
     }
@@ -416,17 +476,27 @@ mod tests {
         );
         let (turn, _, stopped) = replay(stream.as_bytes(), 16);
         assert!(!stopped);
-        assert_eq!(turn.content[0], json!({ "type": "fallback", "from": { "model": "a" }, "to": { "model": "b" } }));
+        assert_eq!(
+            turn.content[0],
+            json!({ "type": "fallback", "from": { "model": "a" }, "to": { "model": "b" } })
+        );
         assert_eq!(turn.content[1]["input"], json!({}));
-        assert_eq!(turn.invalid_tool_inputs.get("toolu_2").map(String::as_str), Some("{\"path\": \"a.rs"));
+        assert_eq!(
+            turn.invalid_tool_inputs.get("toolu_2").map(String::as_str),
+            Some("{\"path\": \"a.rs")
+        );
     }
 
     #[test]
     fn surfaces_a_stream_error_as_retryable_only_when_the_api_says_so() {
         let mut accumulator = StreamAccumulator::default();
-        let overloaded = accumulator.apply(&json!({ "type": "error", "error": { "type": "overloaded_error", "message": "busy" } })).unwrap_err();
+        let overloaded = accumulator
+            .apply(&json!({ "type": "error", "error": { "type": "overloaded_error", "message": "busy" } }))
+            .unwrap_err();
         assert!(overloaded.retryable());
-        let invalid = accumulator.apply(&json!({ "type": "error", "error": { "type": "invalid_request_error", "message": "bad" } })).unwrap_err();
+        let invalid = accumulator
+            .apply(&json!({ "type": "error", "error": { "type": "invalid_request_error", "message": "bad" } }))
+            .unwrap_err();
         assert!(!invalid.retryable());
         assert!(!api_error(Some(400), &json!({ "type": "invalid_request_error", "message": "bad" })).retryable());
         assert!(api_error(Some(529), &json!({ "type": "overloaded_error", "message": "busy" })).retryable());
@@ -446,7 +516,10 @@ mod tests {
         let official = request_body(&request, true);
         assert_eq!(official["fallbacks"], "default");
         assert_eq!(official["tools"][0]["eager_input_streaming"], true);
-        assert_eq!(official["thinking"], json!({ "type": "adaptive", "display": "summarized" }));
+        assert_eq!(
+            official["thinking"],
+            json!({ "type": "adaptive", "display": "summarized" })
+        );
         assert_eq!(official["output_config"], json!({ "effort": "high" }));
         assert_eq!(official["stream"], true);
         // Sampling parameters are rejected by this API version, so none may appear.
@@ -456,7 +529,13 @@ mod tests {
         assert!(gateway.get("fallbacks").is_none());
         assert!(gateway["tools"][0].get("eager_input_streaming").is_none());
 
-        let haiku = request_body(&LlmRequest { model: "claude-haiku-5-5".into(), ..request }, true);
+        let haiku = request_body(
+            &LlmRequest {
+                model: "claude-haiku-5-5".into(),
+                ..request
+            },
+            true,
+        );
         assert!(haiku.get("fallbacks").is_none());
     }
 
@@ -483,7 +562,10 @@ mod tests {
         // The search's own call is the API's, not one to run here: never reported as a bad tool input.
         assert!(turn.invalid_tool_inputs.is_empty());
         assert_eq!(turn.content[1], result);
-        assert_eq!(turn.content[2], json!({ "type": "text", "text": "A says so.", "citations": [citation] }));
+        assert_eq!(
+            turn.content[2],
+            json!({ "type": "text", "text": "A says so.", "citations": [citation] })
+        );
     }
 
     #[test]
@@ -497,7 +579,10 @@ mod tests {
             tools: vec![json!({ "type": "web_search_20260209", "name": "web_search", "max_uses": 2 })],
             effort: "low".into(),
         };
-        assert_eq!(request_body(&request, true)["tools"], json!([{ "type": "web_search_20260209", "name": "web_search", "max_uses": 2 }]));
+        assert_eq!(
+            request_body(&request, true)["tools"],
+            json!([{ "type": "web_search_20260209", "name": "web_search", "max_uses": 2 }])
+        );
     }
 
     #[tokio::test]
@@ -519,7 +604,8 @@ mod tests {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         );
-        let raw_http = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
+        let raw_http =
+            format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
         let (address, _server) = serve(vec![raw_http]).await;
         let client = AnthropicClient::new(address, Arc::new(|| Some("sk-ant".into()))).unwrap();
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();

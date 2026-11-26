@@ -90,7 +90,11 @@ pub(super) fn pick_cursor_variant(requested_rank: u8, variants: &[(u8, String)])
     if let Some((_, id)) = variants.iter().find(|(r, _)| *r == requested_rank) {
         return Some(id.as_str());
     }
-    if let Some((_, id)) = variants.iter().filter(|(r, _)| *r < requested_rank).max_by_key(|(r, _)| *r) {
+    if let Some((_, id)) = variants
+        .iter()
+        .filter(|(r, _)| *r < requested_rank)
+        .max_by_key(|(r, _)| *r)
+    {
         return Some(id.as_str());
     }
     variants.iter().min_by_key(|(r, _)| *r).map(|(_, id)| id.as_str())
@@ -229,7 +233,11 @@ pub(super) fn parse_cursor_models_output(raw: &str) -> (Vec<Listed>, CursorVaria
     let mut variants: HashMap<String, Vec<(u8, String)>> = HashMap::new();
     for line in raw.lines() {
         let trimmed = line.trim_matches(|c: char| c.is_whitespace() || c == '\u{200b}');
-        if trimmed.is_empty() || trimmed.starts_with("Available ") || trimmed.starts_with("Tip:") || trimmed.starts_with("Loading ") {
+        if trimmed.is_empty()
+            || trimmed.starts_with("Available ")
+            || trimmed.starts_with("Tip:")
+            || trimmed.starts_with("Loading ")
+        {
             continue;
         }
         let Some((id_raw, label_raw)) = trimmed.split_once(" - ") else {
@@ -332,7 +340,13 @@ fn opencode_providers_is_anonymous(raw: &str) -> bool {
 }
 
 fn is_opencode_cost_free(cost: &Value) -> Option<bool> {
-    let tier = if let Some(arr) = cost.as_array() { arr.first()? } else if cost.is_object() { cost } else { return None };
+    let tier = if let Some(arr) = cost.as_array() {
+        arr.first()?
+    } else if cost.is_object() {
+        cost
+    } else {
+        return None;
+    };
     let input = tier["input"].as_f64()?;
     let output = tier["output"].as_f64().unwrap_or(0.0);
     Some(input == 0.0 && output == 0.0)
@@ -363,7 +377,11 @@ pub(super) fn parse_opencode_api_models(raw: &str, free_only: bool) -> Vec<Liste
     let mut seen = std::collections::HashSet::new();
     for (idx, item) in arr.iter().enumerate() {
         let provider_id = item["providerID"].as_str().unwrap_or("").trim();
-        let model_id = item["id"].as_str().or_else(|| item["modelID"].as_str()).unwrap_or("").trim();
+        let model_id = item["id"]
+            .as_str()
+            .or_else(|| item["modelID"].as_str())
+            .unwrap_or("")
+            .trim();
         if provider_id.is_empty() || model_id.is_empty() {
             continue;
         }
@@ -376,13 +394,28 @@ pub(super) fn parse_opencode_api_models(raw: &str, free_only: bool) -> Vec<Liste
         if free_only && tier != 0 {
             continue;
         }
-        let base_name = item["name"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(model_id);
+        let base_name = item["name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(model_id);
         let display = match tag {
             Some(t) => format!("{base_name} · {t}"),
             None => base_name.to_string(),
         };
-        let ctx = item["limit"]["context"].as_u64().filter(|&n| n > 0).or(Some(context_window(CliKind::OpenCode)));
-        ranked.push((tier, idx, Listed { id: full_id, name: display, context_window: ctx }));
+        let ctx = item["limit"]["context"]
+            .as_u64()
+            .filter(|&n| n > 0)
+            .or(Some(context_window(CliKind::OpenCode)));
+        ranked.push((
+            tier,
+            idx,
+            Listed {
+                id: full_id,
+                name: display,
+                context_window: ctx,
+            },
+        ));
     }
     ranked.sort_by_key(|(tier, idx, _)| (*tier, *idx));
     ranked.into_iter().map(|(_, _, listed)| listed).collect()

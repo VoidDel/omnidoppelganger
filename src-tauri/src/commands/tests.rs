@@ -15,12 +15,11 @@ use tokio_util::sync::CancellationToken;
 use crate::commands::git::{git_checkout_core, session_git_workspace};
 use crate::commands::runtime_lsp::{run_inline_shell_with_sandbox, strip_inline_ansi};
 use crate::commands::sessions::{
-    ensure_markdown_extension, export_session_markdown_with_title, sanitize_export_filename,
-    send_message_core,
+    ensure_markdown_extension, export_session_markdown_with_title, sanitize_export_filename, send_message_core,
 };
 use crate::commands::workbench::{
-    materialize_snapshot_in, open_attachment_blocking, picture_blocking, prune_stale_pastes_in,
-    remove_pasted_file_in, safe_to_open_directly, save_pasted_file_in,
+    materialize_snapshot_in, open_attachment_blocking, picture_blocking, prune_stale_pastes_in, remove_pasted_file_in,
+    safe_to_open_directly, save_pasted_file_in,
 };
 use crate::forward_session_events;
 use crate::state::{AppCore, MAX_IDLE_SESSIONS, safe_session_id};
@@ -85,7 +84,10 @@ impl Llm for MockLlm {
         match step {
             Some(ScriptedStep::Reply(turn)) => {
                 if let Some(txt) = turn.content.first().and_then(|b| b["text"].as_str()) {
-                    let _ = deltas.send(StreamDelta::TextDelta { index: 0, text: txt.to_string() });
+                    let _ = deltas.send(StreamDelta::TextDelta {
+                        index: 0,
+                        text: txt.to_string(),
+                    });
                 }
                 Ok(turn)
             }
@@ -146,7 +148,16 @@ fn init_git_repo(dir: &Path) {
     assert!(
         std::process::Command::new("git")
             .current_dir(dir)
-            .args(["-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "--quiet", "-m", "init"])
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@localhost",
+                "commit",
+                "--quiet",
+                "-m",
+                "init"
+            ])
             .status()
             .unwrap()
             .success()
@@ -237,14 +248,28 @@ fn materialize_snapshot_uses_private_dir_and_rejects_unsafe_names() {
 
     for bad_snap in ["", ".", "..", "../secret", "a/b", "a\\b", "snap\0x"] {
         assert!(
-            materialize_snapshot_in(&versions_root, "sess-1", Path::new("report.pdf"), bad_snap, Some(1), b"pdf")
-                .is_err(),
+            materialize_snapshot_in(
+                &versions_root,
+                "sess-1",
+                Path::new("report.pdf"),
+                bad_snap,
+                Some(1),
+                b"pdf"
+            )
+            .is_err(),
             "expected error for snapshot {bad_snap:?}"
         );
     }
     assert!(
-        materialize_snapshot_in(&versions_root, "../..", Path::new("report.pdf"), "3-0123456789abcdef", None, b"pdf")
-            .is_err()
+        materialize_snapshot_in(
+            &versions_root,
+            "../..",
+            Path::new("report.pdf"),
+            "3-0123456789abcdef",
+            None,
+            b"pdf"
+        )
+        .is_err()
     );
 
     let preview = materialize_snapshot_in(
@@ -261,7 +286,11 @@ fn materialize_snapshot_uses_private_dir_and_rejects_unsafe_names() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let dir_mode = std::fs::symlink_metadata(preview.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+        let dir_mode = std::fs::symlink_metadata(preview.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         let file_mode = std::fs::symlink_metadata(&preview).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700);
         assert_eq!(file_mode, 0o600);
@@ -272,11 +301,26 @@ fn materialize_snapshot_uses_private_dir_and_rejects_unsafe_names() {
 fn export_markdown_helpers_enforce_md_extension() {
     assert_eq!(sanitize_export_filename("我的会话: a/b*c?"), "我的会话- a-b-c-.md");
     assert_eq!(sanitize_export_filename("   "), "session.md");
-    assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/notes")), PathBuf::from("/tmp/notes.md"));
-    assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/evil.sh")), PathBuf::from("/tmp/evil.sh.md"));
-    assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/evil.exe.")), PathBuf::from("/tmp/evil.exe.md"));
-    assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/keep.md")), PathBuf::from("/tmp/keep.md"));
-    assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/KEEP.MD")), PathBuf::from("/tmp/KEEP.MD"));
+    assert_eq!(
+        ensure_markdown_extension(PathBuf::from("/tmp/notes")),
+        PathBuf::from("/tmp/notes.md")
+    );
+    assert_eq!(
+        ensure_markdown_extension(PathBuf::from("/tmp/evil.sh")),
+        PathBuf::from("/tmp/evil.sh.md")
+    );
+    assert_eq!(
+        ensure_markdown_extension(PathBuf::from("/tmp/evil.exe.")),
+        PathBuf::from("/tmp/evil.exe.md")
+    );
+    assert_eq!(
+        ensure_markdown_extension(PathBuf::from("/tmp/keep.md")),
+        PathBuf::from("/tmp/keep.md")
+    );
+    assert_eq!(
+        ensure_markdown_extension(PathBuf::from("/tmp/KEEP.MD")),
+        PathBuf::from("/tmp/KEEP.MD")
+    );
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -380,7 +424,11 @@ fn invoke_handler_registers_all_100_frontend_api_commands() {
         }
     }
 
-    assert_eq!(frontend_cmds.len(), 100, "expected 100 invoke commands in api.ts, got: {frontend_cmds:?}");
+    assert_eq!(
+        frontend_cmds.len(),
+        100,
+        "expected 100 invoke commands in api.ts, got: {frontend_cmds:?}"
+    );
     assert!(frontend_cmds.contains("get_session_item"));
     assert!(frontend_cmds.contains("remove_pasted_file"));
 
@@ -395,7 +443,10 @@ fn invoke_handler_registers_all_100_frontend_api_commands() {
     }
 
     for cmd in &frontend_cmds {
-        assert!(backend_cmds.contains(cmd), "frontend command `{cmd}` missing from commands/mod.rs generate_handler!");
+        assert!(
+            backend_cmds.contains(cmd),
+            "frontend command `{cmd}` missing from commands/mod.rs generate_handler!"
+        );
     }
     assert_eq!(frontend_cmds, backend_cmds);
 }
@@ -435,7 +486,10 @@ async fn app_core_start_chat_creates_trusted_conversation_folder_session() {
     std::fs::create_dir_all(&chat_dir).unwrap();
     let chat = core.start(chat_dir.clone(), false, None).unwrap();
     let view = core.view(&chat);
-    assert!(view.item.project_trusted, "dedicated chat folder must always be trusted");
+    assert!(
+        view.item.project_trusted,
+        "dedicated chat folder must always be trusted"
+    );
     assert!(view.item.untrusted_resources.is_empty());
 }
 
@@ -475,7 +529,10 @@ async fn app_core_worktree_session_allows_bypass_mode_and_delete_cleans_worktree
     drop(wt_session);
 
     core.delete_session_blocking(&wt_id).unwrap();
-    assert!(!checkout_path.exists(), "worktree checkout must be removed when its sole session is deleted");
+    assert!(
+        !checkout_path.exists(),
+        "worktree checkout must be removed when its sole session is deleted"
+    );
     assert!(core.store.peek_idle(&wt_id).is_err());
 }
 
@@ -502,13 +559,19 @@ async fn app_core_fork_session_copies_events_and_preserves_shared_worktree_until
     // Fork before turn 2 -> keeps turn 1, records abandoned_brief from turn 2.
     let forked = core.fork_from(&origin, Some(2)).unwrap();
     let fork_id = forked.item.summary.id.clone();
-    assert_eq!(forked.item.summary.fork.as_ref().map(|f| f.session.as_str()), Some(origin_id.as_str()));
+    assert_eq!(
+        forked.item.summary.fork.as_ref().map(|f| f.session.as_str()),
+        Some(origin_id.as_str())
+    );
     assert!(forked.abandoned_brief.is_some());
     drop(origin);
 
     // Deleting `origin` while `fork` still shares the same worktree MUST keep `checkout_path` alive!
     core.delete_session_blocking(&origin_id).unwrap();
-    assert!(checkout_path.is_dir(), "shared worktree must survive while forked session still exists");
+    assert!(
+        checkout_path.is_dir(),
+        "shared worktree must survive while forked session still exists"
+    );
 
     // Deleting `fork` (now the last owner) removes `checkout_path`.
     core.delete_session_blocking(&fork_id).unwrap();
@@ -551,7 +614,10 @@ async fn app_core_aside_lifecycle_excludes_aside_from_list_and_search_and_cascad
     drop(main);
 
     core.delete_session_blocking(&main_id).unwrap();
-    assert!(core.store.peek_idle(&aside2_id).is_err(), "deleting main session must cascade-delete its aside");
+    assert!(
+        core.store.peek_idle(&aside2_id).is_err(),
+        "deleting main session must cascade-delete its aside"
+    );
 }
 
 #[tokio::test]
@@ -578,7 +644,10 @@ async fn app_core_delete_session_cleans_materialized_version_previews() {
     assert!(session_ver_dir.is_dir());
 
     core.delete_session_blocking(&id).unwrap();
-    assert!(!session_ver_dir.exists(), "delete_session must clean up <home>/tmp/versions/<safe_session_id>");
+    assert!(
+        !session_ver_dir.exists(),
+        "delete_session must clean up <home>/tmp/versions/<safe_session_id>"
+    );
 }
 
 #[tokio::test]
@@ -593,7 +662,10 @@ async fn app_core_refuses_delete_or_aside_reset_while_turn_is_running() {
         .await
         .unwrap();
 
-    assert!(core.delete_session_blocking(&id).is_err(), "must refuse deleting running session");
+    assert!(
+        core.delete_session_blocking(&id).is_err(),
+        "must refuse deleting running session"
+    );
 
     gate.cancel();
     session.wait_idle().await;
@@ -631,11 +703,22 @@ async fn app_core_evicts_least_recently_used_idle_sessions_above_24_while_keepin
 
     let loaded = core.loaded_session_ids();
     // 24 idle sessions + 1 busy session = 25 loaded total.
-    assert_eq!(loaded.len(), MAX_IDLE_SESSIONS + 1, "expected 24 idle + 1 busy loaded, got {}", loaded.len());
+    assert_eq!(
+        loaded.len(),
+        MAX_IDLE_SESSIONS + 1,
+        "expected 24 idle + 1 busy loaded, got {}",
+        loaded.len()
+    );
     assert!(loaded.contains(&busy_id), "busy session must not be evicted");
     assert!(loaded.contains(&newest_id), "active session must not be evicted");
-    assert!(loaded.contains(&touched_id), "recently accessed session must stay cached");
-    assert!(!loaded.contains(&idle_ids[1]), "oldest untouched idle session must be evicted");
+    assert!(
+        loaded.contains(&touched_id),
+        "recently accessed session must stay cached"
+    );
+    assert!(
+        !loaded.contains(&idle_ids[1]),
+        "oldest untouched idle session must be evicted"
+    );
 
     // Reopening an evicted session from disk works seamlessly.
     let reopened = core.live(&idle_ids[1]).await.unwrap();
@@ -654,7 +737,9 @@ async fn app_core_concurrent_once_cell_live_loads_repair_open_turn_without_dupli
         let mut log = core.store.create(&ws, "anthropic", "claude-sonnet-4-6").unwrap();
         log.append(Event::TurnStart { turn: 1 }).unwrap();
         log.append(Event::AssistantMessage {
-            content: vec![json!({ "type": "tool_use", "id": "tu_crash", "name": "read_file", "input": { "path": "a" } })],
+            content: vec![
+                json!({ "type": "tool_use", "id": "tu_crash", "name": "read_file", "input": { "path": "a" } }),
+            ],
             stop_reason: Some("tool_use".to_string()),
             model: "claude-sonnet-4-6".to_string(),
             usage: Value::Null,
@@ -761,20 +846,44 @@ async fn open_attachment_and_picture_enforce_zero_copy_session_file_ownership() 
 
     // Unrelated files outside session history MUST be rejected by `has_session_file`!
     assert!(
-        open_attachment_blocking(&core, &session, &unrelated.display().to_string(), false, None, None, true)
-            .is_err()
+        open_attachment_blocking(
+            &core,
+            &session,
+            &unrelated.display().to_string(),
+            false,
+            None,
+            None,
+            true
+        )
+        .is_err()
     );
     assert!(picture_blocking(&session, &unrelated_png.display().to_string(), None).is_err());
 
     // Attached safe `.md` opens directly; written `.sh` script is revealed instead of executed; written `.png` loads as base64.
     assert_eq!(
-        open_attachment_blocking(&core, &session, &attached_doc.display().to_string(), false, None, None, true)
-            .unwrap(),
+        open_attachment_blocking(
+            &core,
+            &session,
+            &attached_doc.display().to_string(),
+            false,
+            None,
+            None,
+            true
+        )
+        .unwrap(),
         "opened"
     );
     assert_eq!(
-        open_attachment_blocking(&core, &session, &script_file.display().to_string(), false, None, None, true)
-            .unwrap(),
+        open_attachment_blocking(
+            &core,
+            &session,
+            &script_file.display().to_string(),
+            false,
+            None,
+            None,
+            true
+        )
+        .unwrap(),
         "revealed"
     );
     let img = picture_blocking(&session, &ws.join("chart.png").display().to_string(), None).unwrap();
@@ -812,16 +921,8 @@ async fn open_attachment_materializes_historical_snapshot_and_reveals_unsafe_ext
 
     // Overwrite live file on disk to v2, then open historical v1 snapshot!
     std::fs::write(ws.join("report.md"), "# Version Two\n").unwrap();
-    let action = open_attachment_blocking(
-        &core,
-        &session,
-        &report_path,
-        false,
-        Some(&snap_name),
-        Some(1),
-        true,
-    )
-    .unwrap();
+    let action =
+        open_attachment_blocking(&core, &session, &report_path, false, Some(&snap_name), Some(1), true).unwrap();
     assert_eq!(action, "opened");
 
     let preview_file = core
@@ -918,7 +1019,10 @@ async fn session_git_workspace_isolates_untrusted_hooks_and_blocks_root_worktree
     let hook = hooks_dir.join("pre-commit");
     std::fs::write(
         &hook,
-        format!("#!/bin/sh\necho pwn > \"{}\"\nexit 1\n", marker.to_string_lossy().replace('\\', "/")),
+        format!(
+            "#!/bin/sh\necho pwn > \"{}\"\nexit 1\n",
+            marker.to_string_lossy().replace('\\', "/")
+        ),
     )
     .unwrap();
     #[cfg(unix)]
@@ -934,12 +1038,19 @@ async fn session_git_workspace_isolates_untrusted_hooks_and_blocks_root_worktree
 
     std::fs::write(ws.join("README.md"), "# Updated safely\n").unwrap();
     odg_core::git::commit_with_trust(&repo_dir, "safe commit", true, trusted).unwrap();
-    assert!(!marker.exists(), "untrusted session git commit must never execute .git/hooks/pre-commit");
+    assert!(
+        !marker.exists(),
+        "untrusted session git commit must never execute .git/hooks/pre-commit"
+    );
 
     // Worktree session: root checkout is blocked, while child sub-repo checkout is allowed!
     let wt_session = core.start(ws.clone(), true, None).unwrap();
     let wt_id = wt_session.id().to_string();
-    assert!(git_checkout_core(&core, &wt_id, "other-branch".to_string(), true, None).await.is_err());
+    assert!(
+        git_checkout_core(&core, &wt_id, "other-branch".to_string(), true, None)
+            .await
+            .is_err()
+    );
 
     let wt_root = PathBuf::from(wt_session.summary().workspace);
     let sub_repo = wt_root.join("subpkg");
@@ -974,7 +1085,12 @@ async fn settings_view_exposes_static_package_version_and_manages_providers_keys
     core.grants.add(&ws, "command:cargo test").unwrap();
 
     let updated = core.settings_view();
-    assert!(updated.providers.iter().any(|p| p.id == added_id && p.name == "Internal Gateway"));
+    assert!(
+        updated
+            .providers
+            .iter()
+            .any(|p| p.id == added_id && p.name == "Internal Gateway")
+    );
     assert_eq!(updated.keys.get(&added_id).map(|k| k.source.as_str()), Some("saved"));
     assert!(updated.grants.contains_key(ws.to_string_lossy().as_ref()));
 
@@ -991,8 +1107,16 @@ async fn prompt_templates_withhold_project_prompts_until_workspace_is_trusted() 
     let proj_prompts = ws.join(".odg/prompts");
     std::fs::create_dir_all(&user_prompts).unwrap();
     std::fs::create_dir_all(&proj_prompts).unwrap();
-    std::fs::write(user_prompts.join("global.md"), "---\ndescription: Global\n---\nGlobal: $ARGUMENTS").unwrap();
-    std::fs::write(proj_prompts.join("local.md"), "---\ndescription: Local\n---\nLocal: $ARGUMENTS").unwrap();
+    std::fs::write(
+        user_prompts.join("global.md"),
+        "---\ndescription: Global\n---\nGlobal: $ARGUMENTS",
+    )
+    .unwrap();
+    std::fs::write(
+        proj_prompts.join("local.md"),
+        "---\ndescription: Local\n---\nLocal: $ARGUMENTS",
+    )
+    .unwrap();
 
     let session = core.start(ws, false, None).unwrap();
     let id = session.id().to_string();
@@ -1063,7 +1187,10 @@ async fn model_usage_store_flushes_pending_debounced_writes_on_sync_flush() {
     core.model_usage.flush_sync();
 
     let usage_file = core.home.join("model-usage.json");
-    assert!(usage_file.is_file(), "flush_sync must persist model-usage.json immediately");
+    assert!(
+        usage_file.is_file(),
+        "flush_sync must persist model-usage.json immediately"
+    );
     let reopened = odg_core::model_usage::ModelUsageStore::at(&usage_file);
     let entries = reopened.list();
     assert_eq!(entries.len(), 1);
@@ -1085,14 +1212,20 @@ async fn stream_event_forwarder_coalesces_12ms_text_and_thinking_deltas_by_sessi
     for i in 0..80 {
         tx.send(UiEvent::Stream {
             session_id: "s1".to_string(),
-            delta: StreamDelta::ThinkingDelta { index: 0, text: format!("t{i},") },
+            delta: StreamDelta::ThinkingDelta {
+                index: 0,
+                text: format!("t{i},"),
+            },
         })
         .unwrap();
     }
     for i in 0..120 {
         tx.send(UiEvent::Stream {
             session_id: "s1".to_string(),
-            delta: StreamDelta::TextDelta { index: 1, text: format!("w{i} ") },
+            delta: StreamDelta::TextDelta {
+                index: 1,
+                text: format!("w{i} "),
+            },
         })
         .unwrap();
     }
@@ -1101,14 +1234,24 @@ async fn stream_event_forwarder_coalesces_12ms_text_and_thinking_deltas_by_sessi
 
     let out = emitted.lock().unwrap();
     // 200 raw deltas coalesced down to a tiny handful of batched emissions (typically 2: 1 thinking + 1 text)!
-    assert!(out.len() <= 6, "expected 200 deltas to coalesce within 12ms window, got {} emits", out.len());
+    assert!(
+        out.len() <= 6,
+        "expected 200 deltas to coalesce within 12ms window, got {} emits",
+        out.len()
+    );
 
     let mut thinking = String::new();
     let mut text = String::new();
     for ev in out.iter() {
         match ev {
-            UiEvent::Stream { delta: StreamDelta::ThinkingDelta { index: 0, text: s }, .. } => thinking.push_str(s),
-            UiEvent::Stream { delta: StreamDelta::TextDelta { index: 1, text: s }, .. } => text.push_str(s),
+            UiEvent::Stream {
+                delta: StreamDelta::ThinkingDelta { index: 0, text: s },
+                ..
+            } => thinking.push_str(s),
+            UiEvent::Stream {
+                delta: StreamDelta::TextDelta { index: 1, text: s },
+                ..
+            } => text.push_str(s),
             other => panic!("unexpected event {other:?}"),
         }
     }
@@ -1128,26 +1271,46 @@ async fn stream_event_forwarder_preserves_strict_order_across_reset_tool_start_l
         sink.lock().unwrap().push(ev);
     }));
 
-    tx.send(UiEvent::Status { session_id: "s1".to_string(), status: Status::Running }).unwrap();
-    tx.send(UiEvent::Stream {
+    tx.send(UiEvent::Status {
         session_id: "s1".to_string(),
-        delta: StreamDelta::TextDelta { index: 0, text: "hel".to_string() },
+        status: Status::Running,
     })
     .unwrap();
     tx.send(UiEvent::Stream {
         session_id: "s1".to_string(),
-        delta: StreamDelta::TextDelta { index: 0, text: "lo".to_string() },
-    })
-    .unwrap();
-    tx.send(UiEvent::Stream { session_id: "s1".to_string(), delta: StreamDelta::Reset }).unwrap();
-    tx.send(UiEvent::Stream {
-        session_id: "s1".to_string(),
-        delta: StreamDelta::TextDelta { index: 0, text: "fresh ".to_string() },
+        delta: StreamDelta::TextDelta {
+            index: 0,
+            text: "hel".to_string(),
+        },
     })
     .unwrap();
     tx.send(UiEvent::Stream {
         session_id: "s1".to_string(),
-        delta: StreamDelta::TextDelta { index: 0, text: "start".to_string() },
+        delta: StreamDelta::TextDelta {
+            index: 0,
+            text: "lo".to_string(),
+        },
+    })
+    .unwrap();
+    tx.send(UiEvent::Stream {
+        session_id: "s1".to_string(),
+        delta: StreamDelta::Reset,
+    })
+    .unwrap();
+    tx.send(UiEvent::Stream {
+        session_id: "s1".to_string(),
+        delta: StreamDelta::TextDelta {
+            index: 0,
+            text: "fresh ".to_string(),
+        },
+    })
+    .unwrap();
+    tx.send(UiEvent::Stream {
+        session_id: "s1".to_string(),
+        delta: StreamDelta::TextDelta {
+            index: 0,
+            text: "start".to_string(),
+        },
     })
     .unwrap();
     tx.send(UiEvent::Stream {
@@ -1164,11 +1327,19 @@ async fn stream_event_forwarder_preserves_strict_order_across_reset_tool_start_l
         envelope: Envelope {
             seq: 2,
             ts: "2026-11-26T00:00:00Z".to_string(),
-            event: Event::TurnEnd { turn: 1, reason: "completed".to_string(), error: None },
+            event: Event::TurnEnd {
+                turn: 1,
+                reason: "completed".to_string(),
+                error: None,
+            },
         },
     })
     .unwrap();
-    tx.send(UiEvent::Status { session_id: "s1".to_string(), status: Status::Idle }).unwrap();
+    tx.send(UiEvent::Status {
+        session_id: "s1".to_string(),
+        status: Status::Idle,
+    })
+    .unwrap();
     drop(tx);
     task.await.unwrap();
 
@@ -1177,9 +1348,18 @@ async fn stream_event_forwarder_preserves_strict_order_across_reset_tool_start_l
         .iter()
         .map(|ev| match ev {
             UiEvent::Status { status, .. } => format!("status:{status:?}"),
-            UiEvent::Stream { delta: StreamDelta::TextDelta { text, .. }, .. } => format!("text:{text}"),
-            UiEvent::Stream { delta: StreamDelta::Reset, .. } => "reset".to_string(),
-            UiEvent::Stream { delta: StreamDelta::ToolUseStart { name, .. }, .. } => format!("tool:{name}"),
+            UiEvent::Stream {
+                delta: StreamDelta::TextDelta { text, .. },
+                ..
+            } => format!("text:{text}"),
+            UiEvent::Stream {
+                delta: StreamDelta::Reset,
+                ..
+            } => "reset".to_string(),
+            UiEvent::Stream {
+                delta: StreamDelta::ToolUseStart { name, .. },
+                ..
+            } => format!("tool:{name}"),
             UiEvent::Log { .. } => "log:turn_end".to_string(),
             other => format!("other:{other:?}"),
         })
