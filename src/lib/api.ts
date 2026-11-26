@@ -41,6 +41,7 @@ import type {
   SkillsView,
   TreeEntry,
   UiEvent,
+  UpdateStatus,
 } from "./types";
 
 export const api = {
@@ -222,6 +223,7 @@ export const api = {
   openExternal: (url: string) => openUrl(url),
   /** Best-effort native OS desktop notification when the app is in the background. */
   notifyDesktop: (title: string, body: string) => invoke<void>("notify_desktop", { title, body }),
+  checkAppUpdate: () => invoke<UpdateStatus>("check_app_update"),
   /** Per-model token usage statistics and active cooldown timers. */
   getModelUsage: () => invoke<ModelUsageEntry[]>("get_model_usage"),
   listPromptTemplates: (id?: string | null) => invoke<PromptTemplateInfo[]>("list_prompt_templates", { id: id ?? null }),

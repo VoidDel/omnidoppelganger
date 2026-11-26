@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "../lib/api";
 import { MODES } from "../lib/modes";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
@@ -10,7 +11,7 @@ import { LanguageServersSection } from "./LanguageServers";
 import { EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { mcpTool, shortCount } from "../lib/fold";
 import { formatResetIn, quotaWindowLabel, useAntigravityQuota } from "../lib/modelUsage";
-import type { KeyStatus, Provider, Settings, SettingsView } from "../lib/types";
+import type { KeyStatus, Provider, Settings, SettingsView, UpdateStatus } from "../lib/types";
 
 const PAPERS: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
   { value: "light", name: "白昼", hint: "月白底，宜昼", swatches: [["#FBFCFA", "#1B2A2B"], ["#F6E7A8", "#D9BC55"], ["#B8322A", "#B8322A"]] },
@@ -440,6 +441,68 @@ function PainterSection({ view, onSave }: { view: SettingsView; onSave: (setting
           <p className="hint">{name(settings.painter)}还没有密钥，眼下请 {name(view.painter_ready)} 作画。</p>
         ) : (
           <p className="hint">眼下请 {name(view.painter_ready)} 作画。</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function UpdateSection() {
+  const [checking, setChecking] = useState(false);
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const checkNow = () => {
+    setChecking(true);
+    setError(null);
+    api
+      .checkAppUpdate()
+      .then(
+        (res) => setStatus(res),
+        (err) => setError(String(err)),
+      )
+      .finally(() => setChecking(false));
+  };
+
+  return (
+    <section>
+      <div className="usage-head">
+        <h2>版本与更新</h2>
+        <div className="usage-actions">
+          <button type="button" className="button outline small" disabled={checking} onClick={checkNow}>
+            {checking ? "检查中…" : "检查更新"}
+          </button>
+        </div>
+      </div>
+      <div className="provider-card">
+        <div className="who">
+          <span>
+            当前版本 {status ? <strong className="mono">v{status.current_version}</strong> : <span className="muted">点右上角「检查更新」比对 GitHub 最新发布</span>}
+          </span>
+          {error && <span className="hint failed">{error}</span>}
+          {status && !status.has_update && (
+            <span className="muted">已是最新版本（v{status.latest_version}）。</span>
+          )}
+          {status?.has_update && (
+            <span className="muted">
+              发现新版本 <strong className="mono">v{status.latest_version}</strong>
+              {status.published_at ? `（${new Date(status.published_at).toLocaleDateString()}）` : ""}
+            </span>
+          )}
+        </div>
+        {status?.has_update && (
+          <>
+            {status.notes && (
+              <pre className="mono muted" style={{ whiteSpace: "pre-wrap", fontSize: "12px", margin: "8px 0", maxHeight: "180px", overflowY: "auto" }}>
+                {status.notes}
+              </pre>
+            )}
+            <div className="actions" style={{ marginTop: "6px" }}>
+              <button type="button" className="button primary small" onClick={() => void api.openExternal(status.html_url)}>
+                前往 GitHub 下载 v{status.latest_version}
+              </button>
+            </div>
+          </>
         )}
       </div>
     </section>
@@ -881,6 +944,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             ))}
           </fieldset>
         </section>
+        <UpdateSection />
           </>
         )}
       </div>

@@ -271,6 +271,16 @@ export interface InlineShellOutput {
   truncated: boolean;
 }
 
+/** GitHub Release update check result for the desktop app. */
+export interface UpdateStatus {
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  html_url: string;
+  notes: string;
+  published_at: string | null;
+}
+
 /** One item of the 分身's to-do list. */
 export interface Todo {
   text: string;

@@ -1630,6 +1630,11 @@ fn get_settings(app: State<'_, App>) -> SettingsView {
 }
 
 #[tauri::command]
+async fn check_app_update() -> Result<odg_core::update::UpdateStatus, String> {
+    odg_core::update::check_latest(env!("CARGO_PKG_VERSION")).await
+}
+
+#[tauri::command]
 fn save_settings(app: State<'_, App>, settings: Settings) -> Result<SettingsView, String> {
     app.settings.save(settings).map_err(|error| error.to_string())?;
     app.reconcile_live_models();
@@ -1850,6 +1855,7 @@ pub fn run() {
             run_inline_command,
             compact_session,
             get_settings,
+            check_app_update,
             save_settings,
             save_mcp_config,
             revoke_grant,
