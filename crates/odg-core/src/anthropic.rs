@@ -297,7 +297,11 @@ impl AnthropicClient {
                 Ok(Some(Ok(chunk))) => chunk,
             };
             for event in parser.feed(&chunk) {
-                let data: Value = serde_json::from_str(&event.data)
+                let raw = event.data.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                let data: Value = serde_json::from_str(raw)
                     .map_err(|error| (LlmError::Protocol(format!("event {} is not JSON: {error}", event.event)), None))?;
                 for delta in accumulator.apply(&data).map_err(|error| (error, None))? {
                     *forwarded = true;
@@ -494,5 +498,42 @@ mod tests {
             effort: "low".into(),
         };
         assert_eq!(request_body(&request, true)["tools"], json!([{ "type": "web_search_20260209", "name": "web_search", "max_uses": 2 }]));
+    }
+
+    #[tokio::test]
+    async fn ignores_empty_sse_heartbeats_comments_and_blank_data_frames_over_http() {
+        use crate::testing::serve;
+        let sse_body = concat!(
+            "event: ping\n\n",
+            ": comment\n\n",
+            "data: \n\n",
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-opus-5-5\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n",
+            "event: ping\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "data:   \n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"稳如泰山\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        let raw_http = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
+        let (address, _server) = serve(vec![raw_http]).await;
+        let client = AnthropicClient::new(address, Arc::new(|| Some("sk-ant".into()))).unwrap();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let request = LlmRequest {
+            provider: "anthropic".into(),
+            session: "s".into(),
+            model: "claude-opus-5-5".into(),
+            system: "sys".into(),
+            messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })],
+            tools: vec![],
+            effort: "high".into(),
+        };
+        let turn = client.stream(request, sender, CancellationToken::new()).await.unwrap();
+        assert_eq!(turn.content, vec![json!({ "type": "text", "text": "稳如泰山" })]);
+        assert_eq!(turn.stop_reason.as_deref(), Some("end_turn"));
     }
 }

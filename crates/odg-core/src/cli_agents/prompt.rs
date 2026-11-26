@@ -205,29 +205,37 @@ pub fn build_prompt(
     parts.join("\n\n")
 }
 
-/// RAII guard cleaning up temporary image files materialized for an external CLI turn.
-pub struct TempImagesGuard(Vec<PathBuf>);
+/// RAII guard cleaning up temporary image files (and their private per-turn directory) materialized for an external CLI turn.
+pub struct TempImagesGuard {
+    files: Vec<PathBuf>,
+    dir: Option<PathBuf>,
+}
 
 impl Drop for TempImagesGuard {
     fn drop(&mut self) {
-        for path in self.0.drain(..) {
+        for path in self.files.drain(..) {
             let _ = std::fs::remove_file(path);
+        }
+        if let Some(dir) = self.dir.take() {
+            let _ = std::fs::remove_dir(dir);
         }
     }
 }
 
-/// Decode user-attached base64 images to temporary local files so external CLIs can inspect them
-/// via native image flags (`codex --image`, `opencode -f`) or their built-in file/image reader.
-pub fn materialize_cli_images(images: &[Image], turn: u64) -> Result<(Vec<PathBuf>, TempImagesGuard), String> {
+pub(super) fn materialize_cli_images_in(
+    base_home: &Path,
+    images: &[Image],
+    turn: u64,
+) -> Result<(Vec<PathBuf>, TempImagesGuard), String> {
     if images.is_empty() {
-        return Ok((Vec::new(), TempImagesGuard(Vec::new())));
+        return Ok((Vec::new(), TempImagesGuard { files: Vec::new(), dir: None }));
     }
-    let dir = std::env::temp_dir().join("odg-images");
-    std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建临时图片目录：{error}"))?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let mut paths = Vec::with_capacity(images.len());
+    let dir = crate::fsutil::create_private_subdir_in(base_home, "images")
+        .map_err(|error| format!("无法创建私有临时图片目录：{error}"))?;
+    let mut guard = TempImagesGuard {
+        files: Vec::with_capacity(images.len()),
+        dir: Some(dir.clone()),
+    };
     for (idx, image) in images.iter().enumerate() {
         let ext = match image.media_type.as_str() {
             "image/png" => "png",
@@ -237,11 +245,18 @@ pub fn materialize_cli_images(images: &[Image], turn: u64) -> Result<(Vec<PathBu
             _ => "bin",
         };
         let bytes = crate::imagegen::unbase64(&image.data).ok_or_else(|| "无法解码附带图片的 base64 数据".to_string())?;
-        let path = dir.join(format!("image-{}-{turn}-{idx}-{stamp}.{ext}", std::process::id()));
-        std::fs::write(&path, &bytes).map_err(|error| format!("无法写入临时图片文件：{error}"))?;
-        paths.push(path);
+        let path = dir.join(format!("image-{turn}-{idx}.{ext}"));
+        crate::fsutil::write_private_atomically(&path, &bytes)
+            .map_err(|error| format!("无法写入临时图片文件：{error}"))?;
+        guard.files.push(path);
     }
-    Ok((paths.clone(), TempImagesGuard(paths)))
+    Ok((guard.files.clone(), guard))
+}
+
+/// Decode user-attached base64 images to private `0600` local files inside a dedicated `0700`
+/// per-turn directory under `<ODG_HOME>/tmp/images` so external CLIs can inspect them safely.
+pub fn materialize_cli_images(images: &[Image], turn: u64) -> Result<(Vec<PathBuf>, TempImagesGuard), String> {
+    materialize_cli_images_in(&crate::settings::home(), images, turn)
 }
 
 pub(super) fn is_windows_batch_script(path: &Path) -> bool {
@@ -250,12 +265,32 @@ pub(super) fn is_windows_batch_script(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
 }
 
-pub(super) struct TempPromptGuard(pub(super) Option<PathBuf>);
+pub(super) struct TempPromptGuard {
+    pub(super) file: Option<PathBuf>,
+    pub(super) dir: Option<PathBuf>,
+}
+
+impl TempPromptGuard {
+    pub(super) fn none() -> Self {
+        Self { file: None, dir: None }
+    }
+
+    pub(super) fn file_only(file: PathBuf) -> Self {
+        Self { file: Some(file), dir: None }
+    }
+
+    pub(super) fn with_subdir(file: PathBuf, dir: PathBuf) -> Self {
+        Self { file: Some(file), dir: Some(dir) }
+    }
+}
 
 impl Drop for TempPromptGuard {
     fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
+        if let Some(path) = self.file.take() {
             let _ = std::fs::remove_file(path);
+        }
+        if let Some(dir) = self.dir.take() {
+            let _ = std::fs::remove_dir(dir);
         }
     }
 }
@@ -267,10 +302,11 @@ pub(super) struct PreparedPrompt {
     pub(super) _guard: TempPromptGuard,
 }
 
-pub(super) fn prepare_prompt_delivery(
+pub(super) fn prepare_prompt_delivery_in(
+    base_home: &Path,
     kind: CliKind,
     prompt: &str,
-    turn: u64,
+    _turn: u64,
     limit: usize,
     batch_script: bool,
 ) -> Result<PreparedPrompt, String> {
@@ -280,7 +316,7 @@ pub(super) fn prepare_prompt_delivery(
             cli_prompt: String::new(),
             stdin_bytes: Some(prompt.as_bytes().to_vec()),
             extra_dir: None,
-            _guard: TempPromptGuard(None),
+            _guard: TempPromptGuard::none(),
         });
     }
     let needs_temp_file = prompt.len() > limit || (batch_script && prompt.contains(['\r', '\n']));
@@ -289,16 +325,18 @@ pub(super) fn prepare_prompt_delivery(
             cli_prompt: prompt.to_string(),
             stdin_bytes: None,
             extra_dir: None,
-            _guard: TempPromptGuard(None),
+            _guard: TempPromptGuard::none(),
         });
     }
-    let dir = std::env::temp_dir().join("odg-prompts");
-    std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建临时提示词目录：{error}"))?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let path = dir.join(format!("prompt-{}-{turn}-{stamp}.txt", std::process::id()));
-    std::fs::write(&path, prompt.as_bytes()).map_err(|error| format!("无法写入临时提示词文件：{error}"))?;
+    // Create a fresh per-turn `0700` subdirectory `<ODG_HOME>/tmp/prompts/<uuid>/prompt.txt`
+    // so `agy --add-dir` never exposes prompt files from sibling sessions.
+    let dir = crate::fsutil::create_private_subdir_in(base_home, "prompts")
+        .map_err(|error| format!("无法创建私有临时提示词目录：{error}"))?;
+    let path = dir.join("prompt.txt");
+    crate::fsutil::write_private_atomically(&path, prompt.as_bytes()).map_err(|error| {
+        let _ = std::fs::remove_dir(&dir);
+        format!("无法写入临时提示词文件：{error}")
+    })?;
     // Keep this single-line (no `\r`/`\n`) so Windows `.cmd`/`.bat` wrappers never reject it.
     let cli_prompt = format!(
         "本轮用户的完整输入内容已保存到文件：{}。请先完整读取该文件的内容，再直接按其中的要求回答或处理。",
@@ -307,9 +345,19 @@ pub(super) fn prepare_prompt_delivery(
     Ok(PreparedPrompt {
         cli_prompt,
         stdin_bytes: None,
-        extra_dir: Some(dir),
-        _guard: TempPromptGuard(Some(path)),
+        extra_dir: Some(dir.clone()),
+        _guard: TempPromptGuard::with_subdir(path, dir),
     })
+}
+
+pub(super) fn prepare_prompt_delivery(
+    kind: CliKind,
+    prompt: &str,
+    turn: u64,
+    limit: usize,
+    batch_script: bool,
+) -> Result<PreparedPrompt, String> {
+    prepare_prompt_delivery_in(&crate::settings::home(), kind, prompt, turn, limit, batch_script)
 }
 
 /// Adjust `build_args` output when the prompt is delivered via `stdin` or accompanied by an extra readable directory.

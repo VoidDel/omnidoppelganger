@@ -22,10 +22,13 @@ mod tests;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -34,10 +37,66 @@ use crate::llm::{StreamDelta, Tokens};
 use crate::policy::Mode;
 use crate::providers::Listed;
 
-pub use args::{build_args, build_turn_args};
+pub use args::{build_args, build_turn_args, detect_untrusted_cli_configs};
 pub use models::resolve_cursor_model_for_effort;
 pub use parser::{StreamParser, clean_tool_result, normalize_tool};
 pub use prompt::{TempImagesGuard, build_handoff_brief, build_prompt, build_skills_brief, materialize_cli_images};
+
+pub(crate) const CLI_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const MAX_CLI_LINE_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_STDERR_BYTES: usize = 512 * 1024;
+
+const ALL_PROVIDER_KEY_ENVS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "MOONSHOT_API_KEY",
+    "ZHIPUAI_API_KEY",
+    "ZAI_API_KEY",
+    "MAGPIE_API_KEY",
+    "CURSOR_API_KEY",
+    "XAI_API_KEY",
+    "GROK_API_KEY",
+    "OPENCODE_API_KEY",
+];
+
+/// Return cloud provider API-key environment variables unrelated to `kind` (and `model` for OpenCode)
+/// so spawning an external CLI never leaks other providers' credentials into its process tree.
+pub(crate) fn scrubbed_env_keys(kind: CliKind, model: &str) -> Vec<&'static str> {
+    let opencode_prefix = model.trim().split_once('/').map(|(p, _)| p.to_ascii_lowercase()).unwrap_or_default();
+    let keep = |key: &str| -> bool {
+        match kind {
+            CliKind::ClaudeCode => matches!(key, "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN" | "CLAUDE_CODE_OAUTH_TOKEN"),
+            CliKind::Codex => matches!(key, "OPENAI_API_KEY" | "CODEX_API_KEY"),
+            CliKind::Antigravity => matches!(key, "GEMINI_API_KEY" | "GOOGLE_API_KEY"),
+            CliKind::Cursor => key == "CURSOR_API_KEY",
+            CliKind::Grok => matches!(key, "XAI_API_KEY" | "GROK_API_KEY"),
+            CliKind::OpenCode => match key {
+                "OPENCODE_API_KEY" => true,
+                "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN" => opencode_prefix == "anthropic",
+                "OPENAI_API_KEY" => opencode_prefix == "openai",
+                "GEMINI_API_KEY" | "GOOGLE_API_KEY" => matches!(opencode_prefix.as_str(), "google" | "gemini"),
+                "OPENROUTER_API_KEY" => opencode_prefix == "openrouter",
+                "DEEPSEEK_API_KEY" => opencode_prefix == "deepseek",
+                "MOONSHOT_API_KEY" => matches!(opencode_prefix.as_str(), "moonshot" | "kimi"),
+                "ZHIPUAI_API_KEY" | "ZAI_API_KEY" => matches!(opencode_prefix.as_str(), "zhipu" | "zhipuai" | "zai"),
+                "XAI_API_KEY" | "GROK_API_KEY" => matches!(opencode_prefix.as_str(), "xai" | "grok"),
+                _ => false,
+            },
+        }
+    };
+    ALL_PROVIDER_KEY_ENVS.iter().copied().filter(|k| !keep(k)).collect()
+}
+
+pub(crate) fn should_bridge_mcp(mode: Mode, read_only: bool) -> bool {
+    !read_only && matches!(mode, Mode::Auto | Mode::Bypass)
+}
 
 /// Which local coding-agent CLI backs a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -284,12 +343,113 @@ pub struct TurnOutcome {
     pub extra_artifacts: Vec<PathBuf>,
 }
 
+enum NextCliLine {
+    Line,
+    Oversized,
+    Eof,
+    Cancelled,
+    TimedOut,
+}
+
+async fn read_next_cli_line<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    raw_line: &mut Vec<u8>,
+    max_line_bytes: usize,
+    idle_timeout: Duration,
+    started_at: Instant,
+    last_stderr_ms: &AtomicU64,
+    cancel: &CancellationToken,
+) -> std::io::Result<NextCliLine> {
+    raw_line.clear();
+    let mut discarding = false;
+    loop {
+        let mut wait_budget = idle_timeout;
+        loop {
+            let chunk_res = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(NextCliLine::Cancelled),
+                res = tokio::time::timeout(wait_budget, reader.fill_buf()) => res,
+            };
+            match chunk_res {
+                Ok(Ok(available)) => {
+                    if available.is_empty() {
+                        if discarding {
+                            return Ok(NextCliLine::Oversized);
+                        }
+                        if raw_line.is_empty() {
+                            return Ok(NextCliLine::Eof);
+                        }
+                        if raw_line.last() == Some(&b'\r') {
+                            raw_line.pop();
+                        }
+                        return Ok(NextCliLine::Line);
+                    }
+                    if let Some(nl_pos) = available.iter().position(|&b| b == b'\n') {
+                        let before_nl = &available[..nl_pos];
+                        if !discarding {
+                            if raw_line.len().saturating_add(before_nl.len()) <= max_line_bytes {
+                                raw_line.extend_from_slice(before_nl);
+                                if raw_line.last() == Some(&b'\r') {
+                                    raw_line.pop();
+                                }
+                                reader.consume(nl_pos + 1);
+                                return Ok(NextCliLine::Line);
+                            }
+                            raw_line.clear();
+                        }
+                        reader.consume(nl_pos + 1);
+                        return Ok(NextCliLine::Oversized);
+                    }
+                    let chunk_len = available.len();
+                    if !discarding {
+                        if raw_line.len().saturating_add(chunk_len) <= max_line_bytes {
+                            raw_line.extend_from_slice(available);
+                        } else {
+                            raw_line.clear();
+                            discarding = true;
+                        }
+                    }
+                    reader.consume(chunk_len);
+                    break;
+                }
+                Ok(Err(err)) => return Err(err),
+                Err(_) => {
+                    // Check whether stderr produced recent output within `idle_timeout`.
+                    let now_ms = started_at.elapsed().as_millis() as u64;
+                    let stderr_ms = last_stderr_ms.load(Ordering::Relaxed);
+                    let since_stderr = Duration::from_millis(now_ms.saturating_sub(stderr_ms));
+                    if stderr_ms > 0 && since_stderr < idle_timeout {
+                        wait_budget = idle_timeout - since_stderr;
+                        continue;
+                    }
+                    return Ok(NextCliLine::TimedOut);
+                }
+            }
+        }
+    }
+}
+
 /// Execute one headless streaming turn on any supported [`CliKind`].
 pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &CancellationToken) -> Result<TurnOutcome, String> {
-    let bin = params
-        .kind
-        .find_binary()
-        .ok_or_else(|| format!("未找到本机 {}，请先安装并完成登录。", params.kind.display_name()))?;
+    run_turn_with_limits(params, None, CLI_IDLE_TIMEOUT, MAX_CLI_LINE_BYTES, sink, cancel).await
+}
+
+pub(crate) async fn run_turn_with_limits<S: Sink>(
+    params: TurnParams<'_>,
+    bin_override: Option<&Path>,
+    idle_timeout: Duration,
+    max_line_bytes: usize,
+    sink: &S,
+    cancel: &CancellationToken,
+) -> Result<TurnOutcome, String> {
+    args::enforce_untrusted_cli_isolation(params.kind, params.workspace, params.mode, params.workspace_trusted)?;
+    let bin = match bin_override {
+        Some(explicit) => explicit.to_path_buf(),
+        None => params
+            .kind
+            .find_binary()
+            .ok_or_else(|| format!("未找到本机 {}，请先安装并完成登录。", params.kind.display_name()))?,
+    };
     if params.kind == CliKind::Cursor
         && !params.model.trim().is_empty()
         && params.model.trim() != "auto"
@@ -356,18 +516,21 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         }
         prompt::insert_before_prompt_tail(&mut args, extra_flags);
     }
-    if !params.read_only {
-        if params.kind == CliKind::Antigravity {
-            // Do NOT pass `~/.odg/skills` via `--add-dir`: `agy` sorts Active Workspaces alphabetically and
-            // picks the first entry as Command Working Directory (`~/.odg/skills` sorts before `~/Projects/...`),
-            // which would hijack the user's project workspace. `agy`'s `read_file` reads SKILL.md by absolute path directly.
-            mcp_bridge::sync_antigravity_mcp(&bin, &params.mcp_servers).await;
-        } else if params.kind == CliKind::Cursor && matches!(params.mode, Mode::Auto | Mode::Bypass) {
-            mcp_bridge::sync_cursor_mcp(&params.mcp_servers);
+    let _mcp_guard = if should_bridge_mcp(params.mode, params.read_only) {
+        match params.kind {
+            CliKind::Antigravity => {
+                // Do NOT pass `~/.odg/skills` via `--add-dir`: `agy` sorts Active Workspaces alphabetically and
+                // picks the first entry as Command Working Directory (`~/.odg/skills` sorts before `~/Projects/...`),
+                // which would hijack the user's project workspace. `agy`'s `read_file` reads SKILL.md by absolute path directly.
+                mcp_bridge::sync_antigravity_mcp(&bin, &params.mcp_servers).await;
+                None
+            }
+            CliKind::Cursor => {
+                mcp_bridge::sync_cursor_mcp(&params.mcp_servers);
+                None
+            }
+            _ => mcp_bridge::apply_mcp_bridge_args(params.kind, &mut args, &params.mcp_servers, params.turn),
         }
-    }
-    let _mcp_guard = if !params.read_only && matches!(params.mode, Mode::Auto | Mode::Bypass) {
-        mcp_bridge::apply_mcp_bridge_args(params.kind, &mut args, &params.mcp_servers, params.turn)
     } else {
         None
     };
@@ -379,6 +542,9 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in scrubbed_env_keys(params.kind, &params.model) {
+        cmd.env_remove(key);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     #[cfg(unix)]
@@ -395,38 +561,74 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
     let mut group_guard = ProcessGroupGuard(child.id());
     let stdout = child.stdout.take().ok_or("CLI stdout pipe unavailable")?;
     let mut stderr = child.stderr.take();
+    let started_at = Instant::now();
+    let last_stderr_ms = Arc::new(AtomicU64::new(0));
+    let stderr_activity = last_stderr_ms.clone();
     let stderr_task = tokio::spawn(async move {
-        let mut buf = String::new();
+        let mut kept = Vec::new();
         if let Some(mut pipe) = stderr.take() {
-            let _ = pipe.read_to_string(&mut buf).await;
+            let _ = (&mut pipe).take(MAX_STDERR_BYTES as u64).read_to_end(&mut kept).await;
+            if !kept.is_empty() {
+                stderr_activity.store(started_at.elapsed().as_millis() as u64, Ordering::Relaxed);
+            }
+            let mut drain_buf = [0u8; 8192];
+            while let Ok(n) = pipe.read(&mut drain_buf).await {
+                if n == 0 {
+                    break;
+                }
+                stderr_activity.store(started_at.elapsed().as_millis() as u64, Ordering::Relaxed);
+            }
         }
-        buf
+        String::from_utf8_lossy(&kept).into_owned()
     });
 
-    let mut lines = BufReader::new(stdout).lines();
+    let mut reader = BufReader::new(stdout);
+    let mut raw_line = Vec::with_capacity(4096);
     let mut parser = StreamParser::default();
     let mut recorder = recorder::TurnRecorder::new(&params, sink);
 
     let cancelled = loop {
-        let next_line = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
+        match read_next_cli_line(
+            &mut reader,
+            &mut raw_line,
+            max_line_bytes,
+            idle_timeout,
+            started_at,
+            &last_stderr_ms,
+            cancel,
+        )
+        .await
+        {
+            Ok(NextCliLine::Line) => {
+                let line = String::from_utf8_lossy(&raw_line);
+                for ev in parser.parse_line(params.kind, &line) {
+                    recorder.handle_event(ev)?;
+                }
+            }
+            Ok(NextCliLine::Oversized) => {
+                // Oversized line was drained and discarded without OOM; continue reading subsequent lines.
+            }
+            Ok(NextCliLine::Eof) => break false,
+            Ok(NextCliLine::Cancelled) => {
                 crate::tools::kill_tree(&mut child).await;
                 break true;
             }
-            res = lines.next_line() => res,
-        };
-        let line = match next_line {
-            Ok(Some(line)) => line,
-            Ok(None) => break false,
+            Ok(NextCliLine::TimedOut) => {
+                crate::tools::kill_tree(&mut child).await;
+                group_guard.0 = None;
+                let _ = child.wait().await;
+                return Err(format!(
+                    "等待 {} 输出超时（超过 {} 秒无响应），已终止子进程。",
+                    params.kind.display_name(),
+                    idle_timeout.as_secs().max(1)
+                ));
+            }
             Err(error) => {
                 crate::tools::kill_tree(&mut child).await;
                 group_guard.0 = None;
+                let _ = child.wait().await;
                 return Err(format!("读取 {} 输出失败：{error}", params.kind.display_name()));
             }
-        };
-        for ev in parser.parse_line(params.kind, &line) {
-            recorder.handle_event(ev)?;
         }
     };
 
@@ -436,7 +638,7 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         return Ok(TurnOutcome { reason: "cancelled", extra_artifacts: recorder.external_artifacts });
     }
 
-    recorder.flush_text(Value::Null, None)?;
+    recorder.finish()?;
     let status = child.wait().await.map_err(|error| format!("等待 {} 结束失败：{error}", params.kind.display_name()))?;
     group_guard.0 = None;
     let stderr_text = stderr_task.await.unwrap_or_default();

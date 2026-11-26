@@ -175,6 +175,9 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             if mode == Mode::Auto && safety::check(command, Dialect::of_this_machine(), workspace).is_ok() {
                 return Verdict::Allow;
             }
+            if mode == Mode::Plan && safety::check_read_only(command, Dialect::of_this_machine(), workspace).is_err() {
+                return Verdict::Ask { reason: "command", detail, grant: None };
+            }
             // In auto mode only what the check does not pass needs approving, and so a standing grant.
             let grant = safety::grants_needed(command, Dialect::of_this_machine(), workspace, mode == Mode::Auto).ok().filter(|grants| !grants.is_empty()).map(|grants| grants.join("\n"));
             Verdict::Ask { reason: "command", detail, grant }
@@ -668,6 +671,25 @@ mod tests {
             std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
             let escaped = super::check(Mode::Auto, "run_command", &json!({ "command": listing, "cwd": "escape" }), &workspace);
             assert!(matches!(&escaped, Verdict::Ask { reason: "outside_command", grant: None, .. }), "{escaped:?}");
+        }
+    }
+
+    #[test]
+    fn plan_mode_strips_standing_grant_from_non_read_only_commands() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let read_only = super::check(Mode::Plan, "run_command", &json!({ "command": "git status" }), workspace);
+        assert_eq!(
+            read_only,
+            Verdict::Ask { reason: "command", detail: "git status".into(), grant: Some("command:git status".into()) }
+        );
+        for write_or_build in ["git commit -m wip", "git push", "cargo fmt", "cargo test"] {
+            let verdict = super::check(Mode::Plan, "run_command", &json!({ "command": write_or_build }), workspace);
+            assert_eq!(
+                verdict,
+                Verdict::Ask { reason: "command", detail: write_or_build.into(), grant: None },
+                "{write_or_build}"
+            );
         }
     }
 }

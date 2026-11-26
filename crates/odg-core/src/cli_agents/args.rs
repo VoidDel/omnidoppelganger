@@ -21,6 +21,64 @@ use crate::policy::Mode;
 use super::CliKind;
 use super::models::resolve_cursor_model_for_effort;
 
+const UNTRUSTED_CLI_CONFIG_ENTRIES: &[&str] = &[
+    ".claude",
+    ".mcp.json",
+    ".cursor",
+    ".cursorrules",
+    ".codex",
+    ".gemini",
+    ".agent",
+    ".agents",
+    ".opencode",
+    "opencode.json",
+    ".grok",
+];
+
+/// Scan `workspace` for repository-local external CLI configuration directories, rules,
+/// MCP server definitions, or hook folders so untrusted repositories can prompt or isolate them.
+pub fn detect_untrusted_cli_configs(workspace: &Path) -> Vec<String> {
+    UNTRUSTED_CLI_CONFIG_ENTRIES
+        .iter()
+        .filter(|entry| std::fs::symlink_metadata(workspace.join(entry)).is_ok())
+        .map(|entry| (*entry).to_string())
+        .collect()
+}
+
+/// Block headless external CLIs that lack a CLI flag to ignore repository-local hooks/configs
+/// (`Codex`, `Antigravity`, `Grok`, `OpenCode`) when `workspace` is untrusted and not in [`Mode::Bypass`].
+pub fn enforce_untrusted_cli_isolation(
+    kind: CliKind,
+    workspace: &Path,
+    mode: Mode,
+    workspace_trusted: bool,
+) -> Result<(), String> {
+    if workspace_trusted || mode == Mode::Bypass {
+        return Ok(());
+    }
+    let relevant: &[&str] = match kind {
+        CliKind::Codex => &[".codex", ".mcp.json"],
+        CliKind::Antigravity => &[".gemini", ".agent", ".agents", ".mcp.json"],
+        CliKind::Grok => &[".grok", ".mcp.json"],
+        CliKind::OpenCode => &[".opencode", "opencode.json", ".mcp.json"],
+        // `ClaudeCode` isolates via `--setting-sources user`; `Cursor` omits `--trust`.
+        CliKind::ClaudeCode | CliKind::Cursor => return Ok(()),
+    };
+    let found: Vec<&str> = relevant
+        .iter()
+        .copied()
+        .filter(|entry| std::fs::symlink_metadata(workspace.join(entry)).is_ok())
+        .collect();
+    if found.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "当前洞府尚未授信，且检测到本地 CLI 配置或钩子（{}）。请先在顶栏点击「信任此洞府」或审查本地配置后再运行 {}。",
+        found.join("、"),
+        kind.display_name()
+    ))
+}
+
 /// Build the CLI argument vector for one headless turn of `kind` (assuming a trusted workspace).
 #[allow(clippy::too_many_arguments)]
 pub fn build_args(
@@ -137,6 +195,10 @@ pub fn build_turn_args(
             args.push(perm.to_string());
             if !read_only && mode == Mode::Bypass {
                 args.push("--dangerously-skip-permissions".to_string());
+            }
+            if !workspace_trusted {
+                args.push("--setting-sources".to_string());
+                args.push("user".to_string());
             }
             args.push("--".to_string());
             args.push(prompt.to_string());

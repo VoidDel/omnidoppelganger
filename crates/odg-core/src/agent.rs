@@ -168,8 +168,9 @@ struct Inner<L: Llm> {
     painter: Option<crate::imagegen::ImageSource>,
     /// The language servers `code_nav` asks; shared by every session.
     lsp: Option<Arc<crate::lsp::LspHub>>,
-    /// Where Git keeps the workspace's repository, found when a command is first confined.
-    git_directory: std::sync::OnceLock<Option<PathBuf>>,
+    /// Minimal Git subdirectories (`worktrees/<name>`, `objects`, `refs`, `logs`) and common `.git`
+    /// directory for this workspace, found when a command is first confined.
+    git_sandbox_dirs: std::sync::OnceLock<(Vec<PathBuf>, Option<PathBuf>)>,
     /// The session works in the folder kept for conversations.
     chatting: bool,
     /// When true (set on `delegate` tasks with `read_only: true`), file edits, image generation,
@@ -214,7 +215,9 @@ impl<L: Llm> Clone for Session<L> {
     }
 }
 
-/// List project-local agent configuration files (`AGENTS.md`, `CLAUDE.md`, `.odg/skills/`, `.odg/prompts/`)
+/// List project-local agent configuration, skill, prompt, MCP, and external CLI hook files
+/// (`AGENTS.md`, `CLAUDE.md`, `.odg/skills/`, `.odg/prompts/`, `.claude`, `.mcp.json`, `.cursor`,
+/// `.cursorrules`, `.codex`, `.gemini`, `.agent`, `.agents`, `.opencode`, `opencode.json`, `.grok`)
 /// present inside `workspace`, so the UI or CLI can prompt the user before trusting a newly opened repository.
 pub fn untrusted_project_resources(workspace: &std::path::Path) -> Vec<String> {
     let mut found = Vec::new();
@@ -234,6 +237,11 @@ pub fn untrusted_project_resources(workspace: &std::path::Path) -> Vec<String> {
             .count();
         if count > 0 {
             found.push(format!(".odg/prompts（{count} 个模板）"));
+        }
+    }
+    for cli_cfg in crate::cli_agents::detect_untrusted_cli_configs(workspace) {
+        if !found.contains(&cli_cfg) {
+            found.push(cli_cfg);
         }
     }
     found
@@ -301,7 +309,7 @@ impl<L: Llm> Session<L> {
                 documents,
                 painter,
                 lsp,
-                git_directory: std::sync::OnceLock::new(),
+                git_sandbox_dirs: std::sync::OnceLock::new(),
                 chatting,
                 read_only,
                 provider: Mutex::new(provider),
@@ -504,7 +512,7 @@ impl<L: Llm> Session<L> {
         if plan.is_empty() {
             return Err(format!("turn {turn} and those after it have no edits to undo"));
         }
-        let outcome = undo::apply(&plan, &self.inner.snapshots);
+        let outcome = undo::apply(&plan, &self.inner.snapshots, &self.inner.workspace);
         self.inner.append(Event::FilesRestored { turn, restored: outcome.restored.clone(), skipped: outcome.skipped.clone() })?;
         drop(state);
         Ok(outcome)
@@ -720,6 +728,50 @@ impl<L: Llm> Session<L> {
     }
 }
 
+/// Account model token spend and rate-limit cooldown state for one durable session `event`.
+pub fn record_event_model_usage(
+    store: &crate::model_usage::ModelUsageStore,
+    configured_provider: &str,
+    configured_model: &str,
+    event: &Event,
+) {
+    match event {
+        Event::AssistantMessage { model, tokens: Some(tokens), .. } => {
+            let effective_model = if model.trim().is_empty() {
+                configured_model.to_string()
+            } else {
+                model.clone()
+            };
+            store.record_usage(configured_provider, &effective_model, tokens);
+            if configured_model == providers::AUTO_MODEL && effective_model != providers::AUTO_MODEL {
+                store.clear_cooldown(configured_provider, providers::AUTO_MODEL);
+            }
+        }
+        Event::ContextCompacted { tokens: Some(tokens), .. } => {
+            store.record_usage(configured_provider, configured_model, tokens);
+        }
+        Event::GuardianReviewed { model, tokens: Some(tokens), .. } => {
+            let effective_model = if model.trim().is_empty() {
+                configured_model
+            } else {
+                model.as_str()
+            };
+            store.record_usage(configured_provider, effective_model, tokens);
+        }
+        Event::ToolResult { meta, .. } => {
+            if let Some(raw) = meta.get("tokens")
+                && let Ok(tokens) = serde_json::from_value::<crate::llm::Tokens>(raw.clone())
+            {
+                store.record_usage(configured_provider, configured_model, &tokens);
+            }
+        }
+        Event::TurnEnd { error: Some(err), .. } => {
+            store.record_error_if_rate_limited(configured_provider, configured_model, err);
+        }
+        _ => {}
+    }
+}
+
 impl<L: Llm> Inner<L> {
     fn emit(&self, event: UiEvent) {
         // No receiver means no client is attached; the log is still the record.
@@ -739,16 +791,12 @@ impl<L: Llm> Inner<L> {
     /// Append to the log and tell the client. A log that cannot be written ends the turn.
     fn append(&self, event: Event) -> Result<(), String> {
         #[cfg(not(test))]
-        match &event {
-            Event::AssistantMessage { model, tokens: Some(tokens), .. } => {
-                let effective_model = if model.trim().is_empty() { self.model() } else { model.clone() };
-                crate::model_usage::ModelUsageStore::global().record_usage(&self.provider(), &effective_model, tokens);
-            }
-            Event::TurnEnd { error: Some(err), .. } => {
-                crate::model_usage::ModelUsageStore::global().record_error_if_rate_limited(&self.provider(), &self.model(), err);
-            }
-            _ => {}
-        }
+        record_event_model_usage(
+            crate::model_usage::ModelUsageStore::global(),
+            &self.provider(),
+            &self.model(),
+            &event,
+        );
         let envelope = self.log.lock().unwrap().append(event).map_err(|error| format!("cannot write the session log: {error}"))?;
         self.emit(UiEvent::Log { session_id: self.id.clone(), envelope });
         Ok(())
@@ -876,7 +924,18 @@ impl<L: Llm> Inner<L> {
         let mut extra = self.sandbox.as_ref().and_then(|source| source())?;
         crate::sandbox::support().ok()?;
         // Git writes to the repository's own directory, which a worktree's checkout, or a workspace below the top, does not hold.
-        extra.extend(self.git_directory.get_or_init(|| crate::worktree::git_directory(&self.workspace)).clone());
+        // Expose only the minimal required Git subdirectories (never the whole `--git-common-dir` root of a linked worktree)
+        // so `<common_git_dir>/{hooks,config,info}` stay read-only under both Linux Landlock and macOS Seatbelt.
+        let (git_dirs, common_git) = self
+            .git_sandbox_dirs
+            .get_or_init(|| crate::worktree::sandbox_writable_git_dirs(&self.workspace));
+        extra.extend(git_dirs.iter().cloned());
+        if let Some(common) = common_git {
+            let packed = common.join("packed-refs");
+            if packed.exists() {
+                extra.push(packed);
+            }
+        }
         Some(crate::sandbox::Sandbox { writable: crate::sandbox::roots(&self.workspace, &extra) })
     }
 
@@ -1110,10 +1169,7 @@ impl<L: Llm> Inner<L> {
                             .and_then(|hub| crate::mcp::parse_config(&hub.config_text()).ok())
                             .map(|all| all.into_iter().filter(|(_, cfg)| !cfg.disabled).collect())
                             .unwrap_or_default();
-                        let workspace_trusted = self.is_project_trusted()
-                            || (untrusted_project_resources(&self.workspace).is_empty()
-                                && !self.workspace.join(".cursor").exists()
-                                && !self.workspace.join(".cursorrules").exists());
+                        let workspace_trusted = self.is_project_trusted();
                         let params = crate::cli_agents::TurnParams {
                             kind,
                             workspace: &self.workspace,
@@ -1324,7 +1380,8 @@ impl<L: Llm> Inner<L> {
                     self.tool_result(&id, &name, message, true, json!({ "refused": true, "refusal": "read_only" }))?;
                     continue;
                 }
-                let mut verdict = policy::check_in(self.mode(), &name, &input, &self.workspace, self.sandboxed());
+                let mode = self.mode();
+                let mut verdict = policy::check_in(mode, &name, &input, &self.workspace, self.sandboxed());
                 // Input to a job is shown with the command it goes to, which only the session's jobs know.
                 if let Verdict::Ask { reason: "input", detail, .. } = &mut verdict
                     && let Some(command) = self.jobs.command(input["job"].as_str().unwrap_or_default())
@@ -1339,10 +1396,20 @@ impl<L: Llm> Inner<L> {
                 let granted = |grant: &String| {
                     grant.lines().all(|part| self.state.lock().unwrap().grants.contains(part) || self.kept.allows(&self.granted_in, part))
                 };
+                // In plan mode, standing or session grants may never auto-allow non-read-only commands.
+                let can_use_grant = mode != Mode::Plan
+                    || name != "run_command"
+                    || (input["unsandboxed"] != true
+                        && crate::safety::check_read_only(
+                            input["command"].as_str().unwrap_or_default(),
+                            crate::safety::Dialect::of_this_machine(),
+                            &self.workspace,
+                        )
+                        .is_ok());
                 // In auto mode a command the rules cannot pass goes to the guardian first, when there is one.
-                let auto = self.mode() == Mode::Auto;
+                let auto = mode == Mode::Auto;
                 let verdict = match verdict {
-                    Verdict::Ask { grant, .. } if grant.as_ref().is_some_and(granted) => Verdict::Allow,
+                    Verdict::Ask { grant, .. } if can_use_grant && grant.as_ref().is_some_and(granted) => Verdict::Allow,
                     // A file the user attached is read without asking, wherever it is: attaching it said so.
                     Verdict::Ask { reason: "outside_read", ref detail, .. } if name == "read_file" && self.attached(detail) => Verdict::Allow,
                     Verdict::Ask { reason: "command", detail, grant } if auto && tuning.guardian.is_some() => {

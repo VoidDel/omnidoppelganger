@@ -23,6 +23,25 @@ const OUTPUT_WAIT_LIMIT_SECONDS: u64 = 60;
 /// What a failed command printed when it was not let to write somewhere, as the systems that confine say it.
 const DENIED: &[&str] = &["permission denied", "operation not permitted", "read-only file system", "eacces", "eperm"];
 
+/// Cloud provider API keys stripped from child shell processes so untrusted scripts or
+/// prompt-injected commands cannot exfiltrate host credentials via environment inspection.
+pub const SENSITIVE_ENV_VARS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "MOONSHOT_API_KEY",
+    "ZHIPU_API_KEY",
+    "GLM_API_KEY",
+    "XAI_API_KEY",
+    "GROK_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "SILICONFLOW_API_KEY",
+];
+
 /// The shell `run_command` uses on this machine: `(program, arguments before the command, name for the model)`.
 pub fn shell() -> (&'static str, &'static [&'static str], &'static str) {
     if cfg!(windows) {
@@ -107,6 +126,9 @@ fn shell_command(command_line: &str, cwd: &Path, sandbox: Option<&crate::sandbox
     }
     // Ask the programs the command runs not to color either; whatever still does is stripped from the output.
     command.env("NO_COLOR", "1");
+    for var in SENSITIVE_ENV_VARS {
+        command.env_remove(var);
+    }
     command.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.

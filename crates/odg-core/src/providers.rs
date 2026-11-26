@@ -492,8 +492,18 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
             output: count(&usage["completion_tokens"]),
         },
         Protocol::Cli(_) => {
-            let cached = count(&usage["cache_read_tokens"]).max(count(&usage["cache_read_input_tokens"])).max(count(&usage["cached_input_tokens"]));
-            Tokens { input: count(&usage["input_tokens"]) + count(&usage["cache_read_tokens"]) + count(&usage["cache_read_input_tokens"]), cached, output: count(&usage["output_tokens"]) }
+            let cached = count(&usage["cache_read_tokens"])
+                .max(count(&usage["cache_read_input_tokens"]))
+                .max(count(&usage["cached_input_tokens"]));
+            Tokens {
+                input: count(&usage["input_tokens"])
+                    + count(&usage["cache_read_tokens"])
+                    + count(&usage["cache_read_input_tokens"])
+                    + count(&usage["cache_creation_input_tokens"])
+                    + count(&usage["cache_write_tokens"]),
+                cached,
+                output: count(&usage["output_tokens"]),
+            }
         }
     };
     (found.input > 0 || found.output > 0).then_some(found)
@@ -650,6 +660,12 @@ mod tests {
         assert_eq!(tokens("openai", &responses), Some(Tokens { input: 1000, cached: 900, output: 40 }));
         let gemini = json!({ "promptTokenCount": 1000, "cachedContentTokenCount": 600, "candidatesTokenCount": 30, "thoughtsTokenCount": 10 });
         assert_eq!(tokens("gemini", &gemini), Some(Tokens { input: 1000, cached: 600, output: 40 }));
+        let cli_claude = json!({ "input_tokens": 50, "cache_read_input_tokens": 800, "cache_creation_input_tokens": 150, "output_tokens": 60 });
+        assert_eq!(tokens("claude_code", &cli_claude), Some(Tokens { input: 1000, cached: 800, output: 60 }));
+        let cli_agy = json!({ "input_tokens": 100, "cache_read_tokens": 400, "cache_write_tokens": 200, "output_tokens": 35 });
+        assert_eq!(tokens("antigravity", &cli_agy), Some(Tokens { input: 700, cached: 400, output: 35 }));
+        let cli_codex = json!({ "input_tokens": 1000, "cached_input_tokens": 750, "output_tokens": 45 });
+        assert_eq!(tokens("codex", &cli_codex), Some(Tokens { input: 1000, cached: 750, output: 45 }));
         assert_eq!(tokens("zhipu", &json!({})), None);
 
         assert_eq!((vision("zhipu", "glm-5.3"), vision("zhipu", "glm-5.3-flash"), vision("zhipu", "glm-5.2")), (Some(false), Some(true), None));

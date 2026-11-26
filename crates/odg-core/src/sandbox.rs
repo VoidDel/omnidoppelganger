@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 /// Where confined commands may write.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sandbox {
     /// Directories they may write under; each must exist to count.
     pub writable: Vec<PathBuf>,
@@ -55,22 +55,104 @@ pub fn roots(workspace: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
     roots
 }
 
-/// A command that runs `program` confined to `sandbox`; the caller adds the
-/// arguments and the rest. Fails where [`support`] does.
+fn push_unique_path(out: &mut Vec<PathBuf>, path: PathBuf) {
+    let resolved = crate::tools::real_path(&path).unwrap_or(path);
+    if !out.contains(&resolved) {
+        out.push(resolved);
+    }
+}
+
+fn push_git_sensitive_paths(out: &mut Vec<PathBuf>, git_dir: &Path) {
+    for entry in ["hooks", "info", "config", "config.lock", "config.worktree", "config.worktree.lock"] {
+        push_unique_path(out, git_dir.join(entry));
+    }
+}
+
+fn follow_commondir(git_dir: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(git_dir.join("commondir")).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let joined = git_dir.join(trimmed);
+    Some(joined.canonicalize().unwrap_or(joined))
+}
+
+fn looks_like_git_dir(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|name| name.eq_ignore_ascii_case(".git"))
+        || (dir.join("HEAD").is_file()
+            && (dir.join("config").is_file() || dir.join("commondir").is_file() || dir.join("gitdir").is_file()))
+}
+
+/// Sensitive `.git` and `.odg` paths beneath `writable` roots (plus `extra_deny_write`)
+/// that confined commands must never modify even when their parent workspace is writable.
+pub fn protected_paths(writable: &[PathBuf], extra_deny_write: &[PathBuf]) -> Vec<PathBuf> {
+    let mut deny = Vec::new();
+    for root in writable {
+        let dir = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if looks_like_git_dir(&dir) {
+            push_git_sensitive_paths(&mut deny, &dir);
+            if let Some(common) = follow_commondir(&dir) {
+                push_git_sensitive_paths(&mut deny, &common);
+            }
+            continue;
+        }
+        if let Some(parent) = dir.parent()
+            && looks_like_git_dir(parent)
+        {
+            push_git_sensitive_paths(&mut deny, parent);
+        }
+        push_unique_path(&mut deny, dir.join(".odg"));
+        let dot_git = dir.join(".git");
+        if std::fs::symlink_metadata(&dot_git).is_ok_and(|meta| meta.is_file()) {
+            push_unique_path(&mut deny, dot_git.clone());
+            if let Ok(pointer) = std::fs::read_to_string(&dot_git)
+                && let Some(raw_target) = pointer.trim().strip_prefix("gitdir:").map(str::trim)
+            {
+                let wt_gitdir = dir.join(raw_target);
+                let wt_gitdir = wt_gitdir.canonicalize().unwrap_or(wt_gitdir);
+                push_git_sensitive_paths(&mut deny, &wt_gitdir);
+                if let Some(common) = follow_commondir(&wt_gitdir) {
+                    push_git_sensitive_paths(&mut deny, &common);
+                }
+            }
+        } else {
+            push_git_sensitive_paths(&mut deny, &dot_git);
+        }
+    }
+    for extra in extra_deny_write {
+        push_unique_path(&mut deny, extra.clone());
+    }
+    deny
+}
+
+/// A command that runs `program` confined to `sandbox`, automatically write-protecting
+/// `.git/{hooks,config,info}` and `.odg` under writable roots; the caller adds arguments and the rest.
 pub fn command(program: &str, sandbox: &Sandbox) -> std::io::Result<tokio::process::Command> {
+    command_with_deny(program, sandbox, &[])
+}
+
+/// Like [`command`], with additional `extra_deny_write` paths denied for writing where supported.
+pub fn command_with_deny(
+    program: &str,
+    sandbox: &Sandbox,
+    extra_deny_write: &[PathBuf],
+) -> std::io::Result<tokio::process::Command> {
     #[cfg(target_os = "linux")]
     {
+        let _ = extra_deny_write;
         let mut command = tokio::process::Command::new(program);
         linux::confine(&mut command, linux::ruleset(&sandbox.writable)?);
         Ok(command)
     }
     #[cfg(target_os = "macos")]
     {
-        Ok(macos::command(program, &sandbox.writable))
+        let deny_write = protected_paths(&sandbox.writable, extra_deny_write);
+        Ok(macos::command(program, &sandbox.writable, &deny_write))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (program, sandbox);
+        let _ = (program, sandbox, extra_deny_write);
         Err(std::io::Error::new(std::io::ErrorKind::Unsupported, support().unwrap_err()))
     }
 }
@@ -177,27 +259,68 @@ mod linux {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-    /// Everything is allowed but writing, which is allowed under the given
-    /// directories and to the devices a shell writes to. Later rules win.
-    fn profile(roots: usize) -> String {
-        let allowed: String = (0..roots).map(|index| format!(" (subpath (param \"ROOT_{index}\"))")).collect();
-        format!(
-            "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*{allowed}\n  (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\")\n  (literal \"/dev/stdout\") (literal \"/dev/stderr\") (regex #\"^/dev/fd/[0-9]+$\") (regex #\"^/dev/ttys[0-9]+$\"))\n"
+    fn is_file_like_deny(path: &Path) -> bool {
+        if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() || meta.file_type().is_symlink()) {
+            return true;
+        }
+        matches!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("config" | "config.lock" | "config.worktree" | "config.worktree.lock")
         )
     }
 
-    pub fn command(program: &str, writable: &[PathBuf]) -> tokio::process::Command {
+    /// Everything is allowed but writing and sending AppleEvents; writing is allowed under
+    /// the given directories and shell devices, then denied again on sensitive `.git`/`.odg` paths
+    /// (in Seatbelt, later rules win).
+    fn profile(roots: usize, deny_kinds: &[bool]) -> String {
+        let allowed: String = (0..roots).map(|index| format!(" (subpath (param \"ROOT_{index}\"))")).collect();
+        let denied_clause = if deny_kinds.is_empty() {
+            String::new()
+        } else {
+            let filters: String = deny_kinds
+                .iter()
+                .enumerate()
+                .map(|(index, is_literal)| {
+                    if *is_literal {
+                        format!(" (literal (param \"DENY_{index}\"))")
+                    } else {
+                        format!(" (subpath (param \"DENY_{index}\"))")
+                    }
+                })
+                .collect();
+            format!("(deny file-write*{filters})\n")
+        };
+        format!(
+            "(version 1)\n(allow default)\n(deny appleevent-send)\n(deny file-write*)\n(allow file-write*{allowed}\n  (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\")\n  (literal \"/dev/stdout\") (literal \"/dev/stderr\") (regex #\"^/dev/fd/[0-9]+$\") (regex #\"^/dev/ttys[0-9]+$\"))\n{denied_clause}"
+        )
+    }
+
+    pub fn command(program: &str, writable: &[PathBuf], deny_write: &[PathBuf]) -> tokio::process::Command {
         // The rules match a path as the system names it: /tmp is /private/tmp.
         let roots: Vec<PathBuf> = writable.iter().filter_map(|root| root.canonicalize().ok()).collect();
+        let denies: Vec<(PathBuf, bool)> = deny_write
+            .iter()
+            .filter_map(|path| {
+                let resolved = crate::tools::real_path(path)?;
+                let literal = is_file_like_deny(&resolved);
+                Some((resolved, literal))
+            })
+            .collect();
+        let deny_kinds: Vec<bool> = denies.iter().map(|(_, literal)| *literal).collect();
         let mut command = tokio::process::Command::new(SANDBOX_EXEC);
-        command.arg("-p").arg(profile(roots.len()));
+        command.arg("-p").arg(profile(roots.len(), &deny_kinds));
         for (index, root) in roots.iter().enumerate() {
             let mut parameter = std::ffi::OsString::from(format!("ROOT_{index}="));
             parameter.push(root);
+            command.arg("-D").arg(parameter);
+        }
+        for (index, (deny_path, _)) in denies.iter().enumerate() {
+            let mut parameter = std::ffi::OsString::from(format!("DENY_{index}="));
+            parameter.push(deny_path);
             command.arg("-D").arg(parameter);
         }
         command.arg(program);
@@ -289,5 +412,163 @@ mod tests {
         // The same commands run unconfined, so it was the sandbox that stopped them.
         let free = tokio::process::Command::new("sh").arg("-c").arg(format!("echo new > {out}/a.txt")).output().await.unwrap();
         assert!(free.status.success() && outside.join("a.txt").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_sandbox_blocks_writing_git_hooks_git_config_and_odg_dir_while_allowing_git_commit() {
+        if let Err(why) = support() {
+            eprintln!("not run: {why}");
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let repo = directory.path().join("repo");
+        let tmp_scratch = directory.path().join("tmp");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&tmp_scratch).unwrap();
+
+        let init = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["init", "--quiet", "--initial-branch", "main"])
+            .output()
+            .await
+            .unwrap();
+        assert!(init.status.success());
+
+        let sandbox = Sandbox { writable: vec![repo.clone(), tmp_scratch.clone()] };
+        let run = |script: &str| {
+            let sandbox = sandbox.clone();
+            let repo = repo.clone();
+            let tmp_scratch = tmp_scratch.clone();
+            let script = script.to_string();
+            async move {
+                let output = command("sh", &sandbox)
+                    .unwrap()
+                    .arg("-c")
+                    .arg(&script)
+                    .current_dir(&repo)
+                    .env("TMPDIR", &tmp_scratch)
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .await
+                    .unwrap();
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                (output.status.success(), combined)
+            }
+        };
+
+        let orig_config = std::fs::read_to_string(repo.join(".git/config")).unwrap();
+
+        for blocked in [
+            "echo '#!/bin/sh' > .git/hooks/pre-commit",
+            "echo '[core] fsmonitor = evil' >> .git/config",
+            "echo lock > .git/config.lock",
+            "git config user.name pwned",
+            "mkdir -p .odg && echo x > .odg/settings.json",
+        ] {
+            let (ok, said) = run(blocked).await;
+            assert!(!ok, "`{blocked}` unexpectedly succeeded: {said}");
+            let lower = said.to_lowercase();
+            assert!(
+                lower.contains("operation not permitted") || lower.contains("permission denied") || lower.contains("could not lock"),
+                "unexpected error for `{blocked}`: {said}"
+            );
+        }
+        assert!(!repo.join(".git/hooks/pre-commit").exists());
+        assert!(!repo.join(".git/config.lock").exists());
+        assert!(!repo.join(".odg/settings.json").exists());
+        assert_eq!(std::fs::read_to_string(repo.join(".git/config")).unwrap(), orig_config);
+
+        // Ordinary workspace edits, `git add`, `git commit`, and `git status` still succeed inside the sandbox.
+        let (ok, said) = run("echo 'hello' > hello.txt && git add hello.txt && git -c user.name=t -c user.email=t@e commit -m ok && git status --short").await;
+        assert!(ok, "legitimate git commit failed in sandbox: {said}");
+        assert!(repo.join("hello.txt").is_file());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn worktree_sandbox_protects_origin_common_git_hooks_and_config_on_linux_and_macos() {
+        if let Err(why) = support() {
+            eprintln!("not run: {why}");
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let origin = directory.path().join("origin");
+        let wt_root = directory.path().join("worktrees");
+        let tmp_scratch = directory.path().join("tmp");
+        std::fs::create_dir_all(origin.join("src")).unwrap();
+        std::fs::create_dir_all(&tmp_scratch).unwrap();
+        std::fs::write(origin.join("src/lib.rs"), "pub fn v() -> i32 { 1 }\n").unwrap();
+
+        for args in [
+            &["init", "--quiet", "--initial-branch", "main"][..],
+            &["add", "-A"][..],
+            &["-c", "user.name=t", "-c", "user.email=t@e", "commit", "--quiet", "-m", "init"][..],
+        ] {
+            let out = tokio::process::Command::new("git").arg("-C").arg(&origin).args(args).output().await.unwrap();
+            assert!(out.status.success());
+        }
+
+        let (wt_workspace, worktree) = crate::worktree::create(&origin, &wt_root).unwrap();
+        let (git_writable, common_git) = crate::worktree::sandbox_writable_git_dirs(&wt_workspace);
+        let origin_git = origin.join(".git").canonicalize().unwrap();
+        assert_eq!(common_git.as_deref(), Some(origin_git.as_path()));
+
+        let mut writable = vec![wt_workspace.clone(), tmp_scratch.clone()];
+        writable.extend(git_writable);
+        let sandbox = Sandbox { writable };
+
+        let run = |script: String| {
+            let sandbox = sandbox.clone();
+            let wt_workspace = wt_workspace.clone();
+            let tmp_scratch = tmp_scratch.clone();
+            async move {
+                let output = command("sh", &sandbox)
+                    .unwrap()
+                    .arg("-c")
+                    .arg(&script)
+                    .current_dir(&wt_workspace)
+                    .env("TMPDIR", &tmp_scratch)
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .await
+                    .unwrap();
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                (output.status.success(), combined)
+            }
+        };
+
+        let orig_config = std::fs::read_to_string(origin_git.join("config")).unwrap();
+        let hook_target = origin_git.join("hooks/pwn");
+        let config_target = origin_git.join("config");
+
+        for blocked in [
+            format!("echo pwn > {}", hook_target.display()),
+            format!("echo '[core] fsmonitor = evil' >> {}", config_target.display()),
+            format!("echo lock > {}.lock", config_target.display()),
+        ] {
+            let (ok, said) = run(blocked.clone()).await;
+            assert!(!ok, "`{blocked}` unexpectedly succeeded in worktree sandbox: {said}");
+        }
+        assert!(!hook_target.exists());
+        assert_eq!(std::fs::read_to_string(&config_target).unwrap(), orig_config);
+
+        // Worktree file edits, `git status`, `git add`, and `git commit` succeed inside the confined worktree.
+        let (ok, said) = run(
+            "echo 'pub fn v() -> i32 { 2 }' > src/lib.rs && git status --short && git add src/lib.rs && git -c user.name=t -c user.email=t@e commit -m wt-commit".to_string(),
+        )
+        .await;
+        assert!(ok, "git operations inside confined worktree failed: {said}");
+
+        crate::worktree::remove(&worktree).unwrap();
     }
 }

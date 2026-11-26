@@ -291,10 +291,11 @@ impl ResponsesClient {
                 Ok(Some(Ok(chunk))) => chunk,
             };
             for event in parser.feed(&chunk) {
-                if event.data.trim() == "[DONE]" {
+                let raw = event.data.trim();
+                if raw.is_empty() || raw == "[DONE]" {
                     continue;
                 }
-                let data: Value = serde_json::from_str(&event.data).map_err(|error| (LlmError::Protocol(format!("event {} is not JSON: {error}", event.event)), None))?;
+                let data: Value = serde_json::from_str(raw).map_err(|error| (LlmError::Protocol(format!("event {} is not JSON: {error}", event.event)), None))?;
                 for delta in accumulator.apply(&data).map_err(|error| (error, None))? {
                     *forwarded = true;
                     let _ = deltas.send(delta);
@@ -483,5 +484,35 @@ mod tests {
         let body = request_body(&request);
         assert_eq!(body["tools"][0], json!({ "type": "web_search" }));
         assert_eq!(body["tools"][1]["type"], "function");
+    }
+
+    #[tokio::test]
+    async fn ignores_empty_sse_heartbeats_comments_and_blank_data_frames_over_http() {
+        use crate::testing::serve;
+        let completed = json!({
+            "type": "response.completed",
+            "response": { "model": "gpt-6.2-sol", "status": "completed", "output": [message("心如止水")] }
+        });
+        let sse_body = format!(
+            "event: ping\n\n: comment\n\ndata: \n\ndata: {}\n\nevent: ping\n\ndata: {}\n\n",
+            json!({ "type": "response.output_text.delta", "output_index": 0, "delta": "心如止水" }),
+            completed
+        );
+        let raw_http = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
+        let (address, _server) = serve(vec![raw_http]).await;
+        let base_url = format!("{address}/v1");
+        let client = ResponsesClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: base_url.clone(), key: Some("sk-openai".into()) })).unwrap();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let request = LlmRequest {
+            provider: "openai".into(),
+            session: "s".into(),
+            model: "gpt-6.2-sol".into(),
+            system: "sys".into(),
+            messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })],
+            tools: vec![],
+            effort: "high".into(),
+        };
+        let turn = client.stream(request, sender, CancellationToken::new()).await.unwrap();
+        assert_eq!((turn.model.as_str(), turn.content[0]["text"].as_str()), ("gpt-6.2-sol", Some("心如止水")));
     }
 }

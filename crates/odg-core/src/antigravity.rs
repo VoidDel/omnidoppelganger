@@ -171,6 +171,9 @@ pub async fn list_models() -> Result<Vec<Listed>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in crate::cli_agents::scrubbed_env_keys(crate::cli_agents::CliKind::Antigravity, "") {
+        cmd.env_remove(key);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: prevent flashing a console window on Windows.
     let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
@@ -198,8 +201,9 @@ pub async fn list_models() -> Result<Vec<Listed>, String> {
 /// Convert `agy`'s usage object into OmniDoppelganger's [`Tokens`].
 pub fn parse_tokens(usage: &Value) -> Option<Tokens> {
     let count = |key: &str| usage[key].as_u64().unwrap_or(0);
-    let cached = count("cache_read_tokens");
-    let input = count("input_tokens") + cached;
+    let cached = count("cache_read_tokens").max(count("cache_read_input_tokens"));
+    let cache_write = count("cache_creation_input_tokens").max(count("cache_write_tokens"));
+    let input = count("input_tokens") + cached + cache_write;
     let output = count("output_tokens");
     (input > 0 || output > 0).then_some(Tokens { input, cached, output })
 }
@@ -521,6 +525,9 @@ pub async fn fetch_quota(force: bool) -> Result<AntigravityQuota, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in crate::cli_agents::scrubbed_env_keys(crate::cli_agents::CliKind::Antigravity, "") {
+        cmd.env_remove(key);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
 

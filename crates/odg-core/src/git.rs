@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::explorer::{self, MAX_TEXT_VIEW_BYTES};
 
+const SAFE_GIT_CONFIG: [&str; 4] = ["-c", "core.fsmonitor=false", "-c", "protocol.file.allow=never"];
 const FALLBACK_IDENTITY: [&str; 4] = ["-c", "user.name=OmniDoppelganger", "-c", "user.email=odg@localhost"];
 const UNTRACKED_CAP: usize = 500;
 const SYNC_TIMEOUT: Duration = Duration::from_secs(45);
@@ -141,11 +142,46 @@ pub struct GitCommitResult {
     pub branch: Option<String>,
 }
 
+fn untrusted_hooks_config() -> Result<[String; 2], String> {
+    #[cfg(unix)]
+    {
+        Ok(["-c".to_string(), "core.hooksPath=/dev/null".to_string()])
+    }
+    #[cfg(not(unix))]
+    {
+        let dir = crate::fsutil::private_temp_dir("empty-hooks")
+            .map_err(|error| format!("无法准备安全空钩子目录：{error}"))?;
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    let _ = fs::remove_dir_all(&p);
+                } else {
+                    let _ = fs::remove_file(&p);
+                }
+            }
+        }
+        Ok(["-c".to_string(), format!("core.hooksPath={}", dir.display())])
+    }
+}
+
 fn git_bytes(directory: &Path, config: &[&str], args: &[&str]) -> Result<Vec<u8>, String> {
+    git_bytes_with_trust(directory, true, config, args)
+}
+
+fn git_bytes_with_trust(
+    directory: &Path,
+    trusted: bool,
+    config: &[&str],
+    args: &[&str],
+) -> Result<Vec<u8>, String> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(directory)
-        .args(config)
+    cmd.arg("-C").arg(directory).args(SAFE_GIT_CONFIG);
+    if !trusted {
+        let hooks = untrusted_hooks_config()?;
+        cmd.args(&hooks);
+    }
+    cmd.args(config)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
@@ -172,6 +208,46 @@ fn git_bytes(directory: &Path, config: &[&str], args: &[&str]) -> Result<Vec<u8>
 fn git_text(directory: &Path, config: &[&str], args: &[&str]) -> Result<String, String> {
     let bytes = git_bytes(directory, config, args)?;
     Ok(String::from_utf8_lossy(&bytes).trim_end_matches(['\r', '\n']).to_string())
+}
+
+/// Resolve minimal writable Git subdirectories and `(git_dir, common_git_dir)` for `workspace`
+/// when confining commands so `<common_git_dir>/{hooks,config,info}` is never exposed as a writable root.
+pub fn sandbox_git_paths(workspace: &Path) -> (Vec<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
+    let git_dir = git_text(workspace, &[], &["rev-parse", "--path-format=absolute", "--git-dir"])
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| PathBuf::from(s.trim()).canonicalize().ok());
+    let common_dir = git_text(workspace, &[], &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| PathBuf::from(s.trim()).canonicalize().ok());
+    let (Some(git_dir), Some(common_dir)) = (git_dir, common_dir) else {
+        return (Vec::new(), None, None);
+    };
+    let ws_canon = workspace.canonicalize().ok();
+    let mut writable = Vec::new();
+    if git_dir != common_dir {
+        writable.push(git_dir.clone());
+    }
+    if git_dir != common_dir || ws_canon.as_ref().is_none_or(|ws| !common_dir.starts_with(ws)) {
+        for sub in ["objects", "refs", "logs"] {
+            let p = common_dir.join(sub);
+            if p.exists() {
+                writable.push(p);
+            }
+        }
+        let packed = common_dir.join("packed-refs");
+        if packed.exists() {
+            writable.push(packed);
+        }
+        if git_dir == common_dir {
+            let index = common_dir.join("index");
+            if index.exists() {
+                writable.push(index);
+            }
+        }
+    }
+    (writable, Some(git_dir), Some(common_dir))
 }
 
 fn identity(directory: &Path) -> &'static [&'static str] {
@@ -300,16 +376,21 @@ pub fn status(workspace: &Path) -> Result<GitStatus, String> {
 
 /// Inspect Git status for `workspace` or a specific sub-repository `repo` within `workspace`.
 pub fn status_for(workspace: &Path, repo: Option<&str>) -> Result<GitStatus, String> {
+    status_for_with_trust(workspace, repo, false)
+}
+
+/// Inspect Git status with explicit workspace trust (`!trusted` disables repository hooks).
+pub fn status_for_with_trust(workspace: &Path, repo: Option<&str>, trusted: bool) -> Result<GitStatus, String> {
     let explicit = repo.map(str::trim).filter(|s| !s.is_empty());
     if explicit.is_none() && repo_context(workspace).is_some() {
-        return status_single(workspace);
+        return status_single(workspace, trusted);
     }
 
     let discovered = discover_repos(workspace);
     if discovered.is_empty() {
         if let Some(rel) = explicit {
             let dir = resolve_repo_dir(workspace, Some(rel))?;
-            let mut st = status_single(&dir)?;
+            let mut st = status_single(&dir, trusted)?;
             st.active_repo = Some(rel.to_string());
             return Ok(st);
         }
@@ -320,7 +401,7 @@ pub fn status_for(workspace: &Path, repo: Option<&str>) -> Result<GitStatus, Str
     let mut statuses: Vec<(String, GitStatus)> = Vec::with_capacity(discovered.len());
     for rel in &discovered {
         let dir = workspace.join(rel);
-        if let Ok(st) = status_single(&dir)
+        if let Ok(st) = status_single(&dir, trusted)
             && st.is_repo
         {
             let dirty = st.conflicts.len() + st.staged.len() + st.unstaged.len() + st.untracked.len();
@@ -347,12 +428,13 @@ pub fn status_for(workspace: &Path, repo: Option<&str>) -> Result<GitStatus, Str
     Ok(chosen_status)
 }
 
-fn status_single(workspace: &Path) -> Result<GitStatus, String> {
+fn status_single(workspace: &Path, trusted: bool) -> Result<GitStatus, String> {
     let Some((top, ws_prefix)) = repo_context(workspace) else {
         return Ok(GitStatus::not_a_repo());
     };
-    let raw = git_bytes(
+    let raw = git_bytes_with_trust(
         &top,
+        trusted,
         &["-c", "core.quotepath=false"],
         &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
     )?;
@@ -568,11 +650,22 @@ fn validate_ref(reference: &str) -> Result<&str, String> {
 
 /// Compute structured diff hunks for an unstaged file, staged file, or a file in a historical commit.
 pub fn diff(workspace: &Path, rel_path: &str, stage: DiffStage, commit: Option<&str>) -> Result<GitDiffView, String> {
+    diff_with_trust(workspace, rel_path, stage, commit, false)
+}
+
+/// Compute structured diff hunks with explicit workspace trust (`!trusted` disables textconv filters & hooks).
+pub fn diff_with_trust(
+    workspace: &Path,
+    rel_path: &str,
+    stage: DiffStage,
+    commit: Option<&str>,
+    trusted: bool,
+) -> Result<GitDiffView, String> {
     let Some((top, ws_prefix)) = repo_context(workspace) else {
         let clean = rel_path.replace('\\', "/");
         for sub in discover_repos(workspace) {
             if let Some(inner) = clean.strip_prefix(&format!("{sub}/")) {
-                let mut view = diff(&workspace.join(&sub), inner, stage, commit)?;
+                let mut view = diff_with_trust(&workspace.join(&sub), inner, stage, commit, trusted)?;
                 view.path = clean;
                 return Ok(view);
             }
@@ -590,7 +683,7 @@ pub fn diff(workspace: &Path, rel_path: &str, stage: DiffStage, commit: Option<&
     match stage {
         DiffStage::Unstaged => {
             // Check whether the file is untracked; if so, render its full contents as an added hunk.
-            let tracked = git_bytes(&top, &[], &["ls-files", "--error-unmatch", "--", &repo_rel]).is_ok();
+            let tracked = git_bytes_with_trust(&top, trusted, &[], &["ls-files", "--error-unmatch", "--", &repo_rel]).is_ok();
             if !tracked && disk_file.is_file() {
                 let meta = fs::metadata(&disk_file).map_err(|e| format!("无法读取文件：{e}"))?;
                 if meta.len() > MAX_TEXT_VIEW_BYTES {
@@ -651,26 +744,33 @@ pub fn diff(workspace: &Path, rel_path: &str, stage: DiffStage, commit: Option<&
                     hunks,
                 });
             }
-            let raw_bytes = git_bytes(&top, &["-c", "core.quotepath=false"], &["diff", "-U4", "--no-color", "--no-ext-diff", "--", &repo_rel])?;
+            let mut args = vec!["diff", "-U4", "--no-color", "--no-ext-diff"];
+            if !trusted {
+                args.push("--no-textconv");
+            }
+            args.extend(["--", &repo_rel]);
+            let raw_bytes = git_bytes_with_trust(&top, trusted, &["-c", "core.quotepath=false"], &args)?;
             let (binary, added, removed, hunks) = parse_unified_diff(&String::from_utf8_lossy(&raw_bytes));
             Ok(GitDiffView { path: clean_rel, name, language, stage, commit: None, binary, added, removed, hunks })
         }
         DiffStage::Staged => {
-            let raw_bytes = git_bytes(
-                &top,
-                &["-c", "core.quotepath=false"],
-                &["diff", "--cached", "-U4", "--no-color", "--no-ext-diff", "--", &repo_rel],
-            )?;
+            let mut args = vec!["diff", "--cached", "-U4", "--no-color", "--no-ext-diff"];
+            if !trusted {
+                args.push("--no-textconv");
+            }
+            args.extend(["--", &repo_rel]);
+            let raw_bytes = git_bytes_with_trust(&top, trusted, &["-c", "core.quotepath=false"], &args)?;
             let (binary, added, removed, hunks) = parse_unified_diff(&String::from_utf8_lossy(&raw_bytes));
             Ok(GitDiffView { path: clean_rel, name, language, stage, commit: None, binary, added, removed, hunks })
         }
         DiffStage::Commit => {
             let rev = validate_ref(commit.ok_or("缺少提交哈希。")?)?;
-            let raw_bytes = git_bytes(
-                &top,
-                &["-c", "core.quotepath=false"],
-                &["show", "--format=", "-U4", "--no-color", "--no-ext-diff", rev, "--", &repo_rel],
-            )?;
+            let mut args = vec!["show", "--format=", "-U4", "--no-color", "--no-ext-diff"];
+            if !trusted {
+                args.push("--no-textconv");
+            }
+            args.extend([rev, "--", &repo_rel]);
+            let raw_bytes = git_bytes_with_trust(&top, trusted, &["-c", "core.quotepath=false"], &args)?;
             let (binary, added, removed, hunks) = parse_unified_diff(&String::from_utf8_lossy(&raw_bytes));
             Ok(GitDiffView {
                 path: clean_rel,
@@ -689,41 +789,56 @@ pub fn diff(workspace: &Path, rel_path: &str, stage: DiffStage, commit: Option<&
 
 /// Stage specific workspace-relative paths, or everything in `workspace` when `paths` is empty.
 pub fn stage(workspace: &Path, paths: &[String]) -> Result<(), String> {
+    stage_with_trust(workspace, paths, false)
+}
+
+/// Stage paths with explicit workspace trust (`!trusted` disables repository hooks).
+pub fn stage_with_trust(workspace: &Path, paths: &[String], trusted: bool) -> Result<(), String> {
     let (top, ws_prefix) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
     if paths.is_empty() {
         let scope = if ws_prefix.is_empty() { "." } else { ws_prefix.as_str() };
-        git_bytes(&top, &[], &["add", "-A", "--", scope])?;
+        git_bytes_with_trust(&top, trusted, &[], &["add", "-A", "--", scope])?;
         return Ok(());
     }
     let repo_paths: Vec<String> = paths.iter().map(|p| to_repo_rel(workspace, &ws_prefix, p)).collect::<Result<_, _>>()?;
     let mut args: Vec<&str> = vec!["add", "-A", "--"];
     args.extend(repo_paths.iter().map(String::as_str));
-    git_bytes(&top, &[], &args)?;
+    git_bytes_with_trust(&top, trusted, &[], &args)?;
     Ok(())
 }
 
 /// Unstage specific workspace-relative paths, or everything in `workspace` when `paths` is empty.
 pub fn unstage(workspace: &Path, paths: &[String]) -> Result<(), String> {
+    unstage_with_trust(workspace, paths, false)
+}
+
+/// Unstage paths with explicit workspace trust (`!trusted` disables repository hooks).
+pub fn unstage_with_trust(workspace: &Path, paths: &[String], trusted: bool) -> Result<(), String> {
     let (top, ws_prefix) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
     let head = has_head(&top);
     if paths.is_empty() {
         let scope = if ws_prefix.is_empty() { "." } else { ws_prefix.as_str() };
         if head {
-            git_bytes(&top, &[], &["reset", "-q", "HEAD", "--", scope])?;
+            git_bytes_with_trust(&top, trusted, &[], &["reset", "-q", "HEAD", "--", scope])?;
         } else {
-            git_bytes(&top, &[], &["rm", "-q", "--cached", "-r", "--", scope])?;
+            git_bytes_with_trust(&top, trusted, &[], &["rm", "-q", "--cached", "-r", "--", scope])?;
         }
         return Ok(());
     }
     let repo_paths: Vec<String> = paths.iter().map(|p| to_repo_rel(workspace, &ws_prefix, p)).collect::<Result<_, _>>()?;
     let mut args: Vec<&str> = if head { vec!["reset", "-q", "HEAD", "--"] } else { vec!["rm", "-q", "--cached", "-r", "--"] };
     args.extend(repo_paths.iter().map(String::as_str));
-    git_bytes(&top, &[], &args)?;
+    git_bytes_with_trust(&top, trusted, &[], &args)?;
     Ok(())
 }
 
 /// Discard unstaged working-tree modifications or remove untracked files.
 pub fn discard(workspace: &Path, paths: &[String]) -> Result<(), String> {
+    discard_with_trust(workspace, paths, false)
+}
+
+/// Discard unstaged changes with explicit workspace trust (`!trusted` disables repository hooks).
+pub fn discard_with_trust(workspace: &Path, paths: &[String], trusted: bool) -> Result<(), String> {
     let (top, ws_prefix) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
     if paths.is_empty() {
         return Ok(());
@@ -732,7 +847,7 @@ pub fn discard(workspace: &Path, paths: &[String]) -> Result<(), String> {
     let mut untracked = Vec::new();
     for rel in paths {
         let repo_rel = to_repo_rel(workspace, &ws_prefix, rel)?;
-        if git_bytes(&top, &[], &["ls-files", "--error-unmatch", "--", &repo_rel]).is_ok() {
+        if git_bytes_with_trust(&top, trusted, &[], &["ls-files", "--error-unmatch", "--", &repo_rel]).is_ok() {
             tracked.push(repo_rel);
         } else {
             untracked.push(rel.clone());
@@ -741,7 +856,7 @@ pub fn discard(workspace: &Path, paths: &[String]) -> Result<(), String> {
     if !tracked.is_empty() {
         let mut args: Vec<&str> = vec!["checkout", "--"];
         args.extend(tracked.iter().map(String::as_str));
-        git_bytes(&top, &[], &args)?;
+        git_bytes_with_trust(&top, trusted, &[], &args)?;
     }
     for rel in &untracked {
         explorer::delete_entry(workspace, rel)?;
@@ -752,36 +867,51 @@ pub fn discard(workspace: &Path, paths: &[String]) -> Result<(), String> {
 /// Discard and revert ALL uncommitted changes inside `workspace`:
 /// unstages staged edits/additions, restores tracked files to HEAD, and removes untracked files/directories.
 pub fn discard_all(workspace: &Path) -> Result<(), String> {
+    discard_all_with_trust(workspace, false)
+}
+
+/// Discard all uncommitted changes with explicit workspace trust (`!trusted` disables repository hooks).
+pub fn discard_all_with_trust(workspace: &Path, trusted: bool) -> Result<(), String> {
     let (top, ws_prefix) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
     let scope = if ws_prefix.is_empty() { "." } else { ws_prefix.as_str() };
-    let has_head = git_bytes(&top, &[], &["rev-parse", "--verify", "HEAD"]).is_ok();
+    let has_head = git_bytes_with_trust(&top, trusted, &[], &["rev-parse", "--verify", "HEAD"]).is_ok();
     if has_head {
-        git_bytes(&top, &[], &["reset", "HEAD", "--", scope])?;
+        git_bytes_with_trust(&top, trusted, &[], &["reset", "HEAD", "--", scope])?;
         // Only run checkout if any tracked files exist under `scope`.
-        if !git_bytes(&top, &[], &["ls-files", "--", scope]).unwrap_or_default().is_empty() {
-            git_bytes(&top, &[], &["checkout", "--", scope])?;
+        if !git_bytes_with_trust(&top, trusted, &[], &["ls-files", "--", scope]).unwrap_or_default().is_empty() {
+            git_bytes_with_trust(&top, trusted, &[], &["checkout", "--", scope])?;
         }
     } else {
-        let _ = git_bytes(&top, &[], &["rm", "-rf", "--cached", "--ignore-unmatch", "--", scope]);
+        let _ = git_bytes_with_trust(&top, trusted, &[], &["rm", "-rf", "--cached", "--ignore-unmatch", "--", scope]);
     }
-    git_bytes(&top, &[], &["clean", "-fd", "--", scope])?;
+    git_bytes_with_trust(&top, trusted, &[], &["clean", "-fd", "--", scope])?;
     Ok(())
 }
 
 /// Commit staged changes (optionally staging all tracked/untracked changes first when `stage_all` is true).
 pub fn commit(workspace: &Path, message: &str, stage_all: bool) -> Result<GitCommitResult, String> {
+    commit_with_trust(workspace, message, stage_all, false)
+}
+
+/// Commit staged changes with explicit workspace trust (`!trusted` disables `pre-commit` / `commit-msg` / `post-commit` hooks).
+pub fn commit_with_trust(
+    workspace: &Path,
+    message: &str,
+    stage_all: bool,
+    trusted: bool,
+) -> Result<GitCommitResult, String> {
     let (top, _) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
     let msg = message.trim();
     if msg.is_empty() {
         return Err("请填写提交说明。".to_string());
     }
     if stage_all {
-        stage(workspace, &[])?;
+        stage_with_trust(workspace, &[], trusted)?;
     }
-    if git_bytes(&top, &[], &["diff", "--cached", "--quiet"]).is_ok() {
+    if git_bytes_with_trust(&top, trusted, &[], &["diff", "--cached", "--quiet"]).is_ok() {
         return Err("暂存区还是空的，请先勾选暂存要提交的改动。".to_string());
     }
-    git_bytes(&top, identity(&top), &["commit", "-m", msg])?;
+    git_bytes_with_trust(&top, trusted, identity(&top), &["commit", "-m", msg])?;
     let hash = git_text(&top, &[], &["rev-parse", "--short", "HEAD"])?;
     let branch = git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"]).ok().filter(|b| b != "HEAD");
     Ok(GitCommitResult { hash, branch })
@@ -845,22 +975,27 @@ pub fn branches(workspace: &Path) -> Result<Vec<GitBranch>, String> {
 
 /// Switch to an existing branch (or remote tracking branch) or create a new local branch.
 pub fn checkout(workspace: &Path, branch: &str, create: bool) -> Result<String, String> {
+    checkout_with_trust(workspace, branch, create, false)
+}
+
+/// Switch or create a branch with explicit workspace trust (`!trusted` disables `post-checkout` hooks).
+pub fn checkout_with_trust(workspace: &Path, branch: &str, create: bool, trusted: bool) -> Result<String, String> {
     let (top, _) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
     let name = validate_ref(branch)?;
     if create {
-        git_bytes(&top, &[], &["checkout", "-b", name])?;
+        git_bytes_with_trust(&top, trusted, &[], &["checkout", "-b", name])?;
         return Ok(name.to_string());
     }
-    if git_bytes(&top, &[], &["show-ref", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok() {
-        git_bytes(&top, &[], &["checkout", name])?;
+    if git_bytes_with_trust(&top, trusted, &[], &["show-ref", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok() {
+        git_bytes_with_trust(&top, trusted, &[], &["checkout", name])?;
         return Ok(name.to_string());
     }
     // Remote branch like `origin/feature` -> create local tracking branch `feature`.
-    if git_bytes(&top, &[], &["show-ref", "--verify", "--quiet", &format!("refs/remotes/{name}")]).is_ok() {
-        git_bytes(&top, &[], &["checkout", "--track", name])?;
+    if git_bytes_with_trust(&top, trusted, &[], &["show-ref", "--verify", "--quiet", &format!("refs/remotes/{name}")]).is_ok() {
+        git_bytes_with_trust(&top, trusted, &[], &["checkout", "--track", name])?;
         return git_text(&top, &[], &["rev-parse", "--abbrev-ref", "HEAD"]);
     }
-    git_bytes(&top, &[], &["checkout", name])?;
+    git_bytes_with_trust(&top, trusted, &[], &["checkout", name])?;
     Ok(name.to_string())
 }
 
@@ -949,6 +1084,11 @@ pub fn commit_files(workspace: &Path, commit: &str) -> Result<Vec<GitFile>, Stri
 
 /// Run `fetch`, `pull`, or `push` asynchronously with interactive prompts disabled and a safety timeout.
 pub async fn sync(workspace: &Path, action: &str) -> Result<String, String> {
+    sync_with_trust(workspace, action, false).await
+}
+
+/// Run `fetch`, `pull`, or `push` with explicit workspace trust (`!trusted` disables `pre-push` / `post-merge` hooks).
+pub async fn sync_with_trust(workspace: &Path, action: &str, trusted: bool) -> Result<String, String> {
     let (top, _) = repo_context(workspace).ok_or("当前目录不在 Git 仓库中。")?;
     let args: Vec<&str> = match action {
         "fetch" => vec!["fetch", "--prune"],
@@ -966,9 +1106,12 @@ pub async fn sync(workspace: &Path, action: &str) -> Result<String, String> {
     };
 
     let mut cmd = tokio::process::Command::new("git");
-    cmd.arg("-C")
-        .arg(&top)
-        .args(&args)
+    cmd.arg("-C").arg(&top).args(SAFE_GIT_CONFIG);
+    if !trusted {
+        let hooks = untrusted_hooks_config()?;
+        cmd.args(&hooks);
+    }
+    cmd.args(&args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
         .stdin(Stdio::null())
@@ -1060,6 +1203,18 @@ pub fn pr_defaults(directory: &Path) -> Result<PrDefaults, String> {
 
 /// Push the current branch if needed and create a GitHub Pull Request via `gh pr create`.
 pub async fn create_pr(directory: &Path, title: &str, body: &str, base: Option<&str>, draft: bool) -> Result<PullRequestResult, String> {
+    create_pr_with_trust(directory, title, body, base, draft, false).await
+}
+
+/// Push the current branch with explicit workspace trust and create a GitHub Pull Request via `gh pr create`.
+pub async fn create_pr_with_trust(
+    directory: &Path,
+    title: &str,
+    body: &str,
+    base: Option<&str>,
+    draft: bool,
+    trusted: bool,
+) -> Result<PullRequestResult, String> {
     let title = title.trim();
     if title.is_empty() {
         return Err("PR 标题不能为空。".to_string());
@@ -1072,7 +1227,7 @@ pub async fn create_pr(directory: &Path, title: &str, body: &str, base: Option<&
         return Err("当前处于游离 HEAD 状态，请先切到具体分支再创建 PR。".to_string());
     }
     // Ensure the branch is pushed to origin before creating the PR.
-    sync(&top, "push").await?;
+    sync_with_trust(&top, "push", trusted).await?;
 
     let mut args = vec!["pr".to_string(), "create".to_string(), "--title".to_string(), title.to_string(), "--body".to_string(), body.to_string()];
     if let Some(base) = base.map(str::trim).filter(|b| !b.is_empty() && *b != branch) {
@@ -1250,5 +1405,84 @@ mod tests {
         let st_a = status_for(workspace, Some("app-a")).unwrap();
         assert_eq!(st_a.active_repo.as_deref(), Some("app-a"));
         assert!(st_a.unstaged.is_empty());
+    }
+
+    #[test]
+    fn git_status_ignores_malicious_core_fsmonitor_in_repo_config() {
+        let (dir, root) = init_repo();
+        let marker = dir.path().join("fsmonitor-pwned");
+        let payload = dir.path().join("fsmonitor-hook.sh");
+        let marker_slash = marker.to_string_lossy().replace('\\', "/");
+        fs::write(&payload, format!("#!/bin/sh\necho pwn > \"{marker_slash}\"\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let payload_slash = payload.to_string_lossy().replace('\\', "/");
+        assert!(
+            Command::new("git")
+                .current_dir(&root)
+                .args(["config", "core.fsmonitor", &payload_slash])
+                .status()
+                .unwrap()
+                .success()
+        );
+        // Dirty working tree & untracked file so `git status` refreshes the index/worktree.
+        fs::write(root.join("src/hello.rs"), "fn main() { println!(\"changed\"); }\n").unwrap();
+        fs::write(root.join("untracked.txt"), "new\n").unwrap();
+
+        let st_untrusted = status_for(&root, None).unwrap();
+        assert!(st_untrusted.is_repo);
+        assert_eq!(st_untrusted.unstaged.len(), 1);
+        assert_eq!(st_untrusted.untracked.len(), 1);
+        assert!(!marker.exists(), "core.fsmonitor must never execute during status_for");
+
+        let st_trusted = status_for_with_trust(&root, None, true).unwrap();
+        assert!(st_trusted.is_repo);
+        assert!(!marker.exists(), "core.fsmonitor must remain disabled even in trusted workspaces");
+    }
+
+    #[test]
+    fn untrusted_git_commit_ignores_malicious_pre_commit_hook() {
+        let (dir, root) = init_repo();
+        let pre_commit_marker = dir.path().join("pre-commit-pwned");
+        let post_checkout_marker = dir.path().join("post-checkout-pwned");
+        let hooks_dir = root.join(".git/hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+
+        let pre_commit = hooks_dir.join("pre-commit");
+        let pre_marker_slash = pre_commit_marker.to_string_lossy().replace('\\', "/");
+        fs::write(&pre_commit, format!("#!/bin/sh\necho pwn > \"{pre_marker_slash}\"\nexit 1\n")).unwrap();
+
+        let post_checkout = hooks_dir.join("post-checkout");
+        let post_marker_slash = post_checkout_marker.to_string_lossy().replace('\\', "/");
+        fs::write(&post_checkout, format!("#!/bin/sh\necho pwn > \"{post_marker_slash}\"\nexit 1\n")).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(&post_checkout, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // Untrusted commit (`trusted = false`) must succeed without running `.git/hooks/pre-commit`.
+        fs::write(root.join("src/hello.rs"), "fn main() { println!(\"safe\"); }\n").unwrap();
+        let res = commit_with_trust(&root, "safe commit in untrusted repo", true, false).unwrap();
+        assert!(!res.hash.is_empty());
+        assert!(!pre_commit_marker.exists(), "untrusted git commit must not execute pre-commit hook");
+
+        // Untrusted checkout (`trusted = false`) must succeed without running `.git/hooks/post-checkout`.
+        let branch = checkout_with_trust(&root, "feat/isolated", true, false).unwrap();
+        assert_eq!(branch, "feat/isolated");
+        assert!(!post_checkout_marker.exists(), "untrusted git checkout must not execute post-checkout hook");
+
+        // Sanity check on Unix: when `trusted = true`, the armed `pre-commit` hook IS invoked and blocks the commit.
+        #[cfg(unix)]
+        {
+            fs::write(root.join("src/hello.rs"), "fn main() { println!(\"trusted\"); }\n").unwrap();
+            assert!(commit_with_trust(&root, "trusted commit runs hook", true, true).is_err());
+            assert!(pre_commit_marker.exists(), "trusted git commit should honour repository hooks");
+        }
     }
 }

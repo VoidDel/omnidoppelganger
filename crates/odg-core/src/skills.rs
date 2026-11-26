@@ -9,7 +9,7 @@
 //! home directory and in `.odg/skills` in the workspace; where both hold a
 //! skill of the same name, the workspace's is used.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -231,15 +231,31 @@ const INSTALL_BYTES: u64 = 50 * 1024 * 1024;
 /// taken apart; any other is cloned as it is. `None` for what is not a Git
 /// address, which is a folder on this computer.
 pub fn git_source(source: &str) -> Option<(String, Option<String>, Option<String>)> {
-    let remote = ["https://", "http://", "git@", "ssh://"].iter().any(|start| source.starts_with(start)) || source.ends_with(".git");
+    if source.is_empty() || source.starts_with('-') || source.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let remote = ["https://", "http://", "ssh://", "git@"].iter().any(|start| source.starts_with(start));
     if !remote {
         return None;
     }
     if let Some(rest) = source.strip_prefix("https://github.com/") {
         let parts: Vec<&str> = rest.trim_end_matches('/').splitn(5, '/').collect();
         if let [owner, repository, "tree", branch, rest @ ..] = parts.as_slice() {
+            let repo_clean = repository.trim_end_matches(".git");
+            if owner.is_empty()
+                || repo_clean.is_empty()
+                || *owner == "."
+                || *owner == ".."
+                || repo_clean == "."
+                || repo_clean == ".."
+                || branch.is_empty()
+                || branch.starts_with('-')
+                || branch.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return None;
+            }
             let folder = rest.first().map(|folder| folder.to_string()).filter(|folder| !folder.is_empty());
-            return Some((format!("https://github.com/{owner}/{}.git", repository.trim_end_matches(".git")), Some(branch.to_string()), folder));
+            return Some((format!("https://github.com/{owner}/{repo_clean}.git"), Some(branch.to_string()), folder));
         }
     }
     Some((source.to_string(), None, None))
@@ -348,15 +364,57 @@ fn remove_tree(root: &Path) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+fn validate_relative_subpath(subpath: &str) -> Result<(), String> {
+    if subpath.contains('\0') {
+        return Err("Skill subpath contains invalid null byte.".to_string());
+    }
+    for component in Path::new(subpath).components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("Skill path `{subpath}` must stay inside the source repository without `..`."));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Fetch a Git repository's latest commit into a folder of its own, for a skill to be installed from.
 async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &CancellationToken) -> Result<(), String> {
+    if url.is_empty() || url.starts_with('-') || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("Refusing unsafe Git repository URL `{url}`."));
+    }
+    if let Some(branch) = branch
+        && (branch.is_empty() || branch.starts_with('-') || branch.chars().any(|c| c.is_whitespace() || c.is_control()))
+    {
+        return Err(format!("Refusing unsafe Git branch `{branch}`."));
+    }
     let mut command = tokio::process::Command::new("git");
-    command.args(["clone", "--depth", "1", "--quiet"]);
+    command.args([
+        "-c",
+        "core.symlinks=false",
+        "-c",
+        "protocol.file.allow=never",
+        "-c",
+        "core.fsmonitor=false",
+        "clone",
+        "--depth",
+        "1",
+        "--quiet",
+    ]);
     if let Some(branch) = branch {
         command.args(["--branch", branch]);
     }
     // Nobody is at a terminal to give a password: a repository that wants one fails at once rather than waits.
-    command.arg(url).arg(into).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
+    command
+        .arg("--")
+        .arg(url)
+        .arg(into)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
     let output = tokio::select! {
@@ -376,26 +434,53 @@ async fn clone(url: &str, branch: Option<&str>, into: &Path, cancel: &Cancellati
 /// after, or else the folder `local` on this computer. `within` is the
 /// folder inside it that holds the skill, when that is not its top.
 pub async fn fetch(source: &str, local: PathBuf, within: Option<&str>, into: &Path, replace: bool, cancel: &CancellationToken) -> Result<Skill, String> {
+    if let Some(within) = within {
+        validate_relative_subpath(within)?;
+    }
     let fetched = match git_source(source) {
         Some((url, branch, folder)) => {
-            let temporary = std::env::temp_dir().join(format!("odg-skill-{}", uuid::Uuid::now_v7()));
+            if let Some(folder) = &folder {
+                validate_relative_subpath(folder)?;
+            }
+            let temp_holder = crate::fsutil::create_private_subdir("skills")
+                .map_err(|error| format!("Cannot create private temporary directory for skill download: {error}"))?;
+            let temporary = temp_holder.join("repo");
             if let Err(error) = clone(&url, branch.as_deref(), &temporary, cancel).await {
-                remove_tree(&temporary);
+                remove_tree(&temp_holder);
                 return Err(error);
             }
-            Some((temporary, folder))
+            Some((temp_holder, temporary, folder))
         }
         None => None,
     };
     let top = match &fetched {
-        Some((temporary, folder)) => folder.as_ref().map_or_else(|| temporary.clone(), |folder| temporary.join(folder)),
-        None => local,
+        Some((_, temporary, folder)) => folder.as_ref().map_or_else(|| temporary.clone(), |folder| temporary.join(folder)),
+        None => local.clone(),
     };
     let from = within.map_or_else(|| top.clone(), |within| top.join(within));
+    if let Some((temp_holder, temporary, _)) = &fetched {
+        let checked = (|| -> Result<(), String> {
+            let temp_canon = temporary.canonicalize().map_err(|e| format!("Cannot verify cloned skill directory: {e}"))?;
+            let from_canon = from.canonicalize().map_err(|_| format!("There is no skill folder at {} inside the cloned repository.", from.display()))?;
+            if !from_canon.starts_with(&temp_canon) {
+                return Err("Skill path escapes the cloned repository.".to_string());
+            }
+            Ok(())
+        })();
+        if let Err(error) = checked {
+            remove_tree(temp_holder);
+            return Err(error);
+        }
+    } else if within.is_some()
+        && let (Ok(local_canon), Ok(from_canon)) = (local.canonicalize(), from.canonicalize())
+        && !from_canon.starts_with(&local_canon)
+    {
+        return Err("Skill path escapes the source folder.".to_string());
+    }
     let target = into.to_path_buf();
     let installed = tokio::task::spawn_blocking(move || install(&from, &target, replace)).await;
-    if let Some((temporary, _)) = &fetched {
-        remove_tree(temporary);
+    if let Some((temp_holder, _, _)) = &fetched {
+        remove_tree(temp_holder);
     }
     installed.map_err(|error| format!("The install stopped: {error}"))?
 }
@@ -534,6 +619,41 @@ mod tests {
         assert_eq!(git_source("git@github.com:me/skill.git"), Some(("git@github.com:me/skill.git".into(), None, None)));
         assert_eq!(git_source("D:\\skills\\pdf"), None);
         assert_eq!(git_source("../skills/pdf"), None);
+        assert_eq!(git_source("--upload-pack=evil.git"), None);
+        assert_eq!(git_source("-u./payload.git"), None);
+        assert_eq!(git_source("local-repo.git"), None);
+        assert_eq!(git_source("https://github.com/me/repo.git --upload-pack=evil"), None);
+        assert_eq!(git_source("https://github.com/me/repo/tree/--upload-pack=evil/skills/pdf"), None);
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_parent_traversal_in_within_or_github_folder_and_clone_flags() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let into = directory.path().join("into");
+        skill(&directory.path().join("outside"), "escaped", "---\nname: escaped\ndescription: Bad.\n---\nNo.\n");
+        std::fs::create_dir_all(&source).unwrap();
+        let cancel = CancellationToken::new();
+
+        let err = fetch("./source", source.clone(), Some("../../outside/escaped"), &into, false, &cancel).await.unwrap_err();
+        assert!(err.contains(".."), "{err}");
+
+        let err_gh = fetch(
+            "https://github.com/anthropics/skills/tree/main/skills/../../outside",
+            source,
+            None,
+            &into,
+            false,
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert!(err_gh.contains(".."), "{err_gh}");
+
+        let err_clone = clone("--upload-pack=evil", None, &directory.path().join("clone_out"), &cancel).await.unwrap_err();
+        assert!(err_clone.contains("unsafe"), "{err_clone}");
+        let err_branch = clone("https://github.com/me/repo.git", Some("--upload-pack=evil"), &directory.path().join("clone_out2"), &cancel).await.unwrap_err();
+        assert!(err_branch.contains("unsafe"), "{err_branch}");
     }
 
     fn skill(root: &Path, folder: &str, text: &str) {

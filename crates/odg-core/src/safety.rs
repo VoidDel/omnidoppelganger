@@ -55,7 +55,19 @@ fn scan(command: &str, dialect: Dialect, workspace: &Path) -> Result<Vec<Segment
     if command.trim().is_empty() {
         return Err("the command is empty".into());
     }
-    let mut scanner = Scanner { chars: command.chars().collect(), at: 0, dialect, workspace, segments: Vec::new(), segment: Vec::new(), word: Word::default(), parens: 0, string_args: Vec::new(), braces: Vec::new() };
+    let mut scanner = Scanner {
+        chars: command.chars().collect(),
+        at: 0,
+        dialect,
+        workspace,
+        segments: Vec::new(),
+        segment: Vec::new(),
+        word: Word::default(),
+        parens: 0,
+        string_args: Vec::new(),
+        array_parens: Vec::new(),
+        braces: Vec::new(),
+    };
     scanner.code(false)?;
     scanner.end_word()?;
     scanner.end_segment()?;
@@ -70,11 +82,215 @@ const RUNS_ANYTHING: &[&str] = &[
     "eval", "exec", "nohup", "time", "source", ".", "call", "npx", "dlx",
 ];
 
+fn normalized_program_base(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed == "." {
+        return ".".to_string();
+    }
+    let base = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    let lower = base.to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+/// Whether invoking `name` with `args` can execute arbitrary code or child commands,
+/// meaning it must never receive a reusable standing grant.
+pub fn runs_arbitrary_code(name: &str, args: &[&str]) -> bool {
+    let base = normalized_program_base(name);
+    if RUNS_ANYTHING.contains(&base.as_str()) {
+        return true;
+    }
+    if ["python", "ruby", "perl", "php", "lua"].iter().any(|prefix| base.starts_with(prefix)) {
+        return true;
+    }
+    if matches!(
+        base.as_str(),
+        "uv" | "uvx"
+            | "pipx"
+            | "bunx"
+            | "pnpx"
+            | "tsx"
+            | "ts-node"
+            | "awk"
+            | "gawk"
+            | "mawk"
+            | "nawk"
+            | "osascript"
+            | "cscript"
+            | "wscript"
+            | "mshta"
+            | "rundll32"
+            | "regsvr32"
+            | "ksh"
+            | "csh"
+            | "tcsh"
+            | "nu"
+            | "elvish"
+    ) {
+        return true;
+    }
+    if base == "find" && args.iter().any(|arg| *arg == "-delete" || arg.starts_with("-exec") || arg.starts_with("-ok")) {
+        return true;
+    }
+    false
+}
+
+/// Extract the narrow subcommand token for a standing `command:<prog> <sub>` grant.
+///
+/// Multi-subcommand CLIs skip only whitelisted harmless global flags, refuse flags that
+/// alter execution hooks/configuration, refuse arbitrary code-runner subcommands, and
+/// never fall back to a bare `command:<prog>` wildcard.
+pub fn extract_grant_subcommand<'a>(name: &str, args: &'a [&'a str]) -> Result<Option<&'a str>, String> {
+    let base = normalized_program_base(name);
+    let valid_multi_sub = |word: &str| {
+        !word.starts_with('-')
+            && word.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    match base.as_str() {
+        "find" => Err("find cannot be approved for good because flags across its arguments can delete files or run commands".into()),
+        "git" => {
+            let mut at = 0;
+            while let Some(&arg) = args.get(at).filter(|arg| arg.starts_with('-')) {
+                match arg {
+                    "--no-pager" | "-P" | "--no-optional-locks" => at += 1,
+                    "-C" => {
+                        if args.get(at + 1).is_none() {
+                            return Err("git -C without a directory".into());
+                        }
+                        at += 2;
+                    }
+                    _ if arg.starts_with("-C") && arg.len() > 2 => at += 1,
+                    other => return Err(format!("git {other} changes how Git runs")),
+                }
+            }
+            let sub = args
+                .get(at)
+                .copied()
+                .filter(|w| valid_multi_sub(w))
+                .ok_or_else(|| "git without a subcommand cannot be approved for good".to_string())?;
+            Ok(Some(sub))
+        }
+        "cargo" => {
+            if args.iter().any(|arg| *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "-C") {
+                return Err("cargo --config, -Z, and -C cannot be approved for good".into());
+            }
+            let mut at = 0;
+            while let Some(&arg) = args.get(at) {
+                let toolchain = arg.starts_with('+') && arg.len() > 1 && arg[1..].chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+                if toolchain || matches!(arg, "-q" | "--quiet" | "-v" | "-vv" | "--verbose" | "--locked" | "--offline" | "--frozen") {
+                    at += 1;
+                } else if arg.starts_with('-') || arg.starts_with('+') {
+                    return Err(format!("cargo {arg} cannot be approved as a standing grant"));
+                } else {
+                    break;
+                }
+            }
+            let sub = args
+                .get(at)
+                .copied()
+                .filter(|w| valid_multi_sub(w))
+                .ok_or_else(|| "cargo without a subcommand cannot be approved for good".to_string())?;
+            if matches!(sub.to_ascii_lowercase().as_str(), "run" | "r" | "install") {
+                return Err(format!("cargo {sub} runs or installs arbitrary binaries"));
+            }
+            Ok(Some(sub))
+        }
+        "npm" | "pnpm" | "yarn" | "bun" => {
+            if args.iter().any(|arg| *arg == "--script-shell" || arg.starts_with("--script-shell=")) {
+                return Err(format!("{name} --script-shell runs an arbitrary shell"));
+            }
+            let mut at = 0;
+            while let Some(&arg) = args.get(at).filter(|arg| arg.starts_with('-')) {
+                if matches!(arg, "--filter" | "-F" | "-C" | "--dir" | "--prefix" | "--cwd") {
+                    if args.get(at + 1).is_none() {
+                        return Err(format!("{name} {arg} without a value"));
+                    }
+                    at += 2;
+                } else if ["--filter=", "--dir=", "--prefix=", "--cwd="].iter().any(|p| arg.starts_with(p))
+                    || matches!(arg, "-s" | "--silent" | "-w" | "--workspace" | "--workspaces")
+                {
+                    at += 1;
+                } else {
+                    return Err(format!("{name} {arg} cannot be approved as a standing grant"));
+                }
+            }
+            let sub = args
+                .get(at)
+                .copied()
+                .filter(|w| valid_multi_sub(w))
+                .ok_or_else(|| format!("{name} without a subcommand cannot be approved for good"))?;
+            if matches!(sub.to_ascii_lowercase().as_str(), "exec" | "dlx" | "x" | "create") {
+                return Err(format!("{name} {sub} executes arbitrary packages"));
+            }
+            Ok(Some(sub))
+        }
+        "go" => {
+            if args.iter().any(|arg| *arg == "-toolexec" || arg.starts_with("-toolexec=")) {
+                return Err("go -toolexec runs an arbitrary program".into());
+            }
+            let sub = args
+                .first()
+                .copied()
+                .filter(|w| valid_multi_sub(w))
+                .ok_or_else(|| "go without a subcommand cannot be approved for good".to_string())?;
+            if sub.eq_ignore_ascii_case("run") {
+                return Err("go run executes arbitrary code".into());
+            }
+            Ok(Some(sub))
+        }
+        "dotnet" => {
+            let sub = args
+                .first()
+                .copied()
+                .filter(|w| valid_multi_sub(w))
+                .ok_or_else(|| "dotnet without a subcommand cannot be approved for good".to_string())?;
+            if matches!(sub.to_ascii_lowercase().as_str(), "run" | "exec" | "script") {
+                return Err(format!("dotnet {sub} executes arbitrary code"));
+            }
+            Ok(Some(sub))
+        }
+        "docker" | "kubectl" | "gh" | "brew" | "apt" | "pacman" => {
+            let mut at = 0;
+            while let Some(&arg) = args.get(at).filter(|arg| arg.starts_with('-')) {
+                match (base.as_str(), arg) {
+                    ("kubectl", "-n" | "--namespace") => {
+                        if args.get(at + 1).is_none() {
+                            return Err("kubectl -n without namespace".into());
+                        }
+                        at += 2;
+                    }
+                    ("kubectl", _) if arg.starts_with("--namespace=") || (arg.starts_with("-n") && arg.len() > 2) => at += 1,
+                    ("brew" | "apt", "-q" | "--quiet" | "-v" | "--verbose" | "-qq") => at += 1,
+                    ("docker", "-D" | "--debug") => at += 1,
+                    ("docker", "-l" | "--log-level") => {
+                        if args.get(at + 1).is_none() {
+                            return Err("docker -l without level".into());
+                        }
+                        at += 2;
+                    }
+                    _ => return Err(format!("{name} {arg} cannot be approved as a standing grant")),
+                }
+            }
+            let sub = args
+                .get(at)
+                .copied()
+                .filter(|w| valid_multi_sub(w))
+                .ok_or_else(|| format!("{name} without a subcommand cannot be approved for good"))?;
+            Ok(Some(sub))
+        }
+        _ => Ok(args.first().copied().filter(|word| {
+            !word.starts_with('-')
+                && word.chars().next().is_some_and(char::is_alphabetic)
+                && word.chars().all(|c| c.is_alphanumeric() || "-_:.".contains(c))
+        })),
+    }
+}
+
 /// What a standing approval of `command` has to cover: one grant for each command in it, `command:` and
-/// its program, followed by its first argument when that is a subcommand rather than a flag, so allowing
-/// `cargo test` does not allow `cargo publish`. With `auto`, the commands that auto mode runs without
-/// asking need none. Fails when the command cannot be approved for good: it writes output to a file,
-/// names a path outside the workspace, hides code, or runs a program that runs anything.
+/// its program, followed by its subcommand when applicable, so allowing `cargo test` does not allow
+/// `cargo publish`. With `auto`, the commands that auto mode runs without asking need none. Fails when
+/// the command cannot be approved for good: it writes output to a file, names a path outside the
+/// workspace, hides code, or runs a program that runs anything.
 pub fn grants_needed(command: &str, dialect: Dialect, workspace: &Path, auto: bool) -> Result<Vec<String>, String> {
     let mut grants: Vec<String> = Vec::new();
     for segment in &scan(command, dialect, workspace)? {
@@ -83,13 +299,11 @@ pub fn grants_needed(command: &str, dialect: Dialect, workspace: &Path, auto: bo
         if auto && check_program(&name, &args, dialect).is_ok() {
             continue;
         }
-        if RUNS_ANYTHING.contains(&name.to_lowercase().trim_end_matches(".exe")) {
+        if runs_arbitrary_code(&name, &args) {
             return Err(format!("{name} runs whatever it is given, so it is approved one time at a time"));
         }
-        let subcommand = args.first().filter(|word| {
-            !word.starts_with('-') && word.chars().next().is_some_and(char::is_alphabetic) && word.chars().all(|c| c.is_alphanumeric() || "-_:.".contains(c))
-        });
-        let subcommand = subcommand.map(|word| if dialect == Dialect::PowerShell { word.to_lowercase() } else { word.to_string() });
+        let subcommand = extract_grant_subcommand(&name, &args)?
+            .map(|word| if dialect == Dialect::PowerShell { word.to_lowercase() } else { word.to_string() });
         let grant = match subcommand {
             Some(subcommand) => format!("command:{name} {subcommand}"),
             None => format!("command:{name}"),
@@ -152,6 +366,8 @@ struct Scanner<'a> {
     /// The paren depths at which a string method's arguments are open, like the
     /// `'\', ''` of `.Replace($root + '\', '')`: text to work on, not paths.
     string_args: Vec<usize>,
+    /// The paren depths at which a PowerShell `@( … )` array literal is open.
+    array_parens: Vec<usize>,
     /// One entry per open `{`: true for a hashtable, `@{ Name = value; … }`.
     braces: Vec<bool>,
 }
@@ -215,6 +431,7 @@ impl Scanner<'_> {
                 '$' if self.peek(1) == Some('{') => self.braced_variable()?,
                 '(' | '{' => {
                     let string_method = self.reject_call()?;
+                    let array_literal = c == '(' && self.dialect == Dialect::PowerShell && !self.word.quoted && self.word.bare.ends_with('@');
                     if c == '{' {
                         self.braces.push(self.dialect == Dialect::PowerShell && !self.word.quoted && self.word.bare.ends_with('@'));
                     }
@@ -225,6 +442,9 @@ impl Scanner<'_> {
                         self.parens += 1;
                         if string_method {
                             self.string_args.push(self.parens);
+                        }
+                        if array_literal {
+                            self.array_parens.push(self.parens);
                         }
                         if nested {
                             depth += 1;
@@ -237,6 +457,9 @@ impl Scanner<'_> {
                     self.at += 1;
                     if self.string_args.last() == Some(&self.parens) {
                         self.string_args.pop();
+                    }
+                    if self.array_parens.last() == Some(&self.parens) {
+                        self.array_parens.pop();
                     }
                     self.parens = self.parens.saturating_sub(1);
                     if nested {
@@ -434,11 +657,30 @@ impl Scanner<'_> {
         if self.dialect == Dialect::PowerShell && word.bare == "--%" {
             return Err("--% passes the rest unparsed".into());
         }
-        // After `-notmatch` or `-Pattern` comes a pattern to match text against, not a path to open:
-        // `'\\(bin|obj)\\'` is a regular expression, not a network share.
-        let pattern = self.dialect == Dialect::PowerShell && self.segment.last().is_some_and(|previous| !previous.quoted && takes_pattern(&previous.bare));
-        let string_arg = self.string_args.last() == Some(&self.parens);
-        if !pattern && !string_arg && !looks_like_pattern(&word) {
+        // After `-notmatch` or `-Pattern` (or inside a PowerShell `@(...)` regex list, or as the
+        // pattern operand of Posix `grep`/`egrep`/`fgrep`/`rg`) comes a regular expression rather
+        // than a path, provided it never names a Win32 verbatim/device path or drive path.
+        let verbatim_or_drive = is_verbatim_or_device_path(&word.text)
+            || word.text.split('=').any(is_verbatim_or_device_path)
+            || has_windows_drive_path(&word.text);
+        let pattern = match self.dialect {
+            Dialect::PowerShell => {
+                let after_pattern_op = self.segment.last().is_some_and(|previous| !previous.quoted && takes_pattern(&previous.bare));
+                let in_array_regex = self.array_parens.last() == Some(&self.parens)
+                    && word.starts_quoted
+                    && looks_like_pattern(&word)
+                    && !word.text.contains('/');
+                (after_pattern_op || in_array_regex) && !verbatim_or_drive
+            }
+            Dialect::Posix => {
+                !verbatim_or_drive
+                    && !word.text.starts_with(['/', '~'])
+                    && looks_like_pattern(&word)
+                    && is_posix_grep_pattern_slot(&self.segment, &word)
+            }
+        };
+        let string_arg = self.string_args.last() == Some(&self.parens) && !verbatim_or_drive;
+        if !pattern && !string_arg {
             check_paths(&word, self.dialect, self.workspace)?;
         }
         self.segment.push(word);
@@ -509,8 +751,154 @@ fn takes_pattern(word: &str) -> bool {
 
 const OPERATORS: &[&str] = &["eq", "ne", "match", "notmatch", "like", "notlike", "replace", "split"];
 
+fn is_verbatim_or_device_path(text: &str) -> bool {
+    text.starts_with(r"\\?\")
+        || text.starts_with(r"\\.\")
+        || text.starts_with("//?/")
+        || text.starts_with("//./")
+}
+
+fn has_windows_drive_path(text: &str) -> bool {
+    text.split('=').any(|part| {
+        let b = part.as_bytes();
+        b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || (b[2] == b'/' && b.get(3) != Some(&b'/')))
+    })
+}
+
+fn starts_like_attached_path(s: &str) -> bool {
+    s.starts_with('/')
+        || s.starts_with('\\')
+        || s.starts_with('~')
+        || s == ".."
+        || s.starts_with("../")
+        || s.starts_with("..\\")
+        || (s.len() >= 3
+            && s.as_bytes()[0].is_ascii_alphabetic()
+            && s.as_bytes()[1] == b':'
+            && (s.as_bytes()[2] == b'/' || s.as_bytes()[2] == b'\\'))
+}
+
+const GREP_VALUE_FLAGS: &[&str] = &[
+    "-A", "-B", "-C", "-m", "-g", "-t", "-T", "-M", "-j",
+    "--after-context", "--before-context", "--context", "--max-count",
+    "--glob", "--iglob", "--type", "--type-not", "--max-columns",
+    "--threads", "--color", "--colors", "--include", "--exclude", "--exclude-dir",
+];
+
+fn is_posix_grep_pattern_slot(segment: &[Word], current: &Word) -> bool {
+    let mut idx = 0;
+    while let Some(w) = segment.get(idx) {
+        if !w.quoted && matches!(w.text.as_str(), "if" | "then" | "elif" | "else" | "while" | "until" | "do" | "!") {
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+    let Some(cmd) = segment.get(idx) else {
+        return false;
+    };
+    if cmd.quoted || !matches!(normalized_program_base(&cmd.text).as_str(), "grep" | "egrep" | "fgrep" | "rg") {
+        return false;
+    }
+    let args = &segment[idx + 1..];
+    let mut has_explicit_pattern = false;
+    let mut positional_count = 0usize;
+    let mut skip_next = false;
+    let mut expects_pattern_now = false;
+    let mut after_double_dash = false;
+
+    for w in args {
+        let arg = w.text.as_str();
+        if skip_next {
+            skip_next = false;
+            expects_pattern_now = false;
+            continue;
+        }
+        if !after_double_dash && !w.quoted && arg == "--" {
+            after_double_dash = true;
+            continue;
+        }
+        if !after_double_dash && arg.starts_with('-') && arg != "-" {
+            if arg == "-e" || arg == "--regexp" {
+                has_explicit_pattern = true;
+                skip_next = true;
+                expects_pattern_now = true;
+            } else if arg.starts_with("--regexp=") || arg == "-f" || arg == "--file" || arg.starts_with("--file=") {
+                has_explicit_pattern = true;
+                if arg == "-f" || arg == "--file" {
+                    skip_next = true;
+                }
+            } else if GREP_VALUE_FLAGS.contains(&arg) {
+                skip_next = true;
+            } else if !arg.starts_with("--") && arg[1..].chars().all(|c| c.is_ascii_alphabetic()) {
+                if arg.ends_with('e') {
+                    has_explicit_pattern = true;
+                    skip_next = true;
+                    expects_pattern_now = true;
+                } else if arg.ends_with('f') {
+                    has_explicit_pattern = true;
+                    skip_next = true;
+                } else if arg[1..].contains('e') || arg[1..].contains('f') {
+                    has_explicit_pattern = true;
+                }
+            }
+        } else {
+            positional_count += 1;
+        }
+    }
+
+    if expects_pattern_now {
+        return true;
+    }
+    if skip_next {
+        return false;
+    }
+    if !after_double_dash && current.text.starts_with('-') && current.text != "-" {
+        return false;
+    }
+    !has_explicit_pattern && positional_count == 0
+}
+
 /// Variables that hold a path outside the workspace.
 const OUTSIDE_VARIABLES: &[&str] = &["$home", "${home}", "$env:", "${env:", "$profile", "$pshome", "$tmpdir", "${tmpdir}", "$oldpwd"];
+
+fn check_single_path_part(part: &str, dialect: Dialect, workspace: &Path) -> Result<(), String> {
+    if is_verbatim_or_device_path(part) {
+        let stripped = &part[4..];
+        if stripped.is_empty()
+            || stripped.eq_ignore_ascii_case("unc")
+            || stripped.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("unc\\") || p.eq_ignore_ascii_case("unc/"))
+            || stripped.split(['/', '\\']).any(|component| component == "..")
+        {
+            return Err(format!("{part} is outside the workspace"));
+        }
+        let path = Path::new(stripped);
+        if !(path.is_absolute() && inside_workspace(workspace, &resolve(workspace, stripped))) {
+            return Err(format!("{part} is outside the workspace"));
+        }
+        return Ok(());
+    }
+    if part.split(['/', '\\']).any(|component| component == "..") {
+        return Err(format!("{part} climbs out of the workspace"));
+    }
+    // `C:`, and in PowerShell any drive: `env:` holds the environment, API keys included.
+    let prefix = part.find(':').map(|colon| &part[..colon]).filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()));
+    // `Rust: 3 files` is text, not a drive: a path has no space after its colon.
+    let drive = prefix.is_some_and(|name| {
+        let after = &part[name.len() + 1..];
+        (name.len() == 1 || dialect == Dialect::PowerShell) && !after.starts_with("//") && !after.starts_with(char::is_whitespace)
+    });
+    if part.starts_with('~') || part.starts_with('/') || part.starts_with('\\') || drive {
+        let path = Path::new(part);
+        if !(path.is_absolute() && inside_workspace(workspace, &resolve(workspace, part))) {
+            return Err(format!("{part} is outside the workspace"));
+        }
+    }
+    Ok(())
+}
 
 /// Fail when the word, or any part of it after `=`, names a path outside the workspace.
 fn check_paths(word: &Word, dialect: Dialect, workspace: &Path) -> Result<(), String> {
@@ -518,21 +906,20 @@ fn check_paths(word: &Word, dialect: Dialect, workspace: &Path) -> Result<(), St
     if let Some(variable) = OUTSIDE_VARIABLES.iter().find(|variable| lower.contains(*variable)) {
         return Err(format!("{variable} points outside the workspace"));
     }
+    if dialect == Dialect::Posix
+        && word.expands.contains('$')
+        && (word.text.contains(['/', '\\']) || word.expands.contains(['/', '\\']))
+    {
+        return Err("variable expansion in a path cannot be verified statically".into());
+    }
     for part in word.text.split('=') {
-        if part.split(['/', '\\']).any(|component| component == "..") {
-            return Err(format!("{part} climbs out of the workspace"));
-        }
-        // `C:`, and in PowerShell any drive: `env:` holds the environment, API keys included.
-        let prefix = part.find(':').map(|colon| &part[..colon]).filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()));
-        // `Rust: 3 files` is text, not a drive: a path has no space after its colon.
-        let drive = prefix.is_some_and(|name| {
-            let after = &part[name.len() + 1..];
-            (name.len() == 1 || dialect == Dialect::PowerShell) && !after.starts_with("//") && !after.starts_with(char::is_whitespace)
-        });
-        if part.starts_with('~') || part.starts_with('/') || part.starts_with('\\') || drive {
-            let path = Path::new(part);
-            if !(path.is_absolute() && inside_workspace(workspace, &resolve(workspace, part))) {
-                return Err(format!("{part} is outside the workspace"));
+        check_single_path_part(part, dialect, workspace)?;
+        if part.starts_with('-') && !part.starts_with("--") {
+            let alpha_len = part[1..].bytes().take_while(u8::is_ascii_alphabetic).count();
+            if part.as_bytes().get(1).is_some_and(u8::is_ascii_alphabetic) && starts_like_attached_path(&part[2..]) {
+                check_single_path_part(&part[2..], dialect, workspace)?;
+            } else if alpha_len >= 2 && starts_like_attached_path(&part[1 + alpha_len..]) {
+                check_single_path_part(&part[1 + alpha_len..], dialect, workspace)?;
             }
         }
     }
@@ -618,7 +1005,7 @@ fn command_of(segment: &[Word], dialect: Dialect) -> Result<Option<(String, Vec<
 const READERS: &[&str] = &[
     "ls", "dir", "cat", "type", "head", "tail", "wc", "grep", "egrep", "fgrep", "tree", "pwd", "echo", "printf", "which", "where", "whoami", "file", "stat",
     "du", "df", "cut", "tr", "diff", "cmp", "comm", "basename", "dirname", "realpath", "readlink", "true", "false", "test", "nl", "md5sum", "sha1sum",
-    "sha256sum", "sha512sum", "cksum", "jq", "cd", "pushd", "popd", "uname", "xxd", "od", "hexdump",
+    "sha256sum", "sha512sum", "cksum", "cd", "pushd", "popd", "uname", "xxd", "od", "hexdump",
 ];
 
 /// PowerShell commands that only read or format what passes through them, and their aliases.
@@ -651,6 +1038,7 @@ fn check_program(name: &str, args: &[&str], dialect: Dialect) -> Result<(), Stri
         "date" => Ok(()),
         "rg" if has(&["--pre"]) => refuse("--pre runs a command on each file"),
         "rg" => Ok(()),
+        "jq" => check_jq(args),
         "git" => check_git(args),
         "cargo" => check_cargo(args),
         "npm" | "pnpm" | "yarn" | "bun" => check_package_manager(name, args),
@@ -691,6 +1079,7 @@ fn check_read_only_program(name: &str, args: &[&str], dialect: Dialect) -> Resul
         "date" => Ok(()),
         "rg" if has(&["--pre"]) => refuse("--pre runs a command on each file"),
         "rg" => Ok(()),
+        "jq" => check_jq(args),
         "git" => check_git(args),
         "cargo" => {
             if args.iter().any(|arg| *arg == "--config" || arg.starts_with("--config=") || arg.starts_with("-Z") || *arg == "--open") {
@@ -803,6 +1192,96 @@ fn check_package_manager(name: &str, args: &[&str]) -> Result<(), String> {
         script => SCRIPTS.contains(&script),
     };
     if allowed { Ok(()) } else { Err(format!("{name} {subcommand} can install packages or run any script")) }
+}
+
+fn jq_filter_reads_env(filter: &str) -> bool {
+    if filter.contains("$ENV") {
+        return true;
+    }
+    let bytes = filter.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len() && is_ident(bytes[i]) {
+                i += 1;
+            }
+            let prev_dollar = start > 0 && bytes[start - 1] == b'$';
+            if !prev_dollar && &filter[start..i] == "env" {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+fn check_jq(args: &[&str]) -> Result<(), String> {
+    let mut at = 0;
+    let mut after_double_dash = false;
+    let mut filter: Option<&str> = None;
+
+    while let Some(&arg) = args.get(at) {
+        if !after_double_dash && arg == "--" {
+            after_double_dash = true;
+            at += 1;
+            continue;
+        }
+        if !after_double_dash && arg.starts_with('-') && arg != "-" {
+            if matches!(
+                arg,
+                "-f" | "--from-file" | "-L" | "--library-path" | "--rawfile" | "--slurpfile" | "--argfile" | "--run-tests"
+            ) || ["--from-file=", "--library-path=", "--rawfile=", "--slurpfile=", "--argfile="]
+                .iter()
+                .any(|prefix| arg.starts_with(prefix))
+                || arg.starts_with("-f")
+                || arg.starts_with("-L")
+            {
+                return Err(format!("jq {arg} loads external files or scripts"));
+            }
+            match arg {
+                "--arg" | "--argjson" => {
+                    if args.get(at + 2).is_none() {
+                        return Err(format!("jq {arg} is missing its name or value"));
+                    }
+                    if args.get(at + 1) == Some(&"ENV") {
+                        return Err("jq --arg ENV is not allowed".into());
+                    }
+                    at += 3;
+                }
+                "--indent" => {
+                    if args.get(at + 1).is_none() {
+                        return Err("jq --indent is missing its number".into());
+                    }
+                    at += 2;
+                }
+                "--null-input" | "--raw-input" | "--slurp" | "--compact-output" | "--raw-output" | "--raw-output0"
+                | "--join-output" | "--ascii-output" | "--color-output" | "--monochrome-output" | "--sort-keys"
+                | "--tab" | "--unbuffered" | "--stream" | "--stream-errors" | "--seq" | "--exit-status"
+                | "--version" | "--help" => {
+                    at += 1;
+                }
+                _ if !arg.starts_with("--") && arg[1..].chars().all(|c| "cnesrRCMSaj0Vhb".contains(c)) => {
+                    at += 1;
+                }
+                other => return Err(format!("jq {other} is not on the safe jq option list")),
+            }
+        } else {
+            if filter.is_none() {
+                filter = Some(arg);
+            }
+            at += 1;
+        }
+    }
+
+    if let Some(expr) = filter
+        && jq_filter_reads_env(expr)
+    {
+        return Err("jq filter accesses process environment variables".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1025,6 +1504,121 @@ mod tests {
             assert!(check(outside, Dialect::Posix, workspace).is_err(), "{outside} passed check");
             assert!(check_read_only(outside, Dialect::Posix, workspace).is_err(), "{outside} passed check_read_only");
             assert!(grants_needed(outside, Dialect::Posix, workspace, false).is_err(), "{outside} passed grants_needed");
+        }
+    }
+
+    #[test]
+    fn grants_needed_extracts_real_subcommand_past_global_flags_and_blocks_bare_multi_tool_grants() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        std::fs::create_dir_all(workspace.join("sub")).unwrap();
+
+        assert_eq!(grants_needed("git --no-pager push", Dialect::Posix, workspace, false), Ok(vec!["command:git push".into()]));
+        assert_eq!(grants_needed("git -P --no-optional-locks -C sub status", Dialect::Posix, workspace, false), Ok(vec!["command:git status".into()]));
+        assert_eq!(grants_needed("cargo +nightly -q --locked test", Dialect::Posix, workspace, false), Ok(vec!["command:cargo test".into()]));
+        assert_eq!(grants_needed("pnpm --filter app -s build", Dialect::Posix, workspace, false), Ok(vec!["command:pnpm build".into()]));
+        assert_eq!(grants_needed("kubectl -n default get pods", Dialect::Posix, workspace, false), Ok(vec!["command:kubectl get".into()]));
+
+        for unapprovable in [
+            "git",
+            "git --version",
+            "git -c core.sshCommand=evil fetch",
+            "git --exec-path=. status",
+            "git --git-dir=sub status",
+            "git --work-tree=sub status",
+            "cargo",
+            "cargo --config build.rustc-wrapper=evil test",
+            "cargo -Z unstable-options build",
+            "cargo run --bin x",
+            "cargo r",
+            "cargo install ripgrep",
+            "pnpm dlx cowsay",
+            "npm exec evil",
+            "bun x evil",
+            "go run main.go",
+            "dotnet run",
+            "dotnet app.dll",
+            "python3.12 -c 'print(1)'",
+            "ruby3.2 -e 'puts 1'",
+            "perl5.38 -e '1'",
+            "uv run script.py",
+            "uvx ruff",
+            "bunx cowsay",
+            "pnpx create-next-app",
+            "tsx script.ts",
+            "ts-node script.ts",
+            "awk 'BEGIN{system(\"id\")}'",
+            "osascript -e 'beep'",
+            "nu -c 'ls'",
+            "elvish -c 'echo 1'",
+            "find . -name '*.rs'",
+            "find . -exec rm {} +",
+            "find . -ok rm {} ;",
+            "find . -delete",
+            "pacman -Syu",
+        ] {
+            assert!(
+                grants_needed(unapprovable, Dialect::Posix, workspace, false).is_err(),
+                "{unapprovable} unexpectedly produced a standing grant: {:?}",
+                grants_needed(unapprovable, Dialect::Posix, workspace, false)
+            );
+        }
+    }
+
+    #[test]
+    fn blocks_windows_verbatim_paths_attached_short_flags_and_jq_env() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+
+        for ps_bad in [
+            r"Get-Content '\\?\C:\Windows\win.ini'",
+            r"Get-Content '\\.\C:\Windows\win.ini'",
+            r"Get-Content '//?/C:/Windows/win.ini'",
+            r"Get-Content '\\?\UNC\server\share\secret.txt'",
+            r"rg 'foo' '\\?\D:\secret'",
+            r"Select-String -Pattern '\\?\C:\Windows\win.ini' src/a.rs",
+            r"Select-String -Pattern 'C:\Windows\win.ini' src/a.rs",
+        ] {
+            assert!(check(ps_bad, Dialect::PowerShell, workspace).is_err(), "{ps_bad} passed PowerShell check");
+            assert!(check_read_only(ps_bad, Dialect::PowerShell, workspace).is_err(), "{ps_bad} passed PowerShell check_read_only");
+        }
+
+        for posix_bad in [
+            "grep -f/etc/passwd root src",
+            "grep -if/etc/passwd root src",
+            "rg -f../secret src",
+            "tar -C/outside -tf archive.tar",
+            "cat $VAR/etc/passwd",
+            "cat \"$VAR/etc/passwd\"",
+            "cat ${VAR}/etc/passwd",
+            r"cat '/etc/foo\(bar'",
+            r"rg 'pattern' '/etc/foo\(bar'",
+            r"rg -e '\.unwrap\(\)' '/etc/foo\(bar'",
+            "jq -n env",
+            "jq 'env' package.json",
+            "jq '$ENV'",
+            "jq '$ENV.OPENAI_API_KEY' package.json",
+            "jq -f filter.jq package.json",
+            "jq --rawfile s /etc/passwd -n '$s'",
+            "jq -L . '.' package.json",
+        ] {
+            assert!(check(posix_bad, Dialect::Posix, workspace).is_err(), "{posix_bad} passed Posix check");
+            assert!(check_read_only(posix_bad, Dialect::Posix, workspace).is_err(), "{posix_bad} passed Posix check_read_only");
+        }
+
+        for posix_good in [
+            "jq '.name' package.json",
+            "jq -r '.scripts.build' package.json",
+            "jq '.environment' config.json",
+            r"rg '\.unwrap\(\)' src",
+            r"grep -e '\(foo|bar\)' src",
+        ] {
+            assert!(check(posix_good, Dialect::Posix, workspace).is_ok(), "{posix_good}: {:?}", check(posix_good, Dialect::Posix, workspace));
+            assert!(
+                check_read_only(posix_good, Dialect::Posix, workspace).is_ok(),
+                "{posix_good}: {:?}",
+                check_read_only(posix_good, Dialect::Posix, workspace)
+            );
         }
     }
 }

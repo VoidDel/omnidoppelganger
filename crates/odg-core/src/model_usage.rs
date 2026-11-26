@@ -296,36 +296,61 @@ pub fn parse_cooldown_from_error(error: &str, now: DateTime<Utc>) -> Option<(Dat
     Some((now + Duration::seconds(fallback), reason))
 }
 
+const MAX_PARSED_DURATION_SECS: u64 = 86_400;
+
 fn parse_duration_seconds(text: &str) -> Option<u64> {
     static EN_RE: OnceLock<Regex> = OnceLock::new();
     static ZH_RE: OnceLock<Regex> = OnceLock::new();
     let en_re = EN_RE.get_or_init(|| {
-        Regex::new(r"(?i)(?:(\d+)\s*(?:hours?|hrs?|h)\b)?\s*(?:(\d+)\s*(?:minutes?|mins?|m)\b)?\s*(?:(\d+)\s*(?:seconds?|secs?|s)\b)?").unwrap()
+        Regex::new(
+            r"(?i)(?-u:\b)(?:(\d+)\s*(?:hours?|hrs?|h)(?:\s*(\d+)\s*(?:minutes?|mins?|m))?(?:\s*(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s))?|(\d+)\s*(?:minutes?|mins?|m)(?:\s*(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s))?|(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s))(?-u:\b)",
+        )
+        .unwrap()
     });
+    let valid_start = |start: usize| start == 0 || !matches!(text.as_bytes()[start - 1], b'-' | b'/' | b'.');
     let mut best: u64 = 0;
     for caps in en_re.captures_iter(text) {
-        let h = caps.get(1).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
-        let m = caps.get(2).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
-        let s = caps.get(3).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
+        let Some(m0) = caps.get(0) else { continue };
+        if !valid_start(m0.start()) {
+            continue;
+        }
+        let parse_u64 = |idx: usize| caps.get(idx).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
+        let parse_secs = |idx: usize| {
+            caps.get(idx)
+                .and_then(|m| m.as_str().parse::<f64>().ok())
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .map(|v| v.ceil() as u64)
+                .unwrap_or(0)
+        };
+        let h = parse_u64(1);
+        let m = parse_u64(2).max(parse_u64(4));
+        let s = parse_secs(3).max(parse_secs(5)).max(parse_secs(6));
         let total = h.saturating_mul(3600).saturating_add(m.saturating_mul(60)).saturating_add(s);
         if total > best {
             best = total;
         }
     }
-    if best > 0 {
-        return Some(best);
-    }
-    let zh_re = ZH_RE.get_or_init(|| Regex::new(r"(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分钟?)?\s*(?:(\d+)\s*秒)?").unwrap());
+    let zh_re = ZH_RE.get_or_init(|| {
+        Regex::new(
+            r"(?-u:\b)(?:(\d+)\s*小时(?:\s*(\d+)\s*分钟?)?(?:\s*(\d+)\s*秒钟?)?|(\d+)\s*分钟?(?:\s*(\d+)\s*秒钟?)?|(\d+)\s*秒钟?)",
+        )
+        .unwrap()
+    });
     for caps in zh_re.captures_iter(text) {
-        let h = caps.get(1).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
-        let m = caps.get(2).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
-        let s = caps.get(3).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
+        let Some(m0) = caps.get(0) else { continue };
+        if !valid_start(m0.start()) {
+            continue;
+        }
+        let parse_u64 = |idx: usize| caps.get(idx).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
+        let h = parse_u64(1);
+        let m = parse_u64(2).max(parse_u64(4));
+        let s = parse_u64(3).max(parse_u64(5)).max(parse_u64(6));
         let total = h.saturating_mul(3600).saturating_add(m.saturating_mul(60)).saturating_add(s);
         if total > best {
             best = total;
         }
     }
-    (best > 0).then_some(best)
+    (best > 0).then(|| best.min(MAX_PARSED_DURATION_SECS))
 }
 
 fn load_file(path: &Path) -> UsageFile {
@@ -395,5 +420,32 @@ mod tests {
         assert_eq!((until - now).num_seconds(), 300);
 
         assert!(parse_cooldown_from_error("file not found: foo.rs", now).is_none());
+    }
+
+    #[test]
+    fn cooldown_parser_ignores_hex_request_ids_and_uuids() {
+        let now = DateTime::parse_from_rfc3339("2026-11-25T09:00:00Z").unwrap().with_timezone(&Utc);
+
+        let (until, reason) = parse_cooldown_from_error(
+            "HTTP 429 rate limit: retry after 5s (request_id: req_a8f72h, trace: 9b-45m-10s)",
+            now,
+        )
+        .unwrap();
+        assert_eq!(reason, "触发限流");
+        assert_eq!((until - now).num_seconds(), 5);
+
+        // Compound forms (`1h30m`, `2h 15m 30s`, `2小时15分`) and 24h cap (`86_400`s).
+        assert_eq!(parse_duration_seconds("retry in 1h30m"), Some(5400));
+        assert_eq!(parse_duration_seconds("retry in 2h 15m 30s"), Some(8130));
+        assert_eq!(parse_duration_seconds("请等待2小时15分后重试"), Some(8100));
+        assert_eq!(parse_duration_seconds("retry after 72h"), Some(86_400));
+
+        // Pure trace/path/version tokens without a real duration fall back to the 60s default.
+        let (until, _) = parse_cooldown_from_error(
+            "HTTP 429 Too Many Requests (req_a8f72h, id: 9b-45m-10s, route: /api/v2m/10s, ver: v1.2s)",
+            now,
+        )
+        .unwrap();
+        assert_eq!((until - now).num_seconds(), 60);
     }
 }

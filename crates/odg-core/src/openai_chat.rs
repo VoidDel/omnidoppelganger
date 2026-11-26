@@ -40,6 +40,10 @@ fn chat_tools(tools: &[Value]) -> Vec<Value> {
 /// prompt, then each message of the log. A user message's tool results come
 /// first, one `tool` message each, and its text after them.
 pub fn chat_messages(system: &str, messages: &[Value]) -> Vec<Value> {
+    chat_messages_inner(system, messages, false)
+}
+
+fn chat_messages_inner(system: &str, messages: &[Value], require_reasoning_field: bool) -> Vec<Value> {
     let mut out = vec![json!({ "role": "system", "content": system })];
     for message in messages {
         let blocks = message["content"].as_array().map(Vec::as_slice).unwrap_or_default();
@@ -54,7 +58,7 @@ pub fn chat_messages(system: &str, messages: &[Value]) -> Vec<Value> {
                 })
                 .collect();
             let mut assistant = json!({ "role": "assistant", "content": text.join("\n\n") });
-            if !reasoning.is_empty() {
+            if !reasoning.is_empty() || (require_reasoning_field && !calls.is_empty()) {
                 assistant["reasoning_content"] = json!(reasoning);
             }
             if !calls.is_empty() {
@@ -97,25 +101,27 @@ pub fn chat_messages(system: &str, messages: &[Value]) -> Vec<Value> {
 /// The JSON body of a streaming Chat Completions request. No output limit is
 /// sent: each provider's default already leaves room for long reasoning.
 pub fn request_body(flavor: Flavor, request: &LlmRequest) -> Value {
+    let effort = effort_for(Protocol::Chat(flavor), &request.effort);
+    let require_reasoning_field = matches!(flavor, Flavor::DeepSeek | Flavor::Kimi) && effort.is_some();
     let mut body = json!({
         "model": request.model,
         "stream": true,
-        "messages": chat_messages(&request.system, &request.messages),
+        "messages": chat_messages_inner(&request.system, &request.messages, require_reasoning_field),
         "tools": chat_tools(&request.tools),
     });
-    if let Some(effort) = effort_for(Protocol::Chat(flavor), &request.effort) {
+    if let Some(effort) = effort {
         body["reasoning_effort"] = json!(effort);
     }
     match flavor {
-        // Both document that usage arrives in the last chunk only when asked for.
-        Flavor::DeepSeek => body["stream_options"] = json!({ "include_usage": true }),
+        // OpenAI-compatible gateways, DeepSeek, and Kimi send usage in the final chunk when asked via `stream_options`.
+        Flavor::DeepSeek | Flavor::Generic => body["stream_options"] = json!({ "include_usage": true }),
         Flavor::Kimi => {
             body["stream_options"] = json!({ "include_usage": true });
             // Kimi recommends one cache key per session for coding agents.
             body["prompt_cache_key"] = json!(request.session);
         }
         // GLM puts usage in the last chunk by default.
-        Flavor::Glm | Flavor::Generic => {}
+        Flavor::Glm => {}
     }
     // A request without tools (a summary written from a transcript) leaves the field out: an empty list is an error to some servers.
     if request.tools.is_empty() {
@@ -329,18 +335,42 @@ impl ChatClient {
             return Err((LlmError::NotConfigured(format!("no address is set for provider `{}`", request.provider)), None));
         }
         let key = endpoint.key.filter(|key| !key.trim().is_empty()).ok_or((LlmError::MissingKey, None))?;
+        let url = format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/'));
+        let mut body = request_body(flavor, request);
         let send = self
             .http
-            .post(format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/')))
+            .post(&url)
             .bearer_auth(key.trim())
-            .json(&request_body(flavor, request))
+            .json(&body)
             .send();
-        let response = tokio::select! {
+        let mut response = tokio::select! {
             response = send => response.map_err(|error| (LlmError::Network(error.to_string()), None))?,
             () = cancel.cancelled() => return Err((LlmError::Cancelled, None)),
         };
         if !response.status().is_success() {
-            return Err(http_failure(response).await);
+            if response.status().as_u16() == 400 && !*forwarded && body.get("stream_options").is_some() {
+                match check_bad_request_stream_options(response).await {
+                    Ok(()) => {
+                        body.as_object_mut().expect("the body is an object").remove("stream_options");
+                        let retry_send = self
+                            .http
+                            .post(&url)
+                            .bearer_auth(key.trim())
+                            .json(&body)
+                            .send();
+                        response = tokio::select! {
+                            response = retry_send => response.map_err(|error| (LlmError::Network(error.to_string()), None))?,
+                            () = cancel.cancelled() => return Err((LlmError::Cancelled, None)),
+                        };
+                        if !response.status().is_success() {
+                            return Err(http_failure(response).await);
+                        }
+                    }
+                    Err(failure) => return Err(failure),
+                }
+            } else {
+                return Err(http_failure(response).await);
+            }
         }
 
         let mut parser = SseParser::default();
@@ -358,10 +388,14 @@ impl ChatClient {
                 Ok(Some(Ok(chunk))) => chunk,
             };
             for event in parser.feed(&chunk) {
-                if event.data.trim() == "[DONE]" {
+                let raw = event.data.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                if raw == "[DONE]" {
                     break 'read;
                 }
-                let data: Value = serde_json::from_str(&event.data).map_err(|error| (LlmError::Protocol(format!("a chunk is not JSON: {error}")), None))?;
+                let data: Value = serde_json::from_str(raw).map_err(|error| (LlmError::Protocol(format!("a chunk is not JSON: {error}")), None))?;
                 for delta in accumulator.apply(&data).map_err(|error| (error, None))? {
                     *forwarded = true;
                     let _ = deltas.send(delta);
@@ -373,6 +407,35 @@ impl ChatClient {
         }
         accumulator.finish().map_err(|error| (error, None))
     }
+}
+
+/// Inspect a 400 HTTP response when `stream_options` was sent: return `Ok(())` if the error body
+/// mentions `stream_options` or `include_usage` (so the caller can strip it and resend once),
+/// or reconstruct the exact `(LlmError, Option<Duration>)` failure otherwise.
+async fn check_bad_request_stream_options(response: reqwest::Response) -> Result<(), (LlmError, Option<Duration>)> {
+    let status = response.status().as_u16();
+    let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
+    let retry_after = header("retry-after")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .map(Duration::from_secs_f64);
+    let should_retry = header("x-should-retry");
+    let body = response.text().await.unwrap_or_default();
+    let lower = body.to_ascii_lowercase();
+    if lower.contains("stream_options") || lower.contains("include_usage") {
+        return Ok(());
+    }
+    let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let error = &parsed["error"];
+    let text = |value: &Value| match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    };
+    let kind = text(&error["type"]).or_else(|| text(&error["code"])).unwrap_or_else(|| "http_error".to_string());
+    let message = text(&error["message"]).unwrap_or_else(|| if body.trim().is_empty() { format!("HTTP {status}") } else { body.chars().take(500).collect() });
+    let retryable = should_retry.as_deref() == Some("true");
+    Err((LlmError::Api { status: Some(status), kind, message, retryable }, retry_after))
 }
 
 #[cfg(test)]
@@ -551,7 +614,73 @@ mod tests {
         assert!(glm.get("stream_options").is_none());
 
         let generic = request_body(Flavor::Generic, &request(vec![]));
-        assert!(generic.get("reasoning_effort").is_none() && generic.get("stream_options").is_none());
+        assert!(generic.get("reasoning_effort").is_none());
+        assert_eq!(generic["stream_options"], json!({ "include_usage": true }));
+    }
+
+    #[test]
+    fn deepseek_and_kimi_reasoning_mode_injects_empty_reasoning_content_on_carried_tool_calls() {
+        let carried_messages = vec![
+            json!({ "role": "user", "content": [{ "type": "text", "text": "read Cargo.toml" }] }),
+            json!({
+                "role": "assistant",
+                "content": [
+                    { "type": "tool_use", "id": "tool_1", "name": "read_file", "input": { "path": "Cargo.toml" } }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "content": [
+                    { "type": "tool_result", "tool_use_id": "tool_1", "content": "[package]", "is_error": false }
+                ]
+            }),
+            json!({
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "Plain reply without tool calls." }]
+            }),
+        ];
+        let mut req = request(carried_messages);
+        req.effort = "high".into();
+
+        for flavor in [Flavor::DeepSeek, Flavor::Kimi] {
+            let body = request_body(flavor, &req);
+            assert_eq!(body["messages"][2]["role"], "assistant");
+            assert_eq!(body["messages"][2]["reasoning_content"], json!(""), "{flavor:?} must inject empty reasoning_content on carried tool_calls");
+            assert!(body["messages"][4].get("reasoning_content").is_none(), "{flavor:?} need not inject reasoning_content when tool_calls are absent");
+        }
+
+        for flavor in [Flavor::Generic, Flavor::Glm] {
+            let body = request_body(flavor, &req);
+            assert!(body["messages"][2].get("reasoning_content").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_flavor_falls_back_without_stream_options_and_ignores_sse_heartbeats() {
+        use crate::testing::{error, serve};
+        let sse_body = format!(
+            "event: ping\n\n: comment\n\ndata: \n\ndata: {}\n\nevent: ping\n\ndata: {}\n\ndata: [DONE]\n\n",
+            delta(json!({ "content": "兼容老网关" })),
+            json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] })
+        );
+        let ok_stream = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{sse_body}");
+        let (address, server) = serve(vec![
+            error(400, r#"{"error":{"message":"Unknown parameter: 'stream_options'.","type":"invalid_request_error","param":"stream_options"}}"#),
+            ok_stream,
+        ])
+        .await;
+        let base_url = format!("{address}/v1");
+        let client = ChatClient::new(std::sync::Arc::new(move |_: &str| crate::llm::Endpoint { base_url: base_url.clone(), key: Some("sk-local".into()) })).unwrap();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut req = request(vec![]);
+        req.provider = "custom".into();
+        let turn = client.stream(Flavor::Generic, req, sender, CancellationToken::new()).await.unwrap();
+        assert_eq!(turn.content, vec![json!({ "type": "text", "text": "兼容老网关" })]);
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("\"stream_options\""));
+        assert!(!requests[1].contains("\"stream_options\""));
     }
 
     #[test]

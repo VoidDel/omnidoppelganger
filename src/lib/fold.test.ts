@@ -338,6 +338,18 @@ describe("usage", () => {
     const sum = breakdown.prompt + breakdown.input + breakdown.output + breakdown.skill + breakdown.mcp + breakdown.tools;
     expect(sum).toBe(context);
   });
+
+  it("counts an empty-content token settlement assistant/message without rendering a blank bubble", () => {
+    const events = log(
+      user("run task"),
+      said({ type: "text", text: "Finished." }),
+      { type: "assistant/message", data: { content: [], stop_reason: "end_turn", model: "gpt-5.4", tokens: { input: 120, cached: 20, output: 30 } } },
+    );
+    expect(usage(events)).toMatchObject({ context: 150, spent: { input: 120, cached: 20, output: 30 } });
+    const rows = fold(events);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].items).toEqual([{ kind: "text", text: "Finished." }]);
+  });
 });
 
 describe("fold", () => {

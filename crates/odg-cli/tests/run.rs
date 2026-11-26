@@ -194,7 +194,8 @@ fn runs_a_subagent_and_answers_what_it_asks() {
 
 #[test]
 fn says_what_is_wrong_with_its_arguments_or_the_run() {
-    let run = |arguments: &[&str]| Command::new(env!("CARGO_BIN_EXE_odg")).args(arguments).env("ODG_HOME", std::env::temp_dir().join("odg-cli-unused-home")).stdin(Stdio::null()).output().unwrap();
+    let unused_home = tempfile::tempdir().unwrap();
+    let run = |arguments: &[&str]| Command::new(env!("CARGO_BIN_EXE_odg")).args(arguments).env("ODG_HOME", unused_home.path()).stdin(Stdio::null()).output().unwrap();
     let none = run(&[]);
     assert_eq!(none.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&none.stderr).contains("give the task"));
@@ -266,4 +267,209 @@ fn continues_resumes_streams_json_and_exports_markdown() {
     assert!(exported.status.success());
     let md = String::from_utf8_lossy(&exported.stdout);
     assert!(md.contains("first question") && md.contains("Second reply."), "{md}");
+}
+
+#[test]
+fn validates_bypass_mode_and_promotes_external_cli_with_yes() {
+    let (home, workspace) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+
+    // 1. `--mode bypass` without `-w` fails with exit code 2.
+    let no_wt = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["-C", &workspace.path().to_string_lossy(), "--mode", "bypass", "do", "x"])
+        .env("ODG_HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(no_wt.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&no_wt.stderr).contains("--worktree"));
+
+    // 2. Resuming a non-worktree session with `--mode bypass` also fails with exit code 2.
+    let (addr1, srv1) = serve(vec![Reply { text: "Initial.", tool: None }]);
+    let first = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["-C", &workspace.path().to_string_lossy(), "--json", "init"])
+        .env("ODG_HOME", home.path())
+        .env("ANTHROPIC_BASE_URL", &addr1)
+        .env("ANTHROPIC_API_KEY", "test-key")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let _ = srv1.join().unwrap();
+    let first_line: Value = serde_json::from_str(String::from_utf8_lossy(&first.stdout).lines().next().unwrap()).unwrap();
+    let non_wt_id = first_line["session_id"].as_str().unwrap();
+
+    let resume_bypass = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["-C", &workspace.path().to_string_lossy(), "-r", non_wt_id, "--mode", "bypass", "next"])
+        .env("ODG_HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(resume_bypass.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&resume_bypass.stderr).contains("--worktree"));
+
+    // 3. `-w --mode bypass` inside a Git repository succeeds.
+    let repo = tempfile::tempdir().unwrap();
+    assert!(Command::new("git").args(["init"]).current_dir(repo.path()).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success());
+    std::fs::write(repo.path().join("README.md"), "hello\n").unwrap();
+    assert!(Command::new("git").args(["add", "README.md"]).current_dir(repo.path()).status().unwrap().success());
+    assert!(
+        Command::new("git")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"])
+            .current_dir(repo.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let (addr2, srv2) = serve(vec![Reply { text: "Bypass ok.", tool: None }]);
+    let wt_bypass = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["-C", &repo.path().to_string_lossy(), "-w", "--mode", "bypass", "ship"])
+        .env("ODG_HOME", home.path())
+        .env("ANTHROPIC_BASE_URL", &addr2)
+        .env("ANTHROPIC_API_KEY", "test-key")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(wt_bypass.status.success(), "{}", String::from_utf8_lossy(&wt_bypass.stderr));
+    let _ = srv2.join().unwrap();
+
+    // 4. `--yes` without `--mode` promotes external CLI providers to Auto (no worktree) and Bypass (with `-w`).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let args_log = home.path().join("codex-args.log");
+        let fake_codex = home.path().join("fake-codex.sh");
+        let script = format!(
+            "#!/bin/sh\necho \"$@\" >> \"{}\"\necho '{{\"type\":\"thread.started\",\"thread_id\":\"t1\"}}'\necho '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"codex done\"}}}}'\necho '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":10,\"cached_input_tokens\":0,\"output_tokens\":2}}}}'\n",
+            args_log.display()
+        );
+        std::fs::write(&fake_codex, script).unwrap();
+        std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let auto_out = Command::new(env!("CARGO_BIN_EXE_odg"))
+            .args(["-C", &workspace.path().to_string_lossy(), "--provider", "codex", "--model", "gpt-5.4", "--yes", "run", "tests"])
+            .env("ODG_HOME", home.path())
+            .env("ODG_CODEX_BIN", &fake_codex)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(auto_out.status.success(), "{}", String::from_utf8_lossy(&auto_out.stderr));
+
+        let bypass_out = Command::new(env!("CARGO_BIN_EXE_odg"))
+            .args(["-C", &repo.path().to_string_lossy(), "-w", "--provider", "codex", "--model", "gpt-5.4", "--yes", "run", "tests"])
+            .env("ODG_HOME", home.path())
+            .env("ODG_CODEX_BIN", &fake_codex)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(bypass_out.status.success(), "{}", String::from_utf8_lossy(&bypass_out.stderr));
+
+        let recorded = std::fs::read_to_string(&args_log).unwrap();
+        let lines: Vec<&str> = recorded.lines().collect();
+        assert_eq!(lines.len(), 2, "{recorded}");
+        assert!(lines[0].contains("--approve-for-me"), "expected Auto mode for --yes without -w: {}", lines[0]);
+        assert!(
+            lines[1].contains("--dangerously-bypass-approvals-and-sandbox"),
+            "expected Bypass mode for -w --yes: {}",
+            lines[1]
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn odg_cli_sigint_cancels_turn_kills_child_group_and_closes_session_log() {
+    use std::time::{Duration, Instant};
+
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+
+    let (home, workspace) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let pid_file = home.path().join("grandchild.pid");
+    let cmd_str = format!("sleep 60 & echo $! > \"{}\"; wait", pid_file.display());
+    let (address, _server) = serve(vec![Reply {
+        text: "Starting long task.",
+        tool: Some(("run_command", json!({ "command": cmd_str }))),
+    }]);
+
+    let child = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["-C", &workspace.path().to_string_lossy(), "--yes", "sleep", "now"])
+        .env("ODG_HOME", home.path())
+        .env("ANTHROPIC_BASE_URL", &address)
+        .env("ANTHROPIC_API_KEY", "test-key")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Wait until the grandchild `sleep 60` process is spawned and writes its PID.
+    let wait_start = Instant::now();
+    let grandchild_pid: i32 = loop {
+        if let Ok(raw) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = raw.trim().parse::<i32>()
+            && pid > 0
+        {
+            break pid;
+        }
+        assert!(wait_start.elapsed() < Duration::from_secs(10), "timed out waiting for grandchild pid file");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+
+    // Send SIGINT to `odg` and assert it exits with code 130 within 3 seconds.
+    let sig_start = Instant::now();
+    assert!(
+        Command::new("kill")
+            .args(["-s", "INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        sig_start.elapsed() < Duration::from_secs(3),
+        "odg took {:?} to exit after SIGINT: {}",
+        sig_start.elapsed(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "expected exit code 130 on SIGINT, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("! stopping the turn..."));
+
+    // Assert grandchild process is completely dead (`kill(grandchild_pid, 0) == -1` with ESRCH).
+    for _ in 0..20 {
+        if unsafe { kill(grandchild_pid, 0) } == -1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let rc = unsafe { kill(grandchild_pid, 0) };
+    let errno = std::io::Error::last_os_error().raw_os_error();
+    assert_eq!(rc, -1, "grandchild process {grandchild_pid} should be dead after SIGINT");
+    assert_eq!(errno, Some(3), "expected ESRCH (3) for dead grandchild {grandchild_pid}, got {errno:?}");
+
+    // Assert `session.v1.jsonl` closed cleanly with `turn/end` (`reason == "cancelled"`).
+    let session_entry = std::fs::read_dir(home.path().join("sessions"))
+        .unwrap()
+        .next()
+        .expect("session directory created")
+        .unwrap();
+    let log_path = session_entry.path().join("session.v1.jsonl");
+    let raw_log = std::fs::read_to_string(&log_path).expect("session.v1.jsonl readable");
+    let events: Vec<Value> = raw_log
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("valid jsonl event"))
+        .collect();
+    let last = events.last().expect("non-empty session log");
+    assert_eq!(last["type"], "turn/end", "expected final event to be turn/end, got: {last}");
+    assert_eq!(last["data"]["reason"], "cancelled", "expected cancelled reason, got: {last}");
 }

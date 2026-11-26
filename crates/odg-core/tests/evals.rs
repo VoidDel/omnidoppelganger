@@ -706,3 +706,493 @@ async fn guardian_escapes_xml_tags_and_uses_root_user_messages_for_subagents() {
         Event::ApprovalRequested { .. }
     )));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plan_mode_never_auto_executes_previously_granted_write_commands() {
+    let mut h = EvalHarness::build(
+        vec![
+            // Turn 1 (Mode::Edit): user permanently grants `command:git commit`.
+            turn_tools(&[(
+                "t_commit_edit",
+                "run_command",
+                json!({ "command": "git commit -m allowed_in_edit" }),
+            )]),
+            turn_text("Committed in Edit mode.", 100, 20),
+            // Turn 2 (Mode::Plan): model tries `git commit -m blocked_in_plan` despite standing grant.
+            turn_tools(&[(
+                "t_commit_plan",
+                "run_command",
+                json!({ "command": "git commit -m blocked_in_plan" }),
+            )]),
+            turn_text("Understood, I will only propose a plan instead of committing.", 100, 20),
+        ],
+        200_000,
+        1_000_000,
+    );
+
+    let ws = h.workspace.path().to_path_buf();
+    let run_git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&ws)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    run_git(&["init", "--quiet", "--initial-branch", "main"]);
+    run_git(&["config", "user.name", "Eval Tester"]);
+    run_git(&["config", "user.email", "eval@example.com"]);
+    std::fs::write(ws.join("notes.txt"), "v1\n").unwrap();
+    run_git(&["add", "notes.txt"]);
+    run_git(&["commit", "-m", "init"]);
+
+    // Stage change #1 and run Turn 1 in Edit mode, granting `AllowAlways`.
+    std::fs::write(ws.join("notes.txt"), "v2\n").unwrap();
+    run_git(&["add", "notes.txt"]);
+    h.session.set_mode(Mode::Edit);
+    h.session.send("Commit staged changes.".into());
+
+    let turn1_grant = loop {
+        let ev = tokio::time::timeout(Duration::from_secs(10), h.rx.recv())
+            .await
+            .expect("timed out waiting for Turn 1 ApprovalRequested")
+            .unwrap();
+        if let UiEvent::Log { envelope, .. } = ev
+            && let Event::ApprovalRequested {
+                tool_use_id,
+                grant,
+                ..
+            } = envelope.event
+            && tool_use_id == "t_commit_edit"
+        {
+            break grant;
+        }
+    };
+    assert_eq!(turn1_grant.as_deref(), Some("command:git commit"));
+    assert!(
+        h.session
+            .resolve_approval("t_commit_edit", odg_core::events::Decision::AllowAlways)
+    );
+    h.wait_idle().await;
+    assert!(run_git(&["log", "--oneline"]).contains("allowed_in_edit"));
+
+    // Stage change #2, switch to `Mode::Plan`, and verify `git commit` does NOT auto-execute!
+    std::fs::write(ws.join("notes.txt"), "v3\n").unwrap();
+    run_git(&["add", "notes.txt"]);
+    h.session.set_mode(Mode::Plan);
+    h.session.send("Plan the next step.".into());
+
+    let turn2_grant = loop {
+        let ev = tokio::time::timeout(Duration::from_secs(10), h.rx.recv())
+            .await
+            .expect("Plan mode must request approval rather than auto-executing write grant")
+            .unwrap();
+        if let UiEvent::Log { envelope, .. } = ev
+            && let Event::ApprovalRequested {
+                tool_use_id,
+                grant,
+                ..
+            } = envelope.event
+            && tool_use_id == "t_commit_plan"
+        {
+            break grant;
+        }
+    };
+    assert_eq!(
+        turn2_grant, None,
+        "mutating commands in Mode::Plan must never carry a reusable grant"
+    );
+    assert!(
+        h.session
+            .resolve_approval("t_commit_plan", odg_core::events::Decision::Deny)
+    );
+    h.wait_idle().await;
+
+    let log_after = run_git(&["log", "--oneline"]);
+    assert!(
+        !log_after.contains("blocked_in_plan"),
+        "Mode::Plan must never penetrate historical write grants: {log_after}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_sandbox_protects_worktree_origin_git_hooks_and_config() {
+    if let Err(why) = odg_core::sandbox::support() {
+        eprintln!("skipping sandbox eval: {why}");
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let origin = root.path().join("origin");
+    let wt_root = root.path().join("worktrees");
+    std::fs::create_dir_all(origin.join("src")).unwrap();
+    std::fs::write(origin.join("src/lib.rs"), "pub fn x() -> u32 { 1 }\n").unwrap();
+
+    for args in [
+        &["init", "--quiet", "--initial-branch", "main"][..],
+        &["add", "-A"][..],
+        &["-c", "user.name=t", "-c", "user.email=t@e", "commit", "--quiet", "-m", "init"][..],
+    ] {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+
+    let (wt_workspace, wt_meta) = odg_core::worktree::create(&origin, &wt_root).unwrap();
+    let origin_git = origin.join(".git").canonicalize().unwrap();
+    let orig_config = std::fs::read_to_string(origin_git.join("config")).unwrap();
+    let hook_path = origin_git.join("hooks/post-checkout");
+    let config_path = origin_git.join("config");
+
+    let llm = EvalLlm::new(vec![
+        turn_tools(&[
+            (
+                "wt_escape_hook",
+                "run_command",
+                json!({ "command": format!("echo pwn > {}", hook_path.display()) }),
+            ),
+            (
+                "wt_escape_cfg",
+                "run_command",
+                json!({ "command": format!("echo '[core] fsmonitor = evil' >> {}", config_path.display()) }),
+            ),
+            (
+                "wt_legit_commit",
+                "run_command",
+                json!({
+                    "command": "echo 'pub fn x() -> u32 { 2 }' > src/lib.rs && git add src/lib.rs && git -c user.name=t -c user.email=t@e commit -m wt_ok"
+                }),
+            ),
+        ]),
+        turn_text("Worktree commit finished inside sandbox.", 100, 20),
+    ]);
+
+    let store = SessionStore::new(home.path().join("sessions"));
+    let log = store
+        .create_with(NewSession {
+            workspace: &wt_workspace,
+            provider: "anthropic",
+            model: "claude-sonnet-5-5",
+            parent: None,
+            worktree: Some(wt_meta.clone()),
+            schedule: None,
+            aside: None,
+        })
+        .unwrap();
+    let (tx, rx) = unbounded_channel();
+    let tuning = Arc::new(|_: &str, _: &str| Tuning {
+        effort: "high".into(),
+        context_limit: 200_000,
+        context_window: 1_000_000,
+        guardian: None,
+        approval_wait: Some(Duration::from_secs(5)),
+    });
+    let services = Services {
+        grants: Arc::new(GrantStore::new(home.path().join("grants.json"))),
+        mcp: None,
+        skills: Some(home.path().join("skills")),
+        search: None,
+        sandbox: Some(Arc::new(|| Some(Vec::new()))),
+        chat: None,
+        runtime: None,
+        painter: None,
+        lsp: None,
+    };
+    let session = Session::new(
+        log,
+        llm.clone(),
+        tuning,
+        services,
+        tx,
+        tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+    session.set_mode(Mode::Bypass);
+
+    let mut h = EvalHarness {
+        _home: home,
+        workspace: root,
+        session,
+        llm,
+        rx,
+    };
+    h.session.send("Update lib.rs in worktree.".into());
+    h.wait_idle().await;
+
+    assert!(!hook_path.exists(), "worktree sandbox must block writing origin .git/hooks");
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        orig_config,
+        "worktree sandbox must block modifying origin .git/config"
+    );
+
+    let results: Vec<(String, bool)> = h
+        .session
+        .snapshot()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            Event::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } => Some((tool_use_id, is_error)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results,
+        vec![
+            ("wt_escape_hook".into(), true),
+            ("wt_escape_cfg".into(), true),
+            ("wt_legit_commit".into(), false),
+        ]
+    );
+
+    odg_core::worktree::remove(&wt_meta).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn untrusted_session_detects_all_cli_configs_and_fails_closed_for_external_cli() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let ws = workspace.path();
+
+    for dir in [
+        ".claude",
+        ".cursor",
+        ".codex",
+        ".gemini",
+        ".agent",
+        ".agents",
+        ".opencode",
+        ".grok",
+    ] {
+        std::fs::create_dir_all(ws.join(dir)).unwrap();
+    }
+    for file in [".mcp.json", ".cursorrules", "opencode.json"] {
+        std::fs::write(ws.join(file), "{}").unwrap();
+    }
+
+    let detected = odg_core::agent::untrusted_project_resources(ws);
+    for expected in [
+        ".claude",
+        ".mcp.json",
+        ".cursor",
+        ".cursorrules",
+        ".codex",
+        ".gemini",
+        ".agent",
+        ".agents",
+        ".opencode",
+        "opencode.json",
+        ".grok",
+    ] {
+        assert!(
+            detected.iter().any(|item| item == expected),
+            "missing `{expected}` in untrusted_project_resources: {detected:?}"
+        );
+    }
+
+    // Create a Codex CLI session on the untrusted workspace and verify it fails closed before spawning `codex`.
+    let llm = EvalLlm::new(vec![]);
+    let store = SessionStore::new(home.path().join("sessions"));
+    let log = store
+        .create_with(NewSession {
+            workspace: ws,
+            provider: "codex",
+            model: "gpt-5.4",
+            parent: None,
+            worktree: None,
+            schedule: None,
+            aside: None,
+        })
+        .unwrap();
+    let (tx, rx) = unbounded_channel();
+    let tuning = Arc::new(|_: &str, _: &str| Tuning {
+        effort: "high".into(),
+        context_limit: 200_000,
+        context_window: 1_000_000,
+        guardian: None,
+        approval_wait: Some(Duration::from_secs(5)),
+    });
+    let services = Services {
+        grants: Arc::new(GrantStore::new(home.path().join("grants.json"))),
+        mcp: None,
+        skills: Some(home.path().join("skills")),
+        search: None,
+        sandbox: None,
+        chat: None,
+        runtime: None,
+        painter: None,
+        lsp: None,
+    };
+    let session = Session::new(
+        log,
+        llm.clone(),
+        tuning,
+        services,
+        tx,
+        tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+    session.set_mode(Mode::Auto);
+    assert!(!session.is_project_trusted());
+    assert_eq!(session.untrusted_project_resources().len(), 11);
+
+    let mut h = EvalHarness {
+        _home: home,
+        workspace,
+        session,
+        llm,
+        rx,
+    };
+    h.session.send("Run in untrusted workspace.".into());
+    h.wait_idle().await;
+
+    let turn_end = h
+        .session
+        .snapshot()
+        .into_iter()
+        .rev()
+        .find_map(|e| match e.event {
+            Event::TurnEnd { reason, error, .. } => Some((reason, error)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(turn_end.0, "error");
+    let err_msg = turn_end.1.unwrap_or_default();
+    assert!(
+        err_msg.contains("尚未授信") && err_msg.contains(".codex"),
+        "expected untrusted CLI isolation error, got: {err_msg}"
+    );
+}
+
+#[test]
+fn append_records_auxiliary_token_usage_clears_auto_cooldown_and_undo_guards_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = odg_core::model_usage::ModelUsageStore::at(tmp.path().join("model_usage.json"));
+
+    // 1. Rate-limit error under `"auto"` records a cooldown on `("anthropic", "auto")`.
+    odg_core::agent::record_event_model_usage(
+        &store,
+        "anthropic",
+        odg_core::providers::AUTO_MODEL,
+        &Event::TurnEnd {
+            turn: 1,
+            reason: "error".into(),
+            error: Some("HTTP 429 Too Many Requests: retry after 60s".into()),
+        },
+    );
+    assert!(
+        store
+            .list()
+            .iter()
+            .any(|e| e.provider == "anthropic" && e.model == "auto" && e.cooldown_until.is_some())
+    );
+
+    // 2. Successful `AssistantMessage` with resolved `claude-sonnet-5-5` clears `"auto"` cooldown too.
+    odg_core::agent::record_event_model_usage(
+        &store,
+        "anthropic",
+        odg_core::providers::AUTO_MODEL,
+        &Event::AssistantMessage {
+            content: vec![json!({ "type": "text", "text": "ok" })],
+            stop_reason: Some("end_turn".into()),
+            model: "claude-sonnet-5-5".into(),
+            usage: json!({}),
+            tokens: Some(Tokens {
+                input: 100,
+                cached: 20,
+                output: 30,
+            }),
+        },
+    );
+    assert!(
+        !store
+            .list()
+            .iter()
+            .any(|e| e.provider == "anthropic" && e.model == "auto" && e.cooldown_until.is_some()),
+        "`auto` cooldown must be cleared when a resolved model succeeds"
+    );
+
+    // 3. `ContextCompacted`, `GuardianReviewed`, and `ToolResult(meta.tokens)` all record token usage.
+    odg_core::agent::record_event_model_usage(
+        &store,
+        "anthropic",
+        "claude-sonnet-5-5",
+        &Event::ContextCompacted {
+            summary: "s".into(),
+            tokens_before: 1000,
+            focus: None,
+            kept_from_turn: None,
+            tokens: Some(Tokens {
+                input: 200,
+                cached: 50,
+                output: 40,
+            }),
+        },
+    );
+    odg_core::agent::record_event_model_usage(
+        &store,
+        "anthropic",
+        "claude-sonnet-5-5",
+        &Event::GuardianReviewed {
+            tool_use_id: "g1".into(),
+            model: "claude-haiku-4-5".into(),
+            allowed: true,
+            reason: "safe".into(),
+            verdict: "ALLOW".into(),
+            failed: false,
+            tokens: Some(Tokens {
+                input: 80,
+                cached: 0,
+                output: 10,
+            }),
+        },
+    );
+    odg_core::agent::record_event_model_usage(
+        &store,
+        "anthropic",
+        "claude-sonnet-5-5",
+        &Event::ToolResult {
+            tool_use_id: "s1".into(),
+            tool: "web_search".into(),
+            content: "results".into(),
+            is_error: false,
+            meta: json!({
+                "tokens": { "input": 150, "cached": 10, "output": 25 }
+            }),
+            images: vec![],
+        },
+    );
+
+    let entries = store.list();
+    let sonnet = entries
+        .iter()
+        .find(|e| e.provider == "anthropic" && e.model == "claude-sonnet-5-5")
+        .expect("sonnet entry");
+    assert_eq!(sonnet.requests, 3);
+    assert_eq!(sonnet.input_tokens, 100 + 200 + 150);
+    assert_eq!(sonnet.cached_tokens, 20 + 50 + 10);
+    assert_eq!(sonnet.output_tokens, 30 + 40 + 25);
+
+    let haiku = entries
+        .iter()
+        .find(|e| e.provider == "anthropic" && e.model == "claude-haiku-4-5")
+        .expect("guardian haiku entry");
+    assert_eq!(haiku.requests, 1);
+    assert_eq!(haiku.input_tokens, 80);
+    assert_eq!(haiku.output_tokens, 10);
+}

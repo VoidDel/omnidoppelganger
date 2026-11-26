@@ -32,6 +32,63 @@ fn image_media_type(path: &Path) -> Option<&'static str> {
     }
 }
 
+fn has_valid_image_magic(path: &Path, expected_media: &str) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 12];
+    let Ok(read) = file.read(&mut header) else {
+        return false;
+    };
+    let slice = &header[..read];
+    match expected_media {
+        "image/png" => slice.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => slice.starts_with(b"\xFF\xD8\xFF"),
+        "image/gif" => slice.starts_with(b"GIF87a") || slice.starts_with(b"GIF89a"),
+        "image/webp" => slice.len() >= 12 && &slice[0..4] == b"RIFF" && &slice[8..12] == b"WEBP",
+        _ => false,
+    }
+}
+
+fn default_external_artifact_roots() -> Vec<PathBuf> {
+    let mut roots = vec![crate::settings::home().join("tmp"), std::env::temp_dir()];
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".gemini").join("antigravity").join("brain"));
+        roots.push(home.join(".gemini").join("antigravity-cli").join("brain"));
+    }
+    roots
+}
+
+pub(super) fn is_allowed_external_artifact_with_roots(path: &Path, allowed_roots: &[PathBuf]) -> bool {
+    let Some(media_type) = image_media_type(path) else {
+        return false;
+    };
+    let Ok(sym_meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if sym_meta.file_type().is_symlink() || !sym_meta.is_file() {
+        return false;
+    }
+    let Ok(canon_path) = path.canonicalize() else {
+        return false;
+    };
+    if !std::fs::metadata(&canon_path).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let in_allowed_root = allowed_roots.iter().any(|root| {
+        if let Ok(canon_root) = root.canonicalize() {
+            canon_path.starts_with(&canon_root)
+        } else {
+            false
+        }
+    });
+    if !in_allowed_root {
+        return false;
+    }
+    has_valid_image_magic(&canon_path, media_type)
+}
+
 pub(super) struct TurnRecorder<'a, S: Sink> {
     params: &'a TurnParams<'a>,
     sink: &'a S,
@@ -39,6 +96,8 @@ pub(super) struct TurnRecorder<'a, S: Sink> {
     logged_conv: Option<String>,
     active_text: String,
     emitted_any_text: bool,
+    accounted_tokens: Tokens,
+    pending_usage: Option<(Value, Tokens)>,
     started_tools: HashMap<String, StartedTool>,
     known_files: HashMap<PathBuf, Vec<u8>>,
     turn_started: std::time::SystemTime,
@@ -55,11 +114,55 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
             logged_conv: params.conversation_id.clone(),
             active_text: String::new(),
             emitted_any_text: false,
+            accounted_tokens: Tokens::default(),
+            pending_usage: None,
             started_tools: HashMap::new(),
             known_files: HashMap::new(),
             turn_started: std::time::SystemTime::now(),
             external_artifacts: Vec::new(),
             result_error: None,
+        }
+    }
+
+    fn add_accounted(&mut self, tokens: Option<&Tokens>) {
+        if let Some(t) = tokens {
+            self.accounted_tokens.input = self.accounted_tokens.input.saturating_add(t.input);
+            self.accounted_tokens.cached = self.accounted_tokens.cached.saturating_add(t.cached);
+            self.accounted_tokens.output = self.accounted_tokens.output.saturating_add(t.output);
+        }
+    }
+
+    fn stash_pending_usage(&mut self, usage: Value, tokens: Tokens) {
+        if tokens.input == 0 && tokens.cached == 0 && tokens.output == 0 {
+            return;
+        }
+        match &mut self.pending_usage {
+            Some((prev_usage, prev_tokens)) => {
+                prev_tokens.input = prev_tokens.input.saturating_add(tokens.input);
+                prev_tokens.cached = prev_tokens.cached.saturating_add(tokens.cached);
+                prev_tokens.output = prev_tokens.output.saturating_add(tokens.output);
+                if !usage.is_null() {
+                    *prev_usage = usage;
+                }
+            }
+            None => {
+                self.pending_usage = Some((usage, tokens));
+            }
+        }
+    }
+
+    fn take_combined_usage(&mut self, usage: Value, tokens: Option<Tokens>) -> (Value, Option<Tokens>) {
+        match (self.pending_usage.take(), tokens) {
+            (None, t) => (usage, t),
+            (Some((pu, pt)), None) => (if usage.is_null() { pu } else { usage }, Some(pt)),
+            (Some((pu, pt)), Some(t)) => {
+                let combined = Tokens {
+                    input: pt.input.saturating_add(t.input),
+                    cached: pt.cached.saturating_add(t.cached),
+                    output: pt.output.saturating_add(t.output),
+                };
+                (if usage.is_null() { pu } else { usage }, Some(combined))
+            }
         }
     }
 
@@ -79,17 +182,39 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
 
     pub(super) fn flush_text(&mut self, usage: Value, tokens: Option<Tokens>) -> Result<(), String> {
         if self.active_text.is_empty() {
+            if let Some(t) = tokens {
+                self.stash_pending_usage(usage, t);
+            }
             return Ok(());
         }
         let body = std::mem::take(&mut self.active_text);
         self.emitted_any_text = true;
+        let (final_usage, final_tokens) = self.take_combined_usage(usage, tokens);
+        self.add_accounted(final_tokens.as_ref());
         self.sink.log(Event::AssistantMessage {
             content: vec![json!({ "type": "text", "text": body })],
             stop_reason: Some("end_turn".to_string()),
             model: self.params.model.clone(),
-            usage,
-            tokens,
+            usage: final_usage,
+            tokens: final_tokens,
         })
+    }
+
+    pub(super) fn finish(&mut self) -> Result<(), String> {
+        self.flush_text(Value::Null, None)?;
+        if let Some((pu, pt)) = self.pending_usage.take()
+            && (pt.input > 0 || pt.cached > 0 || pt.output > 0)
+        {
+            self.add_accounted(Some(&pt));
+            self.sink.log(Event::AssistantMessage {
+                content: Vec::new(),
+                stop_reason: Some("end_turn".to_string()),
+                model: self.params.model.clone(),
+                usage: pu,
+                tokens: Some(pt),
+            })?;
+        }
+        Ok(())
     }
 
     pub(super) fn handle_event(&mut self, ev: CliEvent) -> Result<(), String> {
@@ -105,6 +230,8 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                 }
                 if done {
                     self.flush_text(usage, tokens)?;
+                } else if let Some(t) = tokens {
+                    self.stash_pending_usage(usage, t);
                 }
             }
             CliEvent::ToolStart { conversation_id, call_key, name, mut input } => {
@@ -126,22 +253,32 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                     (false, None)
                 };
                 let tool_use_id = format!("{}-{}-{call_key}", self.backend_key, self.params.turn);
-                if let std::collections::hash_map::Entry::Vacant(slot) = self.started_tools.entry(call_key) {
+                if !self.started_tools.contains_key(&call_key) {
+                    let (tool_usage, tool_tokens) = match self.pending_usage.take() {
+                        Some((pu, pt)) => {
+                            self.add_accounted(Some(&pt));
+                            (pu, Some(pt))
+                        }
+                        None => (Value::Null, None),
+                    };
                     self.sink.log(Event::AssistantMessage {
                         content: vec![json!({ "type": "tool_use", "id": tool_use_id, "name": name, "input": input })],
                         stop_reason: Some("tool_use".to_string()),
                         model: self.params.model.clone(),
-                        usage: Value::Null,
-                        tokens: None,
+                        usage: tool_usage,
+                        tokens: tool_tokens,
                     })?;
-                    slot.insert(StartedTool {
-                        id: tool_use_id,
-                        name,
-                        input,
-                        target,
-                        before_bytes,
-                        file_existed_at_start,
-                    });
+                    self.started_tools.insert(
+                        call_key,
+                        StartedTool {
+                            id: tool_use_id,
+                            name,
+                            input,
+                            target,
+                            before_bytes,
+                            file_existed_at_start,
+                        },
+                    );
                 }
             }
             CliEvent::ToolDone { conversation_id, call_key, name, mut input, output, is_error } => {
@@ -171,12 +308,19 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                         let resolved_name = name.unwrap_or_else(|| "tool".to_string());
                         let target = relativize_tool_input(self.params.workspace, &mut input);
                         let id = format!("{}-{}-{call_key}", self.backend_key, self.params.turn);
+                        let (tool_usage, tool_tokens) = match self.pending_usage.take() {
+                            Some((pu, pt)) => {
+                                self.add_accounted(Some(&pt));
+                                (pu, Some(pt))
+                            }
+                            None => (Value::Null, None),
+                        };
                         self.sink.log(Event::AssistantMessage {
                             content: vec![json!({ "type": "tool_use", "id": id, "name": resolved_name, "input": input })],
                             stop_reason: Some("tool_use".to_string()),
                             model: self.params.model.clone(),
-                            usage: Value::Null,
-                            tokens: None,
+                            usage: tool_usage,
+                            tokens: tool_tokens,
                         })?;
                         (
                             StartedTool {
@@ -209,14 +353,20 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                     meta["picture"] = json!(media_type);
                     meta["file"] = json!(path.display().to_string());
                     // External CLIs (e.g. agy) often write E2E screenshots into their own scratch directory
-                    // outside the workspace. Track newly created images so they also appear in 「产物」.
-                    let in_workspace = path.starts_with(self.params.workspace);
+                    // outside the workspace. Only admit regular image files inside known temporary/brain roots.
+                    let in_workspace = crate::tools::inside_workspace(self.params.workspace, path);
                     let is_user_input_image = self.params.image_paths.iter().any(|p| p == path);
-                    let created_this_turn = std::fs::metadata(path)
+                    let created_this_turn = std::fs::symlink_metadata(path)
                         .and_then(|m| m.modified())
                         .ok()
                         .is_some_and(|mtime| mtime + std::time::Duration::from_secs(2) >= self.turn_started);
-                    if !in_workspace && !is_user_input_image && created_this_turn && !self.external_artifacts.contains(path) {
+                    let allowed_roots = default_external_artifact_roots();
+                    if !in_workspace
+                        && !is_user_input_image
+                        && created_this_turn
+                        && is_allowed_external_artifact_with_roots(path, &allowed_roots)
+                        && !self.external_artifacts.contains(path)
+                    {
                         self.external_artifacts.push(path.clone());
                     }
                 }
@@ -236,17 +386,47 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
             }
             CliEvent::Result { conversation_id, success, response, error, usage, tokens } => {
                 self.record_conv(conversation_id)?;
+                // Compute unrecorded token remainder: if `Result` carries cumulative turn tokens, subtract
+                // `accounted_tokens` (and discard any unlogged `pending_usage` superseded by the summary);
+                // otherwise fall back to any unlogged `pending_usage`.
+                let (rem_usage, rem_tokens) = match tokens {
+                    Some(total) => {
+                        let _ = self.pending_usage.take();
+                        let rem = Tokens {
+                            input: total.input.saturating_sub(self.accounted_tokens.input),
+                            cached: total.cached.saturating_sub(self.accounted_tokens.cached),
+                            output: total.output.saturating_sub(self.accounted_tokens.output),
+                        };
+                        let non_zero = rem.input > 0 || rem.cached > 0 || rem.output > 0;
+                        (if non_zero { usage } else { Value::Null }, non_zero.then_some(rem))
+                    }
+                    None => match self.pending_usage.take() {
+                        Some((pu, pt)) if pt.input > 0 || pt.cached > 0 || pt.output > 0 => (pu, Some(pt)),
+                        _ => (usage, None),
+                    },
+                };
+
                 if !self.active_text.is_empty() {
-                    self.flush_text(usage, tokens)?;
+                    self.flush_text(rem_usage, rem_tokens)?;
                 } else if !self.emitted_any_text && !response.trim().is_empty() {
+                    self.add_accounted(rem_tokens.as_ref());
                     self.sink.log(Event::AssistantMessage {
                         content: vec![json!({ "type": "text", "text": response })],
                         stop_reason: Some("end_turn".to_string()),
                         model: self.params.model.clone(),
-                        usage,
-                        tokens,
+                        usage: rem_usage,
+                        tokens: rem_tokens,
                     })?;
                     self.emitted_any_text = true;
+                } else if let Some(rem) = rem_tokens {
+                    self.add_accounted(Some(&rem));
+                    self.sink.log(Event::AssistantMessage {
+                        content: Vec::new(),
+                        stop_reason: Some("end_turn".to_string()),
+                        model: self.params.model.clone(),
+                        usage: rem_usage,
+                        tokens: Some(rem),
+                    })?;
                 }
                 if !success {
                     self.result_error = error;

@@ -327,7 +327,7 @@ impl StreamParser {
                         }
                     }
                     let delta = if self.saw_partial_delta { String::new() } else { full_text };
-                    if self.saw_partial_delta || !delta.is_empty() {
+                    if self.saw_partial_delta || !delta.is_empty() || tokens.is_some() {
                         out.insert(0, CliEvent::AgentText { conversation_id: conv, delta, done: true, usage, tokens });
                     }
                 }
@@ -707,19 +707,41 @@ fn extract_content_text(content: &Value) -> String {
     if content.is_null() { String::new() } else { content.to_string() }
 }
 
+/// Parse an OpenAI Chat Completions-style usage object where `prompt_tokens` already includes
+/// any `cached_tokens` (so `cached_tokens` must never be added on top of `prompt_tokens`).
+pub(super) fn openai_like_tokens(usage: &Value) -> Option<Tokens> {
+    let count = |key: &str| usage[key].as_u64().unwrap_or(0);
+    let prompt_tokens = count("prompt_tokens");
+    let cached = count("cached_tokens")
+        .max(count("cached_input_tokens"))
+        .max(usage["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0))
+        .max(count("cache_read_tokens"))
+        .max(count("cache_read_input_tokens"));
+    let input = prompt_tokens.max(cached);
+    let output = count("completion_tokens")
+        .max(count("output_tokens"))
+        .max(count("outputTokens") + count("reasoningTokens"))
+        .max(count("output") + count("reasoning"));
+    (input > 0 || output > 0).then_some(Tokens { input, cached: cached.min(input), output })
+}
+
 fn anthropic_like_tokens(usage: &Value) -> Option<Tokens> {
+    if usage.get("prompt_tokens").and_then(Value::as_u64).is_some() {
+        return openai_like_tokens(usage);
+    }
     let count = |key: &str| usage[key].as_u64().unwrap_or(0);
     let cache_read = count("cache_read_input_tokens")
         .max(count("cache_read_tokens"))
         .max(count("cacheReadTokens"))
         .max(count("cached_tokens"))
+        .max(count("cached_input_tokens"))
         .max(usage["cache"]["read"].as_u64().unwrap_or(0));
     let cache_write = count("cache_creation_input_tokens")
+        .max(count("cache_write_tokens"))
         .max(count("cacheWriteTokens"))
         .max(usage["cache"]["write"].as_u64().unwrap_or(0));
     let base_input = count("input_tokens")
         .max(count("inputTokens"))
-        .max(count("prompt_tokens"))
         .max(count("input"));
     let input = base_input + cache_read + cache_write;
     let output = count("output_tokens")

@@ -4,13 +4,16 @@ use crate::events::Event;
 use crate::llm::{StreamDelta, Tokens};
 use crate::policy::Mode;
 
-use super::args::build_turn_args;
-use super::mcp_bridge::{apply_mcp_bridge_args, build_agy_mcp_add_args};
+use super::args::{build_turn_args, detect_untrusted_cli_configs};
+use super::mcp_bridge::{apply_mcp_bridge_args_in, build_agy_mcp_add_args, sync_antigravity_mcp_in, sync_cursor_mcp_in};
 use super::models::{
     cursor_effort_rank, parse_cursor_models_output, parse_opencode_api_models, parse_opencode_models_output, pick_cursor_variant,
 };
-use super::prompt::{apply_prompt_delivery_args, is_windows_batch_script, prepare_prompt_delivery};
-use super::recorder::{TurnRecorder, lookup_agy_transcript_edit_in};
+use super::parser::openai_like_tokens;
+use super::prompt::{
+    apply_prompt_delivery_args, is_windows_batch_script, materialize_cli_images_in, prepare_prompt_delivery_in,
+};
+use super::recorder::{TurnRecorder, is_allowed_external_artifact_with_roots, lookup_agy_transcript_edit_in};
 use super::*;
 
 #[test]
@@ -476,7 +479,7 @@ fn turn_recorder_computes_agy_edit_diffs_relativizes_paths_and_records_undo_snap
     // Verify undo restores `motor.c` to its original content and deletes the created script!
     let plan = crate::undo::plan(&events, 1);
     assert_eq!(plan.len(), 2);
-    let outcome = crate::undo::apply(&plan, &snap_dir);
+    let outcome = crate::undo::apply(&plan, &snap_dir, &workspace);
     assert_eq!(outcome.restored, vec!["peripheral/src/motor.c", "scripts/test_io_park_host.py"]);
     assert_eq!(std::fs::read_to_string(&motor_c).unwrap(), "int a = 1;\nint b = 2;\nint c = 3;\n");
     assert!(!new_test.exists());
@@ -672,10 +675,12 @@ fn tracks_codex_multifile_patch_claude_multiedit_cursor_nested_result_and_grok_c
 
 #[test]
 fn spills_oversized_prompts_to_stdin_or_temp_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join(".odg");
     let huge = "x".repeat(256);
 
     // Codex switches to `exec ... -` + stdin.
-    let codex_prep = prepare_prompt_delivery(CliKind::Codex, &huge, 2, 64, false).unwrap();
+    let codex_prep = prepare_prompt_delivery_in(&home, CliKind::Codex, &huge, 2, 64, false).unwrap();
     assert_eq!(codex_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
     let mut codex_args = build_args(CliKind::Codex, &codex_prep.cli_prompt, None, None, "gpt-5.4", "high", Mode::Auto, false, false);
     apply_prompt_delivery_args(CliKind::Codex, &mut codex_args, &codex_prep);
@@ -683,43 +688,47 @@ fn spills_oversized_prompts_to_stdin_or_temp_file() {
     assert!(!codex_args.iter().any(|a| a == "--"));
 
     // Claude Code omits positional prompt and pipes via stdin.
-    let claude_prep = prepare_prompt_delivery(CliKind::ClaudeCode, &huge, 2, 64, false).unwrap();
+    let claude_prep = prepare_prompt_delivery_in(&home, CliKind::ClaudeCode, &huge, 2, 64, false).unwrap();
     assert_eq!(claude_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
     let mut claude_args = build_args(CliKind::ClaudeCode, &claude_prep.cli_prompt, None, None, "opus", "high", Mode::Auto, false, false);
     apply_prompt_delivery_args(CliKind::ClaudeCode, &mut claude_args, &claude_prep);
     assert!(!claude_args.iter().any(|a| a == "--"));
 
     // Cursor omits positional prompt and pipes via stdin (both for huge prompts and Windows .cmd/.bat shims).
-    let cursor_prep = prepare_prompt_delivery(CliKind::Cursor, &huge, 2, 64, false).unwrap();
+    let cursor_prep = prepare_prompt_delivery_in(&home, CliKind::Cursor, &huge, 2, 64, false).unwrap();
     assert_eq!(cursor_prep.stdin_bytes.as_deref(), Some(huge.as_bytes()));
     let mut cursor_args = build_args(CliKind::Cursor, &cursor_prep.cli_prompt, None, None, "auto", "high", Mode::Auto, false, false);
     apply_prompt_delivery_args(CliKind::Cursor, &mut cursor_args, &cursor_prep);
     assert!(!cursor_args.iter().any(|a| a == "--"));
 
-    let cursor_batch = prepare_prompt_delivery(CliKind::Cursor, "第一行\n你好", 1, 6_000, true).unwrap();
+    let cursor_batch = prepare_prompt_delivery_in(&home, CliKind::Cursor, "第一行\n你好", 1, 6_000, true).unwrap();
     assert_eq!(cursor_batch.stdin_bytes.as_deref(), Some("第一行\n你好".as_bytes()));
     let mut cursor_batch_args = build_args(CliKind::Cursor, &cursor_batch.cli_prompt, None, None, "auto", "high", Mode::Auto, false, false);
     apply_prompt_delivery_args(CliKind::Cursor, &mut cursor_batch_args, &cursor_batch);
     assert!(!cursor_batch_args.iter().any(|a| a == "--" || a.contains('\n') || a.contains('\r')));
 
-    // Antigravity spills to a temporary UTF-8 file (single-line CLI prompt for Windows .cmd safety),
-    // adds `--add-dir`, and cleans up on drop.
-    let agy_prep = prepare_prompt_delivery(CliKind::Antigravity, &huge, 2, 64, false).unwrap();
+    // Antigravity spills to an isolated private per-turn directory `<ODG_HOME>/tmp/prompts/<uuid>/prompt.txt`,
+    // adds `--add-dir` pointing only to that per-turn subdir, and cleans up both file and subdir on drop.
+    let agy_prep = prepare_prompt_delivery_in(&home, CliKind::Antigravity, &huge, 2, 64, false).unwrap();
     assert!(agy_prep.stdin_bytes.is_none());
     assert!(!agy_prep.cli_prompt.contains('\n') && !agy_prep.cli_prompt.contains('\r'));
-    let spilled_path = agy_prep._guard.0.clone().expect("temp prompt file");
+    let spilled_path = agy_prep._guard.file.clone().expect("temp prompt file");
+    let spilled_dir = agy_prep._guard.dir.clone().expect("temp prompt subdir");
+    assert_eq!(spilled_path, spilled_dir.join("prompt.txt"));
+    assert_eq!(spilled_dir.parent(), Some(home.join("tmp").join("prompts").as_path()));
     assert_eq!(std::fs::read_to_string(&spilled_path).unwrap(), huge);
     let mut agy_args = build_args(CliKind::Antigravity, &agy_prep.cli_prompt, None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
     apply_prompt_delivery_args(CliKind::Antigravity, &mut agy_args, &agy_prep);
-    assert!(agy_args.windows(2).any(|w| w[0] == "--add-dir" && w[1].contains("odg-prompts")));
+    assert!(agy_args.windows(2).any(|w| w[0] == "--add-dir" && Path::new(&w[1]) == spilled_dir));
     drop(agy_prep);
     assert!(!spilled_path.exists());
+    assert!(!spilled_dir.exists());
 
     // Non-stdin CLIs on Windows .cmd/.bat with newlines also spill to a single-line temp file prompt.
-    let grok_batch = prepare_prompt_delivery(CliKind::Grok, "line1\nline2", 1, 6_000, true).unwrap();
+    let grok_batch = prepare_prompt_delivery_in(&home, CliKind::Grok, "line1\nline2", 1, 6_000, true).unwrap();
     assert!(grok_batch.stdin_bytes.is_none());
     assert!(!grok_batch.cli_prompt.contains('\n') && !grok_batch.cli_prompt.contains('\r'));
-    let grok_path = grok_batch._guard.0.clone().expect("temp prompt file");
+    let grok_path = grok_batch._guard.file.clone().expect("temp prompt file");
     assert_eq!(std::fs::read_to_string(&grok_path).unwrap(), "line1\nline2");
     drop(grok_batch);
     assert!(!grok_path.exists());
@@ -733,6 +742,7 @@ fn spills_oversized_prompts_to_stdin_or_temp_file() {
 #[test]
 fn bridges_odg_skills_and_mcp_servers_to_cli_turns() {
     let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join(".odg");
     let skill_dir = tmp.path().join("demo-skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
@@ -769,7 +779,7 @@ fn bridges_odg_skills_and_mcp_servers_to_cli_turns() {
     );
 
     let mut claude_args = build_args(CliKind::ClaudeCode, "hi", None, None, "opus", "high", Mode::Auto, false, false);
-    let claude_guard = apply_mcp_bridge_args(CliKind::ClaudeCode, &mut claude_args, &servers, 1).expect("claude mcp temp file");
+    let claude_guard = apply_mcp_bridge_args_in(&home, CliKind::ClaudeCode, &mut claude_args, &servers, 1).expect("claude mcp temp file");
     let cfg_idx = claude_args.iter().position(|a| a == "--mcp-config").expect("--mcp-config flag");
     let sep_idx = claude_args.iter().position(|a| a == "--").expect("-- separator");
     assert!(cfg_idx < sep_idx);
@@ -781,12 +791,12 @@ fn bridges_odg_skills_and_mcp_servers_to_cli_turns() {
     assert!(!cfg_path.exists());
 
     let mut codex_args = build_args(CliKind::Codex, "hi", None, None, "gpt-5.4", "high", Mode::Auto, false, false);
-    assert!(apply_mcp_bridge_args(CliKind::Codex, &mut codex_args, &servers, 1).is_none());
+    assert!(apply_mcp_bridge_args_in(&home, CliKind::Codex, &mut codex_args, &servers, 1).is_none());
     assert!(codex_args.iter().any(|a| a == "mcp_servers.docs.command=\"npx\""));
     assert!(codex_args.iter().any(|a| a == "mcp_servers.remote.url=\"https://mcp.example.com\""));
 
     let mut agy_args = build_args(CliKind::Antigravity, "hi", None, None, "gemini-4-neon", "high", Mode::Auto, false, false);
-    assert!(apply_mcp_bridge_args(CliKind::Antigravity, &mut agy_args, &servers, 1).is_none());
+    assert!(apply_mcp_bridge_args_in(&home, CliKind::Antigravity, &mut agy_args, &servers, 1).is_none());
     assert!(!agy_args.iter().any(|a| a == "--settings"));
     assert_eq!(
         build_agy_mcp_add_args("docs", &servers["docs"]).unwrap(),
@@ -852,7 +862,7 @@ fn cli_read_file_on_external_screenshot_sets_picture_meta_and_tracks_artifact() 
         })
         .unwrap();
 
-    let events = sink.0.lock().unwrap();
+    let events = sink.0.lock().unwrap().clone();
     let result = events.iter().find_map(|e| match e {
         Event::ToolResult { tool, meta, .. } if tool == "read_file" => Some(meta.clone()),
         _ => None,
@@ -888,4 +898,565 @@ fn cursor_mcp_merge_preserves_existing_servers_and_skips_disabled() {
     assert_eq!(v["mcpServers"]["user-custom"]["command"], "node");
     assert_eq!(v["mcpServers"]["odg-docs"]["url"], "https://docs.example.com/mcp");
     assert!(v["mcpServers"].get("off").is_none());
+}
+
+#[tokio::test]
+async fn temp_files_live_under_private_odg_home_with_0600_mode() {
+    let root = tempfile::tempdir().unwrap();
+    let odg_home = root.path().join(".odg");
+    let fake_user_home = root.path().join("user_home");
+    std::fs::create_dir_all(fake_user_home.join(".gemini").join("antigravity")).unwrap();
+
+    // 1) MCP bridge temp file for Claude Code + secret stripping for Antigravity argv.
+    let mut servers = BTreeMap::new();
+    let mut env_map = BTreeMap::new();
+    env_map.insert("API_TOKEN".to_string(), "super-secret-env".to_string());
+    servers.insert(
+        "secret-stdio".to_string(),
+        crate::mcp::ServerConfig {
+            command: Some("node".into()),
+            args: vec!["srv.js".into()],
+            env: env_map,
+            ..Default::default()
+        },
+    );
+    let mut hdr_map = BTreeMap::new();
+    hdr_map.insert("Authorization".to_string(), "Bearer super-secret-bearer".to_string());
+    servers.insert(
+        "secret-http".to_string(),
+        crate::mcp::ServerConfig {
+            url: Some("https://mcp.internal/sse".into()),
+            headers: hdr_map,
+            ..Default::default()
+        },
+    );
+    // Secret servers must NEVER be serialized onto `agy mcp add` command-line arguments.
+    assert!(build_agy_mcp_add_args("secret-stdio", &servers["secret-stdio"]).is_none());
+    assert!(build_agy_mcp_add_args("secret-http", &servers["secret-http"]).is_none());
+
+    let mut claude_args = build_args(CliKind::ClaudeCode, "hi", None, None, "opus", "high", Mode::Auto, false, false);
+    let mcp_guard = apply_mcp_bridge_args_in(&odg_home, CliKind::ClaudeCode, &mut claude_args, &servers, 3).expect("mcp guard");
+    let mcp_path = mcp_guard.file.clone().expect("mcp path");
+    assert!(mcp_path.starts_with(odg_home.join("tmp").join("mcp")));
+    assert!(!mcp_path.to_string_lossy().contains("odg-mcp"));
+
+    // 2) Oversized prompt overflow creates distinct per-turn `<uuid>/prompt.txt` subdirs for `agy`.
+    let prep1 = prepare_prompt_delivery_in(&odg_home, CliKind::Antigravity, &"a".repeat(128), 1, 32, false).unwrap();
+    let prep2 = prepare_prompt_delivery_in(&odg_home, CliKind::Antigravity, &"b".repeat(128), 2, 32, false).unwrap();
+    let p1_file = prep1._guard.file.as_ref().unwrap();
+    let p2_file = prep2._guard.file.as_ref().unwrap();
+    assert_ne!(p1_file.parent(), p2_file.parent(), "each turn gets an isolated --add-dir subdirectory");
+    assert!(p1_file.starts_with(odg_home.join("tmp").join("prompts")));
+
+    // 3) Materialized CLI images live under `<ODG_HOME>/tmp/images/<uuid>/`.
+    let img = crate::events::Image {
+        media_type: "image/png".to_string(),
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=".to_string(),
+    };
+    let (img_paths, img_guard) = materialize_cli_images_in(&odg_home, &[img], 1).unwrap();
+    assert_eq!(img_paths.len(), 1);
+    assert!(img_paths[0].starts_with(odg_home.join("tmp").join("images")));
+
+    // 4) Cursor & Antigravity local MCP config merges write `0600` files atomically.
+    assert!(sync_cursor_mcp_in(&fake_user_home, &servers));
+    let cursor_mcp = fake_user_home.join(".cursor").join("mcp.json");
+    assert!(cursor_mcp.is_file());
+
+    assert!(sync_antigravity_mcp_in(Some(&fake_user_home), Path::new("/nonexistent/agy"), &servers).await);
+    let agy_mcp = fake_user_home.join(".gemini").join("antigravity").join("mcp_config.json");
+    let agy_json: Value = serde_json::from_str(&std::fs::read_to_string(&agy_mcp).unwrap()).unwrap();
+    assert_eq!(agy_json["mcpServers"]["secret-stdio"]["env"]["API_TOKEN"], "super-secret-env");
+    assert_eq!(agy_json["mcpServers"]["secret-http"]["headers"]["Authorization"], "Bearer super-secret-bearer");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for dir in [
+            odg_home.join("tmp"),
+            odg_home.join("tmp").join("mcp"),
+            odg_home.join("tmp").join("prompts"),
+            odg_home.join("tmp").join("images"),
+            p1_file.parent().unwrap().to_path_buf(),
+            img_paths[0].parent().unwrap().to_path_buf(),
+        ] {
+            let mode = std::fs::symlink_metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "expected 0700 on {}", dir.display());
+        }
+        for file in [&mcp_path, p1_file, p2_file, &img_paths[0], &cursor_mcp, &agy_mcp] {
+            let mode = std::fs::symlink_metadata(file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "expected 0600 on {}", file.display());
+        }
+    }
+
+    let img_dir = img_paths[0].parent().unwrap().to_path_buf();
+    drop(img_guard);
+    assert!(!img_paths[0].exists() && !img_dir.exists());
+    drop(mcp_guard);
+    assert!(!mcp_path.exists());
+}
+
+#[tokio::test]
+async fn untrusted_workspace_detects_claude_mcp_codex_cursor_configs_and_isolates_claude_hooks() {
+    struct NoopSink;
+    impl Sink for NoopSink {
+        fn log(&self, _event: Event) -> Result<(), String> {
+            Ok(())
+        }
+        fn stream(&self, _delta: StreamDelta) {}
+    }
+
+    let ws = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(ws.path().join(".claude")).unwrap();
+    std::fs::write(ws.path().join(".claude").join("settings.json"), r#"{"hooks":{}}"#).unwrap();
+    std::fs::write(ws.path().join(".mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+    std::fs::create_dir_all(ws.path().join(".codex")).unwrap();
+    std::fs::create_dir_all(ws.path().join(".gemini")).unwrap();
+    std::fs::create_dir_all(ws.path().join(".opencode")).unwrap();
+    std::fs::create_dir_all(ws.path().join(".grok")).unwrap();
+
+    let detected = detect_untrusted_cli_configs(ws.path());
+    for expected in [".claude", ".mcp.json", ".codex", ".gemini", ".opencode", ".grok"] {
+        assert!(detected.iter().any(|item| item == expected), "missing {expected} in {detected:?}");
+    }
+
+    // Claude Code isolates untrusted repos via `--setting-sources user`.
+    let claude_untrusted = build_turn_args(
+        CliKind::ClaudeCode,
+        "audit",
+        Some(ws.path()),
+        None,
+        "sonnet",
+        "high",
+        Mode::Auto,
+        true,
+        false,
+        false,
+    );
+    assert!(claude_untrusted.windows(2).any(|w| w == ["--setting-sources", "user"]));
+    let claude_trusted = build_turn_args(
+        CliKind::ClaudeCode,
+        "audit",
+        Some(ws.path()),
+        None,
+        "sonnet",
+        "high",
+        Mode::Auto,
+        true,
+        false,
+        true,
+    );
+    assert!(!claude_trusted.iter().any(|a| a == "--setting-sources"));
+
+    // Codex, Antigravity, Grok, and OpenCode block before launching when untrusted and local configs exist.
+    let cancel = CancellationToken::new();
+    for kind in [CliKind::Codex, CliKind::Antigravity, CliKind::Grok, CliKind::OpenCode] {
+        let params = TurnParams {
+            kind,
+            workspace: ws.path(),
+            snapshots: None,
+            turn: 1,
+            prompt: "hello".into(),
+            conversation_id: None,
+            model: "default".into(),
+            effort: "high".into(),
+            mode: Mode::Auto,
+            sandboxed: true,
+            read_only: false,
+            workspace_trusted: false,
+            extra_dirs: Vec::new(),
+            image_paths: Vec::new(),
+            mcp_servers: BTreeMap::new(),
+        };
+        let err = run_turn(params, &NoopSink, &cancel).await.unwrap_err();
+        assert!(err.contains("尚未授信") && err.contains("信任此洞府"), "unexpected error for {kind:?}: {err}");
+    }
+
+    // Env var minimization keeps only the target CLI's own auth keys.
+    let codex_scrubbed = scrubbed_env_keys(CliKind::Codex, "gpt-5.4");
+    assert!(codex_scrubbed.contains(&"ANTHROPIC_API_KEY"));
+    assert!(codex_scrubbed.contains(&"GEMINI_API_KEY"));
+    assert!(!codex_scrubbed.contains(&"OPENAI_API_KEY"));
+    assert!(!codex_scrubbed.contains(&"CODEX_API_KEY"));
+
+    let opencode_anth = scrubbed_env_keys(CliKind::OpenCode, "anthropic/claude-sonnet-4-6");
+    assert!(!opencode_anth.contains(&"ANTHROPIC_API_KEY"));
+    assert!(!opencode_anth.contains(&"OPENCODE_API_KEY"));
+    assert!(opencode_anth.contains(&"OPENAI_API_KEY"));
+    assert!(opencode_anth.contains(&"DEEPSEEK_API_KEY"));
+}
+
+#[tokio::test]
+async fn antigravity_mcp_sync_is_skipped_in_plan_manual_and_edit_modes() {
+    assert!(!should_bridge_mcp(Mode::Plan, false));
+    assert!(!should_bridge_mcp(Mode::Manual, false));
+    assert!(!should_bridge_mcp(Mode::Edit, false));
+    assert!(!should_bridge_mcp(Mode::Auto, true));
+    assert!(!should_bridge_mcp(Mode::Bypass, true));
+    assert!(should_bridge_mcp(Mode::Auto, false));
+    assert!(should_bridge_mcp(Mode::Bypass, false));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct NoopSink;
+        impl Sink for NoopSink {
+            fn log(&self, _event: Event) -> Result<(), String> {
+                Ok(())
+            }
+            fn stream(&self, _delta: StreamDelta) {}
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let log_file = tmp.path().join("agy-calls.log");
+        let fake_agy = tmp.path().join("fake-agy.sh");
+        let script = format!(
+            "#!/bin/sh\necho \"$@\" >> \"{}\"\nif [ \"$1\" = \"mcp\" ]; then\n  exit 0\nfi\necho '{{\"event\":\"init\",\"conversation_id\":\"c1\"}}'\necho '{{\"event\":\"result\",\"result\":{{\"status\":\"SUCCESS\",\"response\":\"ok\"}}}}'\n",
+            log_file.display()
+        );
+        std::fs::write(&fake_agy, script).unwrap();
+        std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut servers = BTreeMap::new();
+        servers.insert(
+            "test-gated-mcp".to_string(),
+            crate::mcp::ServerConfig {
+                command: Some("echo".into()),
+                args: vec!["mcp".into()],
+                ..Default::default()
+            },
+        );
+        let cancel = CancellationToken::new();
+
+        for (mode, read_only) in [
+            (Mode::Plan, false),
+            (Mode::Manual, false),
+            (Mode::Edit, false),
+            (Mode::Auto, true),
+        ] {
+            let params = TurnParams {
+                kind: CliKind::Antigravity,
+                workspace: &ws,
+                snapshots: None,
+                turn: 1,
+                prompt: "plan only".into(),
+                conversation_id: None,
+                model: "gemini-4-neon".into(),
+                effort: "high".into(),
+                mode,
+                sandboxed: false,
+                read_only,
+                workspace_trusted: true,
+                extra_dirs: Vec::new(),
+                image_paths: Vec::new(),
+                mcp_servers: servers.clone(),
+            };
+            run_turn_with_limits(params, Some(&fake_agy), CLI_IDLE_TIMEOUT, MAX_CLI_LINE_BYTES, &NoopSink, &cancel)
+                .await
+                .unwrap();
+        }
+        let logged = std::fs::read_to_string(&log_file).unwrap_or_default();
+        assert!(!logged.contains("mcp add"), "MCP sync must be skipped in Plan/Manual/Edit/read_only: {logged}");
+    }
+}
+
+#[test]
+fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_text() {
+    use std::sync::Mutex;
+
+    struct VecSink(Mutex<Vec<Event>>);
+    impl Sink for VecSink {
+        fn log(&self, event: Event) -> Result<(), String> {
+            self.0.lock().unwrap().push(event);
+            Ok(())
+        }
+        fn stream(&self, _delta: StreamDelta) {}
+    }
+
+    let sum_tokens = |events: &[Event]| -> (Tokens, Vec<String>) {
+        let mut sum = Tokens::default();
+        let mut texts = Vec::new();
+        for ev in events {
+            if let Event::AssistantMessage { content, tokens, .. } = ev {
+                if let Some(t) = tokens {
+                    sum.input += t.input;
+                    sum.cached += t.cached;
+                    sum.output += t.output;
+                }
+                for block in content {
+                    if block["type"].as_str() == Some("text")
+                        && let Some(s) = block["text"].as_str()
+                    {
+                        texts.push(s.to_string());
+                    }
+                }
+            }
+        }
+        (sum, texts)
+    };
+
+    let ws = tempfile::tempdir().unwrap();
+    let make_params = |kind: CliKind| TurnParams {
+        kind,
+        workspace: ws.path(),
+        snapshots: None,
+        turn: 1,
+        prompt: "hi".into(),
+        conversation_id: None,
+        model: "m".into(),
+        effort: "high".into(),
+        mode: Mode::Auto,
+        sandboxed: false,
+        read_only: false,
+        workspace_trusted: true,
+        extra_dirs: Vec::new(),
+        image_paths: Vec::new(),
+        mcp_servers: BTreeMap::new(),
+    };
+
+    // 1) Codex: `item.completed` flushes text without tokens, then `turn.completed` settles full usage without duplicating text.
+    let codex_params = make_params(CliKind::Codex);
+    let codex_sink = VecSink(Mutex::new(Vec::new()));
+    let mut codex_rec = TurnRecorder::new(&codex_params, &codex_sink);
+    let mut codex_parser = StreamParser::default();
+    for line in [
+        r#"{"type":"thread.started","thread_id":"t-1"}"#,
+        r#"{"type":"item.updated","item":{"id":"m1","type":"agent_message","text":"Hel"}}"#,
+        r#"{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"Hello!"}}"#,
+        r#"{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":12}}"#,
+    ] {
+        for ev in codex_parser.parse_line(CliKind::Codex, line) {
+            codex_rec.handle_event(ev).unwrap();
+        }
+    }
+    codex_rec.finish().unwrap();
+    let (codex_total, codex_texts) = sum_tokens(&codex_sink.0.lock().unwrap());
+    assert_eq!(codex_texts, vec!["Hello!"]);
+    assert_eq!(codex_total, Tokens { input: 200, cached: 50, output: 12 });
+
+    // 2) Cursor: `--stream-partial-output` flushes text on the final `assistant` event, then `result` settles usage without repeating `result`.
+    let cursor_params = make_params(CliKind::Cursor);
+    let cursor_sink = VecSink(Mutex::new(Vec::new()));
+    let mut cursor_rec = TurnRecorder::new(&cursor_params, &cursor_sink);
+    let mut cursor_parser = StreamParser::default();
+    for line in [
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"0."}]},"session_id":"ch1"}"#,
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"7.16"}]},"session_id":"ch1"}"#,
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"0.7.16"}]},"session_id":"ch1"}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"0.7.16","session_id":"ch1","usage":{"inputTokens":885,"outputTokens":33,"cacheReadTokens":13568,"cacheWriteTokens":0,"reasoningTokens":28}}"#,
+    ] {
+        for ev in cursor_parser.parse_line(CliKind::Cursor, line) {
+            cursor_rec.handle_event(ev).unwrap();
+        }
+    }
+    cursor_rec.finish().unwrap();
+    let (cursor_total, cursor_texts) = sum_tokens(&cursor_sink.0.lock().unwrap());
+    assert_eq!(cursor_texts, vec!["0.7.16"]);
+    assert_eq!(cursor_total, Tokens { input: 14453, cached: 13568, output: 61 });
+
+    // 3) Claude Code: step 1 pure tool_use `assistant` with cache_creation + cache_read, step 2 streamed text + `result(cumulative)`.
+    let claude_params = make_params(CliKind::ClaudeCode);
+    let claude_sink = VecSink(Mutex::new(Vec::new()));
+    let mut claude_rec = TurnRecorder::new(&claude_params, &claude_sink);
+    let mut claude_parser = StreamParser::default();
+    for line in [
+        r#"{"type":"assistant","session_id":"s1","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":100,"cache_read_input_tokens":400,"cache_creation_input_tokens":50,"output_tokens":20}}}"#,
+        r#"{"type":"user","session_id":"s1","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"file.rs"}]}}"#,
+        r#"{"type":"stream_event","session_id":"s1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"All set."}}}"#,
+        r#"{"type":"assistant","session_id":"s1","message":{"content":[{"type":"text","text":"All set."}],"usage":{"input_tokens":120,"cache_read_input_tokens":450,"cache_creation_input_tokens":0,"output_tokens":15}}}"#,
+        r#"{"type":"result","session_id":"s1","is_error":false,"result":"All set.","usage":{"input_tokens":230,"cache_read_input_tokens":850,"cache_creation_input_tokens":50,"output_tokens":40}}"#,
+    ] {
+        for ev in claude_parser.parse_line(CliKind::ClaudeCode, line) {
+            claude_rec.handle_event(ev).unwrap();
+        }
+    }
+    claude_rec.finish().unwrap();
+    let (claude_total, claude_texts) = sum_tokens(&claude_sink.0.lock().unwrap());
+    assert_eq!(claude_texts, vec!["All set."]);
+    // Step 1 input = 550 (cached 400), Step 2 input = 570 (cached 450), cumulative result input = 230 + 850 + 50 = 1130 (cached 850), output = 40.
+    assert_eq!(claude_total, Tokens { input: 1130, cached: 850, output: 40 });
+
+    // 4) OpenAI-style `prompt_tokens` already includes `cached_tokens` (never doubled!).
+    assert_eq!(
+        openai_like_tokens(&json!({
+            "prompt_tokens": 1000,
+            "prompt_tokens_details": { "cached_tokens": 800 },
+            "completion_tokens": 45
+        })),
+        Some(Tokens { input: 1000, cached: 800, output: 45 })
+    );
+    let mut grok_parser = StreamParser::default();
+    let grok_res = grok_parser.parse_line(
+        CliKind::Grok,
+        r#"{"type":"result","result":"ok","usage":{"prompt_tokens":1000,"cached_tokens":800,"completion_tokens":45}}"#,
+    );
+    assert!(matches!(
+        grok_res.as_slice(),
+        [CliEvent::Result { tokens: Some(Tokens { input: 1000, cached: 800, output: 45 }), .. }]
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn non_utf8_stdout_and_idle_timeout_are_handled_gracefully() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+
+    struct VecSink(Mutex<Vec<Event>>);
+    impl Sink for VecSink {
+        fn log(&self, event: Event) -> Result<(), String> {
+            self.0.lock().unwrap().push(event);
+            Ok(())
+        }
+        fn stream(&self, _delta: StreamDelta) {}
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    // 1) Non-UTF-8 bytes on stdout, oversized stdout line (> 512 bytes), and > 512 KB stderr do not crash or deadlock.
+    let noisy_bin = tmp.path().join("noisy-codex.sh");
+    let noisy_script = "#!/bin/sh\n\
+        printf '\\377\\376non-utf8-banner\\n'\n\
+        dd if=/dev/zero bs=1024 count=600 2>/dev/null | tr '\\0' 'e' >&2\n\
+        dd if=/dev/zero bs=1024 count=2 2>/dev/null | tr '\\0' 'x'\n\
+        printf '\\n'\n\
+        printf '{\"type\":\"thread.started\",\"thread_id\":\"t-bin\"}\\n'\n\
+        printf '{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"survived\"}}\\n'\n\
+        printf '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"cached_input_tokens\":0,\"output_tokens\":2}}\\n'\n";
+    std::fs::write(&noisy_bin, noisy_script).unwrap();
+    std::fs::set_permissions(&noisy_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let sink = VecSink(Mutex::new(Vec::new()));
+    let cancel = CancellationToken::new();
+    let params = TurnParams {
+        kind: CliKind::Codex,
+        workspace: &ws,
+        snapshots: None,
+        turn: 1,
+        prompt: "hi".into(),
+        conversation_id: None,
+        model: "gpt-5.4".into(),
+        effort: "high".into(),
+        mode: Mode::Plan,
+        sandboxed: false,
+        read_only: true,
+        workspace_trusted: true,
+        extra_dirs: Vec::new(),
+        image_paths: Vec::new(),
+        mcp_servers: BTreeMap::new(),
+    };
+    let outcome = run_turn_with_limits(params, Some(&noisy_bin), Duration::from_secs(5), 512, &sink, &cancel)
+        .await
+        .expect("non-utf8 and oversized line handled gracefully");
+    assert_eq!(outcome.reason, "completed");
+    let events = sink.0.lock().unwrap().clone();
+    assert!(events.iter().any(|ev| matches!(
+        ev,
+        Event::AssistantMessage { content, .. } if content.iter().any(|b| b["text"].as_str() == Some("survived"))
+    )));
+
+    // 2) Hung process with zero output triggers idle timeout and kills its entire process group.
+    let pid_file = tmp.path().join("grandchild.pid");
+    let hang_bin = tmp.path().join("hang-codex.sh");
+    let hang_script = format!(
+        "#!/bin/sh\nsleep 60 &\necho $! > \"{}\"\nwait\n",
+        pid_file.display()
+    );
+    std::fs::write(&hang_bin, hang_script).unwrap();
+    std::fs::set_permissions(&hang_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let hang_params = TurnParams {
+        kind: CliKind::Codex,
+        workspace: &ws,
+        snapshots: None,
+        turn: 1,
+        prompt: "hang".into(),
+        conversation_id: None,
+        model: "gpt-5.4".into(),
+        effort: "high".into(),
+        mode: Mode::Plan,
+        sandboxed: false,
+        read_only: true,
+        workspace_trusted: true,
+        extra_dirs: Vec::new(),
+        image_paths: Vec::new(),
+        mcp_servers: BTreeMap::new(),
+    };
+    let err = run_turn_with_limits(
+        hang_params,
+        Some(&hang_bin),
+        Duration::from_millis(200),
+        MAX_CLI_LINE_BYTES,
+        &VecSink(Mutex::new(Vec::new())),
+        &cancel,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("输出超时"), "unexpected error: {err}");
+
+    if let Ok(raw_pid) = std::fs::read_to_string(&pid_file)
+        && let Ok(gpid) = raw_pid.trim().parse::<u32>()
+    {
+        for _ in 0..20 {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &gpid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let still_alive = std::process::Command::new("kill")
+            .args(["-0", &gpid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(!still_alive, "grandchild sleep process {gpid} should have been killed on idle timeout");
+    }
+}
+
+#[test]
+fn external_artifacts_only_admits_verified_images_under_allowed_temp_roots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let allowed_tmp = tmp.path().join("allowed_tmp");
+    let allowed_brain = tmp.path().join("brain");
+    let user_docs = tmp.path().join("Documents");
+    std::fs::create_dir_all(&allowed_tmp).unwrap();
+    std::fs::create_dir_all(&allowed_brain).unwrap();
+    std::fs::create_dir_all(&user_docs).unwrap();
+
+    let roots = vec![allowed_tmp.clone(), allowed_brain.clone()];
+
+    let valid_png = allowed_tmp.join("shot.png");
+    std::fs::write(&valid_png, b"\x89PNG\r\n\x1a\npayload").unwrap();
+    assert!(is_allowed_external_artifact_with_roots(&valid_png, &roots));
+
+    let brain_jpg = allowed_brain.join("ui.jpg");
+    std::fs::write(&brain_jpg, b"\xFF\xD8\xFF\xE0jpeg").unwrap();
+    assert!(is_allowed_external_artifact_with_roots(&brain_jpg, &roots));
+
+    // Sensitive path outside allowed temp/brain roots is rejected even if it is a real PNG.
+    let home_png = user_docs.join("private.png");
+    std::fs::write(&home_png, b"\x89PNG\r\n\x1a\npayload").unwrap();
+    assert!(!is_allowed_external_artifact_with_roots(&home_png, &roots));
+
+    // Non-image text disguised with `.png` extension inside allowed temp root is rejected.
+    let fake_png = allowed_tmp.join("id_rsa.png");
+    std::fs::write(&fake_png, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+    assert!(!is_allowed_external_artifact_with_roots(&fake_png, &roots));
+
+    #[cfg(unix)]
+    {
+        let link_png = allowed_tmp.join("linked.png");
+        std::os::unix::fs::symlink(&home_png, &link_png).unwrap();
+        assert!(!is_allowed_external_artifact_with_roots(&link_png, &roots));
+    }
 }

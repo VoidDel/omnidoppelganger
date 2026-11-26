@@ -39,7 +39,45 @@ fn identity(directory: &Path) -> &'static [&'static str] {
 /// The directory Git keeps the repository `directory` is in: its `.git`. For
 /// a worktree's checkout that is the repository's own, somewhere else.
 pub fn git_directory(directory: &Path) -> Option<PathBuf> {
-    git(directory, &[], &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().filter(|path| !path.is_empty()).map(PathBuf::from)
+    git(directory, &["-c", "core.fsmonitor=false"], &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
+/// Minimal Git paths that must be writable inside a sandbox for `git status`,
+/// `git add`, and `git commit` in `workspace`, paired with `Some(common_git_dir)`.
+///
+/// In a linked worktree, `<common_git_dir>` itself is excluded so neither
+/// `<common_git_dir>/hooks` nor `<common_git_dir>/config` is exposed as writable.
+pub fn sandbox_writable_git_dirs(workspace: &Path) -> (Vec<PathBuf>, Option<PathBuf>) {
+    let cfg = ["-c", "core.fsmonitor=false"];
+    let Some(common_raw) = git(workspace, &cfg, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().filter(|p| !p.is_empty()) else {
+        return (Vec::new(), None);
+    };
+    let Some(gitdir_raw) = git(workspace, &cfg, &["rev-parse", "--path-format=absolute", "--git-dir"]).ok().filter(|p| !p.is_empty()) else {
+        return (Vec::new(), None);
+    };
+    let canon = |raw: String| {
+        let p = PathBuf::from(raw);
+        p.canonicalize().unwrap_or(p)
+    };
+    let common = canon(common_raw);
+    let gitdir = canon(gitdir_raw);
+
+    let mut writable = Vec::new();
+    let mut push_unique = |p: PathBuf| {
+        let resolved = p.canonicalize().unwrap_or(p);
+        if !writable.contains(&resolved) {
+            writable.push(resolved);
+        }
+    };
+    push_unique(gitdir);
+    for sub in ["objects", "refs", "logs"] {
+        push_unique(common.join(sub));
+    }
+    let packed = common.join("packed-refs");
+    if packed.exists() {
+        push_unique(packed);
+    }
+    (writable, Some(common))
 }
 
 /// The top of the repository `directory` is in, if it is in one.
@@ -210,5 +248,23 @@ mod tests {
         std::fs::create_dir_all(&empty).unwrap();
         git(&empty, &[], &["init", "--quiet"]).unwrap();
         assert!(create(&empty, &directory.path().join("worktrees")).unwrap_err().contains("no commit yet"));
+    }
+
+    #[test]
+    fn sandbox_writable_git_dirs_exposes_worktree_state_without_common_root_hooks_or_config() {
+        let (_directory, top, root) = repository_with_a_commit();
+        let (workspace, worktree) = create(&top, &root).unwrap();
+        let origin_git = top.join(".git").canonicalize().unwrap();
+
+        let (writable, common) = sandbox_writable_git_dirs(&workspace);
+        assert_eq!(common.as_deref(), Some(origin_git.as_path()));
+        assert!(writable.contains(&origin_git.join("objects").canonicalize().unwrap()));
+        assert!(writable.contains(&origin_git.join("refs").canonicalize().unwrap()));
+        assert!(writable.contains(&origin_git.join("logs").canonicalize().unwrap()));
+        assert!(writable.iter().any(|p| p.starts_with(origin_git.join("worktrees"))));
+        assert!(!writable.contains(&origin_git), "common .git root itself must not be writable: {writable:?}");
+        assert!(!writable.iter().any(|p| p.ends_with("hooks") || p.ends_with("config") || p.ends_with("info")));
+
+        remove(&worktree).unwrap();
     }
 }

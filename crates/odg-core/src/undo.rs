@@ -148,30 +148,52 @@ pub struct Outcome {
     pub skipped: Vec<String>,
 }
 
-/// Restore each file of `plan` from `snapshots`.
-pub fn apply(plan: &[FileUndo], snapshots: &Path) -> Outcome {
+fn restore_one(file: &FileUndo, snapshots: &Path, workspace: &Path) -> bool {
+    if !crate::tools::inside_workspace(workspace, &file.file) || crate::tools::in_git_directory(workspace, &file.file) {
+        return false;
+    }
+    if std::fs::symlink_metadata(&file.file).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return false;
+    }
+    let untouched = match (&file.after, std::fs::read(&file.file)) {
+        (Some(after), Ok(current)) => fingerprint(&current) == *after,
+        // Gone, as the agent left it: nobody has put a file there since.
+        (None, Err(error)) => error.kind() == io::ErrorKind::NotFound,
+        _ => false,
+    };
+    if !untouched {
+        return false;
+    }
+    match &file.before {
+        Some(name) => read_snapshot(snapshots, name)
+            .and_then(|bytes| {
+                // A file deleted or moved away may have been the last in its folder, which went with it.
+                if let Some(parent) = file.file.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if !crate::tools::inside_workspace(workspace, &file.file) || crate::tools::in_git_directory(workspace, &file.file) {
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "undo target escaped workspace"));
+                }
+                if std::fs::symlink_metadata(&file.file).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "refusing to restore symlink"));
+                }
+                write_atomically(&file.file, &bytes)
+            })
+            .is_ok(),
+        None => std::fs::remove_file(&file.file).is_ok(),
+    }
+}
+
+/// Restore each file of `plan` from `snapshots`, enforcing that every target stays
+/// inside `workspace`, outside `.git`, is not a symlink, and uses a valid snapshot name.
+pub fn apply(plan: &[FileUndo], snapshots: &Path, workspace: &Path) -> Outcome {
     let mut outcome = Outcome::default();
     for file in plan {
-        let untouched = match (&file.after, std::fs::read(&file.file)) {
-            (Some(after), Ok(current)) => fingerprint(&current) == *after,
-            // Gone, as the agent left it: nobody has put a file there since.
-            (None, Err(error)) => error.kind() == io::ErrorKind::NotFound,
-            _ => false,
-        };
-        let done = untouched
-            && match &file.before {
-                Some(name) => std::fs::read(snapshots.join(name))
-                    .and_then(|bytes| {
-                        // A file deleted or moved away may have been the last in its folder, which went with it.
-                        if let Some(parent) = file.file.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        write_atomically(&file.file, &bytes)
-                    })
-                    .is_ok(),
-                None => std::fs::remove_file(&file.file).is_ok(),
-            };
-        if done { outcome.restored.push(file.shown.clone()) } else { outcome.skipped.push(file.shown.clone()) }
+        if restore_one(file, snapshots, workspace) {
+            outcome.restored.push(file.shown.clone());
+        } else {
+            outcome.skipped.push(file.shown.clone());
+        }
     }
     outcome
 }
@@ -191,5 +213,99 @@ mod tests {
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
         assert_eq!(fingerprint(b""), "0-cbf29ce484222325");
         assert_ne!(fingerprint(b"ab"), fingerprint(b"ba"));
+    }
+
+    #[test]
+    fn apply_in_skips_outside_paths_git_paths_symlinks_and_bad_snapshot_names() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("ws");
+        let outside = root.path().join("outside");
+        let snapshots = root.path().join("session/snapshots");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&snapshots).unwrap();
+
+        let snap = save(&snapshots, b"original\n").unwrap();
+        std::fs::write(root.path().join("session/secret"), b"leaked").unwrap();
+
+        // Valid in-workspace restore succeeds.
+        let good_file = workspace.join("src/ok.txt");
+        std::fs::write(&good_file, b"edited\n").unwrap();
+        let good = FileUndo {
+            file: good_file.clone(),
+            shown: "src/ok.txt".into(),
+            before: Some(snap.clone()),
+            after: Some(fingerprint(b"edited\n")),
+        };
+
+        // Invalid snapshot traversal `"../secret"` is skipped.
+        let bad_snap_file = workspace.join("src/bad_snap.txt");
+        let bad_snap = FileUndo {
+            file: bad_snap_file.clone(),
+            shown: "src/bad_snap.txt".into(),
+            before: Some("../secret".into()),
+            after: None,
+        };
+
+        // Outside workspace file and `.git` file are skipped.
+        let outside_file = outside.join("escape.txt");
+        let outside_undo = FileUndo {
+            file: outside_file.clone(),
+            shown: "../outside/escape.txt".into(),
+            before: Some(snap.clone()),
+            after: None,
+        };
+        let git_file = workspace.join(".git/hooks/pre-commit");
+        let git_undo = FileUndo {
+            file: git_file.clone(),
+            shown: ".git/hooks/pre-commit".into(),
+            before: Some(snap.clone()),
+            after: None,
+        };
+
+        let mut plan = vec![good, bad_snap, outside_undo, git_undo];
+
+        #[cfg(unix)]
+        let (symlink_parent_target, symlink_self) = {
+            std::os::unix::fs::symlink(&outside, workspace.join("linked_dir")).unwrap();
+            let via_parent = workspace.join("linked_dir/from_undo.txt");
+            plan.push(FileUndo {
+                file: via_parent,
+                shown: "linked_dir/from_undo.txt".into(),
+                before: Some(snap.clone()),
+                after: None,
+            });
+
+            let real_in_ws = workspace.join("src/real.txt");
+            std::fs::write(&real_in_ws, b"edited\n").unwrap();
+            let link_in_ws = workspace.join("src/link.txt");
+            std::os::unix::fs::symlink(&real_in_ws, &link_in_ws).unwrap();
+            plan.push(FileUndo {
+                file: link_in_ws.clone(),
+                shown: "src/link.txt".into(),
+                before: Some(snap),
+                after: Some(fingerprint(b"edited\n")),
+            });
+            (outside.join("from_undo.txt"), real_in_ws)
+        };
+
+        let outcome = apply(&plan, &snapshots, &workspace);
+        assert_eq!(outcome.restored, vec!["src/ok.txt"]);
+        assert!(outcome.skipped.contains(&"src/bad_snap.txt".to_string()));
+        assert!(outcome.skipped.contains(&"../outside/escape.txt".to_string()));
+        assert!(outcome.skipped.contains(&".git/hooks/pre-commit".to_string()));
+        assert_eq!(std::fs::read(&good_file).unwrap(), b"original\n");
+        assert!(!bad_snap_file.exists());
+        assert!(!outside_file.exists());
+        assert!(!git_file.exists());
+
+        #[cfg(unix)]
+        {
+            assert!(outcome.skipped.contains(&"linked_dir/from_undo.txt".to_string()));
+            assert!(outcome.skipped.contains(&"src/link.txt".to_string()));
+            assert!(!symlink_parent_target.exists());
+            assert_eq!(std::fs::read(&symlink_self).unwrap(), b"edited\n");
+        }
     }
 }

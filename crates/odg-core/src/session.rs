@@ -3,7 +3,7 @@
 //! A session is one file, `<root>/<id>/session.v1.jsonl`, one [`Envelope`]
 //! per line. Lines are only ever appended.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -450,6 +450,7 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     let mut spoken: Vec<(usize, String)> = Vec::new();
     // Snapshot of `(messages.len(), spoken.len())` at the start of each turn, for `kept_from_turn` tail retention.
     let mut turn_starts: HashMap<u64, (usize, usize)> = HashMap::new();
+    let mut current_turn_msg_start: usize = 0;
     // What the user said since the model last spoke.
     let mut unanswered: Vec<Value> = Vec::new();
     // The to-do list as the model last wrote it.
@@ -461,6 +462,7 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
         match &envelope.event {
             Event::TurnStart { turn } => {
                 turn_starts.insert(*turn, (messages.len(), spoken.len()));
+                current_turn_msg_start = messages.len();
             }
             Event::AsideBriefed { brief: told } => brief = Some(told),
             Event::UserMessage { text: said, mode, images, files, .. } => {
@@ -542,6 +544,11 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                         *m_idx = (*m_idx - msg_from) + inserted_header;
                         *s_idx = s_idx.saturating_sub(spoken_from);
                     }
+                    current_turn_msg_start = if current_turn_msg_start >= msg_from {
+                        (current_turn_msg_start - msg_from) + inserted_header
+                    } else {
+                        0
+                    };
                     messages = kept_msgs;
                     spoken = kept_spoken;
                     // Keep `pending` (and `unanswered`) intact: every item in `pending` was recorded
@@ -552,6 +559,7 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     spoken.clear();
                     pending.clear();
                     turn_starts.clear();
+                    current_turn_msg_start = 0;
                     pending.extend(header);
                     pending.extend(unanswered.iter().cloned());
                 }
@@ -569,11 +577,27 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 pending.push(json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error }));
             }
             Event::AssistantMessage { content, .. } if !content.is_empty() => {
-                if !pending.is_empty() {
+                let merged = if !pending.is_empty() {
                     messages.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
+                    false
+                } else if messages.last().is_some_and(|m| m["role"] == "assistant")
+                    && spoken
+                        .last()
+                        .is_some_and(|(idx, spk)| *idx >= current_turn_msg_start && *idx == messages.len() - 1 && spk == &speaker)
+                {
+                    if let Some(existing) = messages.last_mut().and_then(|m| m["content"].as_array_mut()) {
+                        existing.extend(content.iter().cloned());
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !merged {
+                    spoken.push((messages.len(), speaker.clone()));
+                    messages.push(json!({ "role": "assistant", "content": content }));
                 }
-                spoken.push((messages.len(), speaker.clone()));
-                messages.push(json!({ "role": "assistant", "content": content }));
                 unanswered.clear();
                 for block in content.iter().filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos") {
                     // A list the tool refused is not the list.
@@ -588,19 +612,44 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     if !pending.is_empty() {
         messages.push(json!({ "role": "user", "content": pending }));
     }
-    // What other providers answered, in the form this one takes; and the calls whose ids that changed, renamed in their results too.
-    let mut renamed: HashMap<String, String> = HashMap::new();
-    for (at, from) in spoken {
-        if from != speaker {
-            let content = carried(messages[at]["content"].as_array().map(Vec::as_slice).unwrap_or_default(), &mut renamed);
-            messages[at]["content"] = Value::Array(content);
+    // Collect tool call ids already spoken by the active provider so normalized ids from
+    // earlier providers never collide with them.
+    let mut used_ids: HashSet<String> = HashSet::new();
+    for &(at, ref from) in &spoken {
+        if from == &speaker {
+            for block in messages[at]["content"].as_array().into_iter().flatten() {
+                if block["type"] == "tool_use"
+                    && let Some(id) = block["id"].as_str().filter(|id| !id.is_empty())
+                {
+                    used_ids.insert(id.to_string());
+                }
+            }
         }
     }
-    if !renamed.is_empty() {
-        for message in messages.iter_mut().filter(|message| message["role"] == "user") {
-            for block in message["content"].as_array_mut().into_iter().flatten() {
-                if let Some(id) = block["tool_use_id"].as_str().and_then(|id| renamed.get(id)) {
-                    block["tool_use_id"] = json!(id);
+    // What other providers answered, in the form this one takes; any renamed tool call ids
+    // are rewritten strictly in the immediately paired `user` message (`at + 1`), never globally.
+    for (at, from) in spoken {
+        if from != speaker {
+            let mut local_renamed: HashMap<String, VecDeque<String>> = HashMap::new();
+            let mut any_renamed = false;
+            let content = carried(
+                messages[at]["content"].as_array().map(Vec::as_slice).unwrap_or_default(),
+                &mut used_ids,
+                &mut local_renamed,
+                &mut any_renamed,
+            );
+            messages[at]["content"] = Value::Array(content);
+            if any_renamed
+                && let Some(next_user) = messages.get_mut(at + 1).filter(|m| m["role"] == "user")
+            {
+                for block in next_user["content"].as_array_mut().into_iter().flatten() {
+                    if block["type"] == "tool_result"
+                        && let Some(raw_id) = block["tool_use_id"].as_str()
+                        && let Some(queue) = local_renamed.get_mut(raw_id)
+                        && let Some(new_id) = if queue.len() > 1 { queue.pop_front() } else { queue.front().cloned() }
+                    {
+                        block["tool_use_id"] = json!(new_id);
+                    }
                 }
             }
         }
@@ -608,25 +657,68 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     messages
 }
 
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn normalize_tool_id(raw_id: &str, used_ids: &mut HashSet<String>) -> String {
+    let mut sanitized: String = raw_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    if sanitized.is_empty() {
+        sanitized = "call".to_string();
+    }
+    let base = if sanitized.len() > 64 {
+        let hash = fnv1a_64(raw_id.as_bytes());
+        format!("{}_{hash:016x}", &sanitized[..47])
+    } else {
+        sanitized
+    };
+    let mut candidate = base.clone();
+    let mut suffix_num = 2u64;
+    while used_ids.contains(&candidate) {
+        let suffix = format!("_{suffix_num}");
+        let max_prefix = 64usize.saturating_sub(suffix.len());
+        let prefix = &base[..base.len().min(max_prefix)];
+        candidate = format!("{prefix}{suffix}");
+        suffix_num += 1;
+    }
+    used_ids.insert(candidate.clone());
+    candidate
+}
+
 /// What one provider answered, in the form every provider takes: its words
 /// and its tool calls, with nothing but the fields all of them know. Its
 /// reasoning is left out, since another provider cannot check it (a signed
 /// thinking block, an encrypted reasoning item) and would refuse it, and so
 /// is anything else of that provider's own. A tool call's id is given only
-/// the characters every provider allows (`functions.read:0` from Kimi is
-/// refused by Anthropic), and `renamed` records it so that the result can
-/// follow. A message of reasoning alone keeps its place with a mark.
-fn carried(content: &[Value], renamed: &mut HashMap<String, String>) -> Vec<Value> {
+/// up to 64 `[A-Za-z0-9_-]` characters without colliding with `used_ids`
+/// (`functions.read:0` from Kimi is refused by Anthropic), and `local_renamed`
+/// records it so that only the paired result message follows. A message of
+/// reasoning alone keeps its place with a mark.
+fn carried(
+    content: &[Value],
+    used_ids: &mut HashSet<String>,
+    local_renamed: &mut HashMap<String, VecDeque<String>>,
+    any_renamed: &mut bool,
+) -> Vec<Value> {
     let mut kept: Vec<Value> = content
         .iter()
         .filter_map(|block| match block["type"].as_str() {
             Some("text") => block["text"].as_str().filter(|words| !words.is_empty()).map(|words| json!({ "type": "text", "text": words })),
             Some("tool_use") => {
                 let id = block["id"].as_str().unwrap_or_default();
-                let plain: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+                let plain = normalize_tool_id(id, used_ids);
                 if plain != id {
-                    renamed.insert(id.to_string(), plain.clone());
+                    *any_renamed = true;
                 }
+                local_renamed.entry(id.to_string()).or_default().push_back(plain.clone());
                 Some(json!({ "type": "tool_use", "id": plain, "name": block["name"], "input": if block["input"].is_object() { block["input"].clone() } else { json!({}) } }))
             }
             _ => None,
@@ -1710,5 +1802,195 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         })
         .unwrap();
         assert!(unanswered_tool_uses(log.events()).is_empty());
+    }
+
+    #[test]
+    fn provider_switch_renames_only_paired_user_message_and_caps_id_at_64_chars() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "moonshot", "kimi-k3.1-pro").unwrap();
+        let said = |text: &str| Event::UserMessage {
+            text: text.into(),
+            steering: false,
+            mode: Mode::Auto,
+            images: vec![],
+            files: vec![],
+        };
+        let tool_result = |id: &str, out: &str| Event::ToolResult {
+            tool_use_id: id.into(),
+            tool: "read_file".into(),
+            content: out.into(),
+            is_error: false,
+            meta: Value::Null,
+            images: vec![],
+        };
+
+        let overlong_a = format!("{}:tail_alpha", "x".repeat(95));
+        let overlong_b = format!("{}:tail_bravo", "x".repeat(95));
+        assert_eq!(overlong_a.len(), 106);
+
+        // Turn 1 on `moonshot`: uses `functions.read:0`, colliding `a:1` & `a.1`, empty id `""`, and two 100+ char ids.
+        log.append(Event::TurnStart { turn: 1 }).unwrap();
+        log.append(said("turn 1")).unwrap();
+        log.append(assistant(vec![
+            json!({ "type": "tool_use", "id": "functions.read:0", "name": "read_file", "input": { "path": "a" } }),
+            json!({ "type": "tool_use", "id": "a:1", "name": "read_file", "input": { "path": "b" } }),
+            json!({ "type": "tool_use", "id": "a.1", "name": "read_file", "input": { "path": "c" } }),
+            json!({ "type": "tool_use", "id": "", "name": "read_file", "input": { "path": "d" } }),
+            json!({ "type": "tool_use", "id": overlong_a, "name": "read_file", "input": { "path": "e" } }),
+            json!({ "type": "tool_use", "id": overlong_b, "name": "read_file", "input": { "path": "f" } }),
+        ]))
+        .unwrap();
+        log.append(tool_result("functions.read:0", "out-0")).unwrap();
+        log.append(tool_result("a:1", "out-a1")).unwrap();
+        log.append(tool_result("a.1", "out-a2")).unwrap();
+        log.append(tool_result("", "out-empty")).unwrap();
+        log.append(tool_result(&overlong_a, "out-long-a")).unwrap();
+        log.append(tool_result(&overlong_b, "out-long-b")).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "done turn 1" })])).unwrap();
+        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+
+        // Turn 2 switches to `openrouter` (current speaker) and ALSO emits `functions.read:0`.
+        log.append(Event::ModelChanged { model: "moonshotai/kimi-k3".into(), provider: Some("openrouter".into()) }).unwrap();
+        log.append(Event::TurnStart { turn: 2 }).unwrap();
+        log.append(said("turn 2")).unwrap();
+        log.append(assistant(vec![
+            json!({ "type": "tool_use", "id": "functions.read:0", "name": "read_file", "input": { "path": "z" } }),
+        ]))
+        .unwrap();
+        log.append(tool_result("functions.read:0", "out-turn2")).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "done turn 2" })])).unwrap();
+        log.append(Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }).unwrap();
+
+        log.append(Event::TurnStart { turn: 3 }).unwrap();
+        log.append(said("turn 3")).unwrap();
+
+        let messages = derive_messages(log.events());
+
+        // Turn 1 (`messages[1]` assistant, `messages[2]` user) was spoken by `moonshot != openrouter`:
+        let t1_calls: Vec<&str> = messages[1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["id"].as_str().unwrap())
+            .collect();
+        let t1_results: Vec<&str> = messages[2]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["tool_use_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(t1_calls, t1_results, "Turn 1 tool_use and tool_result ids must pair 1-to-1");
+        assert_eq!(t1_calls[0], "functions_read_0");
+        assert_eq!(t1_calls[1], "a_1");
+        assert_eq!(t1_calls[2], "a_1_2");
+        assert_eq!(t1_calls[3], "call");
+        assert_eq!(t1_calls[4].len(), 64);
+        assert_eq!(t1_calls[5].len(), 64);
+        assert_ne!(t1_calls[4], t1_calls[5]);
+        for id in &t1_calls {
+            assert!(!id.is_empty() && id.len() <= 64, "invalid length for {id}");
+            assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'), "invalid chars in {id}");
+        }
+
+        // Turn 2 (`messages[5]` assistant, `messages[6]` user) was spoken by `openrouter == speaker`:
+        // neither its `tool_use.id` nor its `tool_result.tool_use_id` may be corrupted by Turn 1's rename!
+        assert_eq!(messages[5]["content"][0]["id"], "functions.read:0");
+        assert_eq!(messages[6]["content"][0]["tool_use_id"], "functions.read:0");
+    }
+
+    #[test]
+    fn consecutive_cli_assistant_tool_uses_merge_into_single_assistant_turn() {
+        use crate::llm::Tokens;
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "claude_code", "opus").unwrap();
+
+        log.append(Event::TurnStart { turn: 1 }).unwrap();
+        log.append(Event::UserMessage {
+            text: "inspect a and b".into(),
+            steering: false,
+            mode: Mode::Auto,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
+        // TurnRecorder emits separate AssistantMessage events for parallel CLI tool starts,
+        // plus an optional empty-content token settlement AssistantMessage.
+        log.append(assistant(vec![json!({
+            "type": "tool_use",
+            "id": "tool:1",
+            "name": "read_file",
+            "input": { "path": "a.rs" }
+        })]))
+        .unwrap();
+        log.append(assistant(vec![json!({
+            "type": "tool_use",
+            "id": "tool:2",
+            "name": "read_file",
+            "input": { "path": "b.rs" }
+        })]))
+        .unwrap();
+        log.append(Event::AssistantMessage {
+            content: vec![],
+            stop_reason: Some("end_turn".into()),
+            model: "opus".into(),
+            usage: json!({}),
+            tokens: Some(Tokens { input: 100, cached: 20, output: 15 }),
+        })
+        .unwrap();
+        log.append(Event::ToolResult {
+            tool_use_id: "tool:1".into(),
+            tool: "read_file".into(),
+            content: "fn a() {}".into(),
+            is_error: false,
+            meta: Value::Null,
+            images: vec![],
+        })
+        .unwrap();
+        log.append(Event::ToolResult {
+            tool_use_id: "tool:2".into(),
+            tool: "read_file".into(),
+            content: "fn b() {}".into(),
+            is_error: false,
+            meta: Value::Null,
+            images: vec![],
+        })
+        .unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "Both look good." })])).unwrap();
+        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+
+        // Switch from CLI to native Anthropic API and continue.
+        log.append(Event::ModelChanged { model: "claude-opus-5-5".into(), provider: Some("anthropic".into()) }).unwrap();
+        log.append(Event::TurnStart { turn: 2 }).unwrap();
+        log.append(Event::UserMessage {
+            text: "continue".into(),
+            steering: false,
+            mode: Mode::Auto,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
+
+        let messages = derive_messages(log.events());
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(
+            messages[1]["content"],
+            json!([
+                { "type": "tool_use", "id": "tool_1", "name": "read_file", "input": { "path": "a.rs" } },
+                { "type": "tool_use", "id": "tool_2", "name": "read_file", "input": { "path": "b.rs" } },
+            ])
+        );
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(
+            messages[2]["content"],
+            json!([
+                { "type": "tool_result", "tool_use_id": "tool_1", "content": "fn a() {}", "is_error": false },
+                { "type": "tool_result", "tool_use_id": "tool_2", "content": "fn b() {}", "is_error": false },
+            ])
+        );
+        assert_eq!(messages[3]["role"], "assistant");
+        assert_eq!(messages[3]["content"], json!([{ "type": "text", "text": "Both look good." }]));
+        assert_eq!(messages[4]["role"], "user");
     }
 }

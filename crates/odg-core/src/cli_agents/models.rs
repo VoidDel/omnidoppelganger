@@ -125,6 +125,9 @@ pub(super) async fn list_cursor_models(bin: &Path) -> Result<Vec<Listed>, String
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in super::scrubbed_env_keys(CliKind::Cursor, "") {
+        cmd.env_remove(key);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
@@ -155,6 +158,9 @@ pub(super) async fn list_grok_models(bin: &Path) -> Result<Vec<Listed>, String> 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in super::scrubbed_env_keys(CliKind::Grok, "") {
+        cmd.env_remove(key);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
@@ -273,6 +279,9 @@ async fn run_opencode_subcommand(bin: &Path, args: &[&str]) -> Result<String, St
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in super::scrubbed_env_keys(CliKind::OpenCode, "") {
+        cmd.env_remove(key);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())

@@ -505,19 +505,98 @@ async fn fork_session(app: State<'_, App>, id: String, before: Option<u64>) -> R
     Ok(out)
 }
 
+fn sanitize_export_filename(title: &str) -> String {
+    let trimmed = title.trim();
+    let base = if trimmed.is_empty() { "session" } else { trimmed };
+    let replaced: String = base
+        .chars()
+        .map(|c| {
+            if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = replaced
+        .trim_matches(|c: char| c.is_whitespace() || c == '.')
+        .chars()
+        .take(60)
+        .collect::<String>();
+    let stem = if cleaned.is_empty() { "session".to_string() } else { cleaned };
+    format!("{stem}.md")
+}
+
+fn ensure_markdown_extension(path: PathBuf) -> PathBuf {
+    let Some(parent) = path.parent() else {
+        return PathBuf::from("session.md");
+    };
+    let raw_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let trimmed = raw_name.trim_end_matches(|c: char| c.is_whitespace() || c == '.');
+    if trimmed.is_empty() {
+        return parent.join("session.md");
+    }
+    let has_md_ext = std::path::Path::new(trimmed)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    if has_md_ext {
+        parent.join(trimmed)
+    } else {
+        parent.join(format!("{trimmed}.md"))
+    }
+}
+
 #[tauri::command]
-async fn export_session_markdown(app: State<'_, App>, id: String, path: Option<String>) -> Result<String, String> {
-    let events = match app.all_live().get(&id) {
-        Some(live) => live.snapshot(),
-        None => app.store.open(&id).map_err(|e| e.to_string())?.events().to_vec(),
+async fn export_session_markdown(
+    handle: tauri::AppHandle,
+    app: State<'_, App>,
+    id: String,
+    title: Option<String>,
+    save: Option<bool>,
+) -> Result<Option<String>, String> {
+    let (events, fallback_title) = match app.all_live().get(&id) {
+        Some(live) => (live.snapshot(), live.summary().title),
+        None => {
+            let log = app.store.open(&id).map_err(|e| e.to_string())?;
+            let evs = log.events().to_vec();
+            let t = odg_core::session::summarize(&evs).title;
+            (evs, t)
+        }
     };
     let markdown = odg_core::export::to_markdown(&events, None);
-    if let Some(dest) = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
-        odg_core::fsutil::write_atomically(std::path::Path::new(&dest), markdown.as_bytes()).map_err(|e| format!("写入导出文件失败：{e}"))?;
-        Ok(dest)
-    } else {
-        Ok(markdown)
+    if save != Some(true) {
+        return Ok(Some(markdown));
     }
+
+    use tauri_plugin_dialog::DialogExt;
+    let raw_title = title.filter(|t| !t.trim().is_empty()).unwrap_or(fallback_title);
+    let default_name = sanitize_export_filename(&raw_title);
+    let mut dialog = handle
+        .dialog()
+        .file()
+        .set_title("导出会话为 Markdown")
+        .set_file_name(default_name)
+        .add_filter("Markdown", &["md"]);
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Some(window) = handle.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    dialog.save_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let Some(picked) = rx.await.map_err(|_| "保存对话框已关闭".to_string())? else {
+        return Ok(None);
+    };
+    let raw_path = picked.into_path().map_err(|e| format!("无效的导出路径：{e}"))?;
+    let dest = ensure_markdown_extension(raw_path);
+    odg_core::fsutil::write_atomically(&dest, markdown.as_bytes()).map_err(|e| format!("写入导出文件失败：{e}"))?;
+    Ok(Some(dest.display().to_string()))
 }
 
 /// The tasks set to start by themselves, in the order they were added.
@@ -564,11 +643,14 @@ async fn open_session(app: State<'_, App>, id: String) -> Result<SessionView, St
     Ok(view(&app, &session))
 }
 
-/// Kinds of file that are programs, or that run one when opened: pressed under a message, they are shown in their
-/// folder rather than opened, so that a slip of the hand runs nothing.
-const RUNNABLE: &[&str] = &[
-    "exe", "com", "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "msi", "msp", "msc", "scr", "cpl", "lnk",
-    "url", "reg", "jar", "appref-ms", "sh", "bash", "zsh", "command", "app", "run", "bin",
+/// Explicit allowlist of static document, image, audio/video, and plain-text config extensions
+/// that may be opened directly with the OS default handler (provided the file carries no Unix `+x` bits).
+/// Everything else (scripts, `.html`/`.svg`/`.xml`, `.desktop`/`.terminal`/`.AppImage`, `.url`/`.webloc`,
+/// extensionless files, or `+x` binaries) is revealed in its folder instead.
+const SAFE_OPEN_EXTENSIONS: &[&str] = &[
+    "md", "txt", "log", "pdf", "docx", "doc", "xlsx", "xls", "pptx", "ppt", "csv", "tsv",
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "mp3", "wav", "mp4", "webm",
+    "json", "yaml", "yml", "toml",
 ];
 
 /// Whether `path` is a file this session has to do with: attached to one of its messages, or written, moved, handed
@@ -595,30 +677,105 @@ fn session_file(session: &Session<Router>, path: &str) -> bool {
 /// Filename for opening a snapshotted deliverable with the system's default program, preserving its extension
 /// and adding `.v{n}` when `version` is given so two versions opened side-by-side are easy to tell apart.
 fn versioned_filename(file: &std::path::Path, version: Option<u32>) -> String {
-    let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| "file".to_string());
-    let ext = file.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let clean = |s: &str| -> String {
+        s.chars()
+            .map(|c| if matches!(c, '/' | '\\' | '\0') || c.is_control() { '_' } else { c })
+            .collect()
+    };
+    let stem = file
+        .file_stem()
+        .map(|s| clean(&s.to_string_lossy()))
+        .filter(|s| !s.is_empty() && s != "." && s != "..")
+        .unwrap_or_else(|| "file".to_string());
+    let ext = file
+        .extension()
+        .map(|e| clean(&e.to_string_lossy()))
+        .filter(|e| !e.is_empty())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
     match version {
         Some(n) => format!("{stem}.v{n}{ext}"),
         None => format!("{stem}{ext}"),
     }
 }
 
-/// Materialize immutable snapshot bytes into an isolated temp preview path so external programs (e.g. Word)
-/// can open a historical version with its original extension without ever touching the session snapshot store.
-fn materialize_snapshot(session_id: &str, file: &std::path::Path, snapshot: &str, version: Option<u32>, bytes: &[u8]) -> Result<PathBuf, String> {
-    let safe_session: String = session_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
-    let dir = std::env::temp_dir().join("odg-versions").join(safe_session).join(snapshot);
-    std::fs::create_dir_all(&dir).map_err(|error| format!("无法准备预览目录：{error}"))?;
+fn ensure_private_dir(dir: &std::path::Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                return Err(format!("无法准备预览目录：{} 不是受控私有目录", dir.display()));
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            let created = {
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new().mode(0o700).create(dir)
+            };
+            #[cfg(not(unix))]
+            let created = std::fs::create_dir(dir);
+            match created {
+                Ok(()) => {}
+                Err(race) if race.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(race) => return Err(format!("无法准备预览目录：{race}")),
+            }
+        }
+        Err(err) => return Err(format!("无法准备预览目录：{err}")),
+    }
+    let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("无法准备预览目录：{e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(format!("无法准备预览目录：{} 不是受控私有目录", dir.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("无法设置预览目录权限：{e}"))?;
+    }
+    Ok(())
+}
+
+fn materialize_snapshot_in(
+    versions_root: &std::path::Path,
+    session_id: &str,
+    file: &std::path::Path,
+    snapshot: &str,
+    version: Option<u32>,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let safe_session: String = session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if safe_session.is_empty() {
+        return Err("无效的会话标识。".to_string());
+    }
+    if !odg_core::undo::valid_snapshot_name(snapshot) {
+        return Err("无效的历史版本标识。".to_string());
+    }
+    let session_dir = versions_root.join(safe_session);
+    ensure_private_dir(&session_dir)?;
+    let dir = session_dir.join(snapshot);
+    ensure_private_dir(&dir)?;
     let preview = dir.join(versioned_filename(file, version));
     if std::fs::read(&preview).ok().as_deref() != Some(bytes) {
-        odg_core::fsutil::write_atomically(&preview, bytes).map_err(|error| format!("无法准备历史版本预览文件：{error}"))?;
+        odg_core::fsutil::write_private_atomically(&preview, bytes)
+            .map_err(|error| format!("无法准备历史版本预览文件：{error}"))?;
     }
     Ok(preview)
 }
 
+/// Materialize immutable snapshot bytes into a `0700` private temp preview path under `~/.odg/tmp/versions/`
+/// so external programs (e.g. Word) can open a historical version without exposing it in `/tmp` or touching the snapshot store.
+fn materialize_snapshot(session_id: &str, file: &std::path::Path, snapshot: &str, version: Option<u32>, bytes: &[u8]) -> Result<PathBuf, String> {
+    let versions_root = odg_core::fsutil::private_temp_dir("versions")
+        .map_err(|error| format!("无法准备预览目录：{error}"))?;
+    materialize_snapshot_in(&versions_root, session_id, file, snapshot, version, bytes)
+}
+
 /// Open a file attached to a message in this session, or written by its 分身, with the system's own program for
 /// it, or with `reveal`, show it in its folder. When `snapshot` is given, opens that exact historical snapshot
-/// rather than whatever is on disk now. A program is only shown in its folder. Answers `opened` or `revealed`.
+/// rather than whatever is on disk now. Unsafe or executable files are only shown in their folder. Answers `opened` or `revealed`.
 #[tauri::command]
 async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: bool, snapshot: Option<String>, version: Option<u32>) -> Result<String, String> {
     let session = app.live(&id)?;
@@ -642,7 +799,7 @@ async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: 
         }
         let bytes = session.snapshot_bytes(snap)?;
         let preview = materialize_snapshot(&id, &file, snap, version, &bytes)?;
-        if runnable(&file) {
+        if !safe_to_open_directly(&preview) || (file.exists() && !safe_to_open_directly(&file)) {
             if !dry {
                 tauri_plugin_opener::reveal_item_in_dir(&preview).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
             }
@@ -661,7 +818,7 @@ async fn open_attachment(app: State<'_, App>, id: String, path: String, reveal: 
         return Err(format!("找不到这个文件了，可能已经移走或删掉：{path}"));
     }
     // The end-to-end test asks what would be done, and has nothing opened on the machine it runs on.
-    if reveal || runnable(&file) || file.is_dir() {
+    if reveal || !safe_to_open_directly(&file) || file.is_dir() {
         if !dry {
             tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
         }
@@ -748,7 +905,7 @@ async fn open_workspace_entry(app: State<'_, App>, id: String, path: String, rev
         return Err(format!("找不到这个文件了，可能已经移走或删掉：{path}"));
     }
     let dry = std::env::var_os("ODG_E2E_DRY_OPEN").is_some();
-    if reveal || runnable(&file) || file.is_dir() {
+    if reveal || !safe_to_open_directly(&file) || file.is_dir() {
         if !dry {
             tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|error| format!("没能在文件夹里显示它：{error}"))?;
         }
@@ -760,16 +917,20 @@ async fn open_workspace_entry(app: State<'_, App>, id: String, path: String, rev
     Ok("opened".to_string())
 }
 
-fn session_git_workspace(app: &App, id: &str, repo: Option<&str>) -> Result<(PathBuf, PathBuf), String> {
-    let workspace = session_workspace(app, id)?;
+fn session_git_workspace(app: &App, id: &str, repo: Option<&str>) -> Result<(PathBuf, PathBuf, bool), String> {
+    let session = app.live(id)?;
+    let trusted = session.is_project_trusted();
+    let workspace = PathBuf::from(session.summary().workspace);
     let repo_dir = odg_core::git::resolve_repo_dir(&workspace, repo)?;
-    Ok((workspace, repo_dir))
+    Ok((workspace, repo_dir, trusted))
 }
 
 #[tauri::command]
 async fn git_status(app: State<'_, App>, id: String, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
-    let workspace = session_workspace(&app, &id)?;
-    tokio::task::spawn_blocking(move || odg_core::git::status_for(&workspace, repo.as_deref()))
+    let session = app.live(&id)?;
+    let trusted = session.is_project_trusted();
+    let workspace = PathBuf::from(session.summary().workspace);
+    tokio::task::spawn_blocking(move || odg_core::git::status_for_with_trust(&workspace, repo.as_deref(), trusted))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -783,18 +944,18 @@ async fn git_diff(
     commit: Option<String>,
     repo: Option<String>,
 ) -> Result<odg_core::git::GitDiffView, String> {
-    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
-    tokio::task::spawn_blocking(move || odg_core::git::diff(&repo_dir, &path, stage, commit.as_deref()))
+    let (_, repo_dir, trusted) = session_git_workspace(&app, &id, repo.as_deref())?;
+    tokio::task::spawn_blocking(move || odg_core::git::diff_with_trust(&repo_dir, &path, stage, commit.as_deref(), trusted))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn git_stage(app: State<'_, App>, id: String, paths: Vec<String>, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
-    let (workspace, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    let (workspace, repo_dir, trusted) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        odg_core::git::stage(&repo_dir, &paths)?;
-        odg_core::git::status_for(&workspace, repo.as_deref())
+        odg_core::git::stage_with_trust(&repo_dir, &paths, trusted)?;
+        odg_core::git::status_for_with_trust(&workspace, repo.as_deref(), trusted)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -802,10 +963,10 @@ async fn git_stage(app: State<'_, App>, id: String, paths: Vec<String>, repo: Op
 
 #[tauri::command]
 async fn git_unstage(app: State<'_, App>, id: String, paths: Vec<String>, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
-    let (workspace, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    let (workspace, repo_dir, trusted) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        odg_core::git::unstage(&repo_dir, &paths)?;
-        odg_core::git::status_for(&workspace, repo.as_deref())
+        odg_core::git::unstage_with_trust(&repo_dir, &paths, trusted)?;
+        odg_core::git::status_for_with_trust(&workspace, repo.as_deref(), trusted)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -813,10 +974,10 @@ async fn git_unstage(app: State<'_, App>, id: String, paths: Vec<String>, repo: 
 
 #[tauri::command]
 async fn git_discard(app: State<'_, App>, id: String, paths: Vec<String>, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
-    let (workspace, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    let (workspace, repo_dir, trusted) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        odg_core::git::discard(&repo_dir, &paths)?;
-        odg_core::git::status_for(&workspace, repo.as_deref())
+        odg_core::git::discard_with_trust(&repo_dir, &paths, trusted)?;
+        odg_core::git::status_for_with_trust(&workspace, repo.as_deref(), trusted)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -824,10 +985,10 @@ async fn git_discard(app: State<'_, App>, id: String, paths: Vec<String>, repo: 
 
 #[tauri::command]
 async fn git_discard_all(app: State<'_, App>, id: String, repo: Option<String>) -> Result<odg_core::git::GitStatus, String> {
-    let (workspace, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    let (workspace, repo_dir, trusted) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        odg_core::git::discard_all(&repo_dir)?;
-        odg_core::git::status_for(&workspace, repo.as_deref())
+        odg_core::git::discard_all_with_trust(&repo_dir, trusted)?;
+        odg_core::git::status_for_with_trust(&workspace, repo.as_deref(), trusted)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -835,15 +996,15 @@ async fn git_discard_all(app: State<'_, App>, id: String, repo: Option<String>) 
 
 #[tauri::command]
 async fn git_commit(app: State<'_, App>, id: String, message: String, stage_all: bool, repo: Option<String>) -> Result<odg_core::git::GitCommitResult, String> {
-    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
-    tokio::task::spawn_blocking(move || odg_core::git::commit(&repo_dir, &message, stage_all))
+    let (_, repo_dir, trusted) = session_git_workspace(&app, &id, repo.as_deref())?;
+    tokio::task::spawn_blocking(move || odg_core::git::commit_with_trust(&repo_dir, &message, stage_all, trusted))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn git_branches(app: State<'_, App>, id: String, repo: Option<String>) -> Result<Vec<odg_core::git::GitBranch>, String> {
-    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    let (_, repo_dir, _) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || odg_core::git::branches(&repo_dir)).await.map_err(|e| e.to_string())?
 }
 
@@ -853,9 +1014,10 @@ async fn git_checkout(app: State<'_, App>, id: String, branch: String, create: b
     if session.summary().worktree.is_some() && repo.as_deref().is_none_or(|r| r.trim().is_empty()) {
         return Err("独立工作树分身绑定在专属分支上，不能直接切换分支；请在主洞府的分身里切换分支。".to_string());
     }
+    let trusted = session.is_project_trusted();
     let workspace = PathBuf::from(session.summary().workspace);
     let repo_dir = odg_core::git::resolve_repo_dir(&workspace, repo.as_deref())?;
-    tokio::task::spawn_blocking(move || odg_core::git::checkout(&repo_dir, &branch, create))
+    tokio::task::spawn_blocking(move || odg_core::git::checkout_with_trust(&repo_dir, &branch, create, trusted))
         .await
         .map_err(|e| e.to_string())??;
     Ok(app.item(session.summary(), session.status()))
@@ -863,7 +1025,7 @@ async fn git_checkout(app: State<'_, App>, id: String, branch: String, create: b
 
 #[tauri::command]
 async fn git_log(app: State<'_, App>, id: String, limit: Option<usize>, repo: Option<String>, all: Option<bool>) -> Result<Vec<odg_core::git::GitCommitItem>, String> {
-    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    let (_, repo_dir, _) = session_git_workspace(&app, &id, repo.as_deref())?;
     let cap = limit.unwrap_or(30);
     let all_branches = all.unwrap_or(false);
     tokio::task::spawn_blocking(move || odg_core::git::log_with_options(&repo_dir, cap, all_branches))
@@ -873,7 +1035,7 @@ async fn git_log(app: State<'_, App>, id: String, limit: Option<usize>, repo: Op
 
 #[tauri::command]
 async fn git_commit_files(app: State<'_, App>, id: String, commit: String, repo: Option<String>) -> Result<Vec<odg_core::git::GitFile>, String> {
-    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    let (_, repo_dir, _) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || odg_core::git::commit_files(&repo_dir, &commit))
         .await
         .map_err(|e| e.to_string())?
@@ -881,13 +1043,13 @@ async fn git_commit_files(app: State<'_, App>, id: String, commit: String, repo:
 
 #[tauri::command]
 async fn git_sync(app: State<'_, App>, id: String, action: String, repo: Option<String>) -> Result<String, String> {
-    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
-    odg_core::git::sync(&repo_dir, &action).await
+    let (_, repo_dir, trusted) = session_git_workspace(&app, &id, repo.as_deref())?;
+    odg_core::git::sync_with_trust(&repo_dir, &action, trusted).await
 }
 
 #[tauri::command]
 async fn git_pr_defaults(app: State<'_, App>, id: String, repo: Option<String>) -> Result<odg_core::git::PrDefaults, String> {
-    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
+    let (_, repo_dir, _) = session_git_workspace(&app, &id, repo.as_deref())?;
     tokio::task::spawn_blocking(move || odg_core::git::pr_defaults(&repo_dir))
         .await
         .map_err(|e| e.to_string())?
@@ -903,8 +1065,8 @@ async fn git_create_pr(
     draft: bool,
     repo: Option<String>,
 ) -> Result<odg_core::git::PullRequestResult, String> {
-    let (_, repo_dir) = session_git_workspace(&app, &id, repo.as_deref())?;
-    odg_core::git::create_pr(&repo_dir, &title, &body, base.as_deref(), draft).await
+    let (_, repo_dir, trusted) = session_git_workspace(&app, &id, repo.as_deref())?;
+    odg_core::git::create_pr_with_trust(&repo_dir, &title, &body, base.as_deref(), draft, trusted).await
 }
 
 #[derive(serde::Serialize)]
@@ -1156,28 +1318,243 @@ async fn picture(app: State<'_, App>, id: String, path: String, snapshot: Option
     Ok(Image { media_type, data: odg_core::events::base64(&bytes) })
 }
 
-/// Whether a file is a program, or runs one when opened; see [`RUNNABLE`].
-fn runnable(file: &std::path::Path) -> bool {
-    file.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| RUNNABLE.contains(&extension.to_ascii_lowercase().as_str()))
+fn allowed_open_filename(name: &str) -> bool {
+    let trimmed = name.trim_end_matches(|c: char| c.is_whitespace() || c == '.');
+    if trimmed.is_empty() || trimmed.len() != name.len() {
+        return false;
+    }
+    let Some(ext) = std::path::Path::new(trimmed).extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    SAFE_OPEN_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
+/// Whether `file` is safe to open directly via the OS default file association rather than revealing in its folder.
+fn safe_to_open_directly(file: &std::path::Path) -> bool {
+    let Some(raw_name) = file.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if !allowed_open_filename(raw_name) {
+        return false;
+    }
+    let Ok(meta) = std::fs::metadata(file) else {
+        return false;
+    };
+    if meta.is_dir() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o111 != 0 {
+            return false;
+        }
+    }
+    if let Ok(canon) = file.canonicalize()
+        && let Some(canon_name) = canon.file_name().and_then(|n| n.to_str())
+        && canon_name != raw_name
+        && !allowed_open_filename(canon_name)
+    {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         MACOS_NOTIFY_SCRIPT, NOTIFY_MAX_CHARS, WIN_TOAST_SCRIPT, build_linux_notify_command,
-        build_macos_notify_command, build_windows_notify_command, runnable, sanitize_notify_text,
+        build_macos_notify_command, build_windows_notify_command, ensure_markdown_extension,
+        materialize_snapshot_in, run_inline_shell_with_sandbox, safe_to_open_directly,
+        sanitize_export_filename, sanitize_notify_text,
     };
     use std::collections::HashMap;
     use std::ffi::OsStr;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
-    fn a_program_is_known_by_its_kind_whatever_its_case() {
-        for program in ["setup.exe", "RUN.BAT", "build.cmd", "tool.ps1", "install.msi", "shortcut.lnk", "site.url", "script.sh", "a.Exe"] {
-            assert!(runnable(Path::new(program)), "{program}");
+    fn safe_to_open_directly_enforces_whitelist_trailing_dot_and_unix_exec_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let make = |name: &str, mode: u32| -> PathBuf {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"sample").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+            #[cfg(not(unix))]
+            let _ = mode;
+            path
+        };
+
+        // Blocked extensions, scripts, HTML/SVG/URL, and extensionless files (even at 0o644).
+        for blocked in [
+            "launch.terminal",
+            "entry.desktop",
+            "bundle.AppImage",
+            "script.py",
+            "page.html",
+            "page.htm",
+            "diagram.svg",
+            "feed.xml",
+            "site.url",
+            "mac.webloc",
+            "auto.scpt",
+            "run.command",
+            "setup.exe",
+            "RUN.BAT",
+            "build.cmd",
+            "tool.ps1",
+            "install.msi",
+            "shortcut.lnk",
+            "script.sh",
+            "README",
+            "Makefile",
+            "archive.tar.gz",
+            ".md",
+            "evil.exe.",
+            "sneaky.pdf.",
+            "trailing.md ",
+        ] {
+            let p = make(blocked, 0o644);
+            assert!(!safe_to_open_directly(&p), "{blocked} must be blocked");
         }
-        for document in ["notes.md", "report.pdf", "sheet.xlsx", "build.log", "photo.png", "README", "archive.tar.gz", ".exe-notes.txt"] {
-            assert!(!runnable(Path::new(document)), "{document}");
+
+        // Whitelisted static documents, images, media, and configs at 0o644.
+        for allowed in [
+            "report.pdf",
+            "spec.docx",
+            "photo.png",
+            "notes.md",
+            "UPPER.PDF",
+            "sheet.xlsx",
+            "build.log",
+            "data.json",
+            "config.toml",
+            ".exe-notes.txt",
+        ] {
+            let p = make(allowed, 0o644);
+            assert!(safe_to_open_directly(&p), "{allowed} with 0o644 should be allowed");
+        }
+
+        // Unix executable bit (`mode & 0o111 != 0`) blocks even whitelisted extensions.
+        #[cfg(unix)]
+        for exec_file in ["exec.pdf", "exec.docx", "exec.png", "exec.md", "elf_bin"] {
+            let p = make(exec_file, 0o755);
+            assert!(!safe_to_open_directly(&p), "0o755 {exec_file} must be blocked on Unix");
+        }
+
+        // Directories and missing paths are never opened directly.
+        let folder = dir.path().join("folder.pdf");
+        std::fs::create_dir(&folder).unwrap();
+        assert!(!safe_to_open_directly(&folder));
+        assert!(!safe_to_open_directly(&dir.path().join("missing.pdf")));
+    }
+
+    #[test]
+    fn materialize_snapshot_uses_private_dir_and_rejects_unsafe_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions_root = dir.path().join("versions");
+        std::fs::create_dir_all(&versions_root).unwrap();
+
+        for bad_snap in ["", ".", "..", "../secret", "a/b", "a\\b", "snap\0x"] {
+            assert!(
+                materialize_snapshot_in(&versions_root, "sess-1", Path::new("report.pdf"), bad_snap, Some(1), b"pdf")
+                    .is_err(),
+                "expected error for snapshot {bad_snap:?}"
+            );
+        }
+        assert!(
+            materialize_snapshot_in(&versions_root, "../..", Path::new("report.pdf"), "3-0123456789abcdef", None, b"pdf")
+                .is_err()
+        );
+
+        let preview = materialize_snapshot_in(
+            &versions_root,
+            "sess-1",
+            Path::new("report.pdf"),
+            "3-0123456789abcdef",
+            Some(2),
+            b"%PDF-1.7",
+        )
+        .unwrap();
+        assert_eq!(preview.file_name().and_then(|n| n.to_str()), Some("report.v2.pdf"));
+        assert_eq!(std::fs::read(&preview).unwrap(), b"%PDF-1.7");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = std::fs::symlink_metadata(preview.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+            let file_mode = std::fs::symlink_metadata(&preview).unwrap().permissions().mode() & 0o777;
+            assert_eq!(dir_mode, 0o700);
+            assert_eq!(file_mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn export_markdown_helpers_enforce_md_extension() {
+        assert_eq!(sanitize_export_filename("我的会话: a/b*c?"), "我的会话- a-b-c-.md");
+        assert_eq!(sanitize_export_filename("   "), "session.md");
+        assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/notes")), PathBuf::from("/tmp/notes.md"));
+        assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/evil.sh")), PathBuf::from("/tmp/evil.sh.md"));
+        assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/evil.exe.")), PathBuf::from("/tmp/evil.exe.md"));
+        assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/keep.md")), PathBuf::from("/tmp/keep.md"));
+        assert_eq!(ensure_markdown_extension(PathBuf::from("/tmp/KEEP.MD")), PathBuf::from("/tmp/KEEP.MD"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn inline_shell_sandbox_confines_outside_writes_and_protects_git_hooks_on_macos() {
+        if odg_core::sandbox::support().is_err() {
+            return;
+        }
+        // Create scratch root outside `std::env::temp_dir()` because `sandbox::roots` allows `temp_dir()` by design.
+        let scratch_parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/inline-sandbox-test");
+        std::fs::create_dir_all(&scratch_parent).unwrap();
+        let dir = tempfile::tempdir_in(&scratch_parent).unwrap();
+        let ws = dir.path().join("ws");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(&ws)
+                .args(["init", "--quiet", "--initial-branch", "main"])
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let ok_res = run_inline_shell_with_sandbox("echo ok > inside.txt", &ws, Some(Vec::new()), 10, 8192)
+            .await
+            .unwrap();
+        assert_eq!(ok_res.exit_code, Some(0), "{}", ok_res.output);
+        assert!(ws.join("inside.txt").is_file());
+
+        let out_target = outside.join("escaped.txt");
+        let bad_out = run_inline_shell_with_sandbox(
+            &format!("echo pwn > '{}'", out_target.display()),
+            &ws,
+            Some(Vec::new()),
+            10,
+            8192,
+        )
+        .await
+        .unwrap();
+        assert_ne!(bad_out.exit_code, Some(0));
+        assert!(!out_target.exists());
+
+        #[cfg(target_os = "macos")]
+        for attempt in [
+            "mkdir -p .git/hooks && echo pwn > .git/hooks/pre-commit",
+            "echo '[core]' >> .git/config",
+            "echo lock > .git/config.lock",
+            "mkdir -p .odg && echo pwn > .odg/settings.json",
+        ] {
+            let denied = run_inline_shell_with_sandbox(attempt, &ws, Some(Vec::new()), 10, 8192)
+                .await
+                .unwrap();
+            assert_ne!(denied.exit_code, Some(0), "`{attempt}` should be denied by Seatbelt");
         }
     }
 
@@ -1756,6 +2133,304 @@ fn expand_prompt_template(
     odg_core::templates::expand_named(&user_dir, proj_dir.as_deref(), &name, &args)
 }
 
+const INLINE_SENSITIVE_ENV_VARS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "MOONSHOT_API_KEY",
+    "ZHIPU_API_KEY",
+    "GLM_API_KEY",
+    "XAI_API_KEY",
+    "GROK_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "SILICONFLOW_API_KEY",
+];
+
+#[cfg(target_os = "macos")]
+fn enforce_macos_inline_workspace_denies(
+    cmd: tokio::process::Command,
+    cwd: &std::path::Path,
+    git_dir: Option<&std::path::Path>,
+    common_git_dir: Option<&std::path::Path>,
+) -> tokio::process::Command {
+    let std_cmd = cmd.as_std();
+    if std_cmd.get_program() != std::ffi::OsStr::new("/usr/bin/sandbox-exec") {
+        return cmd;
+    }
+    let args: Vec<std::ffi::OsString> = std_cmd.get_args().map(|a| a.to_os_string()).collect();
+    let Some(p_idx) = args.iter().position(|a| a == "-p") else {
+        return cmd;
+    };
+    let Some(profile_os) = args.get(p_idx + 1) else {
+        return cmd;
+    };
+    let Some(profile) = profile_os.to_str() else {
+        return cmd;
+    };
+    if profile.contains("DENY_") || profile.contains("appleevent-send") {
+        return cmd;
+    }
+
+    let ws_canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let mut denies: Vec<(bool, PathBuf)> = Vec::new();
+    let push_deny = |denies: &mut Vec<(bool, PathBuf)>, is_subpath: bool, path: PathBuf| {
+        let resolved = path.canonicalize().unwrap_or(path);
+        if !denies.iter().any(|(sub, p)| *sub == is_subpath && *p == resolved) {
+            denies.push((is_subpath, resolved));
+        }
+    };
+
+    push_deny(&mut denies, true, ws_canon.join(".odg"));
+    let dot_git = ws_canon.join(".git");
+    if dot_git.is_file() {
+        push_deny(&mut denies, false, dot_git.clone());
+        push_deny(&mut denies, false, ws_canon.join(".git.lock"));
+    }
+
+    let mut git_dirs = Vec::new();
+    if !dot_git.is_file() {
+        git_dirs.push(dot_git);
+    }
+    if let Some(g) = git_dir {
+        git_dirs.push(g.to_path_buf());
+    }
+    if let Some(c) = common_git_dir {
+        git_dirs.push(c.to_path_buf());
+    }
+    for gdir in git_dirs {
+        let base = gdir.canonicalize().unwrap_or(gdir);
+        push_deny(&mut denies, true, base.join("hooks"));
+        push_deny(&mut denies, true, base.join("info"));
+        push_deny(&mut denies, false, base.join("config"));
+        push_deny(&mut denies, false, base.join("config.lock"));
+        push_deny(&mut denies, false, base.join("config.worktree"));
+        push_deny(&mut denies, false, base.join("config.worktree.lock"));
+    }
+
+    let mut extra_rules = String::from("(deny appleevent-send)\n");
+    if !denies.is_empty() {
+        extra_rules.push_str("(deny file-write*");
+        for (idx, (is_subpath, _)) in denies.iter().enumerate() {
+            if *is_subpath {
+                extra_rules.push_str(&format!(" (subpath (param \"INLINE_DENY_{idx}\"))"));
+            } else {
+                extra_rules.push_str(&format!(" (literal (param \"INLINE_DENY_{idx}\"))"));
+            }
+        }
+        extra_rules.push_str(")\n");
+    }
+
+    let new_profile = format!("{profile}{extra_rules}");
+    let mut rebuilt = tokio::process::Command::new("/usr/bin/sandbox-exec");
+    let program_idx = args.len().saturating_sub(1);
+    for (idx, arg) in args.iter().enumerate() {
+        if idx == p_idx + 1 {
+            rebuilt.arg(&new_profile);
+        } else if idx == program_idx {
+            for (d_idx, (_, path)) in denies.iter().enumerate() {
+                let mut param = std::ffi::OsString::from(format!("INLINE_DENY_{d_idx}="));
+                param.push(path);
+                rebuilt.arg("-D").arg(param);
+            }
+            rebuilt.arg(arg);
+        } else {
+            rebuilt.arg(arg);
+        }
+    }
+    rebuilt
+}
+
+fn strip_inline_ansi(bytes: &[u8]) -> String {
+    let raw = String::from_utf8_lossy(bytes).replace("\r\n", "\n");
+    if !raw.contains('\u{1b}') {
+        return raw;
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('[') => {
+                let _ = chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                let _ = chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\u{07}' {
+                        break;
+                    }
+                    if c == '\u{1b}' && chars.next_if_eq(&'\\').is_some() {
+                        break;
+                    }
+                }
+            }
+            Some(_) => {
+                let _ = chars.next();
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+async fn capture_inline_pipe(mut pipe: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    const CAP: usize = 1024 * 1024;
+    let mut kept = Vec::new();
+    let mut buf = [0u8; 8192];
+    while let Ok(n) = pipe.read(&mut buf).await {
+        if n == 0 {
+            break;
+        }
+        let room = CAP.saturating_sub(kept.len());
+        kept.extend_from_slice(&buf[..n.min(room)]);
+    }
+    kept
+}
+
+async fn run_inline_shell_with_sandbox(
+    command_line: &str,
+    cwd: &std::path::Path,
+    sandbox_extra: Option<Vec<PathBuf>>,
+    timeout_secs: u64,
+    max_chars: usize,
+) -> Result<odg_core::tools::InlineShellOutput, String> {
+    let Some(mut extra) = sandbox_extra.filter(|_| odg_core::sandbox::support().is_ok()) else {
+        return odg_core::tools::run_inline_shell(command_line, cwd, timeout_secs, max_chars).await;
+    };
+    let trimmed = command_line.trim();
+    if trimmed.is_empty() {
+        return Err("命令不能为空".to_string());
+    }
+
+    let (git_writable, git_dir, common_git_dir) = odg_core::git::sandbox_git_paths(cwd);
+    extra.extend(git_writable);
+    let sandbox = odg_core::sandbox::Sandbox {
+        writable: odg_core::sandbox::roots(cwd, &extra),
+    };
+    let (program, shell_args, _) = odg_core::tools::shell();
+    let cmd = odg_core::sandbox::command(program, &sandbox)
+        .map_err(|e| format!("无法在沙箱中启动终端命令：{e}"))?;
+    #[cfg(target_os = "macos")]
+    let mut cmd = enforce_macos_inline_workspace_denies(
+        cmd,
+        cwd,
+        git_dir.as_deref(),
+        common_git_dir.as_deref(),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = {
+        let _ = (&git_dir, &common_git_dir);
+        cmd
+    };
+
+    cmd.args(shell_args);
+    if cfg!(windows) {
+        cmd.arg(format!(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; if ($PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}; {trimmed}"
+        ));
+    } else {
+        cmd.arg(trimmed);
+    }
+    cmd.env("NO_COLOR", "1");
+    for var in INLINE_SENSITIVE_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let mut child = cmd.spawn().map_err(|e| format!("无法执行命令 `{trimmed}`：{e}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_task = tokio::spawn(async move {
+        match stdout {
+            Some(pipe) => capture_inline_pipe(pipe).await,
+            None => Vec::new(),
+        }
+    });
+    let stderr_task = tokio::spawn(async move {
+        match stderr {
+            Some(pipe) => capture_inline_pipe(pipe).await,
+            None => Vec::new(),
+        }
+    });
+
+    let mut timed_out = false;
+    let status = match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs.max(1)), child.wait()).await {
+        Ok(res) => res.ok(),
+        Err(_) => {
+            timed_out = true;
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                let _ = tokio::process::Command::new("kill")
+                    .args(["-KILL", "--", &format!("-{pid}")])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await;
+            }
+            let _ = child.kill().await;
+            None
+        }
+    };
+
+    let drain = |task| async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    };
+    let out_bytes = drain(stdout_task).await;
+    let err_bytes = drain(stderr_task).await;
+    let out_str = strip_inline_ansi(&out_bytes);
+    let err_str = strip_inline_ansi(&err_bytes);
+
+    let mut combined = out_str.trim_end().to_string();
+    if !err_str.trim().is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&format!("[stderr]\n{}", err_str.trim_end()));
+    }
+
+    let total = combined.chars().count();
+    let truncated = total > max_chars;
+    if truncated {
+        let half = max_chars / 2;
+        let head: String = combined.chars().take(half).collect();
+        let tail: String = combined.chars().skip(total - half).collect();
+        combined = format!("{head}\n[... 省略 {} 个字符 ...]\n{tail}", total - max_chars);
+    }
+
+    Ok(odg_core::tools::InlineShellOutput {
+        command: trimmed.to_string(),
+        output: combined,
+        exit_code: status.and_then(|s| s.code()),
+        timed_out,
+        truncated,
+    })
+}
+
 #[tauri::command]
 async fn run_inline_command(
     app: State<'_, App>,
@@ -1772,7 +2447,7 @@ async fn run_inline_command(
     if !cwd.is_dir() {
         return Err(format!("洞府目录不存在：{}", cwd.display()));
     }
-    odg_core::tools::run_inline_shell(&command, &cwd, 15, 32_000).await
+    run_inline_shell_with_sandbox(&command, &cwd, app.settings.sandbox(), 15, 32_000).await
 }
 
 #[tauri::command]
@@ -1873,6 +2548,9 @@ pub fn run() {
             }
 
             let home = settings::home();
+            std::thread::spawn(|| {
+                odg_core::fsutil::prune_stale_temp_files(std::time::Duration::from_secs(86_400));
+            });
             let settings = Arc::new(SettingsStore::at_home());
             let key_source = settings.clone();
             let anthropic = AnthropicClient::new(anthropic_base_url(), Arc::new(move || key_source.api_key("anthropic")))?;

@@ -40,7 +40,7 @@ Options:
       --export <id>       Export a stored session as Markdown to standard output.
       --provider <id>     The model provider. Default: the one chosen in settings.
       --model <id>        The model. Default: the one chosen in settings.
-      --mode <mode>       manual, edit, plan, or auto. Default: the one chosen in settings.
+      --mode <mode>       manual, edit, plan, auto, or bypass (-w). Default: from settings.
       --yes               Approve everything the agent asks for. It will run any command.
       --no                Decline everything the agent asks for. The default when
                           standard input is not a terminal.
@@ -97,7 +97,8 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
                     "edit" => Mode::Edit,
                     "plan" => Mode::Plan,
                     "auto" => Mode::Auto,
-                    other => return Err(format!("--mode is manual, edit, plan, or auto, not `{other}`")),
+                    "bypass" => Mode::Bypass,
+                    other => return Err(format!("--mode is manual, edit, plan, auto, or bypass, not `{other}`")),
                 });
             }
             "--yes" => options.answer = Some(Answer::Yes),
@@ -113,6 +114,9 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
     }
     if options.worktree && (options.continue_latest || options.resume.is_some()) {
         return Err("--worktree starts a new session and cannot be combined with --continue or --resume".to_string());
+    }
+    if options.mode == Some(Mode::Bypass) && !options.worktree && !options.continue_latest && options.resume.is_none() {
+        return Err("--mode bypass requires --worktree (-w) or resuming a worktree session".to_string());
     }
     options.task = words.join(" ").trim().to_string();
     if options.export.is_none() && options.task.is_empty() {
@@ -265,14 +269,123 @@ fn resolve_session_id(store: &SessionStore, target: &str) -> Result<String, Stri
     }
 }
 
-async fn run(options: Options) -> Result<bool, String> {
+enum ExitOutcome {
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+enum RunError {
+    Usage(String),
+    Runtime(String),
+}
+
+impl From<String> for RunError {
+    fn from(msg: String) -> Self {
+        Self::Runtime(msg)
+    }
+}
+
+struct ShutdownSignals {
+    #[cfg(unix)]
+    sigint: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    sigterm: Option<tokio::signal::unix::Signal>,
+}
+
+impl ShutdownSignals {
+    fn new() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Self {
+                sigint: signal(SignalKind::interrupt()).ok(),
+                sigterm: signal(SignalKind::terminate()).ok(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {}
+        }
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            let wait_int = async {
+                match &mut self.sigint {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            let wait_term = async {
+                match &mut self.sigterm {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::select! {
+                _ = wait_int => {}
+                _ = wait_term => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {}
+                Err(_) => std::future::pending::<()>().await,
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_effective_mode(
+    explicit_mode: Option<Mode>,
+    answer: Option<Answer>,
+    effective_answer: Answer,
+    has_worktree: bool,
+    is_cli_provider: bool,
+    is_resumed: bool,
+    current_session_mode: Mode,
+    saved_mode: Mode,
+) -> Option<Mode> {
+    if let Some(mode) = explicit_mode {
+        return Some(mode);
+    }
+    let base = if is_resumed { current_session_mode } else { saved_mode };
+    if is_cli_provider {
+        if answer == Some(Answer::Yes) {
+            return Some(if has_worktree { Mode::Bypass } else { Mode::Auto });
+        }
+        if effective_answer == Answer::No && base == Mode::Manual {
+            return Some(Mode::Plan);
+        }
+    } else if answer == Some(Answer::Yes) && base == Mode::Plan {
+        return Some(if has_worktree { Mode::Bypass } else { Mode::Edit });
+    }
+    if !is_resumed {
+        Some(saved_mode)
+    } else {
+        None
+    }
+}
+
+async fn run(options: Options) -> Result<ExitOutcome, RunError> {
+    tokio::task::spawn_blocking(|| {
+        odg_core::fsutil::prune_stale_temp_files(Duration::from_secs(86_400));
+    });
     let home = settings::home();
     let session_store = SessionStore::new(home.join("sessions"));
     if let Some(target) = &options.export {
         let id = resolve_session_id(&session_store, target)?;
         let events = session_store.read(&id).map_err(|e| e.to_string())?;
         print!("{}", odg_core::export::to_markdown(&events, None));
-        return Ok(true);
+        return Ok(ExitOutcome::Completed);
     }
 
     let workspace = options
@@ -282,7 +395,7 @@ async fn run(options: Options) -> Result<bool, String> {
     // Windows gives the canonical path a `\\?\` prefix that most programs do not expect.
     let workspace = PathBuf::from(workspace.to_string_lossy().trim_start_matches(r"\\?\").to_string());
     if !workspace.is_dir() {
-        return Err(format!("{} is not a folder", workspace.display()));
+        return Err(RunError::Runtime(format!("{} is not a folder", workspace.display())));
     }
     let store = Arc::new(SettingsStore::at_home());
     let saved = store.load();
@@ -311,6 +424,14 @@ async fn run(options: Options) -> Result<bool, String> {
         Some(id) => Some(session_store.peek(id).map_err(|e| e.to_string())?),
         None => None,
     };
+    if options.mode == Some(Mode::Bypass)
+        && !options.worktree
+        && existing_summary.as_ref().and_then(|s| s.worktree.as_ref()).is_none()
+    {
+        return Err(RunError::Usage(
+            "--mode bypass requires --worktree (-w) or resuming a worktree session".to_string(),
+        ));
+    }
 
     let provider_id = options
         .provider
@@ -318,7 +439,7 @@ async fn run(options: Options) -> Result<bool, String> {
         .or_else(|| existing_summary.as_ref().map(|s| s.provider.clone()))
         .unwrap_or_else(|| saved.provider.clone());
     if provider(&provider_id).is_none() {
-        return Err(format!("there is no provider `{provider_id}`"));
+        return Err(RunError::Runtime(format!("there is no provider `{provider_id}`")));
     }
     // A model named here goes with the provider named here; otherwise keep the resumed session's or settings' pair.
     let model = match options.model.clone() {
@@ -333,7 +454,7 @@ async fn run(options: Options) -> Result<bool, String> {
             .unwrap_or_default(),
     };
     if model.is_empty() {
-        return Err(format!("name a model for `{provider_id}` with --model"));
+        return Err(RunError::Runtime(format!("name a model for `{provider_id}` with --model")));
     }
 
     let keys = store.clone();
@@ -420,13 +541,31 @@ async fn run(options: Options) -> Result<bool, String> {
     {
         session.set_model(&provider_id, &model)?;
     }
-    if let Some(mode) = options.mode {
-        session.set_mode(mode);
-    } else if existing_summary.is_none() {
-        session.set_mode(saved.mode);
-    }
     let answer = options.answer.unwrap_or(if std::io::stdin().is_terminal() { Answer::Ask } else { Answer::No });
-    let untrusted = session.untrusted_project_resources();
+    let is_cli_provider = matches!(
+        provider(&provider_id).map(|p| p.protocol),
+        Some(odg_core::providers::Protocol::Cli(_))
+    );
+    if let Some(effective_mode) = resolve_effective_mode(
+        options.mode,
+        options.answer,
+        answer,
+        created_worktree.is_some(),
+        is_cli_provider,
+        existing_summary.is_some(),
+        session.mode(),
+        saved.mode,
+    ) {
+        session.set_mode(effective_mode);
+    }
+    let mut untrusted = session.untrusted_project_resources();
+    if !session.is_project_trusted() {
+        for cfg in odg_core::cli_agents::detect_untrusted_cli_configs(&session_workspace) {
+            if !untrusted.contains(&cfg) {
+                untrusted.push(cfg);
+            }
+        }
+    }
     if !untrusted.is_empty() {
         if answer == Answer::Yes {
             let _ = session.set_project_trust(true);
@@ -473,11 +612,14 @@ async fn run(options: Options) -> Result<bool, String> {
         let action = if resumed_id.is_some() { "resumed" } else { "session" };
         eprintln!("odg: {provider_id} {model}, in {} ({action} {})", session_workspace.display(), session.id());
     }
+    let mut signals = ShutdownSignals::new();
     session.send(task_to_send);
 
     // Whether the agent's words on standard output still lack their closing newline.
     let mut mid_line = false;
     let mut completed = false;
+    let mut interrupted = false;
+    let mut force_exit_deadline: Option<tokio::time::Instant> = None;
     let mut stdout = std::io::stdout();
     let close_line = |mid_line: &mut bool| {
         if std::mem::take(mid_line) {
@@ -486,7 +628,37 @@ async fn run(options: Options) -> Result<bool, String> {
     };
     // The names of the subagents the agent has set off, by session id: their events arrive on the same channel.
     let mut subagents: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    while let Some(event) = events.recv().await {
+    loop {
+        let wait_deadline = async {
+            match force_exit_deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let event = tokio::select! {
+            biased;
+            _ = signals.recv() => {
+                close_line(&mut mid_line);
+                if !interrupted {
+                    interrupted = true;
+                    eprintln!("\n! stopping the turn...");
+                    session.cancel();
+                    force_exit_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            _ = wait_deadline => {
+                break;
+            }
+            maybe_event = events.recv() => {
+                match maybe_event {
+                    Some(ev) => ev,
+                    None => break,
+                }
+            }
+        };
         if options.json {
             if let Ok(line) = serde_json::to_string(&event) {
                 println!("{line}");
@@ -496,10 +668,27 @@ async fn run(options: Options) -> Result<bool, String> {
                 UiEvent::Log { session_id, envelope } if session_id != session.id() => {
                     if let Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } = &envelope.event {
                         let (r, d, g) = (reason.clone(), detail.clone(), grant.is_some());
-                        let decision = match answer {
-                            Answer::Yes => Decision::AllowOnce,
-                            Answer::No => Decision::Deny,
-                            Answer::Ask => tokio::task::spawn_blocking(move || ask(&r, &d, g)).await.unwrap_or(Decision::Deny),
+                        let decision = if interrupted {
+                            Decision::Deny
+                        } else {
+                            match answer {
+                                Answer::Yes => Decision::AllowOnce,
+                                Answer::No => Decision::Deny,
+                                Answer::Ask => {
+                                    let prompt_fut = tokio::task::spawn_blocking(move || ask(&r, &d, g));
+                                    tokio::select! {
+                                        biased;
+                                        _ = signals.recv() => {
+                                            interrupted = true;
+                                            eprintln!("\n! stopping the turn...");
+                                            session.cancel();
+                                            force_exit_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                                            Decision::Deny
+                                        }
+                                        res = prompt_fut => res.unwrap_or(Decision::Deny),
+                                    }
+                                }
+                            }
                         };
                         if let Some(child) = session.child(session_id) {
                             child.resolve_approval(tool_use_id, decision);
@@ -509,19 +698,47 @@ async fn run(options: Options) -> Result<bool, String> {
                 UiEvent::Log { envelope, .. } => match &envelope.event {
                     Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } => {
                         let (r, d, g) = (reason.clone(), detail.clone(), grant.is_some());
-                        let decision = match answer {
-                            Answer::Yes => Decision::AllowOnce,
-                            Answer::No => Decision::Deny,
-                            Answer::Ask => tokio::task::spawn_blocking(move || ask(&r, &d, g)).await.unwrap_or(Decision::Deny),
+                        let decision = if interrupted {
+                            Decision::Deny
+                        } else {
+                            match answer {
+                                Answer::Yes => Decision::AllowOnce,
+                                Answer::No => Decision::Deny,
+                                Answer::Ask => {
+                                    let prompt_fut = tokio::task::spawn_blocking(move || ask(&r, &d, g));
+                                    tokio::select! {
+                                        biased;
+                                        _ = signals.recv() => {
+                                            interrupted = true;
+                                            eprintln!("\n! stopping the turn...");
+                                            session.cancel();
+                                            force_exit_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                                            Decision::Deny
+                                        }
+                                        res = prompt_fut => res.unwrap_or(Decision::Deny),
+                                    }
+                                }
+                            }
                         };
                         session.resolve_approval(tool_use_id, decision);
                     }
                     Event::QuestionAsked { tool_use_id, questions, .. } => {
                         let qs = questions.clone();
-                        let answers = if answer == Answer::Ask {
-                            tokio::task::spawn_blocking(move || ask_questions(&qs)).await.ok()
-                        } else {
+                        let answers = if interrupted || answer != Answer::Ask {
                             None
+                        } else {
+                            let prompt_fut = tokio::task::spawn_blocking(move || ask_questions(&qs));
+                            tokio::select! {
+                                biased;
+                                _ = signals.recv() => {
+                                    interrupted = true;
+                                    eprintln!("\n! stopping the turn...");
+                                    session.cancel();
+                                    force_exit_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                                    None
+                                }
+                                res = prompt_fut => res.ok(),
+                            }
                         };
                         session.answer_questions(tool_use_id, answers);
                     }
@@ -551,11 +768,28 @@ async fn run(options: Options) -> Result<bool, String> {
                     }
                     Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } => {
                         close_line(&mut mid_line);
-                        eprintln!("  [{name}] asks:");
-                        let decision = match answer {
-                            Answer::Yes => Decision::AllowOnce,
-                            Answer::No => Decision::Deny,
-                            Answer::Ask => tokio::task::spawn_blocking(move || ask(&reason, &detail, grant.is_some())).await.unwrap_or(Decision::Deny),
+                        let decision = if interrupted {
+                            Decision::Deny
+                        } else {
+                            eprintln!("  [{name}] asks:");
+                            match answer {
+                                Answer::Yes => Decision::AllowOnce,
+                                Answer::No => Decision::Deny,
+                                Answer::Ask => {
+                                    let prompt_fut = tokio::task::spawn_blocking(move || ask(&reason, &detail, grant.is_some()));
+                                    tokio::select! {
+                                        biased;
+                                        _ = signals.recv() => {
+                                            interrupted = true;
+                                            eprintln!("\n! stopping the turn...");
+                                            session.cancel();
+                                            force_exit_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                                            Decision::Deny
+                                        }
+                                        res = prompt_fut => res.unwrap_or(Decision::Deny),
+                                    }
+                                }
+                            }
                         };
                         if let Some(child) = session.child(&from) {
                             child.resolve_approval(&tool_use_id, decision);
@@ -593,19 +827,49 @@ async fn run(options: Options) -> Result<bool, String> {
                     }
                 }
                 Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } => {
-                    let decision = match answer {
-                        Answer::Yes => Decision::AllowOnce,
-                        Answer::No => Decision::Deny,
-                        Answer::Ask => tokio::task::spawn_blocking(move || ask(&reason, &detail, grant.is_some())).await.unwrap_or(Decision::Deny),
+                    let decision = if interrupted {
+                        Decision::Deny
+                    } else {
+                        match answer {
+                            Answer::Yes => Decision::AllowOnce,
+                            Answer::No => Decision::Deny,
+                            Answer::Ask => {
+                                let prompt_fut = tokio::task::spawn_blocking(move || ask(&reason, &detail, grant.is_some()));
+                                tokio::select! {
+                                    biased;
+                                    _ = signals.recv() => {
+                                        interrupted = true;
+                                        eprintln!("\n! stopping the turn...");
+                                        session.cancel();
+                                        force_exit_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                                        Decision::Deny
+                                    }
+                                    res = prompt_fut => res.unwrap_or(Decision::Deny),
+                                }
+                            }
+                        }
                     };
-                    if answer != Answer::Ask {
+                    if !interrupted && answer != Answer::Ask {
                         eprintln!("  {} (--{})", if decision == Decision::Deny { "declined" } else { "approved" }, if answer == Answer::Yes { "yes" } else { "no" });
                     }
                     session.resolve_approval(&tool_use_id, decision);
                 }
                 Event::QuestionAsked { tool_use_id, questions, .. } => {
-                    let answers = if answer == Answer::Ask {
-                        tokio::task::spawn_blocking(move || ask_questions(&questions)).await.ok()
+                    let answers = if interrupted {
+                        None
+                    } else if answer == Answer::Ask {
+                        let prompt_fut = tokio::task::spawn_blocking(move || ask_questions(&questions));
+                        tokio::select! {
+                            biased;
+                            _ = signals.recv() => {
+                                interrupted = true;
+                                eprintln!("\n! stopping the turn...");
+                                session.cancel();
+                                force_exit_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                                None
+                            }
+                            res = prompt_fut => res.ok(),
+                        }
                     } else {
                         eprintln!("  nobody to answer (--{}); the agent decides", if answer == Answer::Yes { "yes" } else { "no" });
                         None
@@ -623,7 +887,7 @@ async fn run(options: Options) -> Result<bool, String> {
                 Event::ContextCompacted { tokens_before, .. } => eprintln!("! the conversation reached about {tokens_before} tokens and was summarized"),
                 Event::TurnEnd { reason, error, .. } => {
                     completed = reason == "completed";
-                    if !completed {
+                    if !completed && !interrupted {
                         eprintln!("! the turn ended: {}", error.unwrap_or(reason));
                     }
                 }
@@ -638,7 +902,10 @@ async fn run(options: Options) -> Result<bool, String> {
     session.kill_jobs();
     mcp.shutdown();
     lsp.shutdown();
-    Ok(completed)
+    if interrupted {
+        return Ok(ExitOutcome::Interrupted);
+    }
+    Ok(if completed { ExitOutcome::Completed } else { ExitOutcome::Failed })
 }
 
 fn main() -> ExitCode {
@@ -662,9 +929,14 @@ async fn runtime_main() -> ExitCode {
         }
     };
     match run(options).await {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
-        Err(message) => {
+        Ok(ExitOutcome::Completed) => ExitCode::SUCCESS,
+        Ok(ExitOutcome::Failed) => ExitCode::FAILURE,
+        Ok(ExitOutcome::Interrupted) => ExitCode::from(130),
+        Err(RunError::Usage(message)) => {
+            eprintln!("odg: {message}");
+            ExitCode::from(2)
+        }
+        Err(RunError::Runtime(message)) => {
             eprintln!("odg: {message}");
             ExitCode::FAILURE
         }
@@ -729,9 +1001,41 @@ mod tests {
         assert!(parsed(&[]).unwrap_err().contains("give the task"));
         assert!(parsed(&["-c", "-r", "abc", "hi"]).unwrap_err().contains("cannot be used together"));
         assert!(parsed(&["-w", "-c", "hi"]).unwrap_err().contains("cannot be combined"));
-        assert!(parsed(&["--mode", "fast", "x"]).unwrap_err().contains("manual, edit, plan, or auto"));
+        assert!(parsed(&["--mode", "fast", "x"]).unwrap_err().contains("manual, edit, plan, auto, or bypass"));
+        assert!(parsed(&["--mode", "bypass", "x"]).unwrap_err().contains("requires --worktree"));
+        let wt_bypass = parsed(&["-w", "--mode", "bypass", "ship", "it"]).unwrap();
+        assert_eq!((wt_bypass.worktree, wt_bypass.mode), (true, Some(Mode::Bypass)));
+        assert_eq!(parsed(&["-r", "ses1", "--mode", "bypass", "cont"]).unwrap().mode, Some(Mode::Bypass));
         assert!(parsed(&["--model"]).unwrap_err().contains("needs a value"));
         assert!(parsed(&["--bogus", "x"]).unwrap_err().contains("unknown option"));
+    }
+
+    #[test]
+    fn promotes_effective_mode_for_external_clis_when_yes_is_passed() {
+        // External CLI + `--yes` without explicit `--mode`: Auto without worktree, Bypass with worktree.
+        assert_eq!(
+            resolve_effective_mode(None, Some(Answer::Yes), Answer::Yes, false, true, false, Mode::Edit, Mode::Manual),
+            Some(Mode::Auto)
+        );
+        assert_eq!(
+            resolve_effective_mode(None, Some(Answer::Yes), Answer::Yes, true, true, false, Mode::Edit, Mode::Edit),
+            Some(Mode::Bypass)
+        );
+        // Explicit `--mode` always wins over `--yes`.
+        assert_eq!(
+            resolve_effective_mode(Some(Mode::Plan), Some(Answer::Yes), Answer::Yes, true, true, false, Mode::Edit, Mode::Edit),
+            Some(Mode::Plan)
+        );
+        // External CLI + `--no` on a Manual default avoids hanging for interactive approval.
+        assert_eq!(
+            resolve_effective_mode(None, Some(Answer::No), Answer::No, false, true, false, Mode::Manual, Mode::Manual),
+            Some(Mode::Plan)
+        );
+        // Native API provider keeps `saved_mode` (`Edit`) so `--yes` still answers `ApprovalRequested` directly.
+        assert_eq!(
+            resolve_effective_mode(None, Some(Answer::Yes), Answer::Yes, false, false, false, Mode::Edit, Mode::Edit),
+            Some(Mode::Edit)
+        );
     }
 
     #[test]

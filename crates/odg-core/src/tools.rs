@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::events::Image;
 use crate::jobs::Jobs;
 
-pub use commands::{InlineShellOutput, run_inline_shell, shell};
+pub use commands::{InlineShellOutput, SENSITIVE_ENV_VARS, run_inline_shell, shell};
 pub(crate) use commands::{kill_tree, strip_ansi};
 pub use extras::{ASK_USER, DelegateTask, OPTIONS, PRESENT_PLAN, QUESTIONS, SUBAGENTS, TODO_STATES, answered, delegate_tasks, questions, todo_items};
 pub use files::edits_files;
@@ -97,19 +97,85 @@ pub fn resolve(workspace: &Path, path: &str) -> PathBuf {
     resolved
 }
 
-/// Where `path` really points: links are followed in the part of the path
-/// that exists, and the missing rest is appended unchanged.
-fn real_path(path: &Path) -> Option<PathBuf> {
-    let mut existing = path.to_path_buf();
-    let mut missing: Vec<std::ffi::OsString> = Vec::new();
-    let canonical = loop {
-        if let Ok(canonical) = existing.canonicalize() {
-            break canonical;
-        }
-        missing.push(existing.file_name()?.to_os_string());
-        existing = existing.parent()?.to_path_buf();
+/// Maximum number of symlink hops followed when resolving a path whose leaf does not exist yet.
+const MAX_SYMLINK_HOPS: usize = 32;
+
+/// Where `path` really points: links (including dangling symlinks) are followed
+/// component by component up to [`MAX_SYMLINK_HOPS`], and any missing tail is
+/// appended unchanged onto the resolved target.
+pub(crate) fn real_path(path: &Path) -> Option<PathBuf> {
+    let owned;
+    let abs = if path.is_absolute() {
+        path
+    } else {
+        owned = std::env::current_dir().ok()?.join(path);
+        &owned
     };
-    Some(missing.iter().rev().fold(canonical, |path, name| path.join(name)))
+    real_path_inner(abs, 0)
+}
+
+fn real_path_inner(path: &Path, hops: usize) -> Option<PathBuf> {
+    if hops > MAX_SYMLINK_HOPS {
+        return None;
+    }
+    if let Ok(canonical) = path.canonicalize() {
+        return Some(canonical);
+    }
+    let mut current = PathBuf::new();
+    let mut missing = false;
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !missing
+                    && let Ok(canonical) = current.canonicalize()
+                {
+                    current = canonical;
+                }
+                let _ = current.pop();
+            }
+            Component::Normal(name) => {
+                current.push(name);
+                if missing {
+                    continue;
+                }
+                match std::fs::symlink_metadata(&current) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        let target = std::fs::read_link(&current).ok()?;
+                        let next = if target.is_absolute() {
+                            target
+                        } else {
+                            current.pop();
+                            current.join(target)
+                        };
+                        current = real_path_inner(&next, hops + 1)?;
+                        if !current.exists() && std::fs::symlink_metadata(&current).is_err() {
+                            missing = true;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        current.pop();
+                        if !current.as_os_str().is_empty()
+                            && let Ok(canonical) = current.canonicalize()
+                        {
+                            current = canonical;
+                        }
+                        current.push(name);
+                        missing = true;
+                    }
+                }
+            }
+        }
+    }
+    if !missing
+        && let Ok(canonical) = current.canonicalize()
+    {
+        return Some(canonical);
+    }
+    (!current.as_os_str().is_empty()).then_some(current)
 }
 
 /// Whether `path` is the workspace or below it, following links in the part of the path that exists.
@@ -234,4 +300,46 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         other => Err(ToolOutput::error(format!("Unknown tool `{other}`."))),
     };
     result.unwrap_or_else(|error| error)
+}
+
+#[cfg(all(test, unix))]
+mod symlink_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn inside_workspace_and_in_git_directory_follow_dangling_and_chained_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("ws");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(outside.join("dir")).unwrap();
+
+        // Direct dangling absolute symlink -> outside non-existent target.
+        let dangling_abs = workspace.join("dangling_abs");
+        std::os::unix::fs::symlink(outside.join("not_yet_created.txt"), &dangling_abs).unwrap();
+        assert!(!inside_workspace(&workspace, &dangling_abs));
+
+        // Direct dangling relative symlink -> ../outside/rel_new.txt.
+        let dangling_rel = workspace.join("dangling_rel");
+        std::os::unix::fs::symlink("../outside/rel_new.txt", &dangling_rel).unwrap();
+        assert!(!inside_workspace(&workspace, &dangling_rel));
+
+        // Two-hop symlink with `..` after symlinked directory (`sub_link -> /outside/dir`, `escape -> sub_link/../pwn`).
+        std::os::unix::fs::symlink(outside.join("dir"), workspace.join("sub_link")).unwrap();
+        let chained = workspace.join("escape");
+        std::os::unix::fs::symlink("sub_link/../pwn.txt", &chained).unwrap();
+        assert!(!inside_workspace(&workspace, &chained));
+
+        // Dangling symlink into `.git/hooks/pre-commit` (target hook not created yet).
+        let hook_link = workspace.join("hook_link");
+        std::os::unix::fs::symlink(".git/hooks/pre-commit", &hook_link).unwrap();
+        assert!(inside_workspace(&workspace, &hook_link));
+        assert!(in_git_directory(&workspace, &hook_link));
+
+        // Symlink loop fails closed without infinite recursion.
+        std::os::unix::fs::symlink("loop_b", workspace.join("loop_a")).unwrap();
+        std::os::unix::fs::symlink("loop_a", workspace.join("loop_b")).unwrap();
+        assert!(!inside_workspace(&workspace, &workspace.join("loop_a")));
+        assert!(in_git_directory(&workspace, &workspace.join("loop_a")));
+    }
 }
