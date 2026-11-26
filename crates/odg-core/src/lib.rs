@@ -12,6 +12,7 @@ pub mod documents;
 pub mod env;
 pub mod events;
 pub mod explorer;
+pub mod export;
 pub mod fsutil;
 pub mod git;
 pub mod grants;

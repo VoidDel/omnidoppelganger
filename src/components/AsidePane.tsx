@@ -29,7 +29,7 @@ export interface AsidePaneProps {
   onError: (error: string) => void;
 }
 
-const itemOf = ({ events: _, ...item }: SessionView): SessionItem => item;
+const itemOf = ({ events: _, abandoned_brief: __, ...item }: SessionView): SessionItem => item;
 
 const ASK_FIRST = ["它现在做到哪一步了？", "刚才那几步为什么这么改？", "它接下来打算做什么？"];
 

@@ -13,6 +13,8 @@ export interface SessionHeaderProps {
   onOpenSource: () => void;
   /** Start a fork of the whole conversation. */
   onFork: () => void;
+  /** Export the session log to a Markdown file. */
+  onExport?: () => void;
   /** Whether the session is being replayed, and the way into and out of that. */
   replaying: boolean;
   onReplay: () => void;
@@ -36,6 +38,7 @@ export function SessionHeader({
   source,
   onOpenSource,
   onFork,
+  onExport,
   replaying,
   onReplay,
   onLand,
@@ -126,6 +129,12 @@ export function SessionHeader({
             <button type="button" className="icon-button" title="分叉：另起一个分身，带着这里到现在的全部对话，从这里往别处走。只分对话，洞府里的文件是同一份" onClick={onFork}>
               <Icon name="signpost-split" size={16} />
               <span className="sr-only">分叉</span>
+            </button>
+          )}
+          {onExport && (
+            <button type="button" className="icon-button" title="导出为 Markdown" onClick={onExport}>
+              <Icon name="download" size={15} />
+              <span className="sr-only">导出为 Markdown</span>
             </button>
           )}
           {session.worktree && !session.parent && (

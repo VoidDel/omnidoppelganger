@@ -77,6 +77,8 @@ struct SessionView {
     #[serde(flatten)]
     item: SessionItem,
     events: Vec<Envelope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    abandoned_brief: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -348,7 +350,7 @@ impl App {
 }
 
 fn view(app: &App, session: &Session<Router>) -> SessionView {
-    SessionView { item: app.item(session.summary(), session.status()), events: session.snapshot() }
+    SessionView { item: app.item(session.summary(), session.status()), events: session.snapshot(), abandoned_brief: None }
 }
 
 #[tauri::command]
@@ -492,10 +494,29 @@ async fn start_chat(app: State<'_, App>) -> Result<SessionView, String> {
 #[tauri::command]
 async fn fork_session(app: State<'_, App>, id: String, before: Option<u64>) -> Result<SessionView, String> {
     let source = app.live(&id)?;
-    let log = app.store.fork(&source.snapshot(), before).map_err(|error| error.to_string())?;
+    let source_events = source.snapshot();
+    let abandoned_brief = before.and_then(|turn| odg_core::export::abandoned_branch_brief(&source_events, turn));
+    let log = app.store.fork(&source_events, before).map_err(|error| error.to_string())?;
     let session = app.wrap(log)?;
     app.sessions.lock().unwrap().insert(session.id().to_string(), session.clone());
-    Ok(view(&app, &session))
+    let mut out = view(&app, &session);
+    out.abandoned_brief = abandoned_brief;
+    Ok(out)
+}
+
+#[tauri::command]
+async fn export_session_markdown(app: State<'_, App>, id: String, path: Option<String>) -> Result<String, String> {
+    let events = match app.all_live().get(&id) {
+        Some(live) => live.snapshot(),
+        None => app.store.open(&id).map_err(|e| e.to_string())?.events().to_vec(),
+    };
+    let markdown = odg_core::export::to_markdown(&events, None);
+    if let Some(dest) = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        odg_core::fsutil::write_atomically(std::path::Path::new(&dest), markdown.as_bytes()).map_err(|e| format!("写入导出文件失败：{e}"))?;
+        Ok(dest)
+    } else {
+        Ok(markdown)
+    }
 }
 
 /// The tasks set to start by themselves, in the order they were added.
@@ -1684,6 +1705,7 @@ pub fn run() {
             get_antigravity_quota,
             get_magpie_quota,
             fork_session,
+            export_session_markdown,
             list_schedules,
             save_schedule,
             delete_schedule,

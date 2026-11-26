@@ -344,7 +344,7 @@ export interface SessionItem {
   status: Status;
 }
 
-export type SessionView = SessionItem & { events: Envelope[] };
+export type SessionView = SessionItem & { events: Envelope[]; abandoned_brief?: string };
 
 export type StreamDelta =
   | { type: "text_delta"; index: number; text: string }

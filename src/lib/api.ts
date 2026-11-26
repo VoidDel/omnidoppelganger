@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AntigravityQuota,
@@ -58,6 +58,16 @@ export const api = {
    * where turn `before` starts, or of all of it without `before`. The files are not copied: it works on the same ones.
    */
   forkSession: (id: string, before?: number) => invoke<SessionView>("fork_session", { id, before: before ?? null }),
+  exportSessionMarkdown: async (id: string, title: string): Promise<string | null> => {
+    const safe = (title.trim() || "session").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 60);
+    const picked = await save({
+      title: "导出会话为 Markdown",
+      defaultPath: `${safe}.md`,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (!picked) return null;
+    return invoke<string>("export_session_markdown", { id, path: picked });
+  },
   /** The 功课: tasks set to start by themselves. Each change resolves with the list after it. */
   listSchedules: () => invoke<Schedule[]>("list_schedules"),
   /** Add a schedule, or change the one with its id. Rejects when it could never run. */

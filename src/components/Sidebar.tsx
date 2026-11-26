@@ -42,6 +42,7 @@ export interface SidebarProps {
   onSearch: (query: string) => Promise<string[]>;
   onRenameSession?: (id: string, title: string) => void;
   onForkSession?: (id: string) => void;
+  onExportSession?: (id: string, title: string) => void;
   onDeleteSession?: (id: string) => void;
   onCleanScheduled?: (ids: string[]) => void;
   onRevealWorkspace?: (id: string) => void;
@@ -106,6 +107,7 @@ export function Sidebar({
   onSearch,
   onRenameSession,
   onForkSession,
+  onExportSession,
   onDeleteSession,
   onCleanScheduled,
   onRevealWorkspace,
@@ -526,6 +528,20 @@ export function Sidebar({
                   }}
                 >
                   从此处分叉会话
+                </button>
+              )}
+              {onExportSession && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="session-menu-item"
+                  onClick={() => {
+                    const { id, title } = menuSession;
+                    setMenu(null);
+                    onExportSession(id, title);
+                  }}
+                >
+                  导出为 Markdown…
                 </button>
               )}
               {onRevealWorkspace && (

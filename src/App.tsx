@@ -408,14 +408,25 @@ export default function App() {
     dispatch({ type: "opening", id });
     api.openSession(id).then((view) => dispatch({ type: "opened", view }), fail);
   };
-  /** Fork the session on the page: before `turn`, bringing that turn's message to the box; or all of it. */
+  /** Fork the session on the page: before `turn`, bringing that turn's message (and an optional removable summary of abandoned turns) to the box; or all of it. */
   const forkFrom = (turn?: number, text?: string) => {
     if (!state.activeId) return;
     api.forkSession(state.activeId, turn).then((view) => {
       dispatch({ type: "opened", view });
-      if (text !== undefined) setSeed({ id: Date.now(), text });
+      const quote = view.abandoned_brief
+        ? { label: "原分支试错摘要", meta: "点 × 可不带入", content: view.abandoned_brief }
+        : undefined;
+      if (text !== undefined || quote) {
+        setSeed({ id: Date.now(), text, quote });
+      }
       const point = turn === undefined ? "带着到现在为止的全部对话" : turn > 1 ? `带着第 ${turn} 轮之前的对话，那一轮的话放回了输入框` : "从头来过，头一句话放回了输入框";
-      dispatch({ type: "note", note: `已分叉：这是一个新的分身，${point}。只分了对话：洞府里的文件是同一份，还是现在的样子。` });
+      const extra = quote ? "（输入框已附上原分支试错摘要，不需要可点 × 移除）" : "";
+      dispatch({ type: "note", note: `已分叉：这是一个新的分身，${point}${extra}。只分了对话：洞府里的文件是同一份，还是现在的样子。` });
+    }, fail);
+  };
+  const exportSession = (id: string, title: string) => {
+    api.exportSessionMarkdown(id, title).then((savedPath) => {
+      if (savedPath) dispatch({ type: "note", note: `已导出会话为 Markdown：${savedPath}` });
     }, fail);
   };
   /** Start a conversation: a 分身 in the folder kept for them, which is made the first time. */
@@ -922,6 +933,14 @@ export default function App() {
         run: summonAside,
       },
       { name: "fork", label: "分叉", aliases: ["分叉"], hint: "分叉：另起一个分身，带着到现在的全部对话", unavailable: session.parent ? "子分身的会话不能分叉" : undefined, run: () => forkFrom() },
+      {
+        name: "export",
+        label: "导出",
+        aliases: ["导出", "导出会话"],
+        hint: "将当前会话导出为 Markdown 文件（.md）",
+        unavailable: rows.length === 0 ? "还没有对话记录可导出" : undefined,
+        run: () => exportSession(session.id, session.title),
+      },
       ...(!chatting(session)
         ? [
             {
@@ -1269,6 +1288,7 @@ export default function App() {
               }, fail)
             }
             onDeleteSession={(id) => api.deleteSession(id).then(() => dispatch({ type: "deleted", id }), fail)}
+            onExportSession={exportSession}
             onCleanScheduled={(ids) => void cleanScheduledSessions(ids)}
             onRevealWorkspace={(id) => void api.openWorkspaceEntry(id, "", true).catch(fail)}
           />
@@ -1360,6 +1380,7 @@ export default function App() {
               source={state.sessions.find((session) => session.id === active.fork?.session)}
               onOpenSource={() => active.fork && open(active.fork.session)}
               onFork={() => forkFrom()}
+              onExport={rows.length > 0 ? () => exportSession(active.id, active.title) : undefined}
               replaying={!!replay}
               onReplay={() => setReplay(replay || stops.length === 0 ? null : { at: 0, playing: true, speed: 1 })}
               onLand={() =>
@@ -1624,7 +1645,7 @@ export default function App() {
                                 refresh();
                                 api.asideSession(active.id).then((view) => {
                                   if (!view) return;
-                                  const { events: _, ...item } = view;
+                                  const { events: _, abandoned_brief: __, ...item } = view;
                                   onItem(item);
                                 }, () => undefined);
                               });
