@@ -4,7 +4,7 @@ import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
 import { launchFrom } from "../lib/flight";
 import { type Usage, documentLabel, fileSize, shortCount } from "../lib/fold";
 import { allTokens, cooldownRemainingMs, findModelUsage, formatCooldown, formatResetIn, quotaGroupForModel, quotaWindowLabel, todayTokens, useModelUsage, useProviderQuota } from "../lib/modelUsage";
-import { MODES, nextMode } from "../lib/modes";
+import { MODES, modeHintFor, nextMode } from "../lib/modes";
 import { type PasteKind, detectPasteKind, nextPastedFilename, shouldCollapsePaste } from "../lib/paste";
 import { estimateTokensUsd, formatUsd } from "../lib/pricing";
 import { CLI_INFO, cliOf } from "../lib/providers";
@@ -346,7 +346,7 @@ export function Composer(props: ComposerProps) {
   /** Changed to open the 灵石 / 用量 menu, from "/usage". */
   const [usageSummon, setUsageSummon] = useState(0);
   const effortChoices: SlashChoice[] = efforts.map((level) => ({ value: level, label: EFFORT_NAMES[level] ?? level, hint: EFFORT_HINTS[level] }));
-  const modeChoices: SlashChoice[] = MODES.map((one) => ({ value: one.value, label: one.name, hint: one.hint }));
+  const modeChoices: SlashChoice[] = MODES.map((one) => ({ value: one.value, label: one.name, hint: modeHintFor(one.value, cli) }));
   const picked = (choices: SlashChoice[], arg: string, what: string) =>
     choices.find((choice) => choice.value === arg.toLowerCase() || choice.label === arg) ?? `没有「${arg}」这一${what}：可选 ${choices.map((choice) => choice.label).join("、")}。`;
   const own: SlashCommand[] = [
@@ -652,7 +652,7 @@ export function Composer(props: ComposerProps) {
         )}
         {cli && mode !== "bypass" && status === "idle" && !planReady && (
           <span>
-            {CLI_INFO[cli].label}（无头流式模式）：工具执行与会话上下文由本机 {CLI_INFO[cli].bin} 托管。
+            {CLI_INFO[cli].label}（无头模式）：{modeHintFor(mode, cli)}。
           </span>
         )}
         {status === "idle" && planReady && (
@@ -1172,7 +1172,7 @@ export function Composer(props: ComposerProps) {
                 </>
               )}
             </Popup>
-            {!aside && <ModePicker mode={mode} onMode={onMode} trustable={trustable} />}
+            {!aside && <ModePicker mode={mode} onMode={onMode} trustable={trustable} cli={cli} />}
             {!aside && (
               <Popup
                 name="灵石"

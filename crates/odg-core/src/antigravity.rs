@@ -104,7 +104,7 @@ pub fn resolve_model_for_effort(model: &str, effort: &str) -> (String, Option<St
     let requested = if effort.trim().is_empty() { original_suffix.unwrap_or("high") } else { effort.trim() };
 
     let available: Vec<String> = {
-        let cache = variant_cache().lock().unwrap();
+        let cache = variant_cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(levels) = cache.get(base_id) {
             levels.clone()
         } else {
@@ -190,7 +190,7 @@ pub async fn list_models() -> Result<Vec<Listed>, String> {
     if models.is_empty() {
         Err("agy models 未返回可用模型，请先在终端运行 `agy` 确认已登录。".to_string())
     } else {
-        *variant_cache().lock().unwrap() = variants;
+        *variant_cache().lock().unwrap_or_else(|e| e.into_inner()) = variants;
         Ok(models)
     }
 }

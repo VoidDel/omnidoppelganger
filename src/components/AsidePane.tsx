@@ -45,12 +45,8 @@ export function AsidePane({ main, visible, sessions, renderComposer, onForward, 
   const [resetting, setResetting] = useState(false);
   const asideId = useRef<string | null>(null);
   asideId.current = aside?.id ?? null;
-
-  const open = (view: SessionView) => {
-    asideId.current = view.id;
-    setAside(itemOf(view));
-    dispatch({ type: "opened", events: view.events, status: view.status });
-  };
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   // Opened, or made, the first time the pane is on screen; not before, so no empty one is made for every session looked at.
   useEffect(() => {
@@ -58,14 +54,18 @@ export function AsidePane({ main, visible, sessions, renderComposer, onForward, 
     let alive = true;
     setOpening(true);
     api.startAside(main.id).then(
-      (view) => alive && open(view),
-      (error) => alive && onError(String(error)),
+      (view) => {
+        if (!alive) return;
+        asideId.current = view.id;
+        setAside(itemOf(view));
+        dispatch({ type: "opened", events: view.events, status: view.status });
+      },
+      (error) => alive && onErrorRef.current(String(error)),
     ).finally(() => alive && setOpening(false));
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, aside, main.id]);
+  }, [visible, aside, opening, main.id]);
 
   useEffect(() => {
     const stop = api.onSessionEvent((event) => {

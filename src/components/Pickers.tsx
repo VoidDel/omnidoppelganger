@@ -1,8 +1,9 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { shortCount } from "../lib/fold";
 import { cooldownRemainingMs, findModelUsage, formatCooldown, todayTokens } from "../lib/modelUsage";
-import { BYPASS, MODES, modeOf } from "../lib/modes";
-import type { Mode, ModelUsageEntry, Provider } from "../lib/types";
+import { BYPASS, MODES, modeHintFor, modeOf } from "../lib/modes";
+import { CLI_INFO } from "../lib/providers";
+import type { CliBackend, Mode, ModelUsageEntry, Provider } from "../lib/types";
 import { Info } from "./Hint";
 import { Icon } from "./Icon";
 
@@ -384,7 +385,17 @@ export function ModelList({ providers, listed, keyed, providerId, model, onPick,
 export const LIMITS = [50_000, 100_000, 200_000, 500_000];
 
 /** The 禁制 button and its menu: what the 分身 may do without asking. */
-export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (mode: Mode) => void; trustable: boolean }) {
+export function ModePicker({
+  mode,
+  onMode,
+  trustable,
+  cli = null,
+}: {
+  mode: Mode;
+  onMode: (mode: Mode) => void;
+  trustable: boolean;
+  cli?: CliBackend | null;
+}) {
   const [open, setOpen] = useState(false);
   /** 全权托付 was picked: the dialog that says what it means is open. */
   const [confirming, setConfirming] = useState(false);
@@ -396,6 +407,7 @@ export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (m
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
   const current = modeOf(mode);
+  const currentHint = modeHintFor(mode, cli);
   const menu = useKeepInView(open);
   return (
     <div className="mode-picker" ref={root} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
@@ -404,7 +416,7 @@ export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (m
         className={`select-button ${mode === "bypass" ? "danger" : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={`禁制：${current.hint}。Shift+Tab 切换`}
+        title={`禁制：${currentHint}。Shift+Tab 切换`}
         onClick={() => setOpen(!open)}
       >
         <ModeIcon mode={mode} />
@@ -435,7 +447,7 @@ export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (m
               <ModeIcon mode={option.value} />
               <span className="mode-text">
                 <span className="name">{option.name}</span>
-                <span className="hint">{option.hint}</span>
+                <span className="hint">{modeHintFor(option.value, cli)}</span>
               </span>
               {option.value === mode ? CHECK : <span className="check" aria-hidden="true" />}
             </button>
@@ -456,10 +468,15 @@ export function ModePicker({ mode, onMode, trustable }: { mode: Mode; onMode: (m
             <ModeIcon mode="bypass" />
             <span className="mode-text">
               <span className="name">{BYPASS.name}</span>
-              <span className="hint">{trustable ? BYPASS.hint : "只有独立工作树的分身才能托付"}</span>
+              <span className="hint">{trustable ? modeHintFor("bypass", cli) : "只有独立工作树的分身才能托付"}</span>
             </span>
             {mode === "bypass" ? CHECK : <span className="check" aria-hidden="true" />}
           </button>
+          {cli && (
+            <p className="menu-note">
+              当前心法由本机 <code className="mono">{CLI_INFO[cli].bin}</code> 无头驱动，禁制直接映射为该 CLI 的权限与沙箱参数。
+            </p>
+          )}
         </div>
       )}
       {confirming && (

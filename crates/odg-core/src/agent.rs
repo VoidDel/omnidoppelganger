@@ -1102,6 +1102,10 @@ impl<L: Llm> Inner<L> {
                             .and_then(|hub| crate::mcp::parse_config(&hub.config_text()).ok())
                             .map(|all| all.into_iter().filter(|(_, cfg)| !cfg.disabled).collect())
                             .unwrap_or_default();
+                        let workspace_trusted = self.is_project_trusted()
+                            || (untrusted_project_resources(&self.workspace).is_empty()
+                                && !self.workspace.join(".cursor").exists()
+                                && !self.workspace.join(".cursorrules").exists());
                         let params = crate::cli_agents::TurnParams {
                             kind,
                             workspace: &self.workspace,
@@ -1114,6 +1118,7 @@ impl<L: Llm> Inner<L> {
                             mode: self.mode(),
                             sandboxed: self.sandboxed(),
                             read_only: self.read_only,
+                            workspace_trusted,
                             extra_dirs,
                             image_paths,
                             mcp_servers,

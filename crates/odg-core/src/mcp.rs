@@ -110,6 +110,10 @@ pub struct CallResult {
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A connection that carries JSON-RPC messages one per line, as a server
 /// started as a process does on its standard streams.
 struct LineWire {
@@ -147,16 +151,16 @@ impl LineWire {
                         let _ = writer.write_all(format!("{reply}\n").as_bytes()).await;
                         let _ = writer.flush().await;
                     }
-                } else if let Some(sender) = id.and_then(|id| waiting.lock().unwrap().remove(&id)) {
+                } else if let Some(sender) = id.and_then(|id| lock(&waiting).remove(&id)) {
                     let _ = sender.send(outcome(&message));
                 }
             }
             // The stream ended: nobody will answer what is still waiting.
-            let tail = noted.lock().unwrap().trim().to_string();
+            let tail = lock(&noted).trim().to_string();
             let why = if tail.is_empty() { "the server closed the connection".to_string() } else { format!("the server closed the connection: {tail}") };
             // Said first, so a request that arrives after this finds it.
-            *ended.lock().unwrap() = Some(why.clone());
-            for (_, sender) in waiting.lock().unwrap().drain() {
+            *lock(&ended) = Some(why.clone());
+            for (_, sender) in lock(&waiting).drain() {
                 let _ = sender.send(Err(why.clone()));
             }
         });
@@ -196,10 +200,10 @@ impl HttpWire {
         for (name, value) in &self.headers {
             request = request.header(name, value);
         }
-        if let Some(session) = self.session.lock().unwrap().clone() {
+        if let Some(session) = lock(&self.session).clone() {
             request = request.header("mcp-session-id", session);
         }
-        if let Some(version) = self.version.lock().unwrap().clone() {
+        if let Some(version) = lock(&self.version).clone() {
             request = request.header("mcp-protocol-version", version);
         }
         let mut response = request.send().await.map_err(|error| format!("cannot reach the server: {error}"))?;
@@ -209,7 +213,7 @@ impl HttpWire {
             return Err(format!("the server answered HTTP {}{}", status.as_u16(), if body.trim().is_empty() { String::new() } else { format!(": {}", body.trim()) }));
         }
         if let Some(session) = response.headers().get("mcp-session-id").and_then(|value| value.to_str().ok()) {
-            *self.session.lock().unwrap() = Some(session.to_string());
+            *lock(&self.session) = Some(session.to_string());
         }
         let Some(id) = message.get("id") else { return Ok(Value::Null) };
         let streamed = response.headers().get("content-type").and_then(|value| value.to_str().ok()).is_some_and(|kind| kind.starts_with("text/event-stream"));
@@ -263,13 +267,13 @@ impl Server {
                 Wire::Http(wire) => wire.post(&message).await,
                 Wire::Lines(wire) => {
                     let (sender, receiver) = oneshot::channel();
-                    wire.pending.lock().unwrap().insert(id, sender);
+                    lock(&wire.pending).insert(id, sender);
                     if let Err(error) = wire.send(&message).await {
-                        wire.pending.lock().unwrap().remove(&id);
+                        lock(&wire.pending).remove(&id);
                         // A server that has gone cannot be written to. Why it went, and what it said as it
                         // did, explains more than the failed write; its end is noticed a moment after.
                         for _ in 0..20 {
-                            if let Some(why) = wire.closed.lock().unwrap().clone() {
+                            if let Some(why) = lock(&wire.closed).clone() {
                                 return Err(why);
                             }
                             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -284,7 +288,7 @@ impl Server {
             Ok(answer) => answer,
             Err(_) => {
                 if let Wire::Lines(wire) = &self.wire {
-                    wire.pending.lock().unwrap().remove(&id);
+                    lock(&wire.pending).remove(&id);
                 }
                 Err(format!("the server did not answer `{method}` within {} seconds", timeout.as_secs()))
             }
@@ -305,7 +309,7 @@ impl Server {
         let hello = json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": { "name": "omnidoppelganger", "version": env!("CARGO_PKG_VERSION") } });
         let welcome = server.request("initialize", hello, timeout).await?;
         if let (Wire::Http(wire), Some(version)) = (&server.wire, welcome["protocolVersion"].as_str()) {
-            *wire.version.lock().unwrap() = Some(version.to_string());
+            *lock(&wire.version) = Some(version.to_string());
         }
         server.notify("notifications/initialized").await?;
         server.resources = welcome["capabilities"].get("resources").is_some();
@@ -347,15 +351,16 @@ impl Server {
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
         let mut child = command.spawn().map_err(|error| format!("cannot start `{program}`: {error}"))?;
-        let (stdin, stdout) = (child.stdin.take().expect("stdin is piped"), child.stdout.take().expect("stdout is piped"));
-        let errors = child.stderr.take().expect("stderr is piped");
+        let stdin = child.stdin.take().ok_or_else(|| format!("cannot attach stdin for `{program}`"))?;
+        let stdout = child.stdout.take().ok_or_else(|| format!("cannot attach stdout for `{program}`"))?;
+        let errors = child.stderr.take().ok_or_else(|| format!("cannot attach stderr for `{program}`"))?;
         let wire = LineWire::new(stdout, stdin, Some(child));
         // Servers log to stderr; the last of it explains a server that exits at once.
         let noted = wire.stderr.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(errors).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let mut tail = noted.lock().unwrap();
+                let mut tail = lock(&noted);
                 tail.push_str(&line);
                 tail.push('\n');
                 let excess = tail.chars().count().saturating_sub(600);
@@ -556,14 +561,14 @@ impl McpHub {
     /// Connect to `name` in the background, in place of whatever stood under that name.
     fn start(&self, name: &str, config: ServerConfig) {
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
-        self.slots.lock().unwrap().insert(name.to_string(), Entry { config: config.clone(), attempt, slot: Slot::Connecting });
+        lock(&self.slots).insert(name.to_string(), Entry { config: config.clone(), attempt, slot: Slot::Connecting });
         let (slots, name) = (self.slots.clone(), name.to_string());
         self.runtime.spawn(async move {
             let slot = match Server::connect(&config).await {
                 Ok(server) => Slot::Ready(Arc::new(server)),
                 Err(error) => Slot::Failed(error),
             };
-            if let Some(entry) = slots.lock().unwrap().get_mut(&name).filter(|entry| entry.attempt == attempt) {
+            if let Some(entry) = lock(&slots).get_mut(&name).filter(|entry| entry.attempt == attempt) {
                 entry.slot = slot;
             }
         });
@@ -582,13 +587,13 @@ impl McpHub {
         let servers: BTreeMap<String, ServerConfig> =
             parse_config(&std::fs::read_to_string(&self.path).unwrap_or_default()).unwrap_or_default().into_iter().filter(|(_, config)| !config.disabled).collect();
         let dropped: Vec<Entry> = {
-            let mut slots = self.slots.lock().unwrap();
+            let mut slots = lock(&self.slots);
             let gone: Vec<String> = slots.iter().filter(|(name, entry)| servers.get(*name) != Some(&entry.config)).map(|(name, _)| name.clone()).collect();
             gone.iter().filter_map(|name| slots.remove(name)).collect()
         };
         // Dropped outside the lock: ending a process need not hold up the others.
         drop(dropped);
-        let standing: Vec<String> = self.slots.lock().unwrap().keys().cloned().collect();
+        let standing: Vec<String> = lock(&self.slots).keys().cloned().collect();
         for (name, config) in servers {
             if !standing.contains(&name) {
                 self.start(&name, config);
@@ -636,7 +641,7 @@ impl McpHub {
         }
         write_atomically(&self.path, text.as_bytes()).map_err(|error| error.to_string())?;
         if config.disabled {
-            self.slots.lock().unwrap().remove(name);
+            lock(&self.slots).remove(name);
         } else {
             self.start(name, config);
         }
@@ -659,7 +664,7 @@ impl McpHub {
     }
 
     pub fn statuses(&self) -> Vec<ServerStatus> {
-        let slots = self.slots.lock().unwrap();
+        let slots = lock(&self.slots);
         slots
             .iter()
             .map(|(name, entry)| {
@@ -675,7 +680,7 @@ impl McpHub {
 
     /// The connected servers' tools as the model is told of them.
     pub fn specs(&self) -> Vec<Value> {
-        let slots = self.slots.lock().unwrap();
+        let slots = lock(&self.slots);
         let mut specs = Vec::new();
         for (name, entry) in slots.iter() {
             let Slot::Ready(server) = &entry.slot else { continue };
@@ -689,7 +694,7 @@ impl McpHub {
 
     /// The connected servers that offer resources, by name.
     pub fn resource_servers(&self) -> Vec<(String, Arc<Server>)> {
-        let slots = self.slots.lock().unwrap();
+        let slots = lock(&self.slots);
         slots
             .iter()
             .filter_map(|(name, entry)| match &entry.slot {
@@ -702,7 +707,7 @@ impl McpHub {
     /// Call the tool the model named. A name no connected server offers comes back as an error result.
     pub async fn call(&self, name: &str, input: &Value, cancel: &CancellationToken) -> CallResult {
         let found = {
-            let slots = self.slots.lock().unwrap();
+            let slots = lock(&self.slots);
             slots.iter().find_map(|(server_name, entry)| {
                 let Slot::Ready(server) = &entry.slot else { return None };
                 server.tools.iter().find(|tool| exposed_name(server_name, &tool.name) == name).map(|tool| (server.clone(), tool.name.clone()))
@@ -717,12 +722,12 @@ impl McpHub {
     /// Put a connected server in place directly, for tests.
     #[cfg(test)]
     pub fn insert(&self, name: &str, server: Server) {
-        self.slots.lock().unwrap().insert(name.to_string(), Entry { config: ServerConfig::default(), attempt: 0, slot: Slot::Ready(Arc::new(server)) });
+        lock(&self.slots).insert(name.to_string(), Entry { config: ServerConfig::default(), attempt: 0, slot: Slot::Ready(Arc::new(server)) });
     }
 
     /// Drop every connection, which ends the servers started as processes.
     pub fn shutdown(&self) {
-        let dropped = std::mem::take(&mut *self.slots.lock().unwrap());
+        let dropped = std::mem::take(&mut *lock(&self.slots));
         drop(dropped);
     }
 }

@@ -258,7 +258,6 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
       }
       mountedRef.current.clear();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
   // Subscribe to PTY output and exit events.

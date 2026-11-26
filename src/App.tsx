@@ -2,31 +2,32 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useReducer, useRef, us
 import { Desk } from "./components/Desk";
 import { Guard } from "./components/Guard";
 import { Jump } from "./components/Jump";
-import { McpPage } from "./components/Mcp";
-import { SkillsPage } from "./components/Skills";
 import { AsidePane } from "./components/AsidePane";
 import { AgentJobsPane } from "./components/AgentJobsPane";
 import { Logo, Mountains } from "./components/Backdrop";
 import { Composer, type ComposerDraft, type ComposerQuoteInput, type ComposerSeed } from "./components/Composer";
-import { DiffViewer } from "./components/DiffViewer";
-import { FileTree, type GitBadge } from "./components/FileTree";
-import { GitPanel } from "./components/GitPanel";
+import type { GitBadge } from "./components/FileTree";
 import { SessionHeader } from "./components/SessionHeader";
 import { CHAT_ICON, SIDEBAR_WIDTH, Sidebar, type SidebarTab, fitSidebar } from "./components/Sidebar";
 import { PANEL_STRIP, PANEL_WIDTH, type PanelTab, SidePanel, fitPanel } from "./components/SidePanel";
 import { ReplayBar, STEP_MS } from "./components/Replay";
-import { SchedulesPage } from "./components/Schedules";
-import { SettingsPage } from "./components/Settings";
 import { Transcript } from "./components/Transcript";
 import { Workbench, WorkbenchTabsBar, type WorkbenchTab } from "./components/Workbench";
 
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
-import { isProviderEnabled } from "./lib/providers";
+const SettingsPage = lazy(() => import("./components/Settings").then((m) => ({ default: m.SettingsPage })));
+const McpPage = lazy(() => import("./components/Mcp").then((m) => ({ default: m.McpPage })));
+const SkillsPage = lazy(() => import("./components/Skills").then((m) => ({ default: m.SkillsPage })));
+const SchedulesPage = lazy(() => import("./components/Schedules").then((m) => ({ default: m.SchedulesPage })));
+const FileTree = lazy(() => import("./components/FileTree").then((m) => ({ default: m.FileTree })));
+const GitPanel = lazy(() => import("./components/GitPanel").then((m) => ({ default: m.GitPanel })));
+const DiffViewer = lazy(() => import("./components/DiffViewer").then((m) => ({ default: m.DiffViewer })));
+import { cliOf, isProviderEnabled } from "./lib/providers";
 import { api } from "./lib/api";
 import { notifyBackground } from "./lib/notify";
 import { forwarded } from "./lib/aside";
 import { applyDelta, changedFiles, commandRuns, fold, products, sessionCostUsd, todos, usage, type StreamBlock } from "./lib/fold";
-import { modeOf } from "./lib/modes";
+import { modeHintFor, modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
 import type { SlashCommand } from "./lib/slash";
 import type { Decision, DiffStage, Envelope, GitStatus, Image, Mode, PromptTemplateInfo, Reply, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
@@ -1136,11 +1137,20 @@ export default function App() {
         <div className="empty">
           <h1>分身已入驻这处洞府</h1>
           <p>
-            吩咐一件事吧。眼下的禁制是「{modeOf(active.mode).name}」：{modeOf(active.mode).hint}。
-            {active.mode === "bypass"
-              ? "它不会停下来请示任何事，碰洞府之外的东西、改 .git 也一样。"
-              : "碰这个文件夹之外的东西、改 .git 里的文件，无论哪种禁制都要先请本尊定夺。"}
-            输入框里按 Shift+Tab 换禁制。
+            {(() => {
+              const activeCli = cliOf(providers.find((known) => known.id === active.provider));
+              return (
+                <>
+                  吩咐一件事吧。眼下的禁制是「{modeOf(active.mode).name}」：{modeHintFor(active.mode, activeCli)}。
+                  {active.mode === "bypass"
+                    ? "它不会停下来请示任何事，碰洞府之外的东西、改 .git 也一样。"
+                    : activeCli
+                      ? "当前心法由本机 CLI 无头运行，不会弹出逐条审批卡片，权限直接按对应档位托管。"
+                      : "碰这个文件夹之外的东西、改 .git 里的文件，无论哪种禁制都要先请本尊定夺。"}
+                  输入框里按 Shift+Tab 换禁制。
+                </>
+              );
+            })()}
           </p>
         </div>
       ) : (
@@ -1266,53 +1276,57 @@ export default function App() {
             gitCount={gitChangeCount}
             filesPane={
               isProjectSession && active ? (
-                <FileTree
-                  sessionId={active.id}
-                  workspace={active.workspace}
-                  activePath={activeWbFile}
-                  refreshTick={fsRefreshTick}
-                  gitBadges={gitBadges}
-                  onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
-                  onAttachFile={(absPath) => attachIntoMain(absPath)}
-                  onAttachToAside={canAside ? (absPath) => attachIntoAside(absPath) : undefined}
-                  onDeletedPath={(rel) => {
-                    handleDeletedWorkspacePath(rel);
-                    bumpRefresh();
-                  }}
-                  onRenamedPath={(fromRel, toRel) => {
-                    handleRenamedWorkspacePath(fromRel, toRel);
-                    bumpRefresh();
-                  }}
-                  onError={fail}
-                />
+                <Suspense fallback={<div className="viewer-placeholder muted">正在加载文件树…</div>}>
+                  <FileTree
+                    sessionId={active.id}
+                    workspace={active.workspace}
+                    activePath={activeWbFile}
+                    refreshTick={fsRefreshTick}
+                    gitBadges={gitBadges}
+                    onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
+                    onAttachFile={(absPath) => attachIntoMain(absPath)}
+                    onAttachToAside={canAside ? (absPath) => attachIntoAside(absPath) : undefined}
+                    onDeletedPath={(rel) => {
+                      handleDeletedWorkspacePath(rel);
+                      bumpRefresh();
+                    }}
+                    onRenamedPath={(fromRel, toRel) => {
+                      handleRenamedWorkspacePath(fromRel, toRel);
+                      bumpRefresh();
+                    }}
+                    onError={fail}
+                  />
+                </Suspense>
               ) : undefined
             }
             gitPane={
               isProjectSession && active ? (
-                <GitPanel
-                  sessionId={active.id}
-                  workspace={active.workspace}
-                  isWorktree={!!active.worktree}
-                  status={gitState}
-                  onSelectRepo={(repo) => setSelectedGitRepo(repo)}
-                  refreshTick={gitRefreshTick}
-                  working={state.status !== "idle"}
-                  onStatusChanged={(next) => {
-                    // Staging hands back the new status itself; anything else (commit, branch, sync) asks for it again.
-                    if (next) setGitState(next);
-                    else bumpRefresh();
-                  }}
-                  onFilesChanged={bumpRefresh}
-                  onBranchSwitched={(item) => dispatch({ type: "session", item })}
-                  onOpenDiff={(relPath, stage, pin, commit) => openWorkbenchDiff(relPath, stage, pin, commit)}
-                  onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
-                  onAskReview={() => {
-                    send(REVIEW_TASK);
-                    if (showWorkbench) setInWorkbench(false);
-                  }}
-                  onNote={(note) => dispatch({ type: "note", note })}
-                  onError={fail}
-                />
+                <Suspense fallback={<div className="viewer-placeholder muted">正在加载 Git 面板…</div>}>
+                  <GitPanel
+                    sessionId={active.id}
+                    workspace={active.workspace}
+                    isWorktree={!!active.worktree}
+                    status={gitState}
+                    onSelectRepo={(repo) => setSelectedGitRepo(repo)}
+                    refreshTick={gitRefreshTick}
+                    working={state.status !== "idle"}
+                    onStatusChanged={(next) => {
+                      // Staging hands back the new status itself; anything else (commit, branch, sync) asks for it again.
+                      if (next) setGitState(next);
+                      else bumpRefresh();
+                    }}
+                    onFilesChanged={bumpRefresh}
+                    onBranchSwitched={(item) => dispatch({ type: "session", item })}
+                    onOpenDiff={(relPath, stage, pin, commit) => openWorkbenchDiff(relPath, stage, pin, commit)}
+                    onOpenFile={(relPath, pin) => openWorkbenchFile(relPath, pin)}
+                    onAskReview={() => {
+                      send(REVIEW_TASK);
+                      if (showWorkbench) setInWorkbench(false);
+                    }}
+                    onNote={(note) => dispatch({ type: "note", note })}
+                    onError={fail}
+                  />
+                </Suspense>
               ) : undefined
             }
             onHome={() => dispatch({ type: "home" })}
@@ -1345,75 +1359,83 @@ export default function App() {
         {!(inChat && active) && banners}
         {inSettings && state.settings ? (
           <Guard name="设置" className="fill" resetKey={state.page}>
-          <SettingsPage
-            view={state.settings}
-            onSave={(settings) => saved(api.saveSettings(settings))}
-            onSaveKey={(provider, key) => saved(api.saveApiKey(provider, key))}
-            onAddProvider={(kind, name) =>
-              api.addProvider(kind, name).then(
-                (added) => {
-                  dispatch({ type: "settings", settings: added.view });
-                  return added;
-                },
-                (error) => {
-                  fail(error);
-                  return null;
-                },
-              )
-            }
-            onRemoveProvider={(provider) => saved(api.removeProvider(provider))}
-            onRevoke={(workspace, grant) => saved(api.revokeGrant(workspace, grant))}
-            onRefresh={refreshSettings}
-            listModels={api.listModels}
-          />
+            <Suspense fallback={<div className="viewer-placeholder muted">正在加载设置…</div>}>
+              <SettingsPage
+                view={state.settings}
+                onSave={(settings) => saved(api.saveSettings(settings))}
+                onSaveKey={(provider, key) => saved(api.saveApiKey(provider, key))}
+                onAddProvider={(kind, name) =>
+                  api.addProvider(kind, name).then(
+                    (added) => {
+                      dispatch({ type: "settings", settings: added.view });
+                      return added;
+                    },
+                    (error) => {
+                      fail(error);
+                      return null;
+                    },
+                  )
+                }
+                onRemoveProvider={(provider) => saved(api.removeProvider(provider))}
+                onRevoke={(workspace, grant) => saved(api.revokeGrant(workspace, grant))}
+                onRefresh={refreshSettings}
+                listModels={api.listModels}
+              />
+            </Suspense>
           </Guard>
         ) : state.page === "mcp" && state.settings ? (
           <Guard name="法器" className="fill" resetKey={state.page}>
-          <McpPage
-            config={state.settings.mcp_config}
-            servers={state.settings.mcp_servers}
-            home={state.settings.home}
-            onRefresh={refreshSettings}
-            onSave={(config) =>
-              api.saveMcpConfig(config).then(
-                (settings) => {
-                  dispatch({ type: "settings", settings });
-                  return null;
-                },
-                (error) => String(error),
-              )
-            }
-          />
+            <Suspense fallback={<div className="viewer-placeholder muted">正在加载法器…</div>}>
+              <McpPage
+                config={state.settings.mcp_config}
+                servers={state.settings.mcp_servers}
+                home={state.settings.home}
+                onRefresh={refreshSettings}
+                onSave={(config) =>
+                  api.saveMcpConfig(config).then(
+                    (settings) => {
+                      dispatch({ type: "settings", settings });
+                      return null;
+                    },
+                    (error) => String(error),
+                  )
+                }
+              />
+            </Suspense>
           </Guard>
         ) : state.page === "skills" ? (
           <Guard name="秘籍" className="fill" resetKey={state.page}>
-            <SkillsPage onChanged={refreshSettings} />
+            <Suspense fallback={<div className="viewer-placeholder muted">正在加载秘籍…</div>}>
+              <SkillsPage onChanged={refreshSettings} />
+            </Suspense>
           </Guard>
         ) : state.page === "schedules" ? (
           <Guard name="功课" className="fill" resetKey={state.page}>
-          <SchedulesPage
-            schedules={state.schedules}
-            sessions={state.sessions}
-            mode={state.settings?.settings.mode ?? "edit"}
-            workspace={active ? (active.worktree?.origin ?? active.workspace) : (state.sessions.find((session) => !session.parent)?.workspace ?? "")}
-            onOpen={open}
-            onPick={api.pickWorkspace}
-            onSave={(schedule) => scheduled(api.saveSchedule(schedule))}
-            onDelete={(id) => scheduled(api.deleteSchedule(id))}
-            onRun={(id) =>
-              api.runSchedule(id).then(
-                (schedules) => {
-                  dispatch({ type: "schedules", schedules });
-                  // Asked for by hand, so shown: the 分身 it started, when it started one.
-                  const last = schedules.find((schedule) => schedule.id === id)?.last;
-                  if (last?.session && !last.error) open(last.session);
-                  return last?.error ?? null;
-                },
-                (error) => String(error),
-              )
-            }
-            onCleanSessions={(ids) => void cleanScheduledSessions(ids)}
-          />
+            <Suspense fallback={<div className="viewer-placeholder muted">正在加载功课…</div>}>
+              <SchedulesPage
+                schedules={state.schedules}
+                sessions={state.sessions}
+                mode={state.settings?.settings.mode ?? "edit"}
+                workspace={active ? (active.worktree?.origin ?? active.workspace) : (state.sessions.find((session) => !session.parent)?.workspace ?? "")}
+                onOpen={open}
+                onPick={api.pickWorkspace}
+                onSave={(schedule) => scheduled(api.saveSchedule(schedule))}
+                onDelete={(id) => scheduled(api.deleteSchedule(id))}
+                onRun={(id) =>
+                  api.runSchedule(id).then(
+                    (schedules) => {
+                      dispatch({ type: "schedules", schedules });
+                      // Asked for by hand, so shown: the 分身 it started, when it started one.
+                      const last = schedules.find((schedule) => schedule.id === id)?.last;
+                      if (last?.session && !last.error) open(last.session);
+                      return last?.error ?? null;
+                    },
+                    (error) => String(error),
+                  )
+                }
+                onCleanSessions={(ids) => void cleanScheduledSessions(ids)}
+              />
+            </Suspense>
           </Guard>
         ) : active ? (
           <>
@@ -1501,17 +1523,19 @@ export default function App() {
                   }
                   onError={fail}
                   renderDiff={(tab) => (
-                    <DiffViewer
-                      key={tab.id}
-                      sessionId={active.id}
-                      path={tab.path}
-                      stage={tab.stage}
-                      commit={tab.commit}
-                      refreshTick={gitRefreshTick}
-                      onOpenSource={(relPath, line) => openWorkbenchFile(relPath, false, line)}
-                      onQuoteToMain={quoteIntoMain}
-                      onQuoteToAside={canAside ? quoteIntoAside : undefined}
-                    />
+                    <Suspense fallback={<div className="viewer-placeholder muted">正在加载对比…</div>}>
+                      <DiffViewer
+                        key={tab.id}
+                        sessionId={active.id}
+                        path={tab.path}
+                        stage={tab.stage}
+                        commit={tab.commit}
+                        refreshTick={gitRefreshTick}
+                        onOpenSource={(relPath, line) => openWorkbenchFile(relPath, false, line)}
+                        onQuoteToMain={quoteIntoMain}
+                        onQuoteToAside={canAside ? quoteIntoAside : undefined}
+                      />
+                    </Suspense>
                   )}
                 />
               </Guard>

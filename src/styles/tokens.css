@@ -74,9 +74,8 @@
   --mist-mid: #c9d8d0;
   --mist-near: #b4c8bf;
   /* Two hands. What is written with a brush (headings, seals, the words on a talisman) is LXGW WenKai Lite, a
-     regular-script face. What is read (the conversation, labels, everything a control says) is the system's own
-     Chinese sans, which holds at small sizes; its Latin letters and figures are its own too, so a name like
-     "GLM-4.5" is in one face throughout. Code is JetBrains Mono. */
+     regular-script face. What is read (the conversation, labels, everything a control says) is Noto Sans SC with
+     system Chinese sans fallbacks, holding cleanly at small sizes across platforms. Code is JetBrains Mono. */
   --brush: "LXGW WenKai Lite", "STKaiti", "KaiTi", serif;
   --han: "Noto Sans SC", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
   --text: var(--han), system-ui, sans-serif;

@@ -1,8 +1,9 @@
-import { type ReactNode, useState } from "react";
+import { Suspense, lazy, type ReactNode, useState } from "react";
 import type { Status } from "../lib/types";
-import { CodeViewer } from "./CodeViewer";
 import { Icon } from "./Icon";
 import type { ComposerQuoteInput } from "./Composer";
+
+const CodeViewer = lazy(() => import("./CodeViewer").then((m) => ({ default: m.CodeViewer })));
 
 export type WorkbenchTab =
   | {
@@ -197,19 +198,21 @@ export function Workbench({
         {!active ? (
           <div className="viewer-placeholder muted">从左侧选择文件查看。</div>
         ) : active.kind === "file" ? (
-          <CodeViewer
-            key={active.path}
-            sessionId={sessionId}
-            path={active.path}
-            targetLine={active.line}
-            jumpSeq={active.jumpSeq}
-            refreshTick={refreshTick}
-            onQuoteToMain={onQuoteToMain}
-            onQuoteToAside={onQuoteToAside}
-            onAttachPath={onAttachPath}
-            onAttachToAside={onAttachToAside}
-            onError={onError}
-          />
+          <Suspense fallback={<div className="viewer-placeholder muted">正在加载文件…</div>}>
+            <CodeViewer
+              key={active.path}
+              sessionId={sessionId}
+              path={active.path}
+              targetLine={active.line}
+              jumpSeq={active.jumpSeq}
+              refreshTick={refreshTick}
+              onQuoteToMain={onQuoteToMain}
+              onQuoteToAside={onQuoteToAside}
+              onAttachPath={onAttachPath}
+              onAttachToAside={onAttachToAside}
+              onError={onError}
+            />
+          </Suspense>
         ) : renderDiff ? (
           renderDiff(active)
         ) : null}
