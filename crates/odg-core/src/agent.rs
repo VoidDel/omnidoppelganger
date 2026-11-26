@@ -153,8 +153,8 @@ struct Inner<L: Llm> {
     kept: Arc<GrantStore>,
     /// The MCP servers whose tools join the built-in ones; shared by every session.
     mcp: Option<Arc<McpHub>>,
-    /// Where skills are looked for: the user's directory, then the workspace's, which wins on a shared name.
-    skill_roots: Vec<PathBuf>,
+    /// The user's global skills directory (`~/.odg/skills`). Workspace `.odg/skills` is appended only when trusted.
+    user_skills: Option<PathBuf>,
     search: Option<crate::web::SearchSource>,
     sandbox: Option<crate::sandbox::SandboxSource>,
     /// Where the document runtime is kept; `None` means it is not offered.
@@ -209,6 +209,31 @@ impl<L: Llm> Clone for Session<L> {
     }
 }
 
+/// List project-local agent configuration files (`AGENTS.md`, `CLAUDE.md`, `.odg/skills/`, `.odg/prompts/`)
+/// present inside `workspace`, so the UI or CLI can prompt the user before trusting a newly opened repository.
+pub fn untrusted_project_resources(workspace: &std::path::Path) -> Vec<String> {
+    let mut found = Vec::new();
+    if let Some((name, _)) = read_instructions(workspace) {
+        found.push(name);
+    }
+    let proj_skills = workspace.join(".odg").join("skills");
+    let skill_count = crate::skills::discover(&[proj_skills]).len();
+    if skill_count > 0 {
+        found.push(format!(".odg/skills（{skill_count} 部秘籍）"));
+    }
+    let proj_prompts = workspace.join(".odg").join("prompts");
+    if let Ok(entries) = std::fs::read_dir(&proj_prompts) {
+        let count = entries
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+            .count();
+        if count > 0 {
+            found.push(format!(".odg/prompts（{count} 个模板）"));
+        }
+    }
+    found
+}
+
 impl<L: Llm> Session<L> {
     /// Wrap a stored log. A turn that a crash left open is closed first. The
     /// session resumes the mode of its last message.
@@ -243,9 +268,8 @@ impl<L: Llm> Session<L> {
         let worktree = crate::session::worktree(log.events()).cloned();
         let granted_in = worktree.as_ref().map_or_else(|| workspace.clone(), |worktree| PathBuf::from(&worktree.origin));
         let store = SessionStore::of(&log);
-        let Services { grants: kept, mcp, skills, search, sandbox, chat, runtime: documents, painter, lsp } = services.clone();
+        let Services { grants: kept, mcp, skills: user_skills, search, sandbox, chat, runtime: documents, painter, lsp } = services.clone();
         let chatting = chat.is_some_and(|folder| same_folder(&folder, &workspace));
-        let skill_roots: Vec<PathBuf> = skills.into_iter().chain([workspace.join(".odg").join("skills")]).collect();
         Ok(Self {
             inner: Arc::new(Inner {
                 id: log.id().to_string(),
@@ -263,7 +287,7 @@ impl<L: Llm> Session<L> {
                 jobs: Arc::default(),
                 kept,
                 mcp,
-                skill_roots,
+                user_skills,
                 search,
                 sandbox,
                 documents,
@@ -309,6 +333,26 @@ impl<L: Llm> Session<L> {
     /// Id of the session this one is a side conversation beside, when it is one.
     pub fn aside(&self) -> Option<&str> {
         self.inner.aside.as_deref()
+    }
+
+    /// Whether this session's workspace is trusted to load project-local instructions (`AGENTS.md` / `CLAUDE.md`)
+    /// and `.odg/skills/`. The dedicated chat folder is always trusted.
+    pub fn is_project_trusted(&self) -> bool {
+        self.inner.is_project_trusted()
+    }
+
+    /// Project-local configuration files present in this workspace when it is NOT yet trusted.
+    pub fn untrusted_project_resources(&self) -> Vec<String> {
+        if self.inner.is_project_trusted() {
+            Vec::new()
+        } else {
+            untrusted_project_resources(&self.inner.workspace)
+        }
+    }
+
+    /// Grant or revoke project trust for this workspace in `~/.odg/grants.json`.
+    pub fn set_project_trust(&self, trusted: bool) -> Result<(), String> {
+        self.inner.kept.set_trusted_workspace(&self.inner.granted_in, trusted).map_err(|e| e.to_string())
     }
 
     /// Where this side conversation's briefings on the session it is beside come from. Each message the user
@@ -754,11 +798,24 @@ impl<L: Llm> Inner<L> {
         if same { Ok(()) } else { self.append(Event::AsideBriefed { brief }) }
     }
 
+    fn is_project_trusted(&self) -> bool {
+        self.chatting || self.kept.is_trusted_workspace(&self.granted_in)
+    }
+
+    fn active_skill_roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = self.user_skills.iter().cloned().collect();
+        if self.is_project_trusted() {
+            roots.push(self.workspace.join(".odg").join("skills"));
+        }
+        roots
+    }
+
     /// Log the project's instructions when they are new, changed, or gone
     /// since they were last logged. Done as a turn starts: an edit to the
     /// file takes effect at the next turn, not in the middle of one.
+    /// Untrusted workspaces do not load project instructions until trusted.
     fn refresh_instructions(&self) -> Result<(), String> {
-        let found = read_instructions(&self.workspace);
+        let found = if self.is_project_trusted() { read_instructions(&self.workspace) } else { None };
         let event = {
             let log = self.log.lock().unwrap();
             let logged = instructions(log.events());
@@ -773,7 +830,8 @@ impl<L: Llm> Inner<L> {
 
     /// Log the skills on offer when they differ from the list last logged, as a turn starts.
     fn refresh_skills(&self) -> Result<(), String> {
-        let found = crate::skills::listing(&crate::skills::discover(&self.skill_roots));
+        let roots = self.active_skill_roots();
+        let found = crate::skills::listing(&crate::skills::discover(&roots));
         let changed = skills(self.log.lock().unwrap().events()) != found.as_slice();
         if changed { self.append(Event::SkillsListed { skills: found }) } else { Ok(()) }
     }
@@ -785,7 +843,7 @@ impl<L: Llm> Inner<L> {
             snapshots: Some(self.snapshots.clone()),
             jobs: Some(self.jobs.clone()),
             mcp: self.mcp.clone(),
-            skills: self.skill_roots.clone(),
+            skills: self.active_skill_roots(),
             search: self.search_config(),
             sandbox: self.sandbox_now(),
             runtime: self.documents.clone(),
@@ -1006,8 +1064,9 @@ impl<L: Llm> Inner<L> {
                     } else {
                         None
                     };
+                    let active_roots = self.active_skill_roots();
                     let skills_brief = crate::cli_agents::build_skills_brief(
-                        &self.skill_roots,
+                        &active_roots,
                         cli_text.as_deref().unwrap_or(""),
                         conv.is_none(),
                     );
@@ -1026,7 +1085,7 @@ impl<L: Llm> Inner<L> {
                             briefing.as_deref(),
                         );
                         let tuning = self.tuning();
-                        let mut extra_dirs: Vec<PathBuf> = self.skill_roots.iter().filter(|d| d.is_dir()).cloned().collect();
+                        let mut extra_dirs: Vec<PathBuf> = self.active_skill_roots().into_iter().filter(|d| d.is_dir()).collect();
                         for file in &cli_files {
                             let p = std::path::Path::new(&file.path);
                             if !p.starts_with(&self.workspace)

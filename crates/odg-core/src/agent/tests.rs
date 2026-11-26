@@ -570,6 +570,7 @@ async fn reads_run_while_an_earlier_call_waits_for_approval_but_not_past_an_edit
 #[tokio::test(flavor = "multi_thread")]
 async fn follows_the_projects_instructions_file_and_notices_when_it_changes() {
     let mut fixture = fixture(ScriptedLlm::new(vec![says("one"), says("two"), says("three"), says("four")], None));
+    fixture.session.set_project_trust(true).unwrap();
     let file = fixture.workspace.path().join("AGENTS.md");
     let loaded = |fixture: &Fixture| -> Vec<(String, String)> {
         let events = fixture.session.snapshot().into_iter();
@@ -657,6 +658,7 @@ async fn a_file_the_user_attached_is_read_without_asking_wherever_it_is() {
 async fn lists_skills_in_the_prompt_and_loads_one_on_request() {
     let load = calls(&[("t1", "load_skill", json!({ "name": "release" })), ("t2", "load_skill", json!({ "name": "missing" }))]);
     let mut fixture = fixture(ScriptedLlm::new(vec![says("no skills yet"), load, says("released"), says("again")], None));
+    fixture.session.set_project_trust(true).unwrap();
     fixture.session.send("hello".into());
     fixture.idle().await;
     assert!(!fixture.llm.requests.lock().unwrap()[0].system.contains("<skills>"));
@@ -681,6 +683,57 @@ async fn lists_skills_in_the_prompt_and_loads_one_on_request() {
     let results = fixture.results();
     assert!(!results[0].1 && results[0].2.starts_with("Tag, then build.\n"), "{:?}", results[0]);
     assert_eq!(results[1], ("t2".to_string(), true, "There is no skill `missing`. The skills are: release, style.".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untrusted_workspace_withholds_project_instructions_and_skills_until_trusted() {
+    let mut fixture = fixture(ScriptedLlm::new(vec![says("untrusted"), says("trusted"), says("revoked")], None));
+    std::fs::write(fixture.workspace.path().join("AGENTS.md"), "Secret repo instructions.\n").unwrap();
+    let user_skill = fixture._home.path().join("skills/global-doc");
+    let proj_skill = fixture.workspace.path().join(".odg/skills/repo-hook");
+    std::fs::create_dir_all(&user_skill).unwrap();
+    std::fs::create_dir_all(&proj_skill).unwrap();
+    std::fs::write(user_skill.join("SKILL.md"), "---\nname: global-doc\ndescription: Global skill.\n---\nGlobal.\n").unwrap();
+    std::fs::write(proj_skill.join("SKILL.md"), "---\nname: repo-hook\ndescription: Repo skill.\n---\nRepo.\n").unwrap();
+
+    assert!(!fixture.session.is_project_trusted());
+    let pending_resources = fixture.session.untrusted_project_resources();
+    assert_eq!(pending_resources.len(), 2);
+    assert!(pending_resources[0].contains("AGENTS.md"));
+    assert!(pending_resources[1].contains(".odg/skills"));
+
+    // Turn 1 (untrusted): global skill loads, but repo AGENTS.md and repo skill are withheld!
+    fixture.session.send("check".into());
+    fixture.idle().await;
+    {
+        let reqs = fixture.llm.requests.lock().unwrap();
+        assert!(!reqs[0].system.contains("Secret repo instructions."));
+        assert!(reqs[0].system.contains("global-doc: Global skill."));
+        assert!(!reqs[0].system.contains("repo-hook"));
+    }
+
+    // Grant trust -> Turn 2 loads both AGENTS.md and repo skill.
+    fixture.session.set_project_trust(true).unwrap();
+    assert!(fixture.session.is_project_trusted());
+    assert!(fixture.session.untrusted_project_resources().is_empty());
+    fixture.session.send("now trusted".into());
+    fixture.idle().await;
+    {
+        let reqs = fixture.llm.requests.lock().unwrap();
+        assert!(reqs[1].system.contains("Secret repo instructions."));
+        assert!(reqs[1].system.contains("repo-hook: Repo skill."));
+    }
+
+    // Revoke trust -> Turn 3 clears AGENTS.md and drops repo skill again.
+    fixture.session.set_project_trust(false).unwrap();
+    fixture.session.send("revoked".into());
+    fixture.idle().await;
+    {
+        let reqs = fixture.llm.requests.lock().unwrap();
+        assert!(!reqs[2].system.contains("Secret repo instructions."));
+        assert!(!reqs[2].system.contains("repo-hook"));
+        assert!(reqs[2].system.contains("global-doc: Global skill."));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

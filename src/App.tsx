@@ -743,6 +743,8 @@ export default function App() {
   const panelHidden = compactLayout ? !drawerOpen : strip;
   const showPanel = inChat && !!active && (!compactLayout || drawerOpen);
 
+  /** Workspaces whose untrusted-project banner was dismissed during this run. */
+  const [dismissedTrust, setDismissedTrust] = useState<string[]>([]);
   /** Words or files for the side conversation's box: what is quoted from the code while the code is in the middle. */
   const [asideSeed, setAsideSeed] = useState<ComposerSeed | null>(null);
 
@@ -920,6 +922,28 @@ export default function App() {
         run: summonAside,
       },
       { name: "fork", label: "分叉", aliases: ["分叉"], hint: "分叉：另起一个分身，带着到现在的全部对话", unavailable: session.parent ? "子分身的会话不能分叉" : undefined, run: () => forkFrom() },
+      ...(!chatting(session)
+        ? [
+            {
+              name: "trust",
+              label: session.project_trusted ? "收回洞府授信" : "信任洞府",
+              aliases: ["信任", "授信"],
+              hint: session.project_trusted
+                ? "收回对此洞府的授信，下一轮起不再自动读取其中的 AGENTS.md 与 .odg 配置"
+                : "信任此洞府，允许分身读取其中的 AGENTS.md、.odg/skills 与项目模板",
+              run: () => {
+                const next = !session.project_trusted;
+                api.setWorkspaceTrust(session.id, next).then((item) => {
+                  dispatch({ type: "session", item });
+                  dispatch({
+                    type: "note",
+                    note: next ? "已信任此洞府，项目规矩与秘籍将在下一轮起加载。" : "已收回此洞府授信，下一轮起不再加载项目规矩与秘籍。",
+                  });
+                }, fail);
+              },
+            },
+          ]
+        : []),
       {
         name: "files",
         label: "文件",
@@ -1012,6 +1036,36 @@ export default function App() {
             </button>
           </div>
         )}
+        {active &&
+          !replay &&
+          active.project_trusted === false &&
+          (active.untrusted_resources?.length ?? 0) > 0 &&
+          !dismissedTrust.includes(active.workspace) && (
+            <div className="error-banner note" role="region" aria-label="洞府项目信任确认">
+              <span style={{ flex: 1, overflowWrap: "anywhere" }}>
+                检测到此洞府含项目配置（{active.untrusted_resources!.join("、")}）。为防陌生仓库注入，未授信前不会自动加载。
+              </span>
+              <button
+                type="button"
+                className="button primary small"
+                onClick={() => {
+                  api.setWorkspaceTrust(active.id, true).then((item) => {
+                    dispatch({ type: "session", item });
+                    dispatch({ type: "note", note: "已信任此洞府，项目规矩与秘籍将在下一轮起生效。" });
+                  }, fail);
+                }}
+              >
+                信任此洞府
+              </button>
+              <button
+                type="button"
+                className="button outline small"
+                onClick={() => setDismissedTrust((prev) => [...prev, active.workspace])}
+              >
+                暂不加载
+              </button>
+            </div>
+          )}
     </>
   );
   const conversationPane = active ? (

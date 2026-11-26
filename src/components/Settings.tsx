@@ -372,8 +372,11 @@ function KeyList({ view, onSave, onSaveKey, onAdd, onRemove }: KeyListProps) {
 /** A kept grant as the user reads it: a command's opening words, or an MCP server's tool. */
 function grantLabel(grant: string): string {
   const borrowed = grant.startsWith("mcp:") ? mcpTool(grant.slice("mcp:".length)) : null;
+  if (grant === "project-trust") return "信任此洞府的项目规矩与秘籍（AGENTS.md / .odg）";
   if (grant === "search") return "向天机阁打探（联网搜索）";
   if (grant.startsWith("web:")) return `网站 ${grant.slice("web:".length)}`;
+  if (grant.startsWith("mcp-resource:")) return `读取法器 ${grant.slice("mcp-resource:".length)} 的资源`;
+  if (grant.startsWith("lsp:")) return `启动语言服务 ${grant.slice("lsp:".length)}`;
   return borrowed ? `法器 ${borrowed.server} 的 ${borrowed.tool}` : grant.replace(/^command:/, "");
 }
 

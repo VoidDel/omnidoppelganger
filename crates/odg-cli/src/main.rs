@@ -283,6 +283,17 @@ async fn run(options: Options) -> Result<bool, String> {
     let session = Session::new(log, llm, Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).map_err(|error| error.to_string())?;
     session.set_mode(options.mode.unwrap_or(saved.mode));
     let answer = options.answer.unwrap_or(if std::io::stdin().is_terminal() { Answer::Ask } else { Answer::No });
+    let untrusted = session.untrusted_project_resources();
+    if !untrusted.is_empty() {
+        if answer == Answer::Yes {
+            let _ = session.set_project_trust(true);
+        } else {
+            eprintln!(
+                "! untrusted project configuration skipped ({}): pass --yes or trust this workspace in the app",
+                untrusted.join(", ")
+            );
+        }
+    }
     eprintln!("odg: {provider_id} {model}, in {} (session {})", workspace.display(), session.id());
     session.send(options.task);
 

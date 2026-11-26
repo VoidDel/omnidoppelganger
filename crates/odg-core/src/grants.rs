@@ -15,6 +15,10 @@ use std::sync::Mutex;
 
 use crate::fsutil::write_atomically;
 
+/// Grant key marking a workspace as trusted to load project-local instructions (`AGENTS.md` / `CLAUDE.md`),
+/// `.odg/skills/`, and `.odg/prompts/`.
+pub const PROJECT_TRUST_GRANT: &str = "project-trust";
+
 /// Grants by workspace path.
 pub type Grants = BTreeMap<String, BTreeSet<String>>;
 
@@ -33,7 +37,21 @@ impl GrantStore {
     /// Whether an approval of this grant can be kept for good.
     pub fn keeps(grant: &str) -> bool {
         // `search` covers every web search: there is one search service, and nothing narrower to name.
-        grant == "search" || ["command:", "mcp:", "mcp-resource:", "web:", "lsp:"].iter().any(|kind| grant.starts_with(kind))
+        grant == "search"
+            || grant == PROJECT_TRUST_GRANT
+            || ["command:", "mcp:", "mcp-resource:", "web:", "lsp:"].iter().any(|kind| grant.starts_with(kind))
+    }
+
+    pub fn is_trusted_workspace(&self, workspace: &Path) -> bool {
+        self.allows(workspace, PROJECT_TRUST_GRANT)
+    }
+
+    pub fn set_trusted_workspace(&self, workspace: &Path, trusted: bool) -> io::Result<()> {
+        if trusted {
+            self.add(workspace, PROJECT_TRUST_GRANT)
+        } else {
+            self.remove(&workspace.to_string_lossy(), PROJECT_TRUST_GRANT)
+        }
     }
 
     /// Every kept grant. A missing or unreadable file holds none.

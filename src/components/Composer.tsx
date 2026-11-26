@@ -163,7 +163,7 @@ function findAtMention(text: string, caret: number): { start: number; query: str
 }
 
 /** The order the "/" menu lists the commands in; any not named here (a skill's) come after, as given. */
-const COMMAND_ORDER = ["new", "aside", "fork", "compact", "usage", "model", "effort", "mode", "files", "git", "terminal", "rename", "replay", "init", "review", "skills", "mcp", "schedule", "settings"];
+const COMMAND_ORDER = ["new", "aside", "fork", "compact", "usage", "model", "effort", "mode", "trust", "files", "git", "terminal", "rename", "replay", "export", "init", "review", "skills", "mcp", "schedule", "settings"];
 
 /**
  * How full the conversation is, as five 灵石 lit one after another: each stands for a fifth of the room there is

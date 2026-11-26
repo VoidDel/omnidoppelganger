@@ -333,6 +333,10 @@ export interface SessionItem {
   branch: string | null;
   /** Whether the model takes pictures; null when its provider's documentation does not say. */
   vision: boolean | null;
+  /** Whether this workspace is trusted to load project-local `AGENTS.md` / `.odg/skills/`. */
+  project_trusted?: boolean;
+  /** Project-local configuration files withheld until `project_trusted` is granted. */
+  untrusted_resources?: string[];
   created_at: string;
   updated_at: string;
   turn_open: boolean;

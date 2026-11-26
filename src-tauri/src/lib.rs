@@ -66,6 +66,10 @@ struct SessionItem {
     branch: Option<String>,
     /// Whether the session's model takes pictures; `None` when its provider's documentation does not say.
     vision: Option<bool>,
+    /// Whether this workspace has been trusted to load project-local `AGENTS.md` / `.odg/skills/`.
+    project_trusted: bool,
+    /// Project-local configuration files withheld while `project_trusted` is false.
+    untrusted_resources: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -220,7 +224,19 @@ impl App {
         let branch = odg_core::tools::git_branch(std::path::Path::new(&summary.workspace));
         let vision = vision(&summary.provider, &summary.model);
         let context_ceiling = window / 5 * 4;
-        SessionItem { summary, status, context_limit, context_ceiling, branch, vision }
+        let ws_path = std::path::Path::new(&summary.workspace);
+        let grant_root = summary
+            .worktree
+            .as_ref()
+            .map_or_else(|| ws_path.to_path_buf(), |wt| PathBuf::from(&wt.origin));
+        let is_chat = ws_path == settings::chat_folder();
+        let project_trusted = is_chat || self.grants.is_trusted_workspace(&grant_root);
+        let untrusted_resources = if project_trusted {
+            Vec::new()
+        } else {
+            odg_core::agent::untrusted_project_resources(ws_path)
+        };
+        SessionItem { summary, status, context_limit, context_ceiling, branch, vision, project_trusted, untrusted_resources }
     }
 
     /// Start a session in `workspace` on the provider and model of the
@@ -1496,6 +1512,13 @@ async fn undo_turn(app: State<'_, App>, id: String, turn: u64) -> Result<Undone,
 /// Have the model summarize the session's conversation now, between turns.
 /// Returns how many tokens the conversation held before.
 #[tauri::command]
+fn set_workspace_trust(app: State<'_, App>, id: String, trusted: bool) -> Result<SessionItem, String> {
+    let session = app.live(&id)?;
+    session.set_project_trust(trusted)?;
+    Ok(app.item(session.summary(), session.status()))
+}
+
+#[tauri::command]
 async fn compact_session(app: State<'_, App>, id: String, focus: Option<String>) -> Result<u64, String> {
     let session = app.live(&id)?;
     session.compact_now_with(focus).await
@@ -1731,6 +1754,7 @@ pub fn run() {
             undo_turn,
             cancel_turn,
             deliver_queued,
+            set_workspace_trust,
             compact_session,
             get_settings,
             save_settings,
