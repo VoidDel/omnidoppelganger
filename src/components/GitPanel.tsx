@@ -555,6 +555,18 @@ export function GitPanel({
           </span>
         </button>
         <div className="git-sync-tools">
+          {totalDirty > 0 && (
+            <button
+              type="button"
+              className={`git-sync-btn danger ${discardTarget === "**" ? "active" : ""}`}
+              disabled={!!busy}
+              title="放弃并还原全部未提交的更改（含已暂存、未暂存与未跟踪文件）"
+              aria-label="放弃并还原全部未提交的更改"
+              onClick={() => setDiscardTarget(discardTarget === "**" ? null : "**")}
+            >
+              <Icon name="arrow-counterclockwise" size={14} />
+            </button>
+          )}
           <button
             type="button"
             className="git-sync-btn"
@@ -699,7 +711,7 @@ export function GitPanel({
       <div className="git-commit-box">
         <textarea
           className="input git-commit-input"
-          rows={2}
+          rows={1}
           placeholder="写一句提交说明 (Ctrl/Cmd+Enter 提交)…"
           value={commitMsg}
           onChange={(e) => setCommitMsg(e.target.value)}
@@ -729,26 +741,15 @@ export function GitPanel({
                   : "提交"}
           </button>
           {totalDirty > 0 && (
-            <>
-              <button
-                type="button"
-                className="button outline small"
-                disabled={working}
-                title={working ? "分身正在运功" : "让分身审查当前尚未提交的改动"}
-                onClick={onAskReview}
-              >
-                请分身审查
-              </button>
-              <button
-                type="button"
-                className="icon-button tiny danger"
-                disabled={!!busy}
-                title="放弃并还原全部未提交的更改（含已暂存、未暂存与未跟踪文件）"
-                onClick={() => setDiscardTarget(discardTarget === "**" ? null : "**")}
-              >
-                ↺
-              </button>
-            </>
+            <button
+              type="button"
+              className="button outline small"
+              disabled={working}
+              title={working ? "分身正在运功" : "让分身审查当前尚未提交的改动"}
+              onClick={onAskReview}
+            >
+              请分身审查
+            </button>
           )}
         </div>
         {discardTarget === "**" && totalDirty > 0 && (

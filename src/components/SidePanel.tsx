@@ -341,8 +341,9 @@ function FileRow({
 /** The side panel's width in pixels: as the user left it, within what leaves the center column room. */
 export const PANEL_WIDTH = { initial: 380, least: 280 };
 export const fitPanel = (width: number, sidebarWidth = 236) => {
-  const overlay = typeof window !== "undefined" && window.innerWidth <= 1100;
-  const ceiling = overlay ? Math.min(680, window.innerWidth - 64) : Math.min(680, window.innerWidth - sidebarWidth - 360);
+  if (typeof window === "undefined") return Math.max(width, PANEL_WIDTH.least);
+  const overlay = window.innerWidth <= 1100;
+  const ceiling = overlay ? window.innerWidth - 64 : window.innerWidth - sidebarWidth - 320;
   return Math.round(Math.min(Math.max(width, PANEL_WIDTH.least), Math.max(PANEL_WIDTH.least, ceiling)));
 };
 

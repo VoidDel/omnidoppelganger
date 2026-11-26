@@ -633,8 +633,199 @@
 }
 
 .viewer-markdown {
-  max-width: 860px;
-  padding: 24px 32px 48px;
+  max-width: none;
+  padding: 28px 36px 56px;
+  font-size: 14.5px;
+  line-height: 1.82;
+  color: var(--ink);
+}
+
+.viewer-markdown h1 {
+  font-family: var(--brush);
+  font-size: 26px;
+  line-height: 1.35;
+  margin: 0 0 18px;
+  padding-bottom: 10px;
+  border-bottom: 1.5px solid var(--line-strong);
+  color: var(--ink);
+}
+
+.viewer-markdown h2 {
+  font-size: 19px;
+  line-height: 1.4;
+  margin: 30px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.viewer-markdown h3 {
+  font-size: 16px;
+  line-height: 1.45;
+  margin: 22px 0 8px;
+  color: var(--ink);
+}
+
+.viewer-markdown h4 {
+  font-size: 14.5px;
+  line-height: 1.5;
+  margin: 18px 0 6px;
+  color: var(--ink-2);
+}
+
+.viewer-markdown p {
+  margin: 0 0 14px;
+}
+
+.viewer-markdown ul,
+.viewer-markdown ol {
+  margin: 0 0 14px;
+  padding-left: 1.65em;
+}
+
+.viewer-markdown li + li {
+  margin-top: 6px;
+}
+
+.viewer-markdown li::marker {
+  color: var(--jade);
+  font-weight: 600;
+}
+
+.viewer-markdown :not(pre) > code {
+  padding: 1.5px 6px;
+  border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+  border-radius: 4px;
+  background: var(--well);
+  font-size: 0.89em;
+  color: var(--jade-tint-ink);
+}
+
+.viewer-markdown .code-block {
+  margin: 14px 0 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--well);
+  overflow: hidden;
+}
+
+.viewer-markdown .code-tools {
+  position: static;
+  flex-direction: row;
+  justify-content: space-between;
+  padding: 5px 12px;
+  background: color-mix(in srgb, var(--line) 28%, var(--well));
+  border-bottom: 1px solid var(--line);
+  min-height: 30px;
+}
+
+.viewer-markdown .code-tools .lang {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+
+.viewer-markdown .code-block .copy {
+  opacity: 0.8;
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  min-height: 22px;
+  padding: 0 8px;
+  margin-left: auto;
+}
+
+.viewer-markdown .code-block .copy:hover {
+  opacity: 1;
+  border-color: var(--jade-line);
+  color: var(--jade);
+}
+
+.viewer-markdown .code-block pre {
+  margin: 0;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--line-strong) 60%, transparent) transparent;
+}
+
+.viewer-markdown .code-block pre::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--line-strong) 50%, transparent);
+}
+
+.viewer-markdown .code-block pre:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--line-strong) 85%, transparent);
+}
+
+.viewer-markdown blockquote {
+  margin: 14px 0 16px;
+  padding: 10px 16px;
+  border-left: 3px solid var(--gold);
+  border-radius: 0 var(--r-paper) var(--r-paper) 0;
+  background: var(--well);
+  color: var(--ink-2);
+}
+
+.viewer-markdown .table-wrap {
+  margin: 16px 0 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  overflow-x: auto;
+}
+
+.viewer-markdown table {
+  width: 100%;
+  border-top: 0;
+  font-size: var(--t-small);
+}
+
+.viewer-markdown th,
+.viewer-markdown td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.viewer-markdown thead th {
+  background: var(--well);
+  border-bottom-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.viewer-markdown tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.viewer-markdown tbody tr:hover td {
+  background: var(--wash);
+}
+
+.viewer-markdown hr {
+  margin: 26px 0;
+  border-top: 1px solid var(--line);
+}
+
+.viewer-markdown img {
+  display: block;
+  max-width: 100%;
+  max-height: 520px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+}
+
+@media (max-width: 720px) {
+  .viewer-markdown {
+    padding: 20px 20px 44px;
+  }
 }
 
 .viewer-image-stage {
@@ -980,6 +1171,13 @@
   color: var(--jade);
 }
 
+.git-sync-btn.danger:hover:not(:disabled),
+.git-sync-btn.danger.active {
+  border-color: var(--cinnabar);
+  color: var(--cinnabar-ink);
+  background: var(--cinnabar-tint);
+}
+
 .git-branches-box {
   padding: 8px;
   border: 1px solid var(--line-strong);
@@ -1002,6 +1200,7 @@
 }
 
 .git-branch-list {
+  overflow-x: hidden;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -1009,6 +1208,8 @@
 }
 
 .git-branch-item {
+  width: 100%;
+  min-width: 0;
   padding: 4px 6px;
   border: 0;
   border-radius: calc(var(--r-control) - 2px);
@@ -1020,6 +1221,19 @@
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+}
+
+.git-branch-item > .mono {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-branch-item > .chip {
+  flex: none;
+  white-space: nowrap;
 }
 
 .git-branch-item:hover:not(:disabled) {
@@ -1038,7 +1252,7 @@
 
 .git-commit-input {
   width: 100%;
-  min-height: 54px;
+  min-height: 32px;
   max-height: 140px;
   padding: 6px 8px;
   font-size: var(--t-small);

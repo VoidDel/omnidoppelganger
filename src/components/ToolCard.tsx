@@ -85,19 +85,22 @@ export function Written({ path, name, snapshot, version }: { path: string; name:
       <div className="written-acts">
         <button
           type="button"
-          className="button text small"
+          className="written-icon"
+          aria-label={resolvedVersion ? `打开 v${resolvedVersion}` : "打开"}
           title={`${path}\n${resolvedVersion ? `用系统默认的程序打开 v${resolvedVersion} 快照` : snapshot ? "用系统默认的程序打开这一步的版本" : "用系统默认的程序打开"}`}
           onClick={() => open(false)}
         >
-          {resolvedVersion ? `打开 v${resolvedVersion}` : "打开"}
+          <Icon name="box-arrow-up-right" size={14} />
+          {resolvedVersion && <span className="written-ver">v{resolvedVersion}</span>}
         </button>
-        <button type="button" className="button text small" title="在文件夹中显示" onClick={() => open(true)}>
-          在文件夹中显示
+        <button type="button" className="written-icon" aria-label="在文件夹中显示" title="在文件夹中显示" onClick={() => open(true)}>
+          <Icon name="folder2-open" size={14} />
         </button>
         <button
           type="button"
-          className="button text small"
-          title={image ? "复制图片" : "复制文件路径"}
+          className={`written-icon ${copied ? "done" : ""}`}
+          aria-label={image ? "复制图片" : "复制文件路径"}
+          title={copied ? "已复制" : image ? "复制图片" : "复制文件路径"}
           onClick={() => {
             if (image) {
               void copyImageToClipboard(image).then((ok) => ok && setCopied("image"));
@@ -106,26 +109,28 @@ export function Written({ path, name, snapshot, version }: { path: string; name:
             }
           }}
         >
-          {copied ? "已复制" : image ? "复制图片" : "复制路径"}
+          <Icon name={copied ? "check-lg" : "copy"} size={14} />
         </button>
         {(image ? files.attachImageToMain : files.attachFileToMain) && (
           <button
             type="button"
-            className="button text small"
-            title="附到主对话输入框"
+            className="written-icon"
+            aria-label="引用到对话"
+            title="引用到对话"
             onClick={() => (image ? files.attachImageToMain?.(image) : files.attachFileToMain?.(path))}
           >
-            引用到对话
+            <Icon name="quote" size={14} />
           </button>
         )}
         {(image ? files.attachImageToAside : files.attachFileToAside) && (
           <button
             type="button"
-            className="button text small"
-            title="附到右侧旁聊输入框"
+            className="written-icon"
+            aria-label="引用到旁聊"
+            title="引用到旁聊"
             onClick={() => (image ? files.attachImageToAside?.(image) : files.attachFileToAside?.(path))}
           >
-            引用到旁聊
+            <Icon name="chat-left-quote" size={14} />
           </button>
         )}
         {note && (

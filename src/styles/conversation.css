@@ -618,6 +618,11 @@
   background: var(--removed);
 }
 
+.prose img {
+  max-width: 100%;
+  height: auto;
+}
+
 /* What the 分身 thought, put away under one line; a small ring on the thread marks where. */
 .thinking {
   position: relative;
