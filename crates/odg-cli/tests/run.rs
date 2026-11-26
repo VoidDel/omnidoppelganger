@@ -199,7 +199,7 @@ fn says_what_is_wrong_with_its_arguments_or_the_run() {
     assert_eq!(none.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&none.stderr).contains("give the task"));
     let help = run(&["--help"]);
-    assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).starts_with("odg: run one task"));
+    assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).starts_with("odg: run tasks"));
     let unknown = run(&["--provider", "nobody", "hello"]);
     assert_eq!(unknown.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("there is no provider `nobody`"));
@@ -209,4 +209,61 @@ fn says_what_is_wrong_with_its_arguments_or_the_run() {
     assert_eq!(failed.output.status.code(), Some(1));
     assert!(failed.stderr().contains("! the turn ended: invalid_request_error: the model is not available"), "{}", failed.stderr());
     assert_eq!(failed.stdout(), "");
+}
+
+#[test]
+fn continues_resumes_streams_json_and_exports_markdown() {
+    let (home, workspace) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+
+    // 1. First turn in workspace
+    let (addr1, srv1) = serve(vec![Reply { text: "First reply.", tool: None }]);
+    let out1 = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["-C", &workspace.path().to_string_lossy(), "first", "question"])
+        .env("ODG_HOME", home.path())
+        .env("ANTHROPIC_BASE_URL", &addr1)
+        .env("ANTHROPIC_API_KEY", "test-key")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out1.status.success());
+    let _ = srv1.join().unwrap();
+
+    // 2. Continue latest session in workspace with `--continue` and `--json`
+    let (addr2, srv2) = serve(vec![Reply { text: "Second reply.", tool: None }]);
+    let out2 = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["-C", &workspace.path().to_string_lossy(), "-c", "--json", "second", "question"])
+        .env("ODG_HOME", home.path())
+        .env("ANTHROPIC_BASE_URL", &addr2)
+        .env("ANTHROPIC_API_KEY", "test-key")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out2.status.success(), "{}", String::from_utf8_lossy(&out2.stderr));
+    let reqs2 = srv2.join().unwrap();
+    let msgs2 = reqs2[0]["messages"].as_array().unwrap();
+    assert_eq!(msgs2.len(), 3, "expected user1 + assistant1 + user2 in resumed history");
+    assert_eq!(msgs2[0]["content"][0]["text"], "first question");
+    assert_eq!(msgs2[2]["content"][0]["text"], "second question");
+
+    let lines: Vec<Value> = String::from_utf8_lossy(&out2.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid NDJSON line"))
+        .collect();
+    assert_eq!(lines[0]["kind"], "session");
+    assert_eq!(lines[0]["resumed"], true);
+    let session_id = lines[0]["session_id"].as_str().unwrap().to_string();
+    assert!(lines.iter().any(|l| l["kind"] == "stream"));
+    assert!(lines.iter().any(|l| l["kind"] == "log"));
+
+    // 3. Resume by prefix and export Markdown
+    let prefix = &session_id[..8];
+    let exported = Command::new(env!("CARGO_BIN_EXE_odg"))
+        .args(["--export", prefix])
+        .env("ODG_HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+    let md = String::from_utf8_lossy(&exported.stdout);
+    assert!(md.contains("first question") && md.contains("Second reply."), "{md}");
 }

@@ -19,16 +19,25 @@ use odg_core::llm::StreamDelta;
 use odg_core::mcp::McpHub;
 use odg_core::policy::Mode;
 use odg_core::providers::{Router, provider};
-use odg_core::session::SessionStore;
+use odg_core::session::{NewSession, SessionStore};
 use odg_core::settings::{self, SettingsStore};
+use serde_json::json;
 
 const USAGE: &str = "\
-odg: run one task with the OmniDoppelganger agent, without the window.
+odg: run tasks with the OmniDoppelganger agent from the command line.
 
-Usage: odg [options] <task>
+Usage:
+  odg [options] <task>
+  odg --export <session-id>
 
 Options:
   -C, --workspace <dir>   The folder to work in. Default: the current folder.
+  -c, --continue          Continue the most recent session in this workspace
+                          (starts a new one when none exists yet).
+  -r, --resume <id>       Resume an existing session by id (or unique prefix).
+  -w, --worktree          Run a new session in an isolated Git worktree.
+      --json              Stream structured NDJSON events to standard output.
+      --export <id>       Export a stored session as Markdown to standard output.
       --provider <id>     The model provider. Default: the one chosen in settings.
       --model <id>        The model. Default: the one chosen in settings.
       --mode <mode>       manual, edit, plan, or auto. Default: the one chosen in settings.
@@ -37,9 +46,9 @@ Options:
                           standard input is not a terminal.
   -h, --help              Show this.
 
-The agent's words go to standard output; its tool calls and questions to
-standard error. Exit status: 0 when the turn completed, 1 when it did not,
-2 when the arguments are wrong.";
+The agent's words go to standard output (or NDJSON events with --json); its
+tool calls and questions go to standard error. Exit status: 0 when the turn
+completed, 1 when it did not, 2 when the arguments are wrong.";
 
 /// How a request for approval is answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +59,15 @@ enum Answer {
     No,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
     task: String,
     workspace: PathBuf,
+    continue_latest: bool,
+    resume: Option<String>,
+    worktree: bool,
+    json: bool,
+    export: Option<String>,
     provider: Option<String>,
     model: Option<String>,
     mode: Option<Mode>,
@@ -62,7 +76,7 @@ struct Options {
 
 /// Read the arguments. `Err` holds what to print: the usage text for `--help`, or what is wrong.
 fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String> {
-    let mut options = Options { task: String::new(), workspace: PathBuf::from("."), provider: None, model: None, mode: None, answer: None };
+    let mut options = Options { workspace: PathBuf::from("."), ..Options::default() };
     let mut words: Vec<String> = Vec::new();
     let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
@@ -70,6 +84,11 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
         match argument.as_str() {
             "-h" | "--help" => return Err(USAGE.to_string()),
             "-C" | "--workspace" => options.workspace = PathBuf::from(value("--workspace")?),
+            "-c" | "--continue" => options.continue_latest = true,
+            "-r" | "--resume" => options.resume = Some(value("--resume")?),
+            "-w" | "--worktree" => options.worktree = true,
+            "--json" => options.json = true,
+            "--export" => options.export = Some(value("--export")?),
             "--provider" => options.provider = Some(value("--provider")?),
             "--model" => options.model = Some(value("--model")?),
             "--mode" => {
@@ -89,8 +108,14 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
             _ => words.push(argument),
         }
     }
+    if options.continue_latest && options.resume.is_some() {
+        return Err("--continue and --resume cannot be used together".to_string());
+    }
+    if options.worktree && (options.continue_latest || options.resume.is_some()) {
+        return Err("--worktree starts a new session and cannot be combined with --continue or --resume".to_string());
+    }
     options.task = words.join(" ").trim().to_string();
-    if options.task.is_empty() {
+    if options.export.is_none() && options.task.is_empty() {
         return Err("give the task to run; see odg --help".to_string());
     }
     Ok(options)
@@ -213,25 +238,98 @@ fn ask_questions(questions: &[Question]) -> Vec<Reply> {
         .collect()
 }
 
+fn normalize_dir(path: &std::path::Path) -> PathBuf {
+    path.canonicalize()
+        .map(|p| PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\").to_string()))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn resolve_session_id(store: &SessionStore, target: &str) -> Result<String, String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err("session id cannot be empty".to_string());
+    }
+    if store.peek(trimmed).is_ok() {
+        return Ok(trimmed.to_string());
+    }
+    let matches: Vec<String> = store
+        .ids()
+        .into_iter()
+        .filter(|id| id.starts_with(trimmed))
+        .collect();
+    match matches.len() {
+        0 => Err(format!("session `{trimmed}` does not exist")),
+        1 => Ok(matches.into_iter().next().unwrap()),
+        _ => Err(format!("session prefix `{trimmed}` matches multiple sessions: {}", matches.join(", "))),
+    }
+}
+
 async fn run(options: Options) -> Result<bool, String> {
-    let workspace = options.workspace.canonicalize().map_err(|error| format!("{} is not a folder to work in: {error}", options.workspace.display()))?;
+    let home = settings::home();
+    let session_store = SessionStore::new(home.join("sessions"));
+    if let Some(target) = &options.export {
+        let id = resolve_session_id(&session_store, target)?;
+        let events = session_store.read(&id).map_err(|e| e.to_string())?;
+        print!("{}", odg_core::export::to_markdown(&events, None));
+        return Ok(true);
+    }
+
+    let workspace = options
+        .workspace
+        .canonicalize()
+        .map_err(|error| format!("{} is not a folder to work in: {error}", options.workspace.display()))?;
     // Windows gives the canonical path a `\\?\` prefix that most programs do not expect.
     let workspace = PathBuf::from(workspace.to_string_lossy().trim_start_matches(r"\\?\").to_string());
     if !workspace.is_dir() {
         return Err(format!("{} is not a folder", workspace.display()));
     }
-    let home = settings::home();
     let store = Arc::new(SettingsStore::at_home());
     let saved = store.load();
-    let provider_id = options.provider.unwrap_or_else(|| saved.provider.clone());
+
+    // Locate an existing session to resume if `--resume` or `--continue` was passed.
+    let resumed_id = if let Some(target) = &options.resume {
+        Some(resolve_session_id(&session_store, target)?)
+    } else if options.continue_latest {
+        session_store
+            .list()
+            .into_iter()
+            .find(|s| {
+                s.parent.is_none()
+                    && s.aside.is_none()
+                    && (normalize_dir(std::path::Path::new(&s.workspace)) == workspace
+                        || s.worktree
+                            .as_ref()
+                            .is_some_and(|wt| normalize_dir(std::path::Path::new(&wt.origin)) == workspace))
+            })
+            .map(|s| s.id)
+    } else {
+        None
+    };
+
+    let existing_summary = match &resumed_id {
+        Some(id) => Some(session_store.peek(id).map_err(|e| e.to_string())?),
+        None => None,
+    };
+
+    let provider_id = options
+        .provider
+        .clone()
+        .or_else(|| existing_summary.as_ref().map(|s| s.provider.clone()))
+        .unwrap_or_else(|| saved.provider.clone());
     if provider(&provider_id).is_none() {
         return Err(format!("there is no provider `{provider_id}`"));
     }
-    // A model named here goes with the provider named here; otherwise the settings' own pair is used.
-    let model = match options.model {
+    // A model named here goes with the provider named here; otherwise keep the resumed session's or settings' pair.
+    let model = match options.model.clone() {
         Some(model) => model,
+        None if existing_summary.as_ref().is_some_and(|s| s.provider == provider_id) => {
+            existing_summary.as_ref().unwrap().model.clone()
+        }
         None if provider_id == saved.provider => saved.model.clone(),
-        None => provider(&provider_id).and_then(|known| known.models.first()).map(|(id, _)| id.to_string()).unwrap_or_default(),
+        None => provider(&provider_id)
+            .and_then(|known| known.models.first())
+            .map(|(id, _)| id.to_string())
+            .unwrap_or_default(),
     };
     if model.is_empty() {
         return Err(format!("name a model for `{provider_id}` with --model"));
@@ -253,11 +351,45 @@ async fn run(options: Options) -> Result<bool, String> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    for server in mcp.statuses().iter().filter(|server| server.state != "ready") {
-        eprintln!("! MCP server {} is not connected: {}", server.name, server.error.as_deref().unwrap_or("it is still starting"));
+    if !options.json {
+        for server in mcp.statuses().iter().filter(|server| server.state != "ready") {
+            eprintln!("! MCP server {} is not connected: {}", server.name, server.error.as_deref().unwrap_or("it is still starting"));
+        }
     }
 
-    let log = SessionStore::new(home.join("sessions")).create(&workspace, &provider_id, &model).map_err(|error| error.to_string())?;
+    let (log, session_workspace, created_worktree) = if let Some(id) = &resumed_id {
+        let log = session_store.open(id).map_err(|e| e.to_string())?;
+        let ws = existing_summary
+            .as_ref()
+            .map(|s| PathBuf::from(&s.workspace))
+            .unwrap_or_else(|| workspace.clone());
+        let wt = existing_summary.as_ref().and_then(|s| s.worktree.clone());
+        (log, ws, wt)
+    } else {
+        let (session_ws, made_wt) = if options.worktree {
+            let (checkout_ws, wt) = odg_core::worktree::create(&workspace, &home.join("worktrees"))?;
+            (checkout_ws, Some(wt))
+        } else {
+            (workspace.clone(), None)
+        };
+        let new = NewSession {
+            workspace: &session_ws,
+            provider: &provider_id,
+            model: &model,
+            parent: None,
+            worktree: made_wt.clone(),
+            schedule: None,
+            aside: None,
+        };
+        let log = session_store.create_with(new).map_err(|error| {
+            if let Some(wt) = &made_wt {
+                let _ = odg_core::worktree::remove(wt);
+            }
+            error.to_string()
+        })?;
+        (log, session_ws, made_wt)
+    };
+
     let tuned = store.clone();
     let tuning = move |provider: &str, model: &str| {
         let settings = tuned.load();
@@ -268,8 +400,9 @@ async fn run(options: Options) -> Result<bool, String> {
     let searching = store.clone();
     let painting = store.clone();
     let confining = store.clone();
+    let grants = Arc::new(GrantStore::new(home.join("grants.json")));
     let services = Services {
-        grants: Arc::new(GrantStore::new(home.join("grants.json"))),
+        grants: grants.clone(),
         mcp: Some(mcp.clone()),
         skills: Some(home.join("skills")),
         search: Some(Arc::new(move || searching.search())),
@@ -281,21 +414,65 @@ async fn run(options: Options) -> Result<bool, String> {
     };
     let (sender, mut events) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let session = Session::new(log, llm, Arc::new(tuning), services, sender, tokio::runtime::Handle::current()).map_err(|error| error.to_string())?;
-    session.set_mode(options.mode.unwrap_or(saved.mode));
+    if let Some(prev) = &existing_summary
+        && (prev.provider != provider_id || prev.model != model)
+    {
+        session.set_model(&provider_id, &model)?;
+    }
+    if let Some(mode) = options.mode {
+        session.set_mode(mode);
+    } else if existing_summary.is_none() {
+        session.set_mode(saved.mode);
+    }
     let answer = options.answer.unwrap_or(if std::io::stdin().is_terminal() { Answer::Ask } else { Answer::No });
     let untrusted = session.untrusted_project_resources();
     if !untrusted.is_empty() {
         if answer == Answer::Yes {
             let _ = session.set_project_trust(true);
-        } else {
+        } else if !options.json {
             eprintln!(
                 "! untrusted project configuration skipped ({}): pass --yes or trust this workspace in the app",
                 untrusted.join(", ")
             );
         }
     }
-    eprintln!("odg: {provider_id} {model}, in {} (session {})", workspace.display(), session.id());
-    session.send(options.task);
+
+    // Expand `/template args` if `task` invokes an installed prompt template.
+    let task_to_send = if let Some(rest) = options.task.strip_prefix('/').filter(|r| !r.starts_with('/')) {
+        let (tpl_name, tpl_args) = match rest.find(char::is_whitespace) {
+            Some(pos) => (&rest[..pos], rest[pos..].trim()),
+            None => (rest, ""),
+        };
+        let grant_root = created_worktree
+            .as_ref()
+            .map_or_else(|| session_workspace.clone(), |wt| PathBuf::from(&wt.origin));
+        let proj_prompts = grants
+            .is_trusted_workspace(&grant_root)
+            .then(|| session_workspace.join(".odg").join("prompts"));
+        odg_core::templates::expand_named(&home.join("prompts"), proj_prompts.as_deref(), tpl_name, tpl_args)
+            .unwrap_or_else(|_| options.task.clone())
+    } else {
+        options.task.clone()
+    };
+
+    if options.json {
+        println!(
+            "{}",
+            json!({
+                "kind": "session",
+                "session_id": session.id(),
+                "resumed": resumed_id.is_some(),
+                "provider": provider_id,
+                "model": model,
+                "workspace": session_workspace.display().to_string(),
+                "worktree": created_worktree,
+            })
+        );
+    } else {
+        let action = if resumed_id.is_some() { "resumed" } else { "session" };
+        eprintln!("odg: {provider_id} {model}, in {} ({action} {})", session_workspace.display(), session.id());
+    }
+    session.send(task_to_send);
 
     // Whether the agent's words on standard output still lack their closing newline.
     let mut mid_line = false;
@@ -309,6 +486,54 @@ async fn run(options: Options) -> Result<bool, String> {
     // The names of the subagents the agent has set off, by session id: their events arrive on the same channel.
     let mut subagents: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     while let Some(event) = events.recv().await {
+        if options.json {
+            if let Ok(line) = serde_json::to_string(&event) {
+                println!("{line}");
+                let _ = stdout.flush();
+            }
+            match &event {
+                UiEvent::Log { session_id, envelope } if session_id != session.id() => {
+                    if let Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } = &envelope.event {
+                        let (r, d, g) = (reason.clone(), detail.clone(), grant.is_some());
+                        let decision = match answer {
+                            Answer::Yes => Decision::AllowOnce,
+                            Answer::No => Decision::Deny,
+                            Answer::Ask => tokio::task::spawn_blocking(move || ask(&r, &d, g)).await.unwrap_or(Decision::Deny),
+                        };
+                        if let Some(child) = session.child(session_id) {
+                            child.resolve_approval(tool_use_id, decision);
+                        }
+                    }
+                }
+                UiEvent::Log { envelope, .. } => match &envelope.event {
+                    Event::ApprovalRequested { tool_use_id, reason, detail, grant, .. } => {
+                        let (r, d, g) = (reason.clone(), detail.clone(), grant.is_some());
+                        let decision = match answer {
+                            Answer::Yes => Decision::AllowOnce,
+                            Answer::No => Decision::Deny,
+                            Answer::Ask => tokio::task::spawn_blocking(move || ask(&r, &d, g)).await.unwrap_or(Decision::Deny),
+                        };
+                        session.resolve_approval(tool_use_id, decision);
+                    }
+                    Event::QuestionAsked { tool_use_id, questions, .. } => {
+                        let qs = questions.clone();
+                        let answers = if answer == Answer::Ask {
+                            tokio::task::spawn_blocking(move || ask_questions(&qs)).await.ok()
+                        } else {
+                            None
+                        };
+                        session.answer_questions(tool_use_id, answers);
+                    }
+                    Event::TurnEnd { reason, .. } => {
+                        completed = reason == "completed";
+                    }
+                    _ => {}
+                },
+                UiEvent::Status { session_id, status: Status::Idle } if session_id == session.id() => break,
+                _ => {}
+            }
+            continue;
+        }
         let from = match &event {
             UiEvent::Log { session_id, .. } | UiEvent::Stream { session_id, .. } | UiEvent::Status { session_id, .. } => session_id.clone(),
         };
@@ -478,14 +703,31 @@ mod tests {
     #[test]
     fn reads_the_task_and_its_options() {
         let options = parsed(&["-C", "proj", "--mode", "auto", "--yes", "fix", "the", "lexer"]).unwrap();
-        assert_eq!(options, Options { task: "fix the lexer".into(), workspace: "proj".into(), provider: None, model: None, mode: Some(Mode::Auto), answer: Some(Answer::Yes) });
+        assert_eq!(
+            options,
+            Options {
+                task: "fix the lexer".into(),
+                workspace: "proj".into(),
+                mode: Some(Mode::Auto),
+                answer: Some(Answer::Yes),
+                ..Options::default()
+            }
+        );
         let named = parsed(&["--provider", "zhipu", "--model", "glm-5.3", "--no", "hello"]).unwrap();
         assert_eq!((named.provider.as_deref(), named.model.as_deref(), named.answer), (Some("zhipu"), Some("glm-5.3"), Some(Answer::No)));
+        let resumed = parsed(&["-c", "--json", "follow", "up"]).unwrap();
+        assert!(resumed.continue_latest && resumed.json && resumed.task == "follow up");
+        let worktree = parsed(&["-w", "try", "refactor"]).unwrap();
+        assert!(worktree.worktree && worktree.task == "try refactor");
+        let export = parsed(&["--export", "0190abc"]).unwrap();
+        assert_eq!(export.export.as_deref(), Some("0190abc"));
         // After `--` everything is the task, even what looks like an option.
         assert_eq!(parsed(&["--", "explain", "--mode"]).unwrap().task, "explain --mode");
 
         assert_eq!(parsed(&["--help"]).unwrap_err(), USAGE);
         assert!(parsed(&[]).unwrap_err().contains("give the task"));
+        assert!(parsed(&["-c", "-r", "abc", "hi"]).unwrap_err().contains("cannot be used together"));
+        assert!(parsed(&["-w", "-c", "hi"]).unwrap_err().contains("cannot be combined"));
         assert!(parsed(&["--mode", "fast", "x"]).unwrap_err().contains("manual, edit, plan, or auto"));
         assert!(parsed(&["--model"]).unwrap_err().contains("needs a value"));
         assert!(parsed(&["--bogus", "x"]).unwrap_err().contains("unknown option"));
