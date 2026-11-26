@@ -120,8 +120,8 @@ export interface ComposerProps {
   contextAuto: boolean;
   /** Set the limit, for every session. */
   onLimit: (limit: number | "auto") => void;
-  /** Have the 分身 summarize the conversation now. */
-  onCompact: () => void;
+  /** Have the 分身 summarize the conversation now, optionally preserving `focus` topics. */
+  onCompact: (focus?: string) => void;
   onModel: (provider: string, model: string) => void;
   listModels: (provider: string) => Promise<[string, string][]>;
   /** The last turn in plan mode ended with the 分身's answer: offer to carry it out. */
@@ -301,9 +301,10 @@ export function Composer(props: ComposerProps) {
       name: "compact",
       label: "凝练",
       aliases: ["凝练", "摘要", "压缩"],
-      hint: "现在就把前情凝成摘要，之后的请求省灵石",
+      arg: "[保留重点]",
+      hint: "现在就把前情凝成摘要（可跟要保留的重点；近期轮次原样保留）",
       unavailable: busy ? "分身运功时不能凝练，等它收功" : usage.context === 0 ? "还没有前情可凝" : undefined,
-      run: () => onCompact(),
+      run: (arg) => onCompact(arg.trim() || undefined),
     },
     { name: "model", label: "心法", aliases: ["心法", "功法", "模型"], hint: "换心法，也能换到别的宗门", unavailable: busy ? "分身运功时不能换心法，等它收功" : undefined, run: () => setModelSummon((count) => count + 1) },
     {
@@ -382,7 +383,8 @@ export function Composer(props: ComposerProps) {
     const typed = browsing ? parse("/") : parse(text);
     const fromButton = browsing;
     setBrowsing(false);
-    if ((!typed?.named && (offer.command.arg || offer.command.choices)) || (offer.command.choices && !typed?.arg)) {
+    const argRequired = !!offer.command.arg && !offer.command.arg.startsWith("[");
+    if ((!typed?.named && (argRequired || offer.command.choices)) || (offer.command.choices && !typed?.arg)) {
       setText(completion(offer));
       input.current?.focus();
       return;

@@ -1113,7 +1113,7 @@ export default function App() {
             onCarryOut={carryOut}
             onSend={send}
             onStop={() => api.cancelTurn(active.id).catch(fail)}
-            onCompact={() => api.compactSession(active.id).catch(fail)}
+            onCompact={(focus) => api.compactSession(active.id, focus).catch(fail)}
             trustable={!!active.worktree}
             seed={seed}
             onSeedConsumed={() => setSeed(null)}

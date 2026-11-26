@@ -52,7 +52,7 @@ export type SessionEvent =
   | { type: "external/session"; data: { backend: string; session_id: string } }
   | { type: "user/message"; data: { text: string; steering: boolean; mode?: Mode; images?: Image[]; files?: Attached[] } }
   | { type: "assistant/message"; data: { content: ContentBlock[]; stop_reason: string | null; model: string; tokens?: Tokens } }
-  | { type: "context/compacted"; data: { summary: string; tokens_before: number; tokens?: Tokens } }
+  | { type: "context/compacted"; data: { summary: string; tokens_before: number; focus?: string; kept_from_turn?: number; tokens?: Tokens } }
   | { type: "approval/requested"; data: { tool_use_id: string; tool: string; reason: string; detail: string; grant?: string; expires_at?: string } }
   | { type: "approval/resolved"; data: { tool_use_id: string; decision: Decision; timed_out?: boolean } }
   | { type: "question/asked"; data: { tool_use_id: string; questions: Question[]; expires_at?: string } }

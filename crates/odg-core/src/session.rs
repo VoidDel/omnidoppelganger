@@ -444,6 +444,8 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
         _ => DEFAULT_PROVIDER.to_string(),
     };
     let mut spoken: Vec<(usize, String)> = Vec::new();
+    // Snapshot of `(messages.len(), spoken.len())` at the start of each turn, for `kept_from_turn` tail retention.
+    let mut turn_starts: HashMap<u64, (usize, usize)> = HashMap::new();
     // What the user said since the model last spoke.
     let mut unanswered: Vec<Value> = Vec::new();
     // The to-do list as the model last wrote it.
@@ -453,6 +455,9 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
     let mut brief: Option<&str> = None;
     for envelope in events {
         match &envelope.event {
+            Event::TurnStart { turn } => {
+                turn_starts.insert(*turn, (messages.len(), spoken.len()));
+            }
             Event::AsideBriefed { brief: told } => brief = Some(told),
             Event::UserMessage { text: said, mode, images, files, .. } => {
                 if (*mode == Mode::Plan) != planning {
@@ -491,20 +496,47 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                 pending.push(text(&told));
             }
             Event::ModelChanged { provider: Some(provider), .. } => speaker = provider.clone(),
-            Event::ContextCompacted { summary, .. } => {
-                messages.clear();
-                spoken.clear();
-                pending.clear();
-                pending.push(text(&format!("{COMPACTED}\n\n{summary}")));
+            Event::ContextCompacted { summary, kept_from_turn, .. } => {
+                let mut header = vec![text(&format!("{COMPACTED}\n\n{summary}"))];
                 if planning {
-                    pending.push(text(PLAN_ON));
+                    header.push(text(PLAN_ON));
                 }
                 // The list is the model's own bookkeeping; a summary cannot be trusted to carry it whole.
                 if let Some(todos) = todos.as_ref().filter(|todos| !todos.is_empty()) {
                     let lines: Vec<String> = todos.iter().map(|(item, status)| format!("- [{status}] {item}")).collect();
-                    pending.push(text(&format!("[Your to-do list as you last wrote it; update it with `update_todos` as you go.]\n{}", lines.join("\n"))));
+                    header.push(text(&format!("[Your to-do list as you last wrote it; update it with `update_todos` as you go.]\n{}", lines.join("\n"))));
                 }
-                pending.extend(unanswered.iter().cloned());
+                let retained = kept_from_turn
+                    .and_then(|turn| turn_starts.get(&turn).copied())
+                    .filter(|(msg_from, _)| *msg_from < messages.len());
+                if let Some((msg_from, spoken_from)) = retained {
+                    let mut kept_msgs: Vec<Value> = messages.drain(msg_from..).collect();
+                    let kept_spoken: Vec<(usize, String)> = spoken
+                        .drain(spoken_from..)
+                        .filter(|(idx, _)| *idx >= msg_from)
+                        .map(|(idx, spk)| (idx - msg_from, spk))
+                        .collect();
+                    messages.clear();
+                    spoken.clear();
+                    pending.clear();
+                    turn_starts.clear();
+                    if let Some(first_content) = kept_msgs.first_mut().filter(|m| m["role"] == "user").and_then(|m| m["content"].as_array_mut()) {
+                        header.extend(first_content.drain(..));
+                        *first_content = header;
+                    } else {
+                        kept_msgs.insert(0, json!({ "role": "user", "content": header }));
+                    }
+                    messages = kept_msgs;
+                    spoken = kept_spoken;
+                    pending.extend(unanswered.iter().cloned());
+                } else {
+                    messages.clear();
+                    spoken.clear();
+                    pending.clear();
+                    turn_starts.clear();
+                    pending.extend(header);
+                    pending.extend(unanswered.iter().cloned());
+                }
             }
             Event::ToolResult { tool_use_id, content, is_error, images, .. } => {
                 let words = if content.is_empty() { "(no output)" } else { content.as_str() };
@@ -764,17 +796,59 @@ pub const COMPACTED: &str = "[The conversation up to here grew too long and was 
 pub fn context_estimate(events: &[Envelope]) -> u64 {
     let guess = |text: &str| text.len() as u64 / 3;
     let mut estimate = 0;
+    let mut current_turn = 0u64;
+    let mut turn_added: HashMap<u64, u64> = HashMap::new();
+    let mut unanswered_added = 0u64;
+    let mut turn_answered = false;
     for envelope in events {
         match &envelope.event {
-            Event::ContextCompacted { summary, .. } => estimate = guess(summary),
-            Event::AssistantMessage { tokens: Some(tokens), .. } => estimate = tokens.input + tokens.output,
-            Event::AssistantMessage { content, tokens: None, .. } => estimate += guess(&Value::Array(content.clone()).to_string()),
+            Event::TurnStart { turn } => {
+                current_turn = *turn;
+                turn_answered = false;
+                unanswered_added = 0;
+            }
+            Event::ContextCompacted { summary, kept_from_turn, .. } => {
+                let retained: u64 = match kept_from_turn {
+                    Some(from_turn) => turn_added
+                        .iter()
+                        .filter(|(t, _)| **t >= *from_turn && (**t < current_turn || turn_answered))
+                        .map(|(_, v)| *v)
+                        .sum(),
+                    None => 0,
+                };
+                turn_added.clear();
+                estimate = guess(summary) + retained + if !turn_answered { unanswered_added } else { 0 };
+            }
+            Event::AssistantMessage { tokens: Some(tokens), content, .. } => {
+                turn_answered = true;
+                estimate = tokens.input + tokens.output;
+                *turn_added.entry(current_turn).or_default() += guess(&Value::Array(content.clone()).to_string());
+            }
+            Event::AssistantMessage { content, tokens: None, .. } => {
+                turn_answered = true;
+                let g = guess(&Value::Array(content.clone()).to_string());
+                estimate += g;
+                *turn_added.entry(current_turn).or_default() += g;
+            }
             // A picture's cost depends on its size and the provider; this is a middling guess until the next count.
             Event::UserMessage { text, images, files, .. } => {
-                estimate += guess(text) + 1500 * images.len() as u64 + files.iter().map(|file| guess(&crate::events::attached_text(file))).sum::<u64>()
+                let g = guess(text) + 1500 * images.len() as u64 + files.iter().map(|file| guess(&crate::events::attached_text(file))).sum::<u64>();
+                estimate += g;
+                *turn_added.entry(current_turn).or_default() += g;
+                if !turn_answered {
+                    unanswered_added += g;
+                }
             }
-            Event::ToolResult { content, images, .. } => estimate += guess(content) + 1500 * images.len() as u64,
-            Event::AsideBriefed { brief } => estimate += guess(brief),
+            Event::ToolResult { content, images, .. } => {
+                let g = guess(content) + 1500 * images.len() as u64;
+                estimate += g;
+                *turn_added.entry(current_turn).or_default() += g;
+            }
+            Event::AsideBriefed { brief } => {
+                let g = guess(brief);
+                estimate += g;
+                *turn_added.entry(current_turn).or_default() += g;
+            }
             _ => {}
         }
     }
@@ -1152,7 +1226,7 @@ ASSISTANT CALLED read_file:"));
         let short = transcript(log.events(), 100);
         assert!(short.len() < 200 && short.starts_with("USER:") && short.contains("omitted") && short.ends_with("and hurry"), "{short}");
 
-        log.append(Event::ContextCompacted { summary: "Read a; it holds x.".into(), tokens_before: 1153, tokens: None }).unwrap();
+        log.append(Event::ContextCompacted { summary: "Read a; it holds x.".into(), tokens_before: 1153, focus: None, kept_from_turn: None, tokens: None }).unwrap();
         // Only the summary goes back, then plan mode (still on), then what the model had not answered.
         // (No to-do list was written in this conversation, so none is carried over.)
         let texts = |events: &[Envelope]| -> Vec<String> {
@@ -1251,7 +1325,7 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         log.append(result.clone()).unwrap();
         log.append(listed(json!([{ "text": "bad", "status": "unknown" }]))).unwrap();
         log.append(result).unwrap();
-        log.append(Event::ContextCompacted { summary: "Summary.".into(), tokens_before: 9, tokens: None }).unwrap();
+        log.append(Event::ContextCompacted { summary: "Summary.".into(), tokens_before: 9, focus: None, kept_from_turn: None, tokens: None }).unwrap();
         let messages = derive_messages(log.events());
         let texts: Vec<&str> = messages[0]["content"].as_array().unwrap().iter().filter_map(|block| block["text"].as_str()).collect();
         assert_eq!(texts.len(), 2);

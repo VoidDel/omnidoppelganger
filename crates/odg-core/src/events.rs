@@ -474,6 +474,12 @@ pub enum Event {
         summary: String,
         /// About how many tokens the conversation held before.
         tokens_before: u64,
+        /// Optional user-specified preservation focus (from `/compact <focus>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<String>,
+        /// Earliest completed turn kept verbatim after `summary` (sliding recent tail).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kept_from_turn: Option<u64>,
         /// What the request that wrote the summary cost.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tokens: Option<Tokens>,

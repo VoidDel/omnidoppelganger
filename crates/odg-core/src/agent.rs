@@ -599,6 +599,12 @@ impl<L: Llm> Session<L> {
     /// it does, so it can be stopped, and a message sent meanwhile opens a
     /// turn once it is done. Returns how many tokens the conversation held.
     pub async fn compact_now(&self) -> Result<u64, String> {
+        self.compact_now_with(None).await
+    }
+
+    /// Like [`Session::compact_now`], with an optional `focus` instruction telling the model what
+    /// details must be preserved in the summary.
+    pub async fn compact_now_with(&self, focus: Option<String>) -> Result<u64, String> {
         if let Some(providers::Protocol::Cli(kind)) = providers::provider(&self.inner.provider()).map(|known| known.protocol) {
             return Err(format!("{} 由本机 CLI 自行管理会话上下文，无需手动凝练。", kind.display_name()));
         }
@@ -619,7 +625,7 @@ impl<L: Llm> Session<L> {
         let estimate = context_estimate(self.inner.log.lock().unwrap().events());
         // Near the window, the conversation itself would not fit beside the question: summarize a transcript of it.
         let near_window = estimate >= tuning.context_window / 10 * 9;
-        let outcome = self.inner.compact(&tuning, estimate, near_window, &cancel).await;
+        let outcome = self.inner.compact(&tuning, estimate, near_window, focus.as_deref(), &cancel).await;
         // What was sent meanwhile is answered now; otherwise the session is idle again.
         let next = {
             let mut state = self.inner.state.lock().unwrap();
@@ -1137,7 +1143,7 @@ impl<L: Llm> Inner<L> {
                 let near_window = estimate >= tuning.context_window / 10 * 9;
                 // Any other failure is let pass: past the limit is not yet past the window, so
                 // the request below may still fit, and the next step tries to compact again.
-                if let Err(LlmError::Cancelled) = self.compact(&tuning, estimate, near_window, cancel).await {
+                if let Err(LlmError::Cancelled) = self.compact(&tuning, estimate, near_window, None, cancel).await {
                     return Ok("cancelled");
                 }
             }
@@ -1165,7 +1171,7 @@ impl<L: Llm> Inner<L> {
                 // The window is smaller than the limit assumed: compact, and send the step again, once.
                 Err(error) if error.context_overflow() && !overflowed && self.compactable() => {
                     overflowed = true;
-                    match self.compact(&tuning, estimate, true, cancel).await {
+                    match self.compact(&tuning, estimate, true, None, cancel).await {
                         Ok(()) => continue,
                         Err(LlmError::Cancelled) => return Ok("cancelled"),
                         Err(failure) => return Err(format!("{error}; and the conversation could not be summarized to fit: {failure}")),

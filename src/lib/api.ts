@@ -114,7 +114,7 @@ export const api = {
   /** Interrupt the current step so queued steering messages are heard immediately; resolves false if already picked up. */
   deliverQueued: (id: string) => invoke<boolean>("deliver_queued", { id }),
   /** Have the model summarize the conversation now, between turns. Resolves with how many tokens it held before. */
-  compactSession: (id: string) => invoke<number>("compact_session", { id }),
+  compactSession: (id: string, focus?: string) => invoke<number>("compact_session", { id, focus: focus?.trim() || null }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (settings: Settings) => invoke<SettingsView>("save_settings", { settings }),
   /** Check and save the MCP server list, then connect to what it names. Rejects when the text is not a valid list. */

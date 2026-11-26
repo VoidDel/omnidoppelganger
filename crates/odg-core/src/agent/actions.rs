@@ -19,6 +19,57 @@ use super::{Inner, Session, Status, Tuning};
 /// How long a stopped turn waits for its subagents to stop too before it ends without them.
 const SUBAGENT_STOP: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Pick the last completed turn to keep verbatim across compaction when there are at least two
+/// completed turns since the previous compaction and that last turn fits comfortably (`<= window / 4`).
+/// Returns `(event_index_of_kept_turn_start, kept_turn_number)`.
+fn choose_retained_turn(events: &[crate::events::Envelope], context_window: u64) -> Option<(usize, u64)> {
+    let since = events
+        .iter()
+        .rposition(|envelope| matches!(envelope.event, Event::ContextCompacted { .. }))
+        .map_or(0, |idx| idx + 1);
+    let mut completed: Vec<(u64, usize, u64)> = Vec::new();
+    let mut active: Option<(u64, usize, bool, u64)> = None;
+    let guess = |s: &str| s.len() as u64 / 3;
+    for (offset, env) in events[since..].iter().enumerate() {
+        let abs_idx = since + offset;
+        match &env.event {
+            Event::TurnStart { turn } => {
+                active = Some((*turn, abs_idx, false, 0));
+            }
+            Event::UserMessage { text, images, files, .. } => {
+                if let Some((_, _, _, ref mut est)) = active {
+                    *est += guess(text) + 1500 * images.len() as u64 + files.iter().map(|f| guess(&crate::events::attached_text(f))).sum::<u64>();
+                }
+            }
+            Event::AssistantMessage { content, .. } => {
+                if let Some((_, _, ref mut spoke, ref mut est)) = active {
+                    *spoke = true;
+                    *est += guess(&Value::Array(content.clone()).to_string());
+                }
+            }
+            Event::ToolResult { content, images, .. } => {
+                if let Some((_, _, _, ref mut est)) = active {
+                    *est += guess(content) + 1500 * images.len() as u64;
+                }
+            }
+            Event::TurnEnd { reason, .. } => {
+                if let Some((turn, start_idx, spoke, est)) = active.take()
+                    && spoke
+                    && reason == "completed"
+                {
+                    completed.push((turn, start_idx, est));
+                }
+            }
+            _ => {}
+        }
+    }
+    if completed.len() < 2 {
+        return None;
+    }
+    let &(turn, start_idx, est) = completed.last()?;
+    (est <= context_window / 4).then_some((start_idx, turn))
+}
+
 impl<L: Llm> Inner<L> {
     /// Start a subagent: a session of its own in this workspace, on this
     /// session's provider, model, and effort, in its mode and with what the
@@ -183,23 +234,49 @@ impl<L: Llm> Inner<L> {
     /// provider's cache makes cheap; when that would not fit the context
     /// window (`from_transcript`, or the provider says so), it is a shortened
     /// plain-text transcript instead.
-    pub(super) async fn compact(&self, tuning: &Tuning, tokens_before: u64, mut from_transcript: bool, cancel: &CancellationToken) -> Result<(), LlmError> {
+    pub(super) async fn compact(
+        &self,
+        tuning: &Tuning,
+        tokens_before: u64,
+        mut from_transcript: bool,
+        focus: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<(), LlmError> {
+        let focus_clean = focus.map(str::trim).filter(|s| !s.is_empty());
+        let question = match focus_clean {
+            Some(extra) => format!("{SUMMARIZE}\n\nAdditional user instructions — be sure to preserve the following details in your summary:\n{extra}"),
+            None => SUMMARIZE.to_string(),
+        };
         loop {
             let text = |text: String| json!({ "type": "text", "text": text });
-            let messages = {
+            let (messages, kept_from_turn) = {
                 let log = self.log.lock().unwrap();
+                let all_events = log.events();
+                let retained = if from_transcript {
+                    None
+                } else {
+                    choose_retained_turn(all_events, tuning.context_window)
+                };
+                let slice = match retained {
+                    Some((split_idx, _)) => &all_events[..split_idx],
+                    None => all_events,
+                };
+                let kept_turn = retained.map(|(_, t)| t);
                 if from_transcript {
                     // Half the window, at about three bytes a token.
                     let budget = usize::try_from((tuning.context_window / 2).saturating_mul(3)).unwrap_or(usize::MAX);
-                    vec![json!({ "role": "user", "content": [text(format!("{}\n\n{SUMMARIZE}", transcript(log.events(), budget)))] })]
+                    (
+                        vec![json!({ "role": "user", "content": [text(format!("{}\n\n{question}", transcript(slice, budget)))] })],
+                        None,
+                    )
                 } else {
-                    let mut messages = derive_messages(log.events());
+                    let mut messages = derive_messages(slice);
                     // A step starts with the user's turn to speak, so the question joins that message.
                     match messages.last_mut().filter(|message| message["role"] == "user").and_then(|message| message["content"].as_array_mut()) {
-                        Some(content) => content.push(text(SUMMARIZE.to_string())),
-                        None => messages.push(json!({ "role": "user", "content": [text(SUMMARIZE.to_string())] })),
+                        Some(content) => content.push(text(question.clone())),
+                        None => messages.push(json!({ "role": "user", "content": [text(question.clone())] })),
                     }
-                    messages
+                    (messages, kept_turn)
                 }
             };
             let request = LlmRequest {
@@ -233,7 +310,13 @@ impl<L: Llm> Inner<L> {
             if summary.is_empty() {
                 return Err(LlmError::Protocol("the model wrote no summary".to_string()));
             }
-            let event = Event::ContextCompacted { summary: summary.to_string(), tokens_before, tokens: providers::tokens(&self.provider(), &turn.usage) };
+            let event = Event::ContextCompacted {
+                summary: summary.to_string(),
+                tokens_before,
+                focus: focus_clean.map(str::to_string),
+                kept_from_turn,
+                tokens: providers::tokens(&self.provider(), &turn.usage),
+            };
             return self.append(event).map_err(LlmError::Protocol);
         }
     }

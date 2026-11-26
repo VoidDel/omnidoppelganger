@@ -14,7 +14,7 @@ export interface AsideComposerArgs {
   onItem: (item: SessionItem) => void;
   onSend: (text: string, images: Image[], files: string[]) => void;
   onStop: () => void;
-  onCompact: () => void;
+  onCompact: (focus?: string) => void;
 }
 
 export interface AsidePaneProps {
@@ -162,7 +162,7 @@ export function AsidePane({ main, visible, sessions, renderComposer, onForward, 
           onItem: (item) => setAside(item),
           onSend: send,
           onStop: () => api.cancelTurn(aside.id).catch((error) => onError(String(error))),
-          onCompact: () => api.compactSession(aside.id).catch((error) => onError(String(error))),
+          onCompact: (focus) => api.compactSession(aside.id, focus).catch((error) => onError(String(error))),
         })}
     </div>
   );

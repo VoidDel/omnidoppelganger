@@ -72,7 +72,11 @@ function ItemView({ item, mode, family, frozen, onDecide, onAnswer, onForward }:
     case "compacted":
       return (
         <details className="thinking">
-          <summary>分身把约 {shortCount(item.tokensBefore)} token 的前情凝成了一段摘要，之后只凭摘要接着做</summary>
+          <summary>
+            分身把约 {shortCount(item.tokensBefore)} token 的前情凝成了一段摘要
+            {item.focus ? `（重点保留：${item.focus}）` : ""}
+            {item.keptFromTurn ? `，并原样保留了第 ${item.keptFromTurn} 轮起的近期上下文` : "，之后只凭摘要接着做"}
+          </summary>
           <p>{item.summary}</p>
         </details>
       );

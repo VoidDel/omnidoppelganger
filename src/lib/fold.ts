@@ -33,7 +33,7 @@ export type Item =
   | { kind: "thinking"; text: string }
   | ToolItem
   | { kind: "fallback"; from: string; to: string }
-  | { kind: "compacted"; summary: string; tokensBefore: number }
+  | { kind: "compacted"; summary: string; tokensBefore: number; focus?: string; keptFromTurn?: number }
   | { kind: "restored"; turn: number; restored: string[]; skipped: string[] }
   /** A deliverable restored to an earlier snapshotted version. */
   | { kind: "artifact_restored"; file: string; path: string; version: number; snapshot: string; bytes: number; previous?: string; previousBytes?: number; ts?: string }
@@ -222,7 +222,13 @@ export function fold(events: Envelope[]): Row[] {
         });
         break;
       case "context/compacted":
-        current()?.items.push({ kind: "compacted", summary: event.data.summary, tokensBefore: event.data.tokens_before });
+        current()?.items.push({
+          kind: "compacted",
+          summary: event.data.summary,
+          tokensBefore: event.data.tokens_before,
+          focus: event.data.focus,
+          keptFromTurn: event.data.kept_from_turn,
+        });
         break;
       case "turn/end":
         if (event.data.reason !== "completed" && current()) {

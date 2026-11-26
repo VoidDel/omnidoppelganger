@@ -1496,9 +1496,9 @@ async fn undo_turn(app: State<'_, App>, id: String, turn: u64) -> Result<Undone,
 /// Have the model summarize the session's conversation now, between turns.
 /// Returns how many tokens the conversation held before.
 #[tauri::command]
-async fn compact_session(app: State<'_, App>, id: String) -> Result<u64, String> {
+async fn compact_session(app: State<'_, App>, id: String, focus: Option<String>) -> Result<u64, String> {
     let session = app.live(&id)?;
-    session.compact_now().await
+    session.compact_now_with(focus).await
 }
 
 #[tauri::command]

@@ -874,6 +874,48 @@ async fn compacts_the_conversation_when_asked_between_turns() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn compacts_with_custom_focus_and_retains_most_recent_completed_turn() {
+    let script = vec![
+        says("turn 1 answer"),
+        says("turn 2 exact code details"),
+        says("<summary>Summary of turn 1 preserving DB schema.</summary>"),
+        says("turn 3 answer"),
+    ];
+    let mut fixture = fixture(ScriptedLlm::new(script, None));
+    fixture.session.send("turn 1 question".into());
+    fixture.idle().await;
+    fixture.session.send("turn 2 question".into());
+    fixture.idle().await;
+
+    fixture.session.compact_now_with(Some("保留 DB schema 细节".into())).await.unwrap();
+    fixture.until(|event| matches!(event, UiEvent::Status { status: Status::Running, .. })).await;
+    fixture.idle().await;
+
+    // Next turn: summary covers turn 1, turn 2 is retained verbatim, followed by turn 3 question!
+    fixture.session.send("turn 3 question".into());
+    fixture.idle().await;
+
+    let requests = fixture.llm.requests.lock().unwrap();
+    // Compaction request (requests[2]) summarized only turn 1 and appended the focus instruction.
+    let compact_req_texts = texts(&requests[2]);
+    assert_eq!(compact_req_texts.len(), 3);
+    assert_eq!(compact_req_texts[0], vec!["turn 1 question".to_string()]);
+    assert_eq!(compact_req_texts[1], vec!["turn 1 answer".to_string()]);
+    assert!(compact_req_texts[2][0].contains("保留 DB schema 细节"));
+
+    // Post-compaction request (requests[3]) starts with summary + turn 2 user, then turn 2 assistant, then turn 3 user.
+    let summary_head = format!("{}\n\nSummary of turn 1 preserving DB schema.", crate::session::COMPACTED);
+    assert_eq!(
+        texts(&requests[3]),
+        [
+            vec![summary_head, "turn 2 question".to_string()],
+            vec!["turn 2 exact code details".to_string()],
+            vec!["turn 3 question".to_string()],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn compacts_from_a_transcript_and_retries_when_the_provider_says_the_conversation_is_too_long() {
     let too_long = || Err(LlmError::Api { status: Some(400), kind: "invalid_request_error".into(), message: "prompt is too long: 210000 tokens > 200000 maximum".into(), retryable: false });
     let mut fixture = fixture(ScriptedLlm::new(vec![too_long(), says("first answer"), too_long(), says("The user said one."), says("second answer"), too_long(), says("More was said."), too_long()], None));
