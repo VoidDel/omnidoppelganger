@@ -980,6 +980,7 @@ impl<L: Llm> Inner<L> {
             _ => None,
         };
         let cli_text = cli_kind.is_some().then(|| text.clone());
+        let cli_images = if cli_kind.is_some() { images.clone() } else { Vec::new() };
         let cli_files = if cli_kind.is_some() { files.clone() } else { Vec::new() };
         let opened = self
             .append(Event::TurnStart { turn })
@@ -1008,45 +1009,67 @@ impl<L: Llm> Inner<L> {
                     let combined = (!parts.is_empty()).then(|| parts.join("\n\n"));
                     (conv, combined)
                 };
-                let prompt = crate::cli_agents::build_prompt(cli_text.as_deref().unwrap_or(""), &cli_files, briefing.as_deref());
-                let tuning = self.tuning();
-                let extra_dirs: Vec<PathBuf> = self.skill_roots.iter().filter(|d| d.is_dir()).cloned().collect();
-                let mcp_servers = self
-                    .mcp
-                    .as_ref()
-                    .and_then(|hub| crate::mcp::parse_config(&hub.config_text()).ok())
-                    .map(|all| all.into_iter().filter(|(_, cfg)| !cfg.disabled).collect())
-                    .unwrap_or_default();
-                let params = crate::cli_agents::TurnParams {
-                    kind,
-                    workspace: &self.workspace,
-                    snapshots: Some(&self.snapshots),
-                    turn,
-                    prompt,
-                    conversation_id,
-                    model: self.model(),
-                    effort: tuning.effort,
-                    mode: self.mode(),
-                    sandboxed: self.sandboxed(),
-                    read_only: self.read_only,
-                    extra_dirs,
-                    mcp_servers,
-                };
-                struct CliSink<'a, L: Llm>(&'a Inner<L>);
-                impl<L: Llm> crate::cli_agents::Sink for CliSink<'_, L> {
-                    fn log(&self, event: Event) -> Result<(), String> {
-                        self.0.append(event)
-                    }
-                    fn stream(&self, delta: StreamDelta) {
-                        self.0.emit(UiEvent::Stream { session_id: self.0.id.clone(), delta });
-                    }
-                }
-                match crate::cli_agents::run_turn(params, &CliSink(self), cancel).await {
-                    Ok(outcome) => {
-                        extra_artifacts = outcome.extra_artifacts;
-                        (outcome.reason, None)
-                    }
+                match crate::cli_agents::materialize_cli_images(&cli_images, turn) {
                     Err(error) => ("error", Some(error)),
+                    Ok((image_paths, _image_guard)) => {
+                        let prompt = crate::cli_agents::build_prompt(
+                            cli_text.as_deref().unwrap_or(""),
+                            &cli_files,
+                            &image_paths,
+                            Some(&self.workspace),
+                            briefing.as_deref(),
+                        );
+                        let tuning = self.tuning();
+                        let mut extra_dirs: Vec<PathBuf> = self.skill_roots.iter().filter(|d| d.is_dir()).cloned().collect();
+                        for file in &cli_files {
+                            let p = std::path::Path::new(&file.path);
+                            if !p.starts_with(&self.workspace)
+                                && let Some(dir) = if file.is_dir { Some(p) } else { p.parent() }
+                                && dir.is_dir()
+                                && !extra_dirs.iter().any(|existing| existing == dir)
+                            {
+                                extra_dirs.push(dir.to_path_buf());
+                            }
+                        }
+                        let mcp_servers = self
+                            .mcp
+                            .as_ref()
+                            .and_then(|hub| crate::mcp::parse_config(&hub.config_text()).ok())
+                            .map(|all| all.into_iter().filter(|(_, cfg)| !cfg.disabled).collect())
+                            .unwrap_or_default();
+                        let params = crate::cli_agents::TurnParams {
+                            kind,
+                            workspace: &self.workspace,
+                            snapshots: Some(&self.snapshots),
+                            turn,
+                            prompt,
+                            conversation_id,
+                            model: self.model(),
+                            effort: tuning.effort,
+                            mode: self.mode(),
+                            sandboxed: self.sandboxed(),
+                            read_only: self.read_only,
+                            extra_dirs,
+                            image_paths,
+                            mcp_servers,
+                        };
+                        struct CliSink<'a, L: Llm>(&'a Inner<L>);
+                        impl<L: Llm> crate::cli_agents::Sink for CliSink<'_, L> {
+                            fn log(&self, event: Event) -> Result<(), String> {
+                                self.0.append(event)
+                            }
+                            fn stream(&self, delta: StreamDelta) {
+                                self.0.emit(UiEvent::Stream { session_id: self.0.id.clone(), delta });
+                            }
+                        }
+                        match crate::cli_agents::run_turn(params, &CliSink(self), cancel).await {
+                            Ok(outcome) => {
+                                extra_artifacts = outcome.extra_artifacts;
+                                (outcome.reason, None)
+                            }
+                            Err(error) => ("error", Some(error)),
+                        }
+                    }
                 }
             }
             (Ok(()), None) => match self.run_steps(cancel).await {

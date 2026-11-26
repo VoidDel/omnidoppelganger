@@ -1116,6 +1116,7 @@ export default function App() {
             onCompact={() => api.compactSession(active.id).catch(fail)}
             trustable={!!active.worktree}
             seed={seed}
+            onSeedConsumed={() => setSeed(null)}
             commands={slashCommands(active)}
           />
         </Guard>
@@ -1582,6 +1583,7 @@ export default function App() {
                           onCompact={compactAside}
                           trustable={false}
                           seed={asideSeed}
+                          onSeedConsumed={() => setAsideSeed(null)}
                           commands={[]}
                           aside
                           acceptDrops={visible && showWorkbench}

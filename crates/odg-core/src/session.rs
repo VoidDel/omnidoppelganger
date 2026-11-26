@@ -669,8 +669,19 @@ pub fn last_brief(events: &[Envelope]) -> Option<&str> {
 }
 
 /// The most recent external backend conversation id logged for `backend` (e.g. `antigravity`).
+/// In a forked session, external ids copied from turns `<= fork.turn` belong to the source session
+/// and are ignored so the fork starts an independent CLI conversation seeded via handoff brief.
 pub fn external_session<'a>(events: &'a [Envelope], backend: &str) -> Option<&'a str> {
-    events.iter().rev().find_map(|envelope| match &envelope.event {
+    let own_events = if let Some(fork) = forked_from(events) {
+        let start = events
+            .iter()
+            .position(|env| matches!(env.event, Event::TurnStart { turn } if turn > fork.turn))
+            .unwrap_or(events.len());
+        &events[start..]
+    } else {
+        events
+    };
+    own_events.iter().rev().find_map(|envelope| match &envelope.event {
         Event::ExternalSession { backend: kind, session_id } if kind == backend => Some(session_id.as_str()),
         _ => None,
     })
@@ -1172,7 +1183,10 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         log.append(Event::UserMessage { text: "compare them".into(), steering: false, mode: Mode::Edit, images: vec![png], files: vec![notes.clone(), big.clone()] }).unwrap();
         let content = derive_messages(log.events())[0]["content"].clone();
         assert_eq!(content[0]["type"], "image");
-        assert_eq!(content[1], json!({ "type": "text", "text": "<attached_file path=\"/x/notes.md\">\none\n</attached_file>" }));
+        assert_eq!(
+            content[1],
+            json!({ "type": "text", "text": "<attached_file path=\"/x/notes.md\">\n[File path: /x/notes.md]\none\n</attached_file>" })
+        );
         assert!(content[2]["text"].as_str().unwrap().starts_with("<attached_file path=\"/x/big.log\" bytes=\"300000\">"));
         assert_eq!(content[3], json!({ "type": "text", "text": "compare them" }));
         // The log line carries the files; a message without any reads as before.
@@ -1427,5 +1441,24 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         );
         // A picture is counted as one in a message is, not by the length of its base64.
         assert_eq!(context_estimate(log.events()) - before, "a.png is a PNG picture.".len() as u64 / 3 + 1500);
+    }
+
+    #[test]
+    fn forked_cli_session_does_not_reuse_source_external_session_id() {
+        let (_directory, store) = store();
+        let mut source = store.create(Path::new("/work"), "antigravity", "gemini-4-neon").unwrap();
+        source.append(Event::TurnStart { turn: 1 }).unwrap();
+        source.append(Event::UserMessage { text: "hi".into(), steering: false, mode: Mode::Auto, images: Vec::new(), files: Vec::new() }).unwrap();
+        source.append(Event::ExternalSession { backend: "antigravity".into(), session_id: "src-conv-1".into() }).unwrap();
+        source.append(assistant(vec![json!({ "type": "text", "text": "hello" })])).unwrap();
+        source.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+
+        let mut forked = store.fork(source.events(), None).unwrap();
+        assert_eq!(external_session(source.events(), "antigravity"), Some("src-conv-1"));
+        assert_eq!(external_session(forked.events(), "antigravity"), None);
+
+        forked.append(Event::TurnStart { turn: 2 }).unwrap();
+        forked.append(Event::ExternalSession { backend: "antigravity".into(), session_id: "fork-conv-2".into() }).unwrap();
+        assert_eq!(external_session(forked.events(), "antigravity"), Some("fork-conv-2"));
     }
 }

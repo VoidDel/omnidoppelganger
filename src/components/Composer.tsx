@@ -141,6 +141,8 @@ export interface ComposerProps {
   drafts?: Map<string, ComposerDraft>;
   /** Words, quote chips, or file paths to put in the box (from fork, file tree attach, or code/chat quote); a new `id` applies it. */
   seed: ComposerSeed | null;
+  /** Clear `seed` in the parent once consumed so remounting or switching sessions never re-applies a stale seed. */
+  onSeedConsumed?: () => void;
   /** The "/" commands the window gives, beside the box's own (心法, 境界, 禁制, 凝练); skills among them. */
   commands: SlashCommand[];
   /** What the empty box says, in place of the main conversation's own words. */
@@ -221,7 +223,7 @@ export function Composer(props: ComposerProps) {
         : null;
   const agyQuota = useProviderQuota(quotaSource);
   const activeQuotaGroup = quotaSource ? quotaGroupForModel(agyQuota.quota, model) : undefined;
-  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, trustable, sessionKey, workspace, drafts, commands: given, placeholder, acceptDrops = true, aside = false } = props;
+  const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, onSeedConsumed, trustable, sessionKey, workspace, drafts, commands: given, placeholder, acceptDrops = true, aside = false } = props;
   const provider = providers.find((known) => known.id === providerId);
   const cli = cliOf(provider);
   const providerName = provider?.name ?? providerId;
@@ -488,8 +490,9 @@ export function Composer(props: ComposerProps) {
       const incoming = seed.text;
       setText((prev) => (seed.append && prev.trim() ? `${prev.trimEnd()}\n\n${incoming}` : incoming));
     }
+    onSeedConsumed?.();
     requestAnimationFrame(() => input.current?.focus());
-  }, [seed]);
+  }, [seed, onSeedConsumed]);
   // Files dragged from the system onto the window are attached where they are dropped.
   useEffect(() => {
     if (!acceptDrops) {

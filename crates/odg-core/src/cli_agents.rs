@@ -19,7 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use crate::events::{Attached, Event};
+use crate::events::{Attached, Event, Image};
 use crate::llm::{StreamDelta, Tokens};
 use crate::policy::Mode;
 use crate::providers::Listed;
@@ -532,23 +532,48 @@ pub fn find_named_binary(env_var: &str, bin_name: &str, extra_home_rel: &[&str])
             }
         }
     }
-    let mut fallbacks = Vec::new();
+    let mut fallback_dirs = Vec::new();
     if let Some(home) = dirs::home_dir() {
         for rel in extra_home_rel {
-            fallbacks.push(home.join(rel).join(&exe));
+            fallback_dirs.push(home.join(rel));
         }
-        fallbacks.push(home.join(".local").join("bin").join(&exe));
-        fallbacks.push(home.join(".npm-global").join("bin").join(&exe));
-        fallbacks.push(home.join(".bun").join("bin").join(&exe));
-        fallbacks.push(home.join(".cargo").join("bin").join(&exe));
-        fallbacks.push(home.join("Library").join("pnpm").join(&exe));
+        fallback_dirs.push(home.join(".local").join("bin"));
+        fallback_dirs.push(home.join(".npm-global").join("bin"));
+        fallback_dirs.push(home.join(".bun").join("bin"));
+        fallback_dirs.push(home.join(".cargo").join("bin"));
+        fallback_dirs.push(home.join("Library").join("pnpm"));
+    }
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            fallback_dirs.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local = PathBuf::from(local);
+            fallback_dirs.push(local.join("pnpm"));
+            fallback_dirs.push(local.join("cursor-agent"));
+            fallback_dirs.push(local.join("Programs").join("cursor-agent"));
+        }
     }
     #[cfg(not(windows))]
     {
-        fallbacks.push(PathBuf::from(format!("/opt/homebrew/bin/{bin_name}")));
-        fallbacks.push(PathBuf::from(format!("/usr/local/bin/{bin_name}")));
+        fallback_dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        fallback_dirs.push(PathBuf::from("/usr/local/bin"));
     }
-    fallbacks.into_iter().find(|path| path.is_file())
+    for dir in fallback_dirs {
+        let candidate = dir.join(&exe);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        for ext in ["cmd", "bat"] {
+            let script = dir.join(format!("{bin_name}.{ext}"));
+            if script.is_file() {
+                return Some(script);
+            }
+        }
+    }
+    None
 }
 
 /// Normalized event emitted by any CLI driver's NDJSON parser.
@@ -746,8 +771,13 @@ pub fn build_handoff_brief(events: &[crate::events::Envelope], current_turn: u64
                 latest_summary = Some(clip_text(summary, 1200));
                 exchanges.clear();
             }
-            Event::UserMessage { text, .. } if !text.trim().is_empty() => {
-                exchanges.push(("用户", clip_text(text, 500)));
+            Event::UserMessage { text, images, .. } if !text.trim().is_empty() || !images.is_empty() => {
+                let note = match (text.trim().is_empty(), images.len()) {
+                    (true, n) => format!("[附带 {n} 张图片]"),
+                    (false, 0) => clip_text(text, 500),
+                    (false, n) => format!("{} [附带 {n} 张图片]", clip_text(text, 500)),
+                };
+                exchanges.push(("用户", note));
             }
             Event::AssistantMessage { content, .. } => {
                 let text: String = content
@@ -850,8 +880,16 @@ pub fn build_skills_brief(skill_roots: &[PathBuf], user_text: &str, include_cata
     if sections.is_empty() { None } else { Some(sections.join("\n\n")) }
 }
 
-/// Build the prompt string passed to an external CLI, prepending any side-conversation briefing and attached file paths.
-pub fn build_prompt(text: &str, files: &[Attached], briefing: Option<&str>) -> String {
+/// Build the prompt string passed to an external CLI, prepending any side-conversation briefing,
+/// attached file paths (inlining extracted Office/PDF document text and small out-of-workspace files
+/// so sandboxed or Python-less CLIs can still read them), and materialized user-attached image paths.
+pub fn build_prompt(
+    text: &str,
+    files: &[Attached],
+    image_paths: &[PathBuf],
+    workspace: Option<&Path>,
+    briefing: Option<&str>,
+) -> String {
     let mut parts = Vec::new();
     if let Some(brief) = briefing
         && !brief.trim().is_empty()
@@ -859,10 +897,30 @@ pub fn build_prompt(text: &str, files: &[Attached], briefing: Option<&str>) -> S
         parts.push(brief.trim().to_string());
     }
     if !files.is_empty() {
-        let mut list = String::from("Attached files:");
+        let mut path_only = Vec::new();
         for file in files {
+            let outside_workspace = workspace.is_some_and(|ws| !Path::new(&file.path).starts_with(ws));
+            let should_inline = file.content.is_some() && (file.document.is_some() || outside_workspace);
+            if should_inline {
+                parts.push(crate::events::attached_text(file));
+            } else {
+                path_only.push(file.path.as_str());
+            }
+        }
+        if !path_only.is_empty() {
+            let mut list = String::from("Attached files:");
+            for p in path_only {
+                list.push_str("\n- ");
+                list.push_str(p);
+            }
+            parts.push(list);
+        }
+    }
+    if !image_paths.is_empty() {
+        let mut list = String::from("Attached images (local files; please read/inspect them directly before answering):");
+        for path in image_paths {
             list.push_str("\n- ");
-            list.push_str(&file.path);
+            list.push_str(&path.to_string_lossy());
         }
         parts.push(list);
     }
@@ -870,6 +928,45 @@ pub fn build_prompt(text: &str, files: &[Attached], briefing: Option<&str>) -> S
         parts.push(text.to_string());
     }
     parts.join("\n\n")
+}
+
+/// RAII guard cleaning up temporary image files materialized for an external CLI turn.
+pub struct TempImagesGuard(Vec<PathBuf>);
+
+impl Drop for TempImagesGuard {
+    fn drop(&mut self) {
+        for path in self.0.drain(..) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Decode user-attached base64 images to temporary local files so external CLIs can inspect them
+/// via native image flags (`codex --image`, `opencode -f`) or their built-in file/image reader.
+pub fn materialize_cli_images(images: &[Image], turn: u64) -> Result<(Vec<PathBuf>, TempImagesGuard), String> {
+    if images.is_empty() {
+        return Ok((Vec::new(), TempImagesGuard(Vec::new())));
+    }
+    let dir = std::env::temp_dir().join("odg-images");
+    std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建临时图片目录：{error}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let mut paths = Vec::with_capacity(images.len());
+    for (idx, image) in images.iter().enumerate() {
+        let ext = match image.media_type.as_str() {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => "bin",
+        };
+        let bytes = crate::imagegen::unbase64(&image.data).ok_or_else(|| "无法解码附带图片的 base64 数据".to_string())?;
+        let path = dir.join(format!("image-{}-{turn}-{idx}-{stamp}.{ext}", std::process::id()));
+        std::fs::write(&path, &bytes).map_err(|error| format!("无法写入临时图片文件：{error}"))?;
+        paths.push(path);
+    }
+    Ok((paths.clone(), TempImagesGuard(paths)))
 }
 
 /// Build the CLI argument vector for one headless turn of `kind`.
@@ -2014,6 +2111,8 @@ pub struct TurnParams<'a> {
     pub read_only: bool,
     /// Extra readable directories (e.g. `~/.odg/skills`) granted to CLIs that support `--add-dir`.
     pub extra_dirs: Vec<PathBuf>,
+    /// Materialized temporary paths of user-attached images for this turn.
+    pub image_paths: Vec<PathBuf>,
     /// Enabled `odg` MCP servers (`~/.odg/mcp.json`) to bridge into CLIs supporting per-turn MCP config.
     pub mcp_servers: BTreeMap<String, crate::mcp::ServerConfig>,
 }
@@ -2234,11 +2333,12 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                     // External CLIs (e.g. agy) often write E2E screenshots into their own scratch directory
                     // outside the workspace. Track newly created images so they also appear in 「产物」.
                     let in_workspace = path.starts_with(self.params.workspace);
+                    let is_user_input_image = self.params.image_paths.iter().any(|p| p == path);
                     let created_this_turn = std::fs::metadata(path)
                         .and_then(|m| m.modified())
                         .ok()
                         .is_some_and(|mtime| mtime + std::time::Duration::from_secs(2) >= self.turn_started);
-                    if !in_workspace && created_this_turn && !self.external_artifacts.contains(path) {
+                    if !in_workspace && !is_user_input_image && created_this_turn && !self.external_artifacts.contains(path) {
                         self.external_artifacts.push(path.clone());
                     }
                 }
@@ -2789,6 +2889,45 @@ pub async fn run_turn<S: Sink>(params: TurnParams<'_>, sink: &S, cancel: &Cancel
         params.read_only,
     );
     apply_prompt_delivery_args(params.kind, &mut args, &prepared);
+    if !params.image_paths.is_empty() || !params.extra_dirs.is_empty() {
+        let mut extra_flags = Vec::new();
+        match params.kind {
+            CliKind::Codex => {
+                for path in &params.image_paths {
+                    extra_flags.push("--image".to_string());
+                    extra_flags.push(path.to_string_lossy().into_owned());
+                }
+            }
+            CliKind::ClaudeCode => {
+                let mut added_dirs: Vec<String> = Vec::new();
+                let mut push_dir = |dir: &Path| {
+                    if let Some(s) = dir.to_str()
+                        && !added_dirs.iter().any(|existing| existing == s)
+                    {
+                        added_dirs.push(s.to_string());
+                    }
+                };
+                if let Some(dir) = params.image_paths.first().and_then(|p| p.parent()) {
+                    push_dir(dir);
+                }
+                for dir in &params.extra_dirs {
+                    push_dir(dir);
+                }
+                for dir in added_dirs {
+                    extra_flags.push("--add-dir".to_string());
+                    extra_flags.push(dir);
+                }
+            }
+            CliKind::OpenCode => {
+                for path in &params.image_paths {
+                    extra_flags.push("-f".to_string());
+                    extra_flags.push(path.to_string_lossy().into_owned());
+                }
+            }
+            _ => {}
+        }
+        insert_before_prompt_tail(&mut args, extra_flags);
+    }
     if params.kind == CliKind::Antigravity {
         // Do NOT pass `~/.odg/skills` via `--add-dir`: `agy` sorts Active Workspaces alphabetically and
         // picks the first entry as Command Working Directory (`~/.odg/skills` sorts before `~/Projects/...`),
@@ -3215,6 +3354,7 @@ mod tests {
             sandboxed: false,
             read_only: false,
             extra_dirs: Vec::new(),
+            image_paths: Vec::new(),
             mcp_servers: BTreeMap::new(),
         };
         let sink = TestSink(Mutex::new(Vec::new()));
@@ -3361,6 +3501,7 @@ mod tests {
             sandboxed: false,
             read_only: false,
             extra_dirs: Vec::new(),
+            image_paths: Vec::new(),
             mcp_servers: BTreeMap::new(),
         };
         let codex_sink = VecSink(Mutex::new(Vec::new()));
@@ -3456,6 +3597,7 @@ mod tests {
             sandboxed: false,
             read_only: false,
             extra_dirs: Vec::new(),
+            image_paths: Vec::new(),
             mcp_servers: BTreeMap::new(),
         };
         let grok_sink = VecSink(Mutex::new(Vec::new()));
@@ -3645,6 +3787,7 @@ mod tests {
             read_only: false,
             conversation_id: None,
             extra_dirs: Vec::new(),
+            image_paths: Vec::new(),
             mcp_servers: std::collections::BTreeMap::new(),
         };
         let sink = Capture(std::sync::Mutex::new(Vec::new()));
@@ -3677,5 +3820,41 @@ mod tests {
         assert_eq!(meta["picture"], "image/png");
         assert_eq!(meta["file"], shot.display().to_string());
         assert_eq!(recorder.external_artifacts, vec![shot]);
+    }
+
+    #[test]
+    fn materializes_user_images_into_prompt_and_cleans_up() {
+        let png_bytes = b"\x89PNG\r\n\x1a\nfake-png";
+        let image = Image {
+            media_type: "image/png".into(),
+            data: crate::events::base64(png_bytes),
+        };
+        let (paths, guard) = materialize_cli_images(&[image], 3).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].exists());
+        assert_eq!(paths[0].extension().and_then(|e| e.to_str()), Some("png"));
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), png_bytes);
+
+        // Even with empty user text, the CLI prompt is non-empty and lists the materialized image path.
+        let prompt = build_prompt("", &[], &paths, Some(Path::new("/work")), None);
+        assert!(prompt.contains("Attached images"));
+        assert!(prompt.contains(&paths[0].to_string_lossy().into_owned()));
+
+        // Extracted Office/PDF documents are inlined with both text and file path.
+        let doc = Attached {
+            path: "/work/report.docx".into(),
+            bytes: 1200,
+            content: Some("季度营收增长 24%".into()),
+            document: Some(crate::documents::Kind::Word),
+            parts: None,
+            is_dir: false,
+        };
+        let doc_prompt = build_prompt("总结重点", &[doc], &[], Some(Path::new("/work")), None);
+        assert!(doc_prompt.contains("季度营收增长 24%"));
+        assert!(doc_prompt.contains("/work/report.docx"));
+
+        let path_copy = paths[0].clone();
+        drop(guard);
+        assert!(!path_copy.exists());
     }
 }
