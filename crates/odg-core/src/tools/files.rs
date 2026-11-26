@@ -780,3 +780,127 @@ pub(super) async fn search(input: &Value, context: &ToolContext) -> Result<ToolO
     };
     Ok(ToolOutput::ok(content, meta))
 }
+
+const BATCH_MAX_QUERIES: usize = 16;
+const BATCH_DEFAULT_ITEM_CHARS: usize = 4_000;
+const BATCH_MAX_ITEM_CHARS: usize = 20_000;
+const BATCH_DEFAULT_TOTAL_CHARS: usize = 32_000;
+const BATCH_MAX_TOTAL_CHARS: usize = 80_000;
+
+pub(super) async fn batch_inspect(input: &Value, context: &ToolContext) -> Result<ToolOutput, ToolOutput> {
+    let queries = input["queries"]
+        .as_array()
+        .ok_or_else(|| ToolOutput::error("`queries` is required and must be an array of inspection objects."))?;
+    if queries.is_empty() {
+        return Err(ToolOutput::error("`queries` must contain at least 1 query."));
+    }
+    if queries.len() > BATCH_MAX_QUERIES {
+        return Err(ToolOutput::error(format!(
+            "`queries` has {} items, exceeding the maximum of {BATCH_MAX_QUERIES} per call.",
+            queries.len()
+        )));
+    }
+    let max_total = input["max_total_chars"]
+        .as_u64()
+        .map(|n| n as usize)
+        .unwrap_or(BATCH_DEFAULT_TOTAL_CHARS)
+        .clamp(1_000, BATCH_MAX_TOTAL_CHARS);
+
+    let total = queries.len();
+    let mut sections: Vec<String> = Vec::with_capacity(total);
+    let mut used_chars = 0usize;
+    let mut errors = 0usize;
+    let mut any_truncated = false;
+
+    for (idx, query) in queries.iter().enumerate() {
+        if context.cancel.is_cancelled() {
+            break;
+        }
+        let kind = query["kind"].as_str().unwrap_or_default();
+        let max_item = query["max_chars"]
+            .as_u64()
+            .map(|n| n as usize)
+            .unwrap_or(BATCH_DEFAULT_ITEM_CHARS)
+            .clamp(200, BATCH_MAX_ITEM_CHARS);
+
+        let label = match kind {
+            "read_file" => format!("read_file {}", query["path"].as_str().unwrap_or_default()),
+            "search" => {
+                let pat = query["pattern"].as_str().unwrap_or_default();
+                match query["path"].as_str().filter(|p| !p.is_empty()) {
+                    Some(p) => format!("search `{pat}` in {p}"),
+                    None => format!("search `{pat}`"),
+                }
+            }
+            "find_files" => {
+                let p = query["path"].as_str().unwrap_or(".");
+                match query["glob"].as_str().filter(|g| !g.is_empty()) {
+                    Some(g) => format!("find_files {p} ({g})"),
+                    None => format!("find_files {p}"),
+                }
+            }
+            other => format!("unknown `{other}`"),
+        };
+
+        let out = match kind {
+            "read_file" => read_file(query, context).await.unwrap_or_else(|e| e),
+            "search" => search(query, context).await.unwrap_or_else(|e| e),
+            "find_files" => find_files(query, context).await.unwrap_or_else(|e| e),
+            other => ToolOutput::error(format!(
+                "Unsupported query kind `{other}`; expected `read_file`, `search`, or `find_files`."
+            )),
+        };
+
+        if out.is_error {
+            errors += 1;
+        }
+        let body_chars = out.content.chars().count();
+        let body = if body_chars > max_item {
+            any_truncated = true;
+            let kept: String = out.content.chars().take(max_item).collect();
+            format!("{kept}\n[... truncated at {max_item} of {body_chars} characters ...]")
+        } else {
+            out.content
+        };
+
+        let header = format!(
+            "=== [{}/{}] {}{} ===",
+            idx + 1,
+            total,
+            label.trim(),
+            if out.is_error { " [ERROR]" } else { "" }
+        );
+        let section = format!("{header}\n{body}");
+        let section_chars = section.chars().count() + 2;
+        if !sections.is_empty() && used_chars + section_chars > max_total {
+            any_truncated = true;
+            let remaining = max_total.saturating_sub(used_chars);
+            if remaining > header.chars().count() + 60 {
+                let take = remaining - header.chars().count() - 48;
+                let partial: String = body.chars().take(take).collect();
+                sections.push(format!("{header}\n{partial}\n[... batch digest stopped at {max_total} total characters ...]"));
+            } else {
+                sections.push(format!(
+                    "[... batch digest stopped at {max_total} characters; {} remaining quer{} omitted ...]",
+                    total - idx,
+                    if total - idx == 1 { "y" } else { "ies" }
+                ));
+            }
+            break;
+        }
+        used_chars += section_chars;
+        sections.push(section);
+    }
+
+    let content = sections.join("\n\n");
+    let meta = json!({
+        "queries": total,
+        "errors": errors,
+        "truncated": any_truncated,
+    });
+    if errors == total {
+        Err(ToolOutput { content, is_error: true, meta, images: Vec::new() })
+    } else {
+        Ok(ToolOutput::ok(content, meta))
+    }
+}

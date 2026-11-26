@@ -50,6 +50,37 @@ pub fn specs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "batch_inspect",
+            "description": "Run up to 16 read-only inspections (`read_file`, `search`, `find_files`) in a single call and receive one compact, character-budgeted digest. Prefer this when exploring unfamiliar code, checking several candidate files, or running multiple regex searches at once so intermediate noise does not bloat the conversation.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "type": "array",
+                        "description": "1 to 16 read-only queries executed in order.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "type": "string", "enum": ["read_file", "search", "find_files"], "description": "Which read-only operation to run." },
+                                "path": { "type": "string", "description": "File or directory path, relative to the workspace or absolute." },
+                                "offset": { "type": "integer", "description": "For `read_file`: 1-based starting line." },
+                                "limit": { "type": "integer", "description": "For `read_file`: maximum lines to read." },
+                                "pattern": { "type": "string", "description": "For `search`: regular expression." },
+                                "glob": { "type": "string", "description": "For `search` or `find_files`: file path glob." },
+                                "case_insensitive": { "type": "boolean", "description": "For `search`: ignore letter case." },
+                                "context": { "type": "integer", "description": "For `search`: context lines around matches (0-10)." },
+                                "files_only": { "type": "boolean", "description": "For `search`: return matching file paths only." },
+                                "max_chars": { "type": "integer", "description": "Maximum characters kept from this query's output (default 4000, max 20000)." }
+                            },
+                            "required": ["kind"]
+                        }
+                    },
+                    "max_total_chars": { "type": "integer", "description": "Maximum characters across the whole digest (default 32000, max 80000)." }
+                },
+                "required": ["queries"]
+            }
+        }),
+        json!({
             "name": "edit_file",
             "description": "Replace an exact piece of text in a file, or create a file. `old_string` must match the file exactly and occur once unless `replace_all` is true. To create a new file, pass an empty `old_string` and the full contents as `new_string`. To make several changes to one file in one call, pass `edits` instead of `old_string` and `new_string`: they apply in order, each to the result of the one before, and nothing is written unless all of them apply.",
             "input_schema": {

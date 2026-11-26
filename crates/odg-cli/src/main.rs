@@ -135,6 +135,7 @@ fn describe(name: &str, input: &serde_json::Value) -> String {
         }
         "search" => text("pattern"),
         "find_files" => input["glob"].as_str().or(input["path"].as_str()).unwrap_or(".").to_string(),
+        "batch_inspect" => format!("{} queries", input["queries"].as_array().map_or(0, Vec::len)),
         "run_command" => {
             let cwd = text("cwd");
             let command = text("command");

@@ -187,6 +187,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "move_file" => files::move_file(input, context),
         "search" => files::search(input, context).await,
         "find_files" => files::find_files(input, context).await,
+        "batch_inspect" => files::batch_inspect(input, context).await,
         "run_command" => commands::run_command(input, context).await,
         "command_output" => commands::command_output(input, context).await,
         "command_input" => commands::command_input(input, context).await,

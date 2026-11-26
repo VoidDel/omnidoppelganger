@@ -129,7 +129,7 @@ export function useFresh(): { className: string; style: CSSProperties | undefine
 export type Weight = "live" | "failed" | "wrote" | "act" | "quiet";
 
 /** Acts that only look: they change nothing and reach nowhere outside the machine. */
-const LOOKS = new Set(["read_file", "search", "find_files", "code_nav", "list_mcp_resources", "read_mcp_resource", "load_skill", "update_todos", "update_steps", "update_focus", "command_output"]);
+const LOOKS = new Set(["read_file", "search", "find_files", "batch_inspect", "code_nav", "list_mcp_resources", "read_mcp_resource", "load_skill", "update_todos", "update_steps", "update_focus", "command_output"]);
 
 /** Shorten verbose external CLI scratch/brain directory prefixes for readable one-line headers. */
 function compactCliPaths(value: string): string {
@@ -160,6 +160,8 @@ export function sealOf(tool: ToolItem): string {
       return "搜";
     case "find_files":
       return "寻";
+    case "batch_inspect":
+      return "览";
     case "edit_file":
     case "write_file":
       return tool.result?.meta?.created ? "建" : "改";
@@ -285,6 +287,21 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         target: compactCliPaths(text("glob") || text("path")) || "洞府",
         outcome: waiting || (result!.isError ? "没找成" : `${meta?.entries ?? 0} 项${meta?.truncated ? "以上" : ""}`),
       };
+    case "batch_inspect": {
+      const qs = Array.isArray(tool.input.queries) ? (tool.input.queries as Record<string, unknown>[]) : [];
+      const preview = qs
+        .slice(0, 3)
+        .map((q) => compactCliPaths(String(q.path || q.pattern || q.glob || q.kind || "")))
+        .filter(Boolean)
+        .join("、");
+      const count = meta?.queries ?? qs.length;
+      const errPart = meta?.errors ? `（${meta.errors} 项未得）` : "";
+      return {
+        verb: "批阅",
+        target: preview ? `${preview}${qs.length > 3 ? ` 等 ${qs.length} 项` : ""}` : `${count} 项检索`,
+        outcome: waiting || (result!.isError ? "批阅失败" : `${count} 项${errPart}${meta?.truncated ? " · 已截断" : ""}`),
+      };
+    }
     case "edit_file":
     case "write_file": {
       const added = meta?.added ?? 0;

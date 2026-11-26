@@ -882,3 +882,38 @@ fn delegate_tasks_parses_read_only_flag() {
         ]
     );
 }
+
+#[tokio::test]
+async fn batch_inspect_combines_read_search_and_find_with_budgets() {
+    let (directory, context) = context();
+    std::fs::create_dir_all(directory.path().join("src")).unwrap();
+    std::fs::write(directory.path().join("src/auth.rs"), "pub fn verify_token() -> bool {\n    true\n}\n").unwrap();
+    std::fs::write(directory.path().join("src/long.txt"), "abcdefghij\n".repeat(120)).unwrap();
+
+    let out = execute(
+        "batch_inspect",
+        &json!({
+            "queries": [
+                { "kind": "find_files", "path": "src", "glob": "**/*.rs" },
+                { "kind": "search", "pattern": "verify_token", "path": "src" },
+                { "kind": "read_file", "path": "src/long.txt", "max_chars": 250 },
+                { "kind": "read_file", "path": "src/missing.rs" }
+            ]
+        }),
+        &context,
+    )
+    .await;
+
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(out.meta["queries"], 4);
+    assert_eq!(out.meta["errors"], 1);
+    assert_eq!(out.meta["truncated"], true);
+    assert!(out.content.contains("=== [1/4] find_files src (**/*.rs) ==="));
+    assert!(out.content.contains("src/auth.rs"));
+    assert!(out.content.contains("verify_token"));
+    assert!(out.content.contains("[... truncated at 250 of"));
+    assert!(out.content.contains("[4/4] read_file src/missing.rs [ERROR]"));
+
+    let empty = execute("batch_inspect", &json!({ "queries": [] }), &context).await;
+    assert!(empty.is_error);
+}

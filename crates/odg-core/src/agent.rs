@@ -1364,7 +1364,7 @@ impl<L: Llm> Inner<L> {
                         if tools::edits_files(later_name) {
                             break;
                         }
-                        let reads = matches!(later_name.as_str(), "read_file" | "search" | "find_files") && !message.invalid_tool_inputs.contains_key(later_id);
+                        let reads = matches!(later_name.as_str(), "read_file" | "search" | "find_files" | "batch_inspect") && !message.invalid_tool_inputs.contains_key(later_id);
                         if !reads || policy::check(self.mode(), later_name, later_input, &self.workspace) != Verdict::Allow {
                             continue;
                         }

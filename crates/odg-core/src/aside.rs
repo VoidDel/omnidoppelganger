@@ -36,6 +36,7 @@ fn step(name: &str, input: &Value) -> String {
         "run_command" => format!("ran `{}`", field("command")),
         "search" => format!("searched for `{}`", field("pattern")),
         "find_files" => format!("listed files {}", [field("path"), field("glob")].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")),
+        "batch_inspect" => format!("batch-inspected {} queries", input["queries"].as_array().map_or(0, Vec::len)),
         "code_nav" => format!("code_nav {} {}", field("operation"), field("path")),
         "fetch_url" => format!("fetched {}", field("url")),
         "web_search" => format!("searched the web for `{}`", field("query")),

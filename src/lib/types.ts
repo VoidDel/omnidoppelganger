@@ -134,6 +134,8 @@ export interface ToolMeta {
   glob?: string;
   /** How many files or directory entries `find_files` returned. */
   entries?: number;
+  /** How many queries `batch_inspect` executed. */
+  queries?: number;
   matches?: number;
   /** How many files `search` found in; or, for `deliver_files`, the absolute paths of the files handed over. */
   files?: number | string[];

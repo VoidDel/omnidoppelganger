@@ -198,6 +198,25 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             Some(path) => ask("outside_read", path),
             None => Verdict::Allow,
         },
+        "batch_inspect" => {
+            let mut outside_paths: Vec<String> = Vec::new();
+            if let Some(queries) = input["queries"].as_array() {
+                for q in queries {
+                    let target = resolve(workspace, q["path"].as_str().unwrap_or("."));
+                    if !inside_workspace(workspace, &target) {
+                        let shown = target.to_string_lossy().into_owned();
+                        if !outside_paths.contains(&shown) {
+                            outside_paths.push(shown);
+                        }
+                    }
+                }
+            }
+            if outside_paths.is_empty() {
+                Verdict::Allow
+            } else {
+                ask("outside_read", outside_paths.join(", "))
+            }
+        }
         // Reading code through its language's server: outside the workspace as reading there is; and the one server
         // that loads code of the project to run (see `crate::lsp`) is asked about, once for good if the user says so.
         // Only where that server is on the `PATH`: the one downloaded in its place runs nothing of the project.
@@ -418,6 +437,28 @@ mod tests {
         assert_eq!(reason(check("edit_file", &json!({ "path": "../x.rs" }), workspace)), Some("outside_write"));
         assert_eq!(reason(check("read_file", &json!({ "path": "../x.rs" }), workspace)), Some("outside_read"));
         assert_eq!(reason(check("search", &json!({ "pattern": "x", "path": ".." }), workspace)), Some("outside_read"));
+        for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
+            assert_eq!(
+                super::check(
+                    mode,
+                    "batch_inspect",
+                    &json!({ "queries": [{ "kind": "find_files", "glob": "**/*.rs" }, { "kind": "read_file", "path": "src/a.rs" }] }),
+                    workspace
+                ),
+                Verdict::Allow,
+                "{mode:?}"
+            );
+            assert_eq!(
+                reason(super::check(
+                    mode,
+                    "batch_inspect",
+                    &json!({ "queries": [{ "kind": "read_file", "path": "src/a.rs" }, { "kind": "search", "pattern": "key", "path": "../outside" }] }),
+                    workspace
+                )),
+                Some("outside_read"),
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]
