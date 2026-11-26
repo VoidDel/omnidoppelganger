@@ -1,0 +1,5 @@
+{"type":"step_start","sessionID":"oc-ses-505","part":{"type":"step-start"}}
+{"type":"tool_use","sessionID":"oc-ses-505","part":{"type":"tool","id":"oc_call_1","tool":"read","state":{"status":"completed","input":{"path":"Cargo.toml"},"output":"[package]\nname = \"odg-core\""}}}
+{"type":"text","sessionID":"oc-ses-505","part":{"type":"text","text":"OpenCode 验证完成 🧩"}}
+{"type":"step_finish","sessionID":"oc-ses-505","part":{"type":"step-finish","reason":"stop","tokens":{"input":500,"output":32,"reasoning":12,"cache":{"read":2000,"write":100}}}}
+{"type":"end","sessionID":"oc-ses-505"}

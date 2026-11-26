@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","session_id":"cursor-chat-303"}
+{"type":"tool_call","subtype":"started","call_id":"cur_tc_1","session_id":"cursor-chat-303","tool_call":{"hookAdditionalContexts":{},"readToolCall":{"args":{"path":"src/lsp.rs"}}}}
+{"type":"tool_call","subtype":"completed","call_id":"cur_tc_1","session_id":"cursor-chat-303","tool_call":{"hookAdditionalContexts":{},"readToolCall":{"args":{"path":"src/lsp.rs"},"result":{"success":{"totalLines":480}}}}}
+{"type":"assistant","session_id":"cursor-chat-303","message":{"role":"assistant","content":[{"type":"text","text":"Cursor 契约"}]}}
+{"type":"assistant","session_id":"cursor-chat-303","message":{"role":"assistant","content":[{"type":"text","text":"回放正常 ✨"}]}}
+{"type":"assistant","session_id":"cursor-chat-303","message":{"role":"assistant","content":[{"type":"text","text":"Cursor 契约回放正常 ✨"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"Cursor 契约回放正常 ✨","session_id":"cursor-chat-303","usage":{"inputTokens":600,"outputTokens":40,"cacheReadTokens":2400,"cacheWriteTokens":100,"reasoningTokens":20}}

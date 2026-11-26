@@ -1,3 +1,4 @@
+import "../styles/workbench.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { escapeHtml, highlightLines } from "../lib/highlight";
@@ -11,6 +12,7 @@ export interface DiffViewerProps {
   path: string;
   stage: DiffStage;
   commit?: string;
+  repo?: string | null;
   refreshTick?: number;
   onOpenSource: (relPath: string, line?: number) => void;
   onQuoteToMain: (quote: ComposerQuoteInput) => void;
@@ -22,6 +24,7 @@ export function DiffViewer({
   path,
   stage,
   commit,
+  repo,
   refreshTick = 0,
   onOpenSource,
   onQuoteToMain,
@@ -37,7 +40,9 @@ export function DiffViewer({
   const asked = useRef(0);
   const landed = useRef(0);
   useEffect(() => {
-    const key = `${sessionId}\u0000${path}\u0000${stage}\u0000${commit ?? ""}`;
+    const repoArg = repo || undefined;
+    const repoRelPath = repoArg && path.startsWith(`${repoArg}/`) ? path.slice(repoArg.length + 1) : path;
+    const key = `${sessionId}\u0000${repoArg ?? ""}\u0000${path}\u0000${stage}\u0000${commit ?? ""}`;
     wanted.current = key;
     const quiet = shownKey.current === key;
     // A commit's diff never changes: shown once, it is not asked for again.
@@ -48,7 +53,7 @@ export function DiffViewer({
     }
     const seq = ++asked.current;
     const current = () => wanted.current === key && seq > landed.current;
-    api.gitDiff(sessionId, path, stage, commit).then(
+    api.gitDiff(sessionId, repoRelPath, stage, commit, repoArg).then(
       (data) => {
         if (!current()) return;
         landed.current = seq;
@@ -65,7 +70,7 @@ export function DiffViewer({
         setLoading(false);
       },
     );
-  }, [sessionId, path, stage, commit, refreshTick]);
+  }, [sessionId, path, stage, commit, repo, refreshTick]);
 
   // Pre-highlight lines per hunk so syntax tokens colorize inside +/- rows cleanly.
   const highlightedHunks = useMemo(() => {

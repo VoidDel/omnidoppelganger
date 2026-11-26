@@ -2,8 +2,9 @@
 //!
 //! Each session can open one or more local shell tabs rooted at its workspace
 //! (including an isolated Git worktree when applicable). Output is decoded on
-//! UTF-8 character boundaries, buffered in a bounded replay ring so switching
-//! tabs or sessions preserves terminal screen state, and streamed to the UI.
+//! UTF-8 character boundaries, tracked with a monotonic byte offset so UI tab
+//! re-mounts never drop or duplicate chunks, and underlying OS PTY descriptors
+//! are released immediately when the child shell exits.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -20,11 +21,19 @@ const MAX_BACKLOG_BYTES: usize = 128 * 1024;
 
 static NEXT_PTY_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Default)]
+struct PtyBuffer {
+    text: String,
+    total_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PtyOutputPayload {
     pub id: String,
     pub session_id: String,
     pub data: String,
+    pub start_offset: u64,
+    pub end_offset: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +52,7 @@ pub struct PtyInfo {
     pub cwd: String,
     pub exited: Option<u32>,
     pub backlog: String,
+    pub backlog_end_offset: u64,
 }
 
 struct PtyHandle {
@@ -50,10 +60,10 @@ struct PtyHandle {
     shell_name: String,
     session_id: String,
     cwd: String,
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
-    backlog: Arc<Mutex<String>>,
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    writer: Mutex<Option<Box<dyn Write + Send>>>,
+    child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
+    backlog: Arc<Mutex<PtyBuffer>>,
     exited: Arc<Mutex<Option<u32>>>,
 }
 
@@ -72,7 +82,8 @@ fn detect_shell() -> (String, String, Vec<&'static str>) {
     #[cfg(windows)]
     {
         let on_path = |prog: &str| {
-            std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(prog).is_file()))
+            std::env::var_os("PATH")
+                .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(prog).is_file()))
         };
         for candidate in ["pwsh.exe", "powershell.exe", "cmd.exe"] {
             if on_path(candidate) {
@@ -101,7 +112,11 @@ fn detect_shell() -> (String, String, Vec<&'static str>) {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "sh".to_string());
-        let args = if matches!(name.as_str(), "zsh" | "bash" | "fish") { vec!["-l"] } else { Vec::new() };
+        let args = if matches!(name.as_str(), "zsh" | "bash" | "fish") {
+            vec!["-l"]
+        } else {
+            Vec::new()
+        };
         (program, name, args)
     }
 }
@@ -128,7 +143,6 @@ pub fn decode_utf8_stream(carry: &mut Vec<u8>, incoming: &[u8]) -> String {
                 }
                 match err.error_len() {
                     None => {
-                        // Incomplete multi-byte UTF-8 sequence at the end of this chunk: save for next read.
                         carry.extend_from_slice(&slice[valid_len..]);
                         break;
                     }
@@ -143,15 +157,33 @@ pub fn decode_utf8_stream(carry: &mut Vec<u8>, incoming: &[u8]) -> String {
     out
 }
 
-fn append_backlog(buf: &mut String, chunk: &str) {
-    buf.push_str(chunk);
-    if buf.len() > MAX_BACKLOG_BYTES {
-        let excess = buf.len() - (MAX_BACKLOG_BYTES * 3 / 4);
+fn append_pty_buffer(buf: &mut PtyBuffer, chunk: &str) -> (u64, u64) {
+    let start = buf.total_bytes;
+    buf.total_bytes = buf.total_bytes.saturating_add(chunk.len() as u64);
+    let end = buf.total_bytes;
+    buf.text.push_str(chunk);
+    if buf.text.len() > MAX_BACKLOG_BYTES {
+        let excess = buf.text.len() - (MAX_BACKLOG_BYTES * 3 / 4);
         let mut cut = excess;
-        while cut < buf.len() && !buf.is_char_boundary(cut) {
+        while cut < buf.text.len() && !buf.text.is_char_boundary(cut) {
             cut += 1;
         }
-        buf.drain(..cut);
+        buf.text.drain(..cut);
+    }
+    (start, end)
+}
+
+impl PtyHandle {
+    fn release_os_handles(&self) {
+        let _ = self.writer.lock().unwrap().take();
+        let _ = self.master.lock().unwrap().take();
+    }
+
+    fn kill_and_release(&self) {
+        if let Some(mut child) = self.child.lock().unwrap().take() {
+            let _ = child.kill();
+        }
+        self.release_os_handles();
     }
 }
 
@@ -203,7 +235,6 @@ impl PtyHub {
             .slave
             .spawn_command(cmd)
             .map_err(|error| format!("无法启动终端 {shell_prog}：{error}"))?;
-        // Drop slave immediately so reader sees EOF when the shell process exits.
         drop(pair.slave);
 
         let mut reader = pair
@@ -218,7 +249,6 @@ impl PtyHub {
         let seq = NEXT_PTY_ID.fetch_add(1, Ordering::Relaxed);
         let id = format!("pty-{seq}");
 
-        // Number title within the same session (1, 2, 3...)
         let index_in_session = {
             let map = self.instances.lock().unwrap();
             map.values().filter(|h| h.session_id == session_id).count() + 1
@@ -226,7 +256,7 @@ impl PtyHub {
         let title = format!("{shell_name} {index_in_session}");
         let cwd_str = cwd.to_string_lossy().into_owned();
 
-        let backlog = Arc::new(Mutex::new(String::new()));
+        let backlog = Arc::new(Mutex::new(PtyBuffer::default()));
         let exited = Arc::new(Mutex::new(None));
 
         let handle = Arc::new(PtyHandle {
@@ -234,9 +264,9 @@ impl PtyHub {
             shell_name: shell_name.clone(),
             session_id: session_id.clone(),
             cwd: cwd_str.clone(),
-            master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
-            child: Mutex::new(child),
+            master: Mutex::new(Some(pair.master)),
+            writer: Mutex::new(Some(writer)),
+            child: Mutex::new(Some(child)),
             backlog: backlog.clone(),
             exited: exited.clone(),
         });
@@ -260,27 +290,33 @@ impl PtyHub {
                         Ok(n) => {
                             let text = decode_utf8_stream(&mut carry, &buf[..n]);
                             if !text.is_empty() {
-                                {
+                                let (start_offset, end_offset) = {
                                     let mut log = reader_backlog.lock().unwrap();
-                                    append_backlog(&mut log, &text);
-                                }
+                                    append_pty_buffer(&mut log, &text)
+                                };
                                 on_output(PtyOutputPayload {
                                     id: reader_id.clone(),
                                     session_id: reader_session.clone(),
                                     data: text,
+                                    start_offset,
+                                    end_offset,
                                 });
                             }
                         }
                         Err(_) => break,
                     }
                 }
-                let code = reader_handle
-                    .child
-                    .lock()
-                    .unwrap()
-                    .wait()
-                    .ok()
-                    .map(|status| status.exit_code());
+                drop(reader);
+                let code = {
+                    let mut child_guard = reader_handle.child.lock().unwrap();
+                    let exit = child_guard
+                        .as_mut()
+                        .and_then(|c| c.wait().ok())
+                        .map(|status| status.exit_code());
+                    *child_guard = None;
+                    exit
+                };
+                reader_handle.release_os_handles();
                 *reader_exited.lock().unwrap() = Some(code.unwrap_or(0));
                 on_exit(PtyExitPayload {
                     id: reader_id,
@@ -290,6 +326,11 @@ impl PtyHub {
             })
             .map_err(|error| format!("无法启动终端监听线程：{error}"))?;
 
+        let (initial_backlog, initial_offset) = {
+            let snap = backlog.lock().unwrap();
+            (snap.text.clone(), snap.total_bytes)
+        };
+
         Ok(PtyInfo {
             id,
             session_id,
@@ -297,7 +338,8 @@ impl PtyHub {
             shell: shell_name,
             cwd: cwd_str,
             exited: None,
-            backlog: String::new(),
+            backlog: initial_backlog,
+            backlog_end_offset: initial_offset,
         })
     }
 
@@ -306,14 +348,22 @@ impl PtyHub {
         let mut out: Vec<PtyInfo> = map
             .iter()
             .filter(|(_, h)| h.session_id == session_id)
-            .map(|(id, h)| PtyInfo {
-                id: id.clone(),
-                session_id: h.session_id.clone(),
-                title: h.info_title.clone(),
-                shell: h.shell_name.clone(),
-                cwd: h.cwd.clone(),
-                exited: *h.exited.lock().unwrap(),
-                backlog: h.backlog.lock().unwrap().clone(),
+            .map(|(id, h)| {
+                let exited = *h.exited.lock().unwrap();
+                let (backlog, backlog_end_offset) = {
+                    let snap = h.backlog.lock().unwrap();
+                    (snap.text.clone(), snap.total_bytes)
+                };
+                PtyInfo {
+                    id: id.clone(),
+                    session_id: h.session_id.clone(),
+                    title: h.info_title.clone(),
+                    shell: h.shell_name.clone(),
+                    cwd: h.cwd.clone(),
+                    exited,
+                    backlog,
+                    backlog_end_offset,
+                }
             })
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -328,7 +378,8 @@ impl PtyHub {
             .get(id)
             .cloned()
             .ok_or("这个终端已经关闭了。")?;
-        let mut writer = handle.writer.lock().unwrap();
+        let mut guard = handle.writer.lock().unwrap();
+        let writer = guard.as_mut().ok_or("这个终端已经结束运行了。")?;
         writer.write_all(data.as_bytes()).map_err(|e| format!("写入终端失败：{e}"))?;
         writer.flush().map_err(|e| format!("刷新终端输入失败：{e}"))
     }
@@ -339,23 +390,24 @@ impl PtyHub {
         };
         let cols = cols.clamp(20, 500);
         let rows = rows.clamp(5, 200);
-        handle
-            .master
-            .lock()
-            .unwrap()
+        let guard = handle.master.lock().unwrap();
+        let Some(master) = guard.as_ref() else {
+            return Ok(());
+        };
+        master
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| format!("调整终端尺寸失败：{e}"))
     }
 
     pub fn clear_backlog(&self, id: &str) {
         if let Some(handle) = self.instances.lock().unwrap().get(id) {
-            handle.backlog.lock().unwrap().clear();
+            handle.backlog.lock().unwrap().text.clear();
         }
     }
 
     pub fn close(&self, id: &str) {
         if let Some(handle) = self.instances.lock().unwrap().remove(id) {
-            let _ = handle.child.lock().unwrap().kill();
+            handle.kill_and_release();
         }
     }
 
@@ -376,8 +428,17 @@ impl PtyHub {
     pub fn shutdown(&self) {
         let drained: Vec<Arc<PtyHandle>> = self.instances.lock().unwrap().drain().map(|(_, h)| h).collect();
         for handle in drained {
-            let _ = handle.child.lock().unwrap().kill();
+            handle.kill_and_release();
         }
+    }
+
+    #[cfg(test)]
+    pub fn handles_released(&self, id: &str) -> Option<bool> {
+        let handle = self.instances.lock().unwrap().get(id).cloned()?;
+        let master_free = handle.master.lock().unwrap().is_none();
+        let writer_free = handle.writer.lock().unwrap().is_none();
+        let child_free = handle.child.lock().unwrap().is_none();
+        Some(master_free && writer_free && child_free)
     }
 }
 
@@ -391,7 +452,6 @@ mod tests {
         let bytes = text.as_bytes();
         let mut carry = Vec::new();
         let mut rebuilt = String::new();
-        // Feed 2 bytes at a time so 3-byte Chinese and 4-byte emoji sequences always split across chunks.
         for chunk in bytes.chunks(2) {
             rebuilt.push_str(&decode_utf8_stream(&mut carry, chunk));
         }
@@ -400,11 +460,33 @@ mod tests {
     }
 
     #[test]
-    fn spawns_writes_reads_and_closes_pty_cleanly() {
+    fn pty_buffer_offsets_stay_strictly_monotonic_across_truncation_and_clear() {
+        let mut buf = PtyBuffer::default();
+        let (s1, e1) = append_pty_buffer(&mut buf, "修真终端");
+        assert_eq!((s1, e1), (0, 12));
+        assert_eq!(buf.total_bytes, 12);
+
+        // Ring truncation caps `buf.text` while keeping `total_bytes` strictly cumulative.
+        let big = "x".repeat(MAX_BACKLOG_BYTES + 1024);
+        let (s2, e2) = append_pty_buffer(&mut buf, &big);
+        assert_eq!(s2, 12);
+        assert_eq!(e2, 12 + big.len() as u64);
+        assert!(buf.text.len() <= MAX_BACKLOG_BYTES);
+
+        buf.text.clear();
+        let (s3, e3) = append_pty_buffer(&mut buf, "after");
+        assert_eq!(s3, e2);
+        assert_eq!(e3, e2 + 5);
+    }
+
+    #[test]
+    fn spawns_writes_tracks_monotonic_offsets_and_releases_handles_on_exit() {
         let hub = Arc::new(PtyHub::new());
         let temp = tempfile::tempdir().unwrap();
-        let collected = Arc::new(Mutex::new(String::new()));
-        let out_sink = collected.clone();
+        let payloads: Arc<Mutex<Vec<PtyOutputPayload>>> = Arc::new(Mutex::new(Vec::new()));
+        let out_sink = payloads.clone();
+        let exited_flag = Arc::new(Mutex::new(false));
+        let exit_sink = exited_flag.clone();
         let responder_hub = hub.clone();
 
         let info = hub
@@ -414,14 +496,14 @@ mod tests {
                 80,
                 24,
                 move |payload| {
-                    // Headless Windows ConPTY + PowerShell/.NET queries cursor position via CSI `6n` (`\x1b[6n`)
-                    // and blocks until the terminal emulator answers `\x1b[row;colR` (handled by xterm.js in UI).
                     if payload.data.contains("\x1b[6n") {
                         let _ = responder_hub.write(&payload.id, "\x1b[1;1R");
                     }
-                    out_sink.lock().unwrap().push_str(&payload.data);
+                    out_sink.lock().unwrap().push(payload);
                 },
-                |_| {},
+                move |_| {
+                    *exit_sink.lock().unwrap() = true;
+                },
             )
             .unwrap();
 
@@ -429,11 +511,11 @@ mod tests {
         hub.resize(&info.id, 100, 30).unwrap();
 
         let has_marker = || {
-            let raw = collected.lock().unwrap();
+            let list = payloads.lock().unwrap();
+            let raw: String = list.iter().map(|p| p.data.as_str()).collect();
             if raw.contains("odg_pty_ok") {
                 return true;
             }
-            // Strip ANSI CSI sequences (`ESC [ ... letter`) in case ConPTY splits characters across cursor moves.
             let mut plain = String::with_capacity(raw.len());
             let mut chars = raw.chars().peekable();
             while let Some(c) = chars.next() {
@@ -451,11 +533,8 @@ mod tests {
             plain.contains("odg_pty_ok")
         };
 
-        // Cold PowerShell startup on Windows ConPTY (especially on CI runners) can take several seconds
-        // and may drop keystrokes sent before PSReadLine initializes: wait briefly for initial output,
-        // then write the marker command (re-sending once if needed) with a generous 15s budget.
         for _ in 0..40 {
-            if !collected.lock().unwrap().is_empty() {
+            if !payloads.lock().unwrap().is_empty() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -471,11 +550,36 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        assert!(
-            has_marker(),
-            "PTY did not echo marker; collected output: {:?}",
-            collected.lock().unwrap().as_str()
-        );
+        assert!(has_marker(), "PTY did not echo marker");
+
+        // Verify contiguous monotonic offsets across all emitted chunks.
+        {
+            let chunks = payloads.lock().unwrap();
+            assert!(!chunks.is_empty());
+            let mut expected = 0u64;
+            for chunk in chunks.iter() {
+                assert_eq!(chunk.start_offset, expected);
+                assert_eq!(chunk.end_offset, expected + chunk.data.len() as u64);
+                expected = chunk.end_offset;
+            }
+            let snap = &hub.list("sess-1")[0];
+            assert_eq!(snap.backlog_end_offset, expected);
+        }
+
+        // Tell the shell to exit and assert OS handles are released while backlog stays readable.
+        let _ = hub.write(&info.id, "exit\r\n");
+        for _ in 0..80 {
+            if *exited_flag.lock().unwrap() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(*exited_flag.lock().unwrap(), "expected shell exit callback");
+        assert_eq!(hub.handles_released(&info.id), Some(true), "master/writer/child must be released on exit");
+        let after_exit = &hub.list("sess-1")[0];
+        assert!(after_exit.exited.is_some());
+        assert!(after_exit.backlog_end_offset > 0);
+        assert!(!after_exit.backlog.is_empty());
 
         hub.close_session("sess-1");
         assert!(hub.list("sess-1").is_empty());

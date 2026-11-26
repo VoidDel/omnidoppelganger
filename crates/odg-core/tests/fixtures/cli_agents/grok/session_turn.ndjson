@@ -1,0 +1,5 @@
+{"type":"init","session_id":"grok-ses-404"}
+{"type":"tool_call","toolCallId":"grok_tc_1","toolName":"Grep","rawInput":{"Pattern":"ModelUsageStore","SearchPath":"src"}}
+{"type":"tool_call_update","toolCallId":"grok_tc_1","status":"completed","content":[{"text":"src/model_usage.rs:85: pub struct ModelUsageStore"}]}
+{"type":"text_delta","session_id":"grok-ses-404","delta":"Grok 搜索完毕 ⚡"}
+{"type":"result","session_id":"grok-ses-404","result":"Grok 搜索完毕 ⚡","usage":{"prompt_tokens":1500,"cached_tokens":900,"completion_tokens":48}}

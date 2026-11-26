@@ -1,16 +1,30 @@
 name: CI
 
-# Every push to main and every pull request: the core library and the command
-# line on the three systems the app targets, and the whole app (frontend,
-# desktop shell) on Windows, where it is developed.
+# Every push to main and every pull request: full three-OS desktop gate
+# (Windows, Ubuntu, macOS), Windows WebView2 E2E smoke suite, and supply-chain
+# vulnerability / crate policy audit.
 
 on:
   push:
     branches: [main]
-    # Documentation alone changes nothing that is built or tested here.
-    paths-ignore: ["**.md", "doc/**"]
+    # Pure human-facing documentation changes nothing compiled or embedded.
+    # Embedded skill definitions (`crates/odg-core/skills/*/SKILL.md`) are NEVER ignored.
+    paths-ignore:
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "LICENSE*"
+      - "doc/**"
+      - ".github/ISSUE_TEMPLATE/**"
   pull_request:
-    paths-ignore: ["**.md", "doc/**"]
+    paths-ignore:
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "LICENSE*"
+      - "doc/**"
+      - ".github/ISSUE_TEMPLATE/**"
+
+permissions:
+  contents: read
 
 # A newer push makes the run for the older one pointless.
 concurrency:
@@ -21,31 +35,74 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  core:
-    name: Core library and command line (${{ matrix.os }})
+  app:
+    name: Desktop, CLI, and frontend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # The tools and the command safety check behave differently per shell:
-        # PowerShell on Windows, sh elsewhere.
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [windows-latest, ubuntu-22.04, macos-latest]
     steps:
       - uses: actions/checkout@v5
+      - name: Install Linux desktop dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            xvfb
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Static checks
-        run: cargo clippy -p odg-core -p odg-cli --all-targets -- -D warnings
-      - name: Tests
-        run: cargo test -p odg-core -p odg-cli
+        with:
+          workspaces: ". -> target"
+          shared-key: desktop-${{ matrix.os }}
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify manifest version alignment
+        run: node scripts/check-version.mjs
+      - name: Frontend lint
+        run: pnpm lint
+      - name: Frontend tests
+        run: pnpm test
+      # Type-checks and bundles. The desktop shell embeds `../dist` when it
+      # compiles, so this must run before Cargo workspace checks.
+      - name: Frontend build
+        run: pnpm build
+      - name: Rust formatting check
+        run: cargo fmt --all -- --check
+      - name: Rust static checks
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rust workspace tests
+        run: cargo test --workspace
+      - name: Run WebView2 E2E suite
+        if: matrix.os == 'windows-latest'
+        run: node e2e/run.mjs
+      - name: Upload WebView2 E2E diagnostics
+        if: failure() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diagnostics-windows
+          path: e2e/artifacts/**
+          if-no-files-found: warn
 
-  app:
-    name: Frontend and desktop shell (Windows)
-    runs-on: windows-latest
-    timeout-minutes: 30
+  security-audit:
+    name: Supply chain and vulnerability audit
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -55,18 +112,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Frontend tests
-        run: pnpm test
-      # Type-checks and bundles. The desktop shell embeds the bundle when it
-      # compiles, so this comes before any cargo step.
-      - name: Frontend build
-        run: pnpm build
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Audit production npm dependencies
+        run: pnpm audit --prod --audit-level=high
+      - name: Audit Rust crates (advisories, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Static checks
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Tests
-        run: cargo test --workspace
+          command: check
+          command-arguments: advisories bans sources

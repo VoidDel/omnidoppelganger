@@ -1,0 +1,10 @@
+# Rust formatting configuration aligned with OmniDoppelganger's workspace style.
+edition = "2024"
+max_width = 120
+tab_spaces = 4
+newline_style = "Auto"
+use_small_heuristics = "Default"
+use_field_init_shorthand = true
+use_try_shorthand = true
+reorder_imports = true
+reorder_modules = true

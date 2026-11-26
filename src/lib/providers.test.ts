@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cliOf, enabledProviders, isProviderEnabled, isSetUp, setUp } from "./providers";
-import type { Provider, SettingsView } from "./types";
+import { cliOf, enabledProviders, isProviderEnabled, isProviderKeyed, isSetUp, setUp } from "./providers";
+import type { KeyStatus, Provider, SettingsView } from "./types";
 
 const provider = (id: string, kind = id, protocol: Provider["protocol"] = { chat: "generic" }): Provider => ({
   id,
@@ -56,5 +56,48 @@ describe("the 宗门 the user keeps", () => {
     expect(isSetUp(view, provider("codex", "codex", { cli: "codex" }))).toBe(false);
     expect(cliOf(provider("claude_code", "claude_code", { cli: "claude_code" }))).toBe("claude_code");
     expect(cliOf(provider("openai", "openai", "responses"))).toBeNull();
+  });
+
+  it("treats ollama, magpie, and custom* providers as keyed without requiring a saved API key", () => {
+    const providers = [
+      provider("anthropic"),
+      provider("openai"),
+      provider("ollama"),
+      provider("magpie"),
+      provider("custom"),
+      provider("custom-local", "custom_anthropic"),
+      provider("claude_code", "claude_code", { cli: "claude_code" }),
+    ];
+    const keys: Record<string, KeyStatus> = {
+      anthropic: { source: "saved", preview: "sk-...1", plaintext: false },
+      openai: { source: "none", preview: null, plaintext: false },
+      ollama: { source: "none", preview: null, plaintext: false },
+      magpie: { source: "none", preview: null, plaintext: false },
+      custom: { source: "none", preview: null, plaintext: false },
+      "custom-local": { source: "none", preview: null, plaintext: false },
+      claude_code: { source: "cli", preview: "/opt/bin/claude", plaintext: false },
+    };
+
+    expect(isProviderKeyed("anthropic", providers, keys)).toBe(true);
+    expect(isProviderKeyed("openai", providers, keys)).toBe(false);
+    expect(isProviderKeyed("ollama", providers, keys)).toBe(true);
+    expect(isProviderKeyed("magpie", providers, keys)).toBe(true);
+    expect(isProviderKeyed("custom", providers, keys)).toBe(true);
+    expect(isProviderKeyed("custom-local", providers, keys)).toBe(true);
+    expect(isProviderKeyed("claude_code", providers, keys)).toBe(true);
+  });
+
+  it("returns false when keys map is undefined for cloud API providers while keeping keyless providers enabled", () => {
+    const providers = [provider("anthropic"), provider("ollama"), provider("magpie")];
+    expect(isProviderKeyed("anthropic", providers, undefined)).toBe(false);
+    expect(isProviderKeyed("ollama", providers, undefined)).toBe(true);
+    expect(isProviderKeyed("magpie", providers, undefined)).toBe(true);
+  });
+
+  it("treats custom-kind providers as keyed even when id does not start with custom", () => {
+    const providers = [provider("intranet-gw", "custom"), provider("corp-claude", "custom_anthropic")];
+    expect(isProviderKeyed("intranet-gw", providers, {})).toBe(true);
+    expect(isProviderKeyed("corp-claude", providers, {})).toBe(true);
+    expect(isProviderKeyed("unknown-cloud", providers, {})).toBe(false);
   });
 });

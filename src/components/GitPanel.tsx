@@ -1,3 +1,4 @@
+import "../styles/workbench.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { layoutGitGraph, type GraphRow } from "../lib/gitGraph";
@@ -380,8 +381,9 @@ export function GitPanel({
   }
 
   const totalDirty = status.conflicts.length + status.staged.length + status.unstaged.length + status.untracked.length;
-  const canCommitStaged = status.staged.length > 0;
+  const canCommitStaged = status.conflicts.length === 0 && (status.staged.length > 0 || Boolean(status.merge_head));
   const canCommitAll = !canCommitStaged && status.unstaged.length + status.untracked.length > 0 && status.conflicts.length === 0;
+  const isRootWorktreeRepo = isWorktree && (!status.active_repo || status.active_repo === "");
 
   const toggleCommit = (hash: string) => {
     if (openCommit === hash) {
@@ -399,6 +401,8 @@ export function GitPanel({
 
   const renderFileRow = (file: GitFile, group: "conflict" | "staged" | "unstaged" | "untracked") => {
     const { name, dir } = splitPath(file.path);
+    const unrep = Boolean(file.unrepresentable_path);
+    const unrepHint = "路径含非 UTF-8 字节，请在终端处理";
     const tone =
       file.status === "U"
         ? "conflict"
@@ -418,16 +422,18 @@ export function GitPanel({
           <button
             type="button"
             className="tree-main"
-            title={`${file.path}${file.orig_path ? ` ← ${file.orig_path}` : ""}`}
-            onClick={() => onOpenDiff(wsPath(file.path), diffStage, false)}
-            onDoubleClick={() => onOpenDiff(wsPath(file.path), diffStage, true)}
+            disabled={unrep}
+            title={unrep ? `${file.path}（${unrepHint}）` : `${file.path}${file.orig_path ? ` ← ${file.orig_path}` : ""}`}
+            onClick={() => !unrep && onOpenDiff(wsPath(file.path), diffStage, false)}
+            onDoubleClick={() => !unrep && onOpenDiff(wsPath(file.path), diffStage, true)}
           >
             <span className={`tree-git ${tone}`}>{file.status === "?" ? "U" : file.status}</span>
             <span className="tree-label">{name}</span>
+            {unrep && <span className="chip" title={unrepHint}>非 UTF-8 路径</span>}
             {dir && <span className="tree-sub">{dir}</span>}
           </button>
           <span className="tree-acts">
-            {file.status !== "D" && (
+            {file.status !== "D" && !unrep && (
               <button
                 type="button"
                 className="icon-button tiny"
@@ -444,8 +450,8 @@ export function GitPanel({
               <button
                 type="button"
                 className="icon-button tiny"
-                title="取消暂存"
-                disabled={!!busy}
+                title={unrep ? unrepHint : "取消暂存"}
+                disabled={!!busy || unrep}
                 onClick={(e) => {
                   e.stopPropagation();
                   api.gitUnstage(sessionId, [file.path], activeRepo).then(onStatusChanged, (err) => onError(String(err)));
@@ -458,8 +464,8 @@ export function GitPanel({
                 <button
                   type="button"
                   className="icon-button tiny"
-                  title="暂存此文件"
-                  disabled={!!busy}
+                  title={unrep ? unrepHint : "暂存此文件"}
+                  disabled={!!busy || unrep}
                   onClick={(e) => {
                     e.stopPropagation();
                     api.gitStage(sessionId, [file.path], activeRepo).then(onStatusChanged, (err) => onError(String(err)));
@@ -471,8 +477,8 @@ export function GitPanel({
                   <button
                     type="button"
                     className="icon-button tiny danger"
-                    title={group === "untracked" ? "删除未跟踪文件" : "放弃工作区改动"}
-                    disabled={!!busy}
+                    title={unrep ? unrepHint : group === "untracked" ? "删除未跟踪文件" : "放弃工作区改动"}
+                    disabled={!!busy || unrep}
                     onClick={(e) => {
                       e.stopPropagation();
                       setDiscardTarget(discardTarget === file.path ? null : file.path);
@@ -536,8 +542,8 @@ export function GitPanel({
         <button
           type="button"
           className="git-branch-btn"
-          disabled={isWorktree}
-          title={isWorktree ? "独立工作树分身固定在其专属分支上" : "点击切换或新建 Git 分支"}
+          disabled={isRootWorktreeRepo}
+          title={isRootWorktreeRepo ? "独立工作树分身固定在其专属分支上" : "点击切换或新建 Git 分支"}
           onClick={openBranches}
         >
           <Icon name="diagram-2" size={13} />
@@ -643,7 +649,7 @@ export function GitPanel({
         </div>
       )}
 
-      {branchMenuOpen && !isWorktree && (
+      {branchMenuOpen && !isRootWorktreeRepo && (
         <div className="git-branches-box">
           {creatingBranch ? (
             <div className="tree-inline-edit">
@@ -713,7 +719,9 @@ export function GitPanel({
             {busy === "commit"
               ? "正在提交…"
               : canCommitStaged
-                ? `提交暂存 (${status.staged.length})`
+                ? status.staged.length > 0
+                  ? `提交暂存 (${status.staged.length})`
+                  : "提交合并"
                 : canCommitAll
                   ? `全部暂存并提交 (${status.unstaged.length + status.untracked.length})`
                   : "提交"}
@@ -1192,7 +1200,8 @@ export function GitPanel({
                     type="button"
                     role="menuitem"
                     className="tree-context-item"
-                    disabled={!!busy}
+                    disabled={!!busy || Boolean(file.unrepresentable_path)}
+                    title={file.unrepresentable_path ? "路径含非 UTF-8 字节，请在终端处理" : undefined}
                     onClick={() => {
                       setContextMenu(null);
                       api.gitUnstage(sessionId, [file.path], activeRepo).then(onStatusChanged, (err) => onError(String(err)));
@@ -1205,7 +1214,8 @@ export function GitPanel({
                     type="button"
                     role="menuitem"
                     className="tree-context-item"
-                    disabled={!!busy}
+                    disabled={!!busy || Boolean(file.unrepresentable_path)}
+                    title={file.unrepresentable_path ? "路径含非 UTF-8 字节，请在终端处理" : undefined}
                     onClick={() => {
                       setContextMenu(null);
                       api.gitStage(sessionId, [file.path], activeRepo).then(onStatusChanged, (err) => onError(String(err)));
@@ -1219,7 +1229,8 @@ export function GitPanel({
                     type="button"
                     role="menuitem"
                     className="tree-context-item danger"
-                    disabled={!!busy}
+                    disabled={!!busy || Boolean(file.unrepresentable_path)}
+                    title={file.unrepresentable_path ? "路径含非 UTF-8 字节，请在终端处理" : undefined}
                     onClick={() => {
                       setContextMenu(null);
                       setDiscardTarget(file.path);

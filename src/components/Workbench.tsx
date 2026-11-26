@@ -1,3 +1,4 @@
+import "../styles/workbench.css";
 import { Suspense, lazy, type ReactNode, useState } from "react";
 import type { Status } from "../lib/types";
 import { Icon } from "./Icon";
@@ -21,6 +22,7 @@ export type WorkbenchTab =
       name: string;
       stage: "unstaged" | "staged" | "commit";
       commit?: string;
+      repo?: string | null;
     };
 
 export interface WorkbenchTabsBarProps {

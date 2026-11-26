@@ -3,6 +3,22 @@
    yellow talisman paper with cinnabar on it = the one thing waiting for 本尊 to decide.
    Jade is the colour of sending an order, gold the 分身's own, cinnabar 本尊's. */
 
+@font-face {
+  font-family: "LXGW WenKai Lite";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/lxgw-wenkai-lite-regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "LXGW WenKai Lite";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/lxgw-wenkai-lite-bold.woff2") format("woff2");
+}
+
 :root {
   /* Type: six sizes for everything written, and one for code. Seals and tokens are drawn to their boxes, not set on this scale. */
   --t-micro: 12px;
@@ -77,7 +93,7 @@
      regular-script face. What is read (the conversation, labels, everything a control says) is Noto Sans SC with
      system Chinese sans fallbacks, holding cleanly at small sizes across platforms. Code is JetBrains Mono. */
   --brush: "LXGW WenKai Lite", "STKaiti", "KaiTi", serif;
-  --han: "Noto Sans SC", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
+  --han: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
   --text: var(--han), system-ui, sans-serif;
   --mono: "JetBrains Mono", var(--han), ui-monospace, Consolas, monospace;
   color-scheme: light;

@@ -1,0 +1,2 @@
+data: {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded for metric: 429 RESOURCE_EXHAUSTED, retry in 1m 15s"}}
+

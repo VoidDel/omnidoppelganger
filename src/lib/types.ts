@@ -510,6 +510,7 @@ export interface SettingsView {
   chat_folder: string;
   mcp_config: string;
   mcp_servers: McpServer[];
+  version?: string;
 }
 
 /** A skill (秘籍) as the 秘籍 page lists it: one that comes with the app, on or off, or one of the user's own. */
@@ -606,6 +607,7 @@ export interface GitFile {
   path: string;
   orig_path: string | null;
   status: string;
+  unrepresentable_path?: boolean;
 }
 
 export interface GitRepoInfo {
@@ -624,11 +626,13 @@ export interface GitStatus {
   upstream: string | null;
   ahead: number;
   behind: number;
+  merge_head?: boolean;
+  rebase_head?: boolean;
   conflicts: GitFile[];
   staged: GitFile[];
   unstaged: GitFile[];
   untracked: GitFile[];
-  untracked_truncated: boolean;
+  untracked_truncated?: boolean;
 }
 
 export interface RichDiffLine {
@@ -703,12 +707,15 @@ export interface PtyInfo {
   cwd: string;
   exited: number | null;
   backlog: string;
+  backlog_end_offset?: number;
 }
 
 export interface PtyOutputPayload {
   id: string;
   session_id: string;
   data: string;
+  start_offset?: number;
+  end_offset?: number;
 }
 
 export interface PtyExitPayload {

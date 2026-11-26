@@ -518,6 +518,24 @@ impl<L: Llm> Session<L> {
         Ok(outcome)
     }
 
+    /// Whether `path` belongs to this session without cloning its event log: attached to a user
+    /// message, written/painted/moved/delivered by a successful tool call, read as a picture,
+    /// discovered at turn end (`FilesMade`), or restored (`ArtifactRestored`).
+    pub fn has_session_file(&self, path: &str) -> bool {
+        self.inner.log.lock().unwrap().events().iter().any(|envelope| match &envelope.event {
+            Event::UserMessage { files, .. } => files.iter().any(|file| file.path == path),
+            Event::ToolResult { tool, is_error: false, meta, .. } => match tool.as_str() {
+                "edit_file" | "write_file" | "generate_image" | "move_file" => meta["file"].as_str() == Some(path),
+                "read_file" => meta["picture"].is_string() && meta["file"].as_str() == Some(path),
+                "deliver_files" => meta["files"].as_array().is_some_and(|files| files.iter().any(|file| file.as_str() == Some(path))),
+                _ => false,
+            },
+            Event::FilesMade { files, .. } => files.iter().any(|file| file == path),
+            Event::ArtifactRestored { file, .. } => file == path,
+            _ => false,
+        })
+    }
+
     /// Whether `(path, snapshot)` is a recorded deliverable snapshot of this session.
     pub fn has_artifact_snapshot(&self, path: &str, snapshot: &str) -> bool {
         if !undo::valid_snapshot_name(snapshot) {
@@ -1520,5 +1538,122 @@ impl<L: Llm> Inner<L> {
             }
         }
         Ok("step_limit")
+    }
+}
+
+#[cfg(test)]
+mod session_file_ownership_tests {
+    use super::*;
+    use crate::llm::AssistantTurn;
+
+    #[tokio::test]
+    async fn has_session_file_borrows_log_without_cloning_and_matches_all_event_sources() {
+        struct NoopLlm;
+        impl Llm for NoopLlm {
+            async fn stream(
+                &self,
+                _request: LlmRequest,
+                _deltas: UnboundedSender<StreamDelta>,
+                _cancel: CancellationToken,
+            ) -> Result<AssistantTurn, LlmError> {
+                Err(LlmError::Cancelled)
+            }
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(home.path());
+        let mut log = store.create(ws.path(), "anthropic", "claude-sonnet-5-5").unwrap();
+        log.append(Event::UserMessage {
+            text: "attached".into(),
+            steering: false,
+            mode: Mode::Edit,
+            images: vec![],
+            files: vec![Attached {
+                path: "/ws/attached.pdf".into(),
+                bytes: 100,
+                content: None,
+                document: None,
+                parts: None,
+                is_dir: false,
+            }],
+        })
+        .unwrap();
+        for (id, tool, meta, is_error) in [
+            ("t1", "edit_file", json!({ "file": "/ws/edited.rs" }), false),
+            ("t2", "write_file", json!({ "file": "/ws/written.rs" }), false),
+            ("t3", "generate_image", json!({ "file": "/ws/painted.png" }), false),
+            ("t4", "move_file", json!({ "file": "/ws/moved.txt" }), false),
+            ("t5", "read_file", json!({ "file": "/ws/viewed.png", "picture": "image/png" }), false),
+            ("t6", "read_file", json!({ "file": "/ws/plain_read.txt" }), false),
+            ("t7", "write_file", json!({ "file": "/ws/errored.rs" }), true),
+            ("t8", "deliver_files", json!({ "files": ["/ws/delivered_a.docx", "/ws/delivered_b.xlsx"] }), false),
+        ] {
+            log.append(Event::ToolResult {
+                tool_use_id: id.into(),
+                tool: tool.into(),
+                content: "ok".into(),
+                is_error,
+                meta,
+                images: vec![],
+            })
+            .unwrap();
+        }
+        log.append(Event::FilesMade {
+            turn: 1,
+            files: vec!["/ws/made_by_script.png".into()],
+            snapshots: Default::default(),
+            sizes: Default::default(),
+        })
+        .unwrap();
+        log.append(Event::ArtifactRestored {
+            file: "/ws/restored.pdf".into(),
+            path: "restored.pdf".into(),
+            version: 1,
+            snapshot: "1-0123456789abcdef".into(),
+            bytes: 42,
+            previous: None,
+            previous_bytes: None,
+        })
+        .unwrap();
+
+        let (tx, _rx) = unbounded_channel();
+        let tuning = Arc::new(|_: &str, _: &str| Tuning {
+            effort: "high".into(),
+            context_limit: u64::MAX,
+            context_window: u64::MAX,
+            guardian: None,
+            approval_wait: None,
+        });
+        let services = Services {
+            grants: Arc::new(GrantStore::new(home.path().join("grants.json"))),
+            mcp: None,
+            skills: None,
+            search: None,
+            sandbox: None,
+            chat: None,
+            runtime: None,
+            painter: None,
+            lsp: None,
+        };
+        let session = Session::new(log, Arc::new(NoopLlm), tuning, services, tx, tokio::runtime::Handle::current()).unwrap();
+
+        for expected in [
+            "/ws/attached.pdf",
+            "/ws/edited.rs",
+            "/ws/written.rs",
+            "/ws/painted.png",
+            "/ws/moved.txt",
+            "/ws/viewed.png",
+            "/ws/delivered_a.docx",
+            "/ws/delivered_b.xlsx",
+            "/ws/made_by_script.png",
+            "/ws/restored.pdf",
+        ] {
+            assert!(session.has_session_file(expected), "expected {expected} to belong to session");
+        }
+        for rejected in ["/ws/plain_read.txt", "/ws/errored.rs", "/etc/passwd", ""] {
+            assert!(!session.has_session_file(rejected), "{rejected} must not belong to session");
+        }
     }
 }

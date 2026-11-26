@@ -88,9 +88,14 @@ pub struct SessionSummary {
     pub awaiting_approval: bool,
 }
 
+type CachedSummary = (Option<std::time::SystemTime>, u64, SessionSummary);
+
+const MAX_SUMMARY_CACHE_ENTRIES: usize = 4096;
+
 #[derive(Clone)]
 pub struct SessionStore {
     root: PathBuf,
+    summary_cache: std::sync::Arc<std::sync::Mutex<HashMap<String, CachedSummary>>>,
 }
 
 /// What a session is created with.
@@ -111,7 +116,20 @@ pub struct NewSession<'a> {
 
 impl SessionStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            summary_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Root folder holding stored session directories.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Evict a cached summary entry for `id` (if present).
+    pub fn invalidate_cache(&self, id: &str) {
+        self.summary_cache.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     }
 
     /// The store a log is kept in.
@@ -229,6 +247,7 @@ impl SessionStore {
     /// The caller must have no open handle on it.
     pub fn delete(&self, id: &str) -> Result<(), SessionError> {
         let directory = self.path(id)?.parent().expect("the log sits in the session's directory").to_path_buf();
+        self.invalidate_cache(id);
         Ok(fs::remove_dir_all(directory)?)
     }
 
@@ -249,17 +268,49 @@ impl SessionStore {
         if good_bytes < bytes.len() {
             // Windows refuses to truncate through an append-only handle.
             OpenOptions::new().write(true).open(&path)?.set_len(good_bytes as u64)?;
+            self.invalidate_cache(id);
         }
         let file = OpenOptions::new().append(true).open(&path)?;
         Ok(SessionLog { id: id.to_string(), path, events, file })
     }
 
     /// Read a stored session's summary without changing its file, so it is
-    /// safe while another handle appends to the log.
+    /// safe while another handle appends to the log. Unchanged files hit an
+    /// in-memory `(modified_time, file_len)` cache without re-parsing JSONL.
     pub fn peek(&self, id: &str) -> Result<SessionSummary, SessionError> {
         let path = self.path(id)?;
+        let meta = fs::metadata(&path)?;
+        let len = meta.len();
+        let mtime = meta.modified().ok();
+        if mtime.is_some()
+            && let Some((cached_mtime, cached_len, cached_summary)) =
+                self.summary_cache.lock().unwrap_or_else(|e| e.into_inner()).get(id)
+            && *cached_mtime == mtime
+            && *cached_len == len
+        {
+            return Ok(cached_summary.clone());
+        }
         let (events, _) = parse(&path, &fs::read(&path)?)?;
-        Ok(summarize(&events))
+        let summary = summarize(&events);
+        if mtime.is_some() {
+            let mut cache = self.summary_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.len() >= MAX_SUMMARY_CACHE_ENTRIES && !cache.contains_key(id) {
+                cache.clear();
+            }
+            cache.insert(id.to_string(), (mtime, len, summary.clone()));
+        }
+        Ok(summary)
+    }
+
+    /// Read a stored (non-live) session's summary normalized to idle state
+    /// (`turn_open: false`, `awaiting_approval: false`) for list/single-item queries.
+    pub fn peek_idle(&self, id: &str) -> Result<SessionSummary, SessionError> {
+        let summary = self.peek(id)?;
+        Ok(SessionSummary {
+            turn_open: false,
+            awaiting_approval: false,
+            ..summary
+        })
     }
 
     /// Read a stored session's events without changing its file, as [`SessionStore::peek`] does.
@@ -438,27 +489,102 @@ pub const PLAN_OFF: &str = "[Plan mode is off] You may change files and run comm
 /// What a provider answered stays as it came while the session is on that
 /// provider. Once it has moved to another, what earlier ones answered is sent
 /// in the form every provider takes: see [`carried`].
-pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
-    let text = |text: &str| json!({ "type": "text", "text": text });
-    let mut messages = Vec::new();
-    let mut pending: Vec<Value> = Vec::new();
-    // The provider that is answering, and which answered each assistant message, by its place in `messages`.
+struct PrescanMeta<'a> {
+    speaker: String,
+    planning: bool,
+    todos: Option<Vec<(String, String)>>,
+    brief: Option<&'a str>,
+}
+
+/// Zero-copy prefix scan before `replay_start` for [`derive_messages`], extracting only the
+/// active `speaker`, `planning` mode state, latest valid `todos` list, and any unconsumed
+/// `AsideBriefed` without cloning historical Base64 images or tool result payloads.
+fn prescan_metadata_before_replay(events: &[Envelope]) -> PrescanMeta<'_> {
     let mut speaker = match events.first().map(|envelope| &envelope.event) {
         Some(Event::SessionCreated { provider, .. }) => provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
         _ => DEFAULT_PROVIDER.to_string(),
     };
+    let mut planning = false;
+    let mut todos: Option<Vec<(String, String)>> = None;
+    let mut brief: Option<&str> = None;
+    for envelope in events {
+        match &envelope.event {
+            Event::AsideBriefed { brief: told } => brief = Some(told),
+            Event::UserMessage { mode, .. } => {
+                planning = *mode == Mode::Plan;
+                brief = None;
+            }
+            Event::ModelChanged { provider: Some(provider), .. } => speaker = provider.clone(),
+            Event::AssistantMessage { content, .. } if !content.is_empty() => {
+                for block in content.iter().filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos") {
+                    if let Ok(items) = crate::tools::todo_items(&block["input"]) {
+                        todos = Some(items);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    PrescanMeta {
+        speaker,
+        planning,
+        todos,
+        brief,
+    }
+}
+
+/// Compute the index in `events` from which [`derive_messages`] must construct full message
+/// blocks so its output is 100% identical to replaying from index `0`.
+fn derive_replay_start(events: &[Envelope]) -> usize {
+    let Some(compacted_idx) = events.iter().rposition(|e| matches!(e.event, Event::ContextCompacted { .. })) else {
+        return 0;
+    };
+    let base_start = match &events[compacted_idx].event {
+        Event::ContextCompacted { kept_from_turn: Some(k), .. } => events[..compacted_idx]
+            .iter()
+            .rposition(|e| matches!(e.event, Event::TurnStart { turn } if turn == *k))
+            .unwrap_or(compacted_idx),
+        _ => compacted_idx,
+    };
+    // Step back to just after the last non-empty `AssistantMessage` before `base_start` so any
+    // unanswered user messages or pending restoration notices right before `base_start` are preserved.
+    events[..base_start]
+        .iter()
+        .rposition(|e| matches!(&e.event, Event::AssistantMessage { content, .. } if !content.is_empty()))
+        .map_or(0, |idx| idx + 1)
+}
+
+pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
+    let text = |text: &str| json!({ "type": "text", "text": text });
+    let replay_start = derive_replay_start(events);
+    let PrescanMeta {
+        mut speaker,
+        mut planning,
+        mut todos,
+        mut brief,
+    } = if replay_start > 0 {
+        prescan_metadata_before_replay(&events[..replay_start])
+    } else {
+        let initial_speaker = match events.first().map(|envelope| &envelope.event) {
+            Some(Event::SessionCreated { provider, .. }) => provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
+            _ => DEFAULT_PROVIDER.to_string(),
+        };
+        PrescanMeta {
+            speaker: initial_speaker,
+            planning: false,
+            todos: None,
+            brief: None,
+        }
+    };
+    let mut messages = Vec::new();
+    let mut pending: Vec<Value> = Vec::new();
     let mut spoken: Vec<(usize, String)> = Vec::new();
     // Snapshot of `(messages.len(), spoken.len())` at the start of each turn, for `kept_from_turn` tail retention.
     let mut turn_starts: HashMap<u64, (usize, usize)> = HashMap::new();
     let mut current_turn_msg_start: usize = 0;
     // What the user said since the model last spoke.
     let mut unanswered: Vec<Value> = Vec::new();
-    // The to-do list as the model last wrote it.
-    let mut todos: Option<Vec<(String, String)>> = None;
-    let mut planning = false;
-    // In a side conversation: the briefing that goes ahead of the user's next words.
-    let mut brief: Option<&str> = None;
-    for envelope in events {
+    for envelope in &events[replay_start..] {
         match &envelope.event {
             Event::TurnStart { turn } => {
                 turn_starts.insert(*turn, (messages.len(), spoken.len()));
@@ -899,18 +1025,104 @@ pub fn skills(events: &[Envelope]) -> &[SkillInfo] {
 /// What opens a request after a compaction, ahead of the summary.
 pub const COMPACTED: &str = "[The conversation up to here grew too long and was replaced by the summary below. The earlier messages are gone: read a file again before relying on what it held. Carry on with the task from where the summary leaves it.]";
 
+struct ByteCounter(usize);
+
+impl Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json_slice_serialized_len(content: &[Value]) -> usize {
+    let mut counter = ByteCounter(0);
+    let _ = serde_json::to_writer(&mut counter, content);
+    counter.0
+}
+
+fn context_estimate_start(events: &[Envelope]) -> (usize, u64, bool) {
+    let Some(compacted_idx) = events.iter().rposition(|e| matches!(e.event, Event::ContextCompacted { .. })) else {
+        return (0, 0, false);
+    };
+    match &events[compacted_idx].event {
+        Event::ContextCompacted { kept_from_turn: Some(from_turn), .. } => {
+            let mut earliest_kept: Option<usize> = None;
+            let mut turn_before: Option<u64> = None;
+            let mut answered_before = false;
+            for idx in (0..compacted_idx).rev() {
+                if let Event::TurnStart { turn } = events[idx].event {
+                    if turn >= *from_turn {
+                        earliest_kept = Some(idx);
+                    } else {
+                        turn_before = Some(turn);
+                        answered_before = events[idx + 1..earliest_kept.unwrap_or(compacted_idx)]
+                            .iter()
+                            .any(|e| matches!(e.event, Event::AssistantMessage { .. }));
+                        break;
+                    }
+                }
+            }
+            match earliest_kept {
+                Some(start_idx) => (start_idx, turn_before.unwrap_or(0), answered_before),
+                None => {
+                    // `from_turn` has no `TurnStart`: check whether the active turn before `compacted_idx` was answered.
+                    let last_ts = events[..compacted_idx].iter().rposition(|e| matches!(e.event, Event::TurnStart { .. }));
+                    let search_from = last_ts.map_or(0, |i| i + 1);
+                    let cur_turn = last_ts.map_or(0, |i| match events[i].event {
+                        Event::TurnStart { turn } => turn,
+                        _ => 0,
+                    });
+                    if events[search_from..compacted_idx].iter().any(|e| matches!(e.event, Event::AssistantMessage { .. })) {
+                        (compacted_idx, cur_turn, true)
+                    } else {
+                        (last_ts.unwrap_or(0), 0, false)
+                    }
+                }
+            }
+        }
+        _ => {
+            // `kept_from_turn: None`: `retained` is 0; if the active turn already has an `AssistantMessage`,
+            // `unanswered_added` is unused so we can start directly at `compacted_idx`.
+            let mut saw_assistant = false;
+            let mut cur_turn = 0u64;
+            let mut last_ts_idx: Option<usize> = None;
+            for idx in (0..compacted_idx).rev() {
+                match events[idx].event {
+                    Event::AssistantMessage { .. } if last_ts_idx.is_none() => {
+                        saw_assistant = true;
+                    }
+                    Event::TurnStart { turn } => {
+                        cur_turn = turn;
+                        last_ts_idx = Some(idx);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if saw_assistant {
+                (compacted_idx, cur_turn, true)
+            } else {
+                (last_ts_idx.unwrap_or(0), 0, false)
+            }
+        }
+    }
+}
+
 /// About how many tokens the next request will hold. The last request's own
 /// count is exact; what was added since (tool results, user messages), or a
 /// log with no counts at all, is estimated at one token per three bytes,
 /// which runs high for English and about right for Chinese.
 pub fn context_estimate(events: &[Envelope]) -> u64 {
     let guess = |text: &str| text.len() as u64 / 3;
+    let (start_idx, mut current_turn, mut turn_answered) = context_estimate_start(events);
     let mut estimate = 0;
-    let mut current_turn = 0u64;
     let mut turn_added: HashMap<u64, u64> = HashMap::new();
     let mut unanswered_added = 0u64;
-    let mut turn_answered = false;
-    for envelope in events {
+    for envelope in &events[start_idx..] {
         match &envelope.event {
             Event::TurnStart { turn } => {
                 current_turn = *turn;
@@ -932,11 +1144,11 @@ pub fn context_estimate(events: &[Envelope]) -> u64 {
             Event::AssistantMessage { tokens: Some(tokens), content, .. } => {
                 turn_answered = true;
                 estimate = tokens.input + tokens.output;
-                *turn_added.entry(current_turn).or_default() += guess(&Value::Array(content.clone()).to_string());
+                *turn_added.entry(current_turn).or_default() += json_slice_serialized_len(content) as u64 / 3;
             }
             Event::AssistantMessage { content, tokens: None, .. } => {
                 turn_answered = true;
-                let g = guess(&Value::Array(content.clone()).to_string());
+                let g = json_slice_serialized_len(content) as u64 / 3;
                 estimate += g;
                 *turn_added.entry(current_turn).or_default() += g;
             }
@@ -1992,5 +2204,460 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         assert_eq!(messages[3]["role"], "assistant");
         assert_eq!(messages[3]["content"], json!([{ "type": "text", "text": "Both look good." }]));
         assert_eq!(messages[4]["role"], "user");
+    }
+
+    fn naive_derive_messages_for_test(events: &[Envelope]) -> Vec<Value> {
+        let text = |text: &str| json!({ "type": "text", "text": text });
+        let mut messages = Vec::new();
+        let mut pending: Vec<Value> = Vec::new();
+        let mut speaker = match events.first().map(|envelope| &envelope.event) {
+            Some(Event::SessionCreated { provider, .. }) => provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
+            _ => DEFAULT_PROVIDER.to_string(),
+        };
+        let mut spoken: Vec<(usize, String)> = Vec::new();
+        let mut turn_starts: HashMap<u64, (usize, usize)> = HashMap::new();
+        let mut current_turn_msg_start: usize = 0;
+        let mut unanswered: Vec<Value> = Vec::new();
+        let mut todos: Option<Vec<(String, String)>> = None;
+        let mut planning = false;
+        let mut brief: Option<&str> = None;
+        for envelope in events {
+            match &envelope.event {
+                Event::TurnStart { turn } => {
+                    turn_starts.insert(*turn, (messages.len(), spoken.len()));
+                    current_turn_msg_start = messages.len();
+                }
+                Event::AsideBriefed { brief: told } => brief = Some(told),
+                Event::UserMessage { text: said, mode, images, files, .. } => {
+                    if (*mode == Mode::Plan) != planning {
+                        planning = !planning;
+                        pending.push(text(if planning { PLAN_ON } else { PLAN_OFF }));
+                    }
+                    if let Some(told) = brief.take() {
+                        pending.push(text(told));
+                    }
+                    let blocks = images
+                        .iter()
+                        .map(|image| json!({ "type": "image", "source": { "type": "base64", "media_type": image.media_type, "data": image.data } }))
+                        .chain(files.iter().map(|file| text(&crate::events::attached_text(file))))
+                        .chain((!said.is_empty()).then(|| text(said)));
+                    for block in blocks {
+                        pending.push(block.clone());
+                        unanswered.push(block);
+                    }
+                }
+                Event::FilesRestored { turn, restored, skipped } => {
+                    let mut told = format!("[The user undid your file changes from turn {turn} on.");
+                    if !restored.is_empty() {
+                        told.push_str(&format!(" Back to what they held before those changes, or removed if you had created them: {}.", restored.join(", ")));
+                    }
+                    if !skipped.is_empty() {
+                        told.push_str(&format!(" Left as they are, because they changed after your last edit: {}.", skipped.join(", ")));
+                    }
+                    told.push_str(" Read a file again before relying on what it held.]");
+                    pending.push(text(&told));
+                }
+                Event::ArtifactRestored { path, version, .. } => {
+                    let told = format!("[The user restored {path} to version v{version}. Read it again before relying on what it held.]");
+                    pending.push(text(&told));
+                }
+                Event::ModelChanged { provider: Some(provider), .. } => speaker = provider.clone(),
+                Event::ContextCompacted { summary, kept_from_turn, .. } => {
+                    let mut header = vec![text(&format!("{COMPACTED}\n\n{summary}"))];
+                    if planning {
+                        header.push(text(PLAN_ON));
+                    }
+                    if let Some(todos) = todos.as_ref().filter(|todos| !todos.is_empty()) {
+                        let lines: Vec<String> = todos.iter().map(|(item, status)| format!("- [{status}] {item}")).collect();
+                        header.push(text(&format!("[Your to-do list as you last wrote it; update it with `update_todos` as you go.]\n{}", lines.join("\n"))));
+                    }
+                    let retained = kept_from_turn
+                        .and_then(|turn| turn_starts.get(&turn).copied())
+                        .filter(|(msg_from, _)| *msg_from < messages.len());
+                    if let Some((msg_from, spoken_from)) = retained {
+                        let mut kept_msgs: Vec<Value> = messages.drain(msg_from..).collect();
+                        let mut kept_spoken: Vec<(usize, String)> = spoken
+                            .drain(spoken_from..)
+                            .filter(|(idx, _)| *idx >= msg_from)
+                            .map(|(idx, spk)| (idx - msg_from, spk))
+                            .collect();
+                        let inserted_header = if let Some(first_content) = kept_msgs
+                            .first_mut()
+                            .filter(|m| m["role"] == "user")
+                            .and_then(|m| m["content"].as_array_mut())
+                        {
+                            header.append(first_content);
+                            *first_content = header;
+                            0usize
+                        } else {
+                            kept_msgs.insert(0, json!({ "role": "user", "content": header }));
+                            1usize
+                        };
+                        if inserted_header > 0 {
+                            for (idx, _) in &mut kept_spoken {
+                                *idx += inserted_header;
+                            }
+                        }
+                        turn_starts.retain(|_, (m_idx, _)| *m_idx >= msg_from);
+                        for (m_idx, s_idx) in turn_starts.values_mut() {
+                            *m_idx = (*m_idx - msg_from) + inserted_header;
+                            *s_idx = s_idx.saturating_sub(spoken_from);
+                        }
+                        current_turn_msg_start = if current_turn_msg_start >= msg_from {
+                            (current_turn_msg_start - msg_from) + inserted_header
+                        } else {
+                            0
+                        };
+                        messages = kept_msgs;
+                        spoken = kept_spoken;
+                    } else {
+                        messages.clear();
+                        spoken.clear();
+                        pending.clear();
+                        turn_starts.clear();
+                        current_turn_msg_start = 0;
+                        pending.extend(header);
+                        pending.extend(unanswered.iter().cloned());
+                    }
+                }
+                Event::ToolResult { tool_use_id, content, is_error, images, .. } => {
+                    let words = if content.is_empty() { "(no output)" } else { content.as_str() };
+                    let content = if images.is_empty() {
+                        json!(words)
+                    } else {
+                        let pictures = images.iter().map(|image| json!({ "type": "image", "source": { "type": "base64", "media_type": image.media_type, "data": image.data } }));
+                        Value::Array(std::iter::once(text(words)).chain(pictures).collect())
+                    };
+                    pending.push(json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error }));
+                }
+                Event::AssistantMessage { content, .. } if !content.is_empty() => {
+                    let merged = if !pending.is_empty() {
+                        messages.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
+                        false
+                    } else if messages.last().is_some_and(|m| m["role"] == "assistant")
+                        && spoken
+                            .last()
+                            .is_some_and(|(idx, spk)| *idx >= current_turn_msg_start && *idx == messages.len() - 1 && spk == &speaker)
+                    {
+                        if let Some(existing) = messages.last_mut().and_then(|m| m["content"].as_array_mut()) {
+                            existing.extend(content.iter().cloned());
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if !merged {
+                        spoken.push((messages.len(), speaker.clone()));
+                        messages.push(json!({ "role": "assistant", "content": content }));
+                    }
+                    unanswered.clear();
+                    for block in content.iter().filter(|block| block["type"] == "tool_use" && block["name"] == "update_todos") {
+                        if let Ok(items) = crate::tools::todo_items(&block["input"]) {
+                            todos = Some(items);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !pending.is_empty() {
+            messages.push(json!({ "role": "user", "content": pending }));
+        }
+        let mut used_ids: HashSet<String> = HashSet::new();
+        for &(at, ref from) in &spoken {
+            if from == &speaker {
+                for block in messages[at]["content"].as_array().into_iter().flatten() {
+                    if block["type"] == "tool_use"
+                        && let Some(id) = block["id"].as_str().filter(|id| !id.is_empty())
+                    {
+                        used_ids.insert(id.to_string());
+                    }
+                }
+            }
+        }
+        for (at, from) in spoken {
+            if from != speaker {
+                let mut local_renamed: HashMap<String, VecDeque<String>> = HashMap::new();
+                let mut any_renamed = false;
+                let content = carried(
+                    messages[at]["content"].as_array().map(Vec::as_slice).unwrap_or_default(),
+                    &mut used_ids,
+                    &mut local_renamed,
+                    &mut any_renamed,
+                );
+                messages[at]["content"] = Value::Array(content);
+                if any_renamed
+                    && let Some(next_user) = messages.get_mut(at + 1).filter(|m| m["role"] == "user")
+                {
+                    for block in next_user["content"].as_array_mut().into_iter().flatten() {
+                        if block["type"] == "tool_result"
+                            && let Some(raw_id) = block["tool_use_id"].as_str()
+                            && let Some(queue) = local_renamed.get_mut(raw_id)
+                            && let Some(new_id) = if queue.len() > 1 { queue.pop_front() } else { queue.front().cloned() }
+                        {
+                            block["tool_use_id"] = json!(new_id);
+                        }
+                    }
+                }
+            }
+        }
+        messages
+    }
+
+    fn naive_context_estimate_for_test(events: &[Envelope]) -> u64 {
+        let guess = |text: &str| text.len() as u64 / 3;
+        let mut estimate = 0;
+        let mut current_turn = 0u64;
+        let mut turn_added: HashMap<u64, u64> = HashMap::new();
+        let mut unanswered_added = 0u64;
+        let mut turn_answered = false;
+        for envelope in events {
+            match &envelope.event {
+                Event::TurnStart { turn } => {
+                    current_turn = *turn;
+                    turn_answered = false;
+                    unanswered_added = 0;
+                }
+                Event::ContextCompacted { summary, kept_from_turn, .. } => {
+                    let retained: u64 = match kept_from_turn {
+                        Some(from_turn) => turn_added
+                            .iter()
+                            .filter(|(t, _)| **t >= *from_turn && (**t < current_turn || turn_answered))
+                            .map(|(_, v)| *v)
+                            .sum(),
+                        None => 0,
+                    };
+                    turn_added.clear();
+                    estimate = guess(summary) + retained + if !turn_answered { unanswered_added } else { 0 };
+                }
+                Event::AssistantMessage { tokens: Some(tokens), content, .. } => {
+                    turn_answered = true;
+                    estimate = tokens.input + tokens.output;
+                    *turn_added.entry(current_turn).or_default() += guess(&Value::Array(content.clone()).to_string());
+                }
+                Event::AssistantMessage { content, tokens: None, .. } => {
+                    turn_answered = true;
+                    let g = guess(&Value::Array(content.clone()).to_string());
+                    estimate += g;
+                    *turn_added.entry(current_turn).or_default() += g;
+                }
+                Event::UserMessage { text, images, files, .. } => {
+                    let g = guess(text) + 1500 * images.len() as u64 + files.iter().map(|file| guess(&crate::events::attached_text(file))).sum::<u64>();
+                    estimate += g;
+                    *turn_added.entry(current_turn).or_default() += g;
+                    if !turn_answered {
+                        unanswered_added += g;
+                    }
+                }
+                Event::ToolResult { content, images, .. } => {
+                    let g = guess(content) + 1500 * images.len() as u64;
+                    estimate += g;
+                    *turn_added.entry(current_turn).or_default() += g;
+                }
+                Event::AsideBriefed { brief } => {
+                    let g = guess(brief);
+                    estimate += g;
+                    *turn_added.entry(current_turn).or_default() += g;
+                }
+                _ => {}
+            }
+        }
+        estimate
+    }
+
+    #[test]
+    fn derive_messages_and_context_estimate_skip_events_before_compaction() {
+        use crate::events::Image;
+        use crate::llm::Tokens;
+
+        let mut events: Vec<Envelope> = Vec::new();
+        fn push(events: &mut Vec<Envelope>, ev: Event) {
+            let seq = events.len() as u64 + 1;
+            events.push(Envelope {
+                seq,
+                ts: "2026-11-26T00:00:00Z".into(),
+                event: ev,
+            });
+        }
+
+        push(&mut events, Event::SessionCreated {
+            id: "s-perf".into(),
+            workspace: "/work".into(),
+            provider: Some("moonshot".into()),
+            model: "kimi-k3.1-pro".into(),
+            format: FORMAT_VERSION,
+            parent: None,
+            worktree: None,
+            schedule: None,
+            fork: None,
+            aside: None,
+        });
+
+        let big_image = Image {
+            media_type: "image/png".into(),
+            data: "A".repeat(256 * 1024),
+        };
+        let big_tool_out = "x".repeat(64 * 1024);
+
+        // 120 heavy turns before compaction, switching provider, toggling Plan mode, and setting todos.
+        for turn in 1..=120u64 {
+            push(&mut events, Event::TurnStart { turn });
+            let mode = if turn >= 50 { Mode::Plan } else { Mode::Auto };
+            push(&mut events, Event::UserMessage {
+                text: format!("turn {turn}"),
+                steering: false,
+                mode,
+                images: vec![big_image.clone()],
+                files: vec![],
+            });
+            if turn == 40 {
+                push(&mut events, Event::ModelChanged {
+                    model: "deepseek-v4-pro".into(),
+                    provider: Some("deepseek".into()),
+                });
+            }
+            let call_id = format!("functions.read:{turn}");
+            let mut blocks = vec![json!({
+                "type": "tool_use",
+                "id": call_id,
+                "name": "read_file",
+                "input": { "path": format!("file_{turn}.rs") }
+            })];
+            if turn == 80 {
+                blocks.push(json!({
+                    "type": "tool_use",
+                    "id": "todo_80",
+                    "name": "update_todos",
+                    "input": {
+                        "todos": [
+                            { "text": "audit session replay", "status": "done" },
+                            { "text": "verify tail complexity", "status": "in_progress" }
+                        ]
+                    }
+                }));
+            }
+            push(&mut events, Event::AssistantMessage {
+                content: blocks,
+                stop_reason: Some("tool_use".into()),
+                model: "deepseek-v4-pro".into(),
+                usage: json!({}),
+                tokens: Some(Tokens { input: 20_000 + turn * 100, cached: 10_000, output: 150 }),
+            });
+            push(&mut events, Event::ToolResult {
+                tool_use_id: call_id,
+                tool: "read_file".into(),
+                content: big_tool_out.clone(),
+                is_error: false,
+                meta: Value::Null,
+                images: vec![big_image.clone()],
+            });
+            push(&mut events, Event::AssistantMessage {
+                content: vec![json!({ "type": "text", "text": format!("finished turn {turn}") })],
+                stop_reason: Some("end_turn".into()),
+                model: "deepseek-v4-pro".into(),
+                usage: json!({}),
+                tokens: Some(Tokens { input: 25_000 + turn * 100, cached: 12_000, output: 80 }),
+            });
+            push(&mut events, Event::TurnEnd { turn, reason: "completed".into(), error: None });
+        }
+
+        // Case 1: `kept_from_turn: Some(119)` + provider switch in tail + steering message.
+        push(&mut events, Event::TurnStart { turn: 121 });
+        push(&mut events, Event::UserMessage {
+            text: "inspect tail".into(),
+            steering: false,
+            mode: Mode::Plan,
+            images: vec![],
+            files: vec![],
+        });
+        push(&mut events, Event::AssistantMessage {
+            content: vec![json!({ "type": "tool_use", "id": "tail:1", "name": "read_file", "input": { "path": "Cargo.toml" } })],
+            stop_reason: Some("tool_use".into()),
+            model: "deepseek-v4-pro".into(),
+            usage: json!({}),
+            tokens: Some(Tokens { input: 45_000, cached: 20_000, output: 60 }),
+        });
+        push(&mut events, Event::ToolResult {
+            tool_use_id: "tail:1".into(),
+            tool: "read_file".into(),
+            content: "[package]".into(),
+            is_error: false,
+            meta: Value::Null,
+            images: vec![],
+        });
+        push(&mut events, Event::UserMessage {
+            text: "keep going".into(),
+            steering: true,
+            mode: Mode::Plan,
+            images: vec![],
+            files: vec![],
+        });
+        push(&mut events, Event::ContextCompacted {
+            summary: "Compacted 1..118.".into(),
+            tokens_before: 45_000,
+            focus: None,
+            kept_from_turn: Some(119),
+            tokens: None,
+        });
+        push(&mut events, Event::ModelChanged {
+            model: "claude-sonnet-5-5".into(),
+            provider: Some("anthropic".into()),
+        });
+
+        assert_eq!(derive_messages(&events), naive_derive_messages_for_test(&events));
+        assert_eq!(context_estimate(&events), naive_context_estimate_for_test(&events));
+
+        // Verify speed of O(tail) replay across 50 iterations (avoids cloning ~70 MB of prefix images per call).
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            let m = derive_messages(&events);
+            let c = context_estimate(&events);
+            assert!(!m.is_empty() && c > 0);
+        }
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "tail replay took {:?}", started.elapsed());
+
+        // Case 2: Full compaction (`kept_from_turn: None`) with unanswered steering user message.
+        push(&mut events, Event::ContextCompacted {
+            summary: "Compacted everything.".into(),
+            tokens_before: 12_000,
+            focus: None,
+            kept_from_turn: None,
+            tokens: None,
+        });
+        assert_eq!(derive_messages(&events), naive_derive_messages_for_test(&events));
+        assert_eq!(context_estimate(&events), naive_context_estimate_for_test(&events));
+    }
+
+    #[test]
+    fn session_store_summary_cache_hits_unchanged_and_updates_on_append() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "anthropic", "claude-sonnet-5-5").unwrap();
+        let id = log.id().to_string();
+        log.append(Event::TurnStart { turn: 1 }).unwrap();
+        log.append(Event::UserMessage {
+            text: "initial title".into(),
+            steering: false,
+            mode: Mode::Auto,
+            images: vec![],
+            files: vec![],
+        })
+        .unwrap();
+
+        let s1 = store.peek(&id).unwrap();
+        assert_eq!(s1.title, "initial title");
+        assert!(s1.turn_open);
+        let idle = store.peek_idle(&id).unwrap();
+        assert!(!idle.turn_open && !idle.awaiting_approval);
+        // Repeated peek hits cache and returns identical summary.
+        assert_eq!(store.peek(&id).unwrap(), s1);
+
+        // Appending changes file size, invalidating the `(mtime, len)` cache entry automatically.
+        log.append(Event::SessionRenamed { title: "renamed title".into() }).unwrap();
+        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        let s2 = store.peek(&id).unwrap();
+        assert_eq!(s2.title, "renamed title");
+        assert!(!s2.turn_open);
     }
 }

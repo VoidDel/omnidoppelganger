@@ -1,3 +1,4 @@
+import "../styles/pages.css";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import {

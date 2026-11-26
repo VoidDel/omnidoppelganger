@@ -18,10 +18,13 @@ import { connect } from "./cdp.mjs";
 import { startMock } from "./mock-llm.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-// Its own target directory: a running `tauri dev` holds the usual one's executable open.
-const target = join(root, "target", "e2e");
+// Its own target directory locally (a running `tauri dev` holds `target/debug` open);
+// on CI (`CI=true`), reuse `target` so Cargo reuses compiled workspace artifacts.
+const target = process.env.ODG_E2E_TARGET_DIR || (process.env.CI ? join(root, "target") : join(root, "target", "e2e"));
 const executable = join(target, "debug", "omnidoppelganger.exe");
-const DEBUG_PORT = 9333;
+const artifactsDir = process.env.ODG_E2E_ARTIFACTS_DIR || join(root, "e2e", "artifacts");
+const CDP_CONNECT_TIMEOUT_MS = Math.min(30_000, Math.max(1_000, Number(process.env.ODG_E2E_CDP_TIMEOUT_MS) || 30_000));
+const DEBUG_PORT = Number(process.env.ODG_E2E_DEBUG_PORT) || 9333;
 /** A one-pixel PNG, standing in for a pasted screenshot. */
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
@@ -29,10 +32,18 @@ if (process.platform !== "win32") {
   console.error("The end-to-end test drives WebView2 and runs on Windows only.");
   process.exit(1);
 }
-if (process.argv.includes("--build")) {
+rmSync(artifactsDir, { recursive: true, force: true });
+const shouldBuild =
+  process.argv.includes("--build") || (Boolean(process.env.CI) && process.env.ODG_E2E_SKIP_BUILD !== "1");
+if (shouldBuild) {
   // A build with the frontend inside it; a plain `cargo build` loads the dev server instead.
   // pnpm is a script on Windows, so it runs through the shell, as one fixed command line.
-  const built = spawnSync("pnpm tauri build --debug --no-bundle", { cwd: root, stdio: "inherit", shell: true, env: { ...process.env, CARGO_TARGET_DIR: target } });
+  const built = spawnSync("pnpm tauri build --debug --no-bundle", {
+    cwd: root,
+    stdio: "inherit",
+    shell: true,
+    env: { ...process.env, CARGO_TARGET_DIR: target },
+  });
   if (built.status !== 0) process.exit(built.status ?? 1);
 }
 if (!existsSync(executable)) {
@@ -41,7 +52,11 @@ if (!existsSync(executable)) {
 }
 
 let failed = false;
-const step = (text) => console.log(`  ✓ ${text}`);
+const completedSteps = [];
+const step = (text) => {
+  completedSteps.push(text);
+  console.log(`  ✓ ${text}`);
+};
 const check = (condition, what) => {
   if (!condition) throw new Error(`expected ${what}`);
   step(what);
@@ -140,25 +155,99 @@ const mock = await startMock([
   [{ text: "两份附件都看过了。" }],
 ]);
 
+const appProcessLogs = [];
+const pushProcessLog = (stream, chunk) => {
+  if (appProcessLogs.length < 500) {
+    appProcessLogs.push(`[${new Date().toISOString()}] [${stream}] ${String(chunk).trimEnd()}`);
+  }
+};
+
 const app = spawn(executable, [], {
-  stdio: "ignore",
+  stdio: ["ignore", "pipe", "pipe"],
   env: {
     ...process.env,
-    ODG_HOME: home,
-    ODG_E2E_WORKSPACE: workspace,
-    ANTHROPIC_BASE_URL: mock.url,
-    ANTHROPIC_API_KEY: "e2e-key",
+    ODG_HOME: process.env.ODG_HOME || home,
+    ODG_E2E_WORKSPACE: process.env.ODG_E2E_WORKSPACE || workspace,
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL || mock.url,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "e2e-key",
     // Opening an attached file says what it would do and opens nothing on the machine the test runs on.
-    ODG_E2E_DRY_OPEN: "1",
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEBUG_PORT}`,
-    WEBVIEW2_USER_DATA_FOLDER: join(scratch, "webview"),
+    ODG_E2E_DRY_OPEN: process.env.ODG_E2E_DRY_OPEN ?? "1",
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
+      process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS || `--remote-debugging-port=${DEBUG_PORT}`,
+    WEBVIEW2_USER_DATA_FOLDER: process.env.WEBVIEW2_USER_DATA_FOLDER || join(scratch, "webview"),
   },
 });
+app.stdout?.on("data", (chunk) => pushProcessLog("stdout", chunk));
+app.stderr?.on("data", (chunk) => pushProcessLog("stderr", chunk));
+
+/** Poll WebView2 CDP endpoint for up to `timeoutMs` (default 30s) until a live page evaluates script. */
+async function connectWithRetry(port, timeoutMs = CDP_CONNECT_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    attempt += 1;
+    if (app.exitCode !== null) {
+      throw new Error(
+        `App process exited early with code ${app.exitCode} before CDP connected.\n${appProcessLogs.slice(-20).join("\n")}`,
+      );
+    }
+    let candidate = null;
+    try {
+      const sliceMs = Math.max(1_000, Math.min(5_000, deadline - Date.now()));
+      candidate = await connect(port, sliceMs);
+      const readyState = await candidate.evaluate("document.readyState");
+      if (readyState) {
+        await candidate.evaluate(`(() => {
+          if (window.__ODG_E2E_LOGS__) return true;
+          const entries = [];
+          const record = (level, values) => {
+            if (entries.length >= 500) entries.shift();
+            const text = values
+              .map((v) => {
+                if (typeof v === "string") return v;
+                try { return JSON.stringify(v); } catch { return String(v); }
+              })
+              .join(" ");
+            entries.push("[" + new Date().toISOString() + "] [" + level + "] " + text);
+          };
+          for (const level of ["log", "info", "warn", "error"]) {
+            const orig = console[level]?.bind(console);
+            console[level] = (...args) => {
+              record(level, args);
+              orig?.(...args);
+            };
+          }
+          window.addEventListener("error", (ev) => record("pageerror", [ev.message || String(ev.error || ev)]));
+          window.addEventListener("unhandledrejection", (ev) => record("unhandledrejection", [String(ev.reason)]));
+          window.__ODG_E2E_LOGS__ = entries;
+          return true;
+        })()`);
+        step(`connected to WebView2 CDP port ${port} (attempt ${attempt})`);
+        return candidate;
+      }
+      candidate.close();
+    } catch (err) {
+      lastError = err;
+      try {
+        candidate?.close();
+      } catch {
+        // Ignore socket cleanup errors between retries.
+      }
+      if (Date.now() + 300 < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    }
+  }
+  throw new Error(
+    `Timed out after ${timeoutMs}ms connecting to WebView2 CDP port ${port}: ${lastError?.message ?? "unknown error"}`,
+  );
+}
 
 let page;
 try {
   console.log("A turn with a file edit, a command that asks, and an undo");
-  page = await connect(DEBUG_PORT);
+  page = await connectWithRetry(DEBUG_PORT, CDP_CONNECT_TIMEOUT_MS);
   // The app starts the MCP server in the background; its tool is offered to the model once it is connected.
   // (Asked through the app's own bridge to its backend, which the page gets a moment after it opens.)
   const connected = `window.__TAURI_INTERNALS__?.invoke("get_settings").then((view) => view.mcp_servers[0]?.state === "ready" && view.mcp_servers[0].tools[0] === "shout")`;
@@ -190,8 +279,12 @@ try {
 
   // The side panel widens when its left edge is dragged, and can be put away and brought back as it was.
   const panelWidth = `document.querySelector(".panel")?.getBoundingClientRect().width`;
-  // With nothing in it yet, it stands as a strip; a tab pressed there opens it, and it widens to its width.
+  // With nothing in it yet, it stands as a strip; adding or selecting a tab opens it to its width.
   check(await page.evaluate(`!!document.querySelector(".panel.strip") && ${panelWidth} < 80`), "the side panel stands as a narrow strip while it holds nothing");
+  if (await page.evaluate(`!!document.querySelector(".panel-add-strip")`)) {
+    await page.evaluate(`document.querySelector(".panel-add-strip").click()`);
+    await page.waitFor("the add-panel menu to open", `!!document.querySelector(".panel-add-menu")`);
+  }
   await page.click("改动");
   const settled = `Math.abs(${panelWidth} - parseFloat(getComputedStyle(document.querySelector(".app")).getPropertyValue("--panel-width"))) <= 1`;
   await page.waitFor("the panel to open to its width", `!document.querySelector(".panel.strip") && ${panelWidth} > 200 && ${settled}`);
@@ -200,9 +293,9 @@ try {
   await page.drag(edge, { x: edge.x - 120, y: edge.y });
   await page.waitFor("the panel to widen by the distance dragged", `Math.abs(${panelWidth} - ${narrow + 120}) <= 2`);
   await page.click("收起侧栏");
-  await page.waitFor("the panel to be put away", `!document.querySelector(".panel")`);
+  await page.waitFor("the panel to collapse back", `!document.querySelector(".panel") || !!document.querySelector(".panel.strip")`);
   await page.click("展开侧栏");
-  await page.waitFor("the panel to come back as wide as it was left", `Math.abs(${panelWidth} - ${narrow + 120}) <= 2`);
+  await page.waitFor("the panel to come back as wide as it was left", `!document.querySelector(".panel.strip") && Math.abs(${panelWidth} - ${narrow + 120}) <= 2`);
   // (Within two pixels: the width is kept as a whole number, and the screen's scaling puts the pointer between pixels.)
   const kept = JSON.parse(await page.evaluate(`localStorage.getItem("odg.panel")`));
   check(Math.abs(kept.width - (narrow + 120)) <= 2 && kept.hidden === false, "the side panel resizes by dragging, hides, and comes back, and its width is remembered");
@@ -581,11 +674,144 @@ try {
   await page.evaluate(`window.getSelection().removeAllRanges()`);
   check(!onPage && inField && onPicked, "a right click shows no browser menu on the page, but keeps it in a field and over words picked out");
 
+  console.log("Workbench file tree, code viewer, and side chat smoke checks");
+  const activeWorkspaceDir = process.env.ODG_E2E_WORKSPACE || workspace;
+  const smokeDir = join(activeWorkspaceDir, "smoke-dir");
+  const smokeFile = join(smokeDir, "greeter.ts");
+  mkdirSync(smokeDir, { recursive: true });
+  writeFileSync(
+    smokeFile,
+    [
+      "export function greet(name: string): string {",
+      "  return `hello ${name}`;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  // 1. Workbench file tree expand: switch left sidebar to "文件", expand `smoke-dir`, verify nested `greeter.ts`.
+  await page.waitFor(
+    "the left sidebar 文件 tab",
+    `!![...document.querySelectorAll(".sidebar-mode")].find((b) => b.textContent.trim() === "文件")`,
+  );
+  await page.evaluate(
+    `[...document.querySelectorAll(".sidebar-mode")].find((b) => b.textContent.trim() === "文件").click()`,
+  );
+  const smokeDirItem = `[...document.querySelectorAll("button.tree-main")].find((b) => b.getAttribute("title") === "smoke-dir")`;
+  await page.waitFor("the smoke-dir folder in the file tree", `!!${smokeDirItem}`);
+  check(
+    (await page.evaluate(`${smokeDirItem}?.getAttribute("aria-expanded")`)) === "false",
+    "a directory in the workbench file tree starts collapsed",
+  );
+  await page.evaluate(`${smokeDirItem}.click()`);
+  const smokeFileItem = `[...document.querySelectorAll("button.tree-main")].find((b) => b.getAttribute("title") === "smoke-dir/greeter.ts")`;
+  await page.waitFor(
+    "smoke-dir to expand and list greeter.ts",
+    `${smokeDirItem}?.getAttribute("aria-expanded") === "true" && !!${smokeFileItem}`,
+  );
+  check(true, "expanding a directory in the workbench file tree lists its child files");
+
+  // 2. Code viewer open: click `greeter.ts`, verify workbench tab + code viewer line numbers and source text.
+  await page.evaluate(`${smokeFileItem}.click()`);
+  await page.waitFor(
+    "the code viewer to render greeter.ts",
+    `!!document.querySelector(".code-viewer .code-lines") && document.querySelectorAll(".code-viewer .code-ln").length >= 3 && (document.querySelector(".code-viewer .code-content")?.textContent ?? "").includes("export function greet")`,
+  );
+  const wbState = await page.evaluate(`({
+    tabs: [...document.querySelectorAll(".workbench-tabs .wb-tab-name")].map((el) => el.textContent.trim()),
+    lines: document.querySelectorAll(".code-viewer .code-ln").length,
+  })`);
+  check(
+    wbState.tabs.includes("对话") && wbState.tabs.includes("greeter.ts") && wbState.lines >= 3,
+    "clicking a file opens the workbench code viewer with line numbers and syntax-highlighted text",
+  );
+  await page.evaluate(`document.querySelector(".wb-tab-chat .wb-tab-label").click()`);
+  await page.waitFor("switching back to the conversation tab", `!document.querySelector(".code-viewer") && !!document.querySelector("#composer-input")`);
+  step("the workbench tab bar switches cleanly between the code viewer and main conversation");
+
+  // 3. Side chat panel toggle: open `旁聊`, verify read-only aside session, and toggle tabs cleanly without API calls.
+  if (await page.evaluate(`!!document.querySelector(".panel.strip")`)) {
+    await page.evaluate(`document.querySelector(".panel-add-strip")?.click()`);
+  }
+  const hasAsideTab = await page.evaluate(
+    `!![...document.querySelectorAll(".panel .tabs .tab")].find((b) => b.textContent.includes("旁聊"))`,
+  );
+  if (!hasAsideTab) {
+    if (!(await page.evaluate(`!!document.querySelector(".panel-add-menu")`))) {
+      await page.evaluate(`document.querySelector(".panel-add-btn")?.click()`);
+      await page.waitFor("the side panel add menu", `!!document.querySelector(".panel-add-menu")`);
+    }
+    await page.evaluate(
+      `[...document.querySelectorAll(".panel-add-menu .panel-add-item")].find((b) => b.textContent.includes("旁聊")).click()`,
+    );
+  } else {
+    await page.evaluate(
+      `[...document.querySelectorAll(".panel .tabs .tab")].find((b) => b.textContent.includes("旁聊")).click()`,
+    );
+  }
+  await page.waitFor(
+    "the side chat (旁聊) pane to open its read-only aside session",
+    `!!document.querySelector(".side-chat-pane") && getComputedStyle(document.querySelector(".side-chat-pane")).display !== "none" && !!document.querySelector(".aside-pane .aside-empty") && !!document.querySelector(".aside-pane textarea")`,
+  );
+  await page.evaluate(
+    `[...document.querySelectorAll(".panel .tabs .tab")].find((b) => b.textContent.includes("交付物")).click()`,
+  );
+  await page.waitFor(
+    "the side panel to switch from 旁聊 to 交付物",
+    `getComputedStyle(document.querySelector(".side-chat-pane")).display === "none" && (document.querySelector(".panel-body")?.textContent ?? "").includes("分身的交付物")`,
+  );
+  await page.evaluate(
+    `[...document.querySelectorAll(".panel .tabs .tab")].find((b) => b.textContent.includes("旁聊")).click()`,
+  );
+  await page.waitFor(
+    "the side panel to switch back to 旁聊 with the aside session kept",
+    `getComputedStyle(document.querySelector(".side-chat-pane")).display !== "none" && !!document.querySelector(".aside-pane .aside-empty")`,
+  );
+  check(true, "the side chat (旁聊) panel opens offline and toggles cleanly with other side panel tabs");
+
   console.log("Passed.");
 } catch (error) {
   failed = true;
   console.error(`  ✗ ${error.message}`);
-  if (page) console.error(`\nThe window showed:\n${await page.evaluate("document.body.innerText").catch(() => "(could not read the page)")}`);
+  try {
+    mkdirSync(artifactsDir, { recursive: true });
+    const summaryLines = [
+      `Timestamp: ${new Date().toISOString()}`,
+      `Error: ${error.stack || error.message}`,
+      `Completed steps (${completedSteps.length}):`,
+      ...completedSteps.map((s, idx) => `  ${idx + 1}. ${s}`),
+      `Mock LLM requests recorded: ${mock.requests.length}`,
+      "",
+    ];
+    writeFileSync(join(artifactsDir, "failure-summary.txt"), summaryLines.join("\n"));
+
+    let pageLogs = [];
+    let pageText = "(page not connected)";
+    let pageHtml = "";
+    if (page) {
+      pageLogs = (await page.evaluate("window.__ODG_E2E_LOGS__ ?? []").catch(() => [])) ?? [];
+      pageText = await page.evaluate("document.body?.innerText ?? ''").catch(() => "(could not read innerText)");
+      pageHtml = await page.evaluate("document.documentElement?.outerHTML ?? ''").catch(() => "");
+      await page.screenshot(join(artifactsDir, "screenshot.png")).catch(() => undefined);
+    }
+    const combinedLogs = [
+      "=== In-Page Console & Error Logs ===",
+      ...(pageLogs.length > 0 ? pageLogs : ["(none)"]),
+      "",
+      "=== App Process Output ===",
+      ...(appProcessLogs.length > 0 ? appProcessLogs : ["(none)"]),
+      "",
+    ];
+    writeFileSync(join(artifactsDir, "console.log"), combinedLogs.join("\n"));
+    writeFileSync(join(artifactsDir, "page-text.txt"), pageText);
+    if (pageHtml) {
+      writeFileSync(join(artifactsDir, "page-snapshot.html"), pageHtml);
+    }
+    console.error(`  ↳ Diagnostic artifacts saved to ${artifactsDir}`);
+    if (page) console.error(`\nThe window showed:\n${pageText}`);
+  } catch (archiveError) {
+    console.error(`  ↳ Failed to archive E2E diagnostics: ${archiveError.message}`);
+  }
 } finally {
   page?.close();
   // The window's WebView2 processes are its children: take the whole tree.

@@ -157,14 +157,30 @@ pub fn attach(path: &Path) -> Result<Attached, &'static str> {
         return Ok(Attached { path: path_str, bytes: 0, content: None, document: None, parts: None, is_dir: true });
     }
     let bytes_len = metadata.len();
+    // Gate > 50 MB files BEFORE calling `kind_of_file` so multi-GB `.zip` datasets never open `ZipArchive`.
+    if bytes_len > crate::documents::DOCUMENT_BYTES {
+        let doc_kind = crate::documents::sniff_oversized_kind(path);
+        return Ok(Attached {
+            path: path_str,
+            bytes: bytes_len,
+            content: None,
+            document: doc_kind,
+            parts: None,
+            is_dir: false,
+        });
+    }
     // A document goes as its words when extractable and short enough; otherwise attach by path so the model can inspect it directly.
-    if let Some(found) = crate::documents::kind_of_file(path) {
+    let sniffed = match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| std::panic::catch_unwind(|| crate::documents::kind_of_file(path)).ok().flatten())
+        }
+        _ => std::panic::catch_unwind(|| crate::documents::kind_of_file(path)).ok().flatten(),
+    };
+    if let Some(found) = sniffed {
         let Ok(kind) = found else {
             return Ok(Attached { path: path_str, bytes: bytes_len, content: None, document: None, parts: None, is_dir: false });
         };
-        if bytes_len <= crate::documents::DOCUMENT_BYTES
-            && let Ok(read) = crate::documents::file_text(path, kind).map_err(|_| "missing")?
-        {
+        if let Ok(read) = crate::documents::file_text(path, kind).map_err(|_| "missing")? {
             let inline = read.text.len() as u64 <= ATTACHED_INLINE_BYTES;
             return Ok(Attached {
                 path: path_str,
@@ -725,5 +741,26 @@ mod tests {
         let old_ppt = attach(&at("old.ppt")).unwrap();
         assert_eq!((old_ppt.document, old_ppt.parts, old_ppt.content.as_deref()), (None, None, None));
         assert!(matches!(pick(&at("scan.pdf")), Picked::File { inline: false, document: Some(Kind::Pdf), parts: None, .. }));
+
+        // > 50 MB fake `.zip` and `.docx` skip `ZipArchive` completely and attach cleanly by path.
+        let huge_zip = at("huge.zip");
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&huge_zip).unwrap();
+            f.write_all(b"PK\x03\x04").unwrap();
+            f.set_len(crate::documents::DOCUMENT_BYTES + 1024).unwrap();
+        }
+        let attached_zip = attach(&huge_zip).unwrap();
+        assert_eq!((attached_zip.document, attached_zip.content), (None, None));
+
+        let huge_docx = at("huge.docx");
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&huge_docx).unwrap();
+            f.write_all(b"PK\x03\x04").unwrap();
+            f.set_len(crate::documents::DOCUMENT_BYTES + 1024).unwrap();
+        }
+        let attached_docx = attach(&huge_docx).unwrap();
+        assert_eq!((attached_docx.document, attached_docx.content), (Some(Kind::Word), None));
     }
 }

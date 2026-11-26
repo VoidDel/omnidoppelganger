@@ -2,10 +2,14 @@
 //! branch management, commit history, and remote synchronization for the
 //! desktop workbench.
 
+use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +18,19 @@ use crate::explorer::{self, MAX_TEXT_VIEW_BYTES};
 const SAFE_GIT_CONFIG: [&str; 4] = ["-c", "core.fsmonitor=false", "-c", "protocol.file.allow=never"];
 const FALLBACK_IDENTITY: [&str; 4] = ["-c", "user.name=OmniDoppelganger", "-c", "user.email=odg@localhost"];
 const UNTRACKED_CAP: usize = 500;
-const SYNC_TIMEOUT: Duration = Duration::from_secs(45);
+const GIT_CMD_TIMEOUT: Duration = Duration::from_secs(15);
+const UNTRACKED_ALL_TIMEOUT: Duration = Duration::from_secs(4);
+const UNTRACKED_SLOW_THRESHOLD: Duration = Duration::from_millis(1500);
+const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_STDOUT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_STDERR_BYTES: usize = 512 * 1024;
+const MAX_REPO_CONCURRENCY: usize = 4;
+
+static DEGRADED_UNTRACKED_REPOS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+fn degraded_untracked_repos() -> &'static Mutex<HashSet<PathBuf>> {
+    DEGRADED_UNTRACKED_REPOS.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitFile {
@@ -23,11 +39,14 @@ pub struct GitFile {
     pub orig_path: Option<String>,
     /// Short status code: `"M"`, `"A"`, `"D"`, `"R"`, `"C"`, `"U"`, or `"?"`.
     pub status: String,
+    /// True when the raw Git path bytes are not valid UTF-8 and `path` holds lossy replacement characters.
+    #[serde(default)]
+    pub unrepresentable_path: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitRepoInfo {
-    /// Workspace-relative slash-separated path to this sub-repository (e.g. `"backend"`).
+    /// Workspace-relative slash-separated path to this sub-repository (e.g. `"backend"`, or `""` for root repo).
     pub path: String,
     /// Display name (the relative path or folder name).
     pub name: String,
@@ -39,16 +58,20 @@ pub struct GitRepoInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitStatus {
     pub is_repo: bool,
-    /// When the workspace itself is a container folder with multiple sub-repositories,
+    /// When the workspace itself is a container folder with multiple sub-repositories (or a submodule is selected),
     /// the workspace-relative path of the sub-repository this status belongs to.
     pub active_repo: Option<String>,
-    /// Discovered sub-repositories in a multi-repo workspace (empty for a normal single-repo workspace).
+    /// Discovered repositories in a multi-repo or submodule workspace (empty for a plain single-repo workspace).
     pub repos: Vec<GitRepoInfo>,
     pub branch: Option<String>,
     pub detached: bool,
     pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,
+    #[serde(default)]
+    pub merge_head: bool,
+    #[serde(default)]
+    pub rebase_head: bool,
     pub conflicts: Vec<GitFile>,
     pub staged: Vec<GitFile>,
     pub unstaged: Vec<GitFile>,
@@ -67,6 +90,8 @@ impl GitStatus {
             upstream: None,
             ahead: 0,
             behind: 0,
+            merge_head: false,
+            rebase_head: false,
             conflicts: Vec::new(),
             staged: Vec::new(),
             unstaged: Vec::new(),
@@ -165,6 +190,42 @@ fn untrusted_hooks_config() -> Result<[String; 2], String> {
     }
 }
 
+fn read_bounded_pipe(mut pipe: impl Read, cap: usize) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let mut buf = [0u8; 8192];
+    while let Ok(n) = pipe.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        let room = cap.saturating_sub(kept.len());
+        if room > 0 {
+            kept.extend_from_slice(&buf[..n.min(room)]);
+        }
+    }
+    kept
+}
+
+#[cfg(unix)]
+fn kill_process_group_sync(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(unix)]
+async fn kill_process_group_async(pid: u32) {
+    let _ = tokio::process::Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+}
+
 fn git_bytes(directory: &Path, config: &[&str], args: &[&str]) -> Result<Vec<u8>, String> {
     git_bytes_with_trust(directory, true, config, args)
 }
@@ -174,6 +235,16 @@ fn git_bytes_with_trust(
     trusted: bool,
     config: &[&str],
     args: &[&str],
+) -> Result<Vec<u8>, String> {
+    git_bytes_with_timeout(directory, trusted, config, args, GIT_CMD_TIMEOUT)
+}
+
+fn git_bytes_with_timeout(
+    directory: &Path,
+    trusted: bool,
+    config: &[&str],
+    args: &[&str],
+    timeout: Duration,
 ) -> Result<Vec<u8>, String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(directory).args(SAFE_GIT_CONFIG);
@@ -185,21 +256,84 @@ fn git_bytes_with_trust(
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let out = cmd.output().map_err(|error| format!("无法运行 git：{error}"))?;
-    if out.status.success() {
-        return Ok(out.stdout);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
     }
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+
+    let mut child = cmd.spawn().map_err(|error| format!("无法运行 git：{error}"))?;
+    let pid = child.id();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    let (out_tx, out_rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let data = stdout_pipe.map_or_else(Vec::new, |p| read_bounded_pipe(p, MAX_STDOUT_BYTES));
+        let _ = out_tx.send(data);
+    });
+
+    let (err_tx, err_rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let data = stderr_pipe.map_or_else(Vec::new, |p| read_bounded_pipe(p, MAX_STDERR_BYTES));
+        let _ = err_tx.send(data);
+    });
+
+    let start = Instant::now();
+    let subcmd = args.first().copied().unwrap_or_default();
+    let kill_and_err = |child: &mut std::process::Child| -> String {
+        #[cfg(unix)]
+        kill_process_group_sync(pid);
+        #[cfg(not(unix))]
+        let _ = pid;
+        let _ = child.kill();
+        let _ = child.wait();
+        format!(
+            "git {subcmd} 执行超时（超过 {} 秒），已终止子进程。",
+            timeout.as_secs().max(1)
+        )
+    };
+
+    let stdout_bytes = match out_rx.recv_timeout(timeout) {
+        Ok(bytes) => bytes,
+        Err(_) => return Err(kill_and_err(&mut child)),
+    };
+
+    let remaining = timeout.saturating_sub(start.elapsed());
+    let stderr_bytes = match err_rx.recv_timeout(remaining.max(Duration::from_millis(50))) {
+        Ok(bytes) => bytes,
+        Err(_) => return Err(kill_and_err(&mut child)),
+    };
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    return Err(kill_and_err(&mut child));
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(format!("无法等待 git 子进程：{error}")),
+        }
+    };
+
+    if status.success() {
+        return Ok(stdout_bytes);
+    }
+    let stdout = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
+    let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
     let msg: Vec<String> = [stderr, stdout].into_iter().filter(|s| !s.is_empty()).collect();
     Err(if msg.is_empty() {
-        format!("git {} 执行失败", args.first().copied().unwrap_or_default())
+        format!("git {subcmd} 执行失败")
     } else {
         msg.join("\n")
     })
@@ -250,6 +384,32 @@ pub fn sandbox_git_paths(workspace: &Path) -> (Vec<PathBuf>, Option<PathBuf>, Op
     (writable, Some(git_dir), Some(common_dir))
 }
 
+/// Fast resolution of the repository's `.git` directory (supporting worktrees and submodules where `.git` is a file).
+fn resolve_git_dir(top: &Path) -> Option<PathBuf> {
+    let dot_git = top.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    if dot_git.is_file()
+        && let Ok(raw) = fs::read_to_string(&dot_git)
+        && let Some(target) = raw.lines().find_map(|l| l.trim().strip_prefix("gitdir:")).map(str::trim)
+        && !target.is_empty()
+    {
+        let resolved = if Path::new(target).is_absolute() {
+            PathBuf::from(target)
+        } else {
+            top.join(target)
+        };
+        if resolved.is_dir() {
+            return Some(resolved);
+        }
+    }
+    git_text(top, &[], &["rev-parse", "--path-format=absolute", "--git-dir"])
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| PathBuf::from(s.trim()))
+}
+
 fn identity(directory: &Path) -> &'static [&'static str] {
     if git_text(directory, &[], &["config", "user.email"]).is_ok_and(|s| !s.trim().is_empty()) {
         &[]
@@ -296,6 +456,35 @@ fn to_workspace_rel(repo_rel: &str, ws_prefix: &str) -> Option<String> {
     (!stripped.is_empty()).then(|| stripped.to_string())
 }
 
+/// Decode raw Git path bytes using strict `std::str::from_utf8`, flagging non-UTF-8 sequences with `unrepresentable_path = true`.
+fn decode_git_path_bytes(bytes: &[u8], ws_prefix: &str) -> Option<(String, bool)> {
+    match std::str::from_utf8(bytes) {
+        Ok(valid) => to_workspace_rel(valid, ws_prefix).map(|p| (p, false)),
+        Err(_) => {
+            let lossy = String::from_utf8_lossy(bytes);
+            to_workspace_rel(&lossy, ws_prefix).map(|p| (p, true))
+        }
+    }
+}
+
+fn splitn_bytes(mut slice: &[u8], sep: u8, n: usize) -> Vec<&[u8]> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(n);
+    while out.len() + 1 < n {
+        match slice.iter().position(|b| *b == sep) {
+            Some(pos) => {
+                out.push(&slice[..pos]);
+                slice = &slice[pos + 1..];
+            }
+            None => break,
+        }
+    }
+    out.push(slice);
+    out
+}
+
 /// Convert a validated workspace-relative path into a repo-root-relative path.
 fn to_repo_rel(workspace: &Path, ws_prefix: &str, rel_path: &str) -> Result<String, String> {
     let (_, clean) = explorer::resolve_confined(workspace, rel_path, false, false)?;
@@ -306,14 +495,77 @@ fn to_repo_rel(workspace: &Path, ws_prefix: &str, rel_path: &str) -> Result<Stri
     }
 }
 
-const SKIP_SCAN_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "out", ".venv", "venv", "__pycache__", "vendor"];
+const SKIP_SCAN_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "vendor",
+];
 const MAX_REPO_SCAN_DEPTH: usize = 2;
 const MAX_SUB_REPOS: usize = 32;
 
-/// Discover Git repositories located in subdirectories of `workspace` (up to depth 2).
-/// Does not descend inside a discovered repository.
+/// Parse initialized submodule paths declared in `<workspace>/.gitmodules`, safely confined inside `workspace`.
+fn parse_gitmodules_repos(workspace: &Path) -> Vec<String> {
+    let gitmodules = workspace.join(".gitmodules");
+    let Ok(meta) = fs::metadata(&gitmodules) else {
+        return Vec::new();
+    };
+    if !meta.is_file() || meta.len() > 256 * 1024 {
+        return Vec::new();
+    }
+    let Ok(content) = fs::read_to_string(&gitmodules) else {
+        return Vec::new();
+    };
+    let mut in_submodule = false;
+    let mut out = Vec::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let section = line[1..line.len() - 1].trim();
+            in_submodule = section
+                .split_whitespace()
+                .next()
+                .is_some_and(|head| head.eq_ignore_ascii_case("submodule"));
+            continue;
+        }
+        if !in_submodule {
+            continue;
+        }
+        if let Some((key, val)) = line.split_once('=')
+            && key.trim().eq_ignore_ascii_case("path")
+        {
+            let cleaned = val.trim().trim_matches('"').trim();
+            if cleaned.is_empty() {
+                continue;
+            }
+            if let Ok((disk, slash)) = explorer::resolve_confined(workspace, cleaned, false, false)
+                && !slash.is_empty()
+                && disk.is_dir()
+                && disk.join(".git").exists()
+                && !out.contains(&slash)
+            {
+                out.push(slash);
+                if out.len() >= MAX_SUB_REPOS {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Discover Git repositories and initialized submodules located inside `workspace`
+/// (even when `workspace` itself has a `.git` root).
 pub fn discover_repos(workspace: &Path) -> Vec<String> {
-    fn walk(base: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
+    fn walk(base: &Path, dir: &Path, depth: usize, seen: &mut HashSet<String>, out: &mut Vec<String>) {
         if depth > MAX_REPO_SCAN_DEPTH || out.len() >= MAX_SUB_REPOS {
             return;
         }
@@ -342,17 +594,20 @@ pub fn discover_repos(workspace: &Path) -> Vec<String> {
                         })
                         .collect::<Vec<_>>()
                         .join("/");
-                    if !slash.is_empty() {
+                    if !slash.is_empty() && seen.insert(slash.clone()) {
                         out.push(slash);
                     }
                 }
             } else if depth < MAX_REPO_SCAN_DEPTH {
-                walk(base, &sub, depth + 1, out);
+                walk(base, &sub, depth + 1, seen, out);
             }
         }
     }
-    let mut found = Vec::new();
-    walk(workspace, workspace, 1, &mut found);
+
+    let mut found = parse_gitmodules_repos(workspace);
+    let mut seen: HashSet<String> = found.iter().cloned().collect();
+    walk(workspace, workspace, 1, &mut seen, &mut found);
+    found.sort();
     found
 }
 
@@ -369,7 +624,6 @@ pub fn resolve_repo_dir(workspace: &Path, repo: Option<&str>) -> Result<PathBuf,
 }
 
 /// Inspect repository branch, ahead/behind counts, conflicts, staged, unstaged, and untracked files.
-/// Automatically discovers subdirectory Git repositories when `workspace` itself is not a Git repository.
 pub fn status(workspace: &Path) -> Result<GitStatus, String> {
     status_for(workspace, None)
 }
@@ -382,11 +636,9 @@ pub fn status_for(workspace: &Path, repo: Option<&str>) -> Result<GitStatus, Str
 /// Inspect Git status with explicit workspace trust (`!trusted` disables repository hooks).
 pub fn status_for_with_trust(workspace: &Path, repo: Option<&str>, trusted: bool) -> Result<GitStatus, String> {
     let explicit = repo.map(str::trim).filter(|s| !s.is_empty());
-    if explicit.is_none() && repo_context(workspace).is_some() {
-        return status_single(workspace, trusted);
-    }
-
+    let root_is_repo = repo_context(workspace).is_some();
     let discovered = discover_repos(workspace);
+
     if discovered.is_empty() {
         if let Some(rel) = explicit {
             let dir = resolve_repo_dir(workspace, Some(rel))?;
@@ -394,51 +646,97 @@ pub fn status_for_with_trust(workspace: &Path, repo: Option<&str>, trusted: bool
             st.active_repo = Some(rel.to_string());
             return Ok(st);
         }
+        if root_is_repo {
+            return status_single(workspace, trusted);
+        }
         return Ok(GitStatus::not_a_repo());
     }
 
-    let mut summaries = Vec::with_capacity(discovered.len());
-    let mut statuses: Vec<(String, GitStatus)> = Vec::with_capacity(discovered.len());
+    let mut targets: Vec<(String, String, PathBuf)> = Vec::with_capacity(discovered.len() + usize::from(root_is_repo));
+    if root_is_repo {
+        let root_name = workspace
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .map(|n| format!("{n} (根仓库)"))
+            .unwrap_or_else(|| "根仓库".to_string());
+        targets.push((String::new(), root_name, workspace.to_path_buf()));
+    }
     for rel in &discovered {
-        let dir = workspace.join(rel);
-        if let Ok(st) = status_single(&dir, trusted)
-            && st.is_repo
-        {
+        targets.push((rel.clone(), rel.clone(), workspace.join(rel)));
+    }
+    if let Some(want) = explicit
+        && !targets.iter().any(|(p, _, _)| p == want)
+    {
+        let dir = resolve_repo_dir(workspace, Some(want))?;
+        targets.push((want.to_string(), want.to_string(), dir));
+    }
+
+    let results: Vec<Option<GitStatus>> = if targets.len() == 1 {
+        vec![status_single(&targets[0].2, trusted).ok().filter(|st| st.is_repo)]
+    } else {
+        let slots: Mutex<Vec<Option<GitStatus>>> = Mutex::new(vec![None; targets.len()]);
+        let next_idx = AtomicUsize::new(0);
+        let worker_count = targets.len().min(MAX_REPO_CONCURRENCY);
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                scope.spawn(|| {
+                    loop {
+                        let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                        if i >= targets.len() {
+                            break;
+                        }
+                        if let Ok(st) = status_single(&targets[i].2, trusted)
+                            && st.is_repo
+                        {
+                            slots.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(st);
+                        }
+                    }
+                });
+            }
+        });
+        slots.into_inner().unwrap_or_else(|e| e.into_inner())
+    };
+
+    let mut summaries = Vec::with_capacity(targets.len());
+    let mut statuses: Vec<(String, GitStatus)> = Vec::with_capacity(targets.len());
+    for ((rel, name, _), maybe_st) in targets.into_iter().zip(results) {
+        if let Some(st) = maybe_st {
             let dirty = st.conflicts.len() + st.staged.len() + st.unstaged.len() + st.untracked.len();
             summaries.push(GitRepoInfo {
                 path: rel.clone(),
-                name: rel.clone(),
+                name,
                 branch: st.branch.clone(),
                 dirty,
             });
-            statuses.push((rel.clone(), st));
+            statuses.push((rel, st));
         }
     }
     if statuses.is_empty() {
         return Ok(GitStatus::not_a_repo());
     }
 
-    let chosen_idx = explicit
-        .and_then(|want| statuses.iter().position(|(rel, _)| rel == want))
-        .or_else(|| summaries.iter().position(|r| r.dirty > 0))
-        .unwrap_or(0);
+    let chosen_idx = if let Some(want) = explicit {
+        statuses.iter().position(|(rel, _)| rel == want).unwrap_or(0)
+    } else if root_is_repo {
+        0
+    } else {
+        summaries.iter().position(|r| r.dirty > 0).unwrap_or(0)
+    };
     let (chosen_path, mut chosen_status) = statuses.swap_remove(chosen_idx);
-    chosen_status.active_repo = Some(chosen_path);
+    chosen_status.active_repo = (!chosen_path.is_empty()).then_some(chosen_path);
     chosen_status.repos = summaries;
     Ok(chosen_status)
 }
 
-fn status_single(workspace: &Path, trusted: bool) -> Result<GitStatus, String> {
-    let Some((top, ws_prefix)) = repo_context(workspace) else {
-        return Ok(GitStatus::not_a_repo());
-    };
-    let raw = git_bytes_with_trust(
-        &top,
-        trusted,
-        &["-c", "core.quotepath=false"],
-        &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
-    )?;
-
+fn parse_porcelain_v2_z(
+    raw: &[u8],
+    ws_prefix: &str,
+    top: &Path,
+    merge_head: bool,
+    rebase_head: bool,
+    force_truncated: bool,
+) -> GitStatus {
     let mut out = GitStatus {
         is_repo: true,
         active_repo: None,
@@ -448,53 +746,56 @@ fn status_single(workspace: &Path, trusted: bool) -> Result<GitStatus, String> {
         upstream: None,
         ahead: 0,
         behind: 0,
+        merge_head,
+        rebase_head,
         conflicts: Vec::new(),
         staged: Vec::new(),
         unstaged: Vec::new(),
         untracked: Vec::new(),
-        untracked_truncated: false,
+        untracked_truncated: force_truncated,
     };
 
     let tokens: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
     let mut idx = 0usize;
     while idx < tokens.len() {
-        let token = String::from_utf8_lossy(tokens[idx]);
+        let entry = tokens[idx];
         idx += 1;
-        if token.is_empty() {
+        if entry.is_empty() {
             continue;
         }
-        if let Some(head) = token.strip_prefix("# branch.head ") {
-            let head = head.trim();
-            if head == "(detached)" {
-                out.detached = true;
-                out.branch = git_text(&top, &[], &["rev-parse", "--short", "HEAD"]).ok();
-            } else {
-                out.branch = Some(head.to_string());
-            }
-            continue;
-        }
-        if let Some(up) = token.strip_prefix("# branch.upstream ") {
-            out.upstream = Some(up.trim().to_string());
-            continue;
-        }
-        if let Some(ab) = token.strip_prefix("# branch.ab ") {
-            for part in ab.split_whitespace() {
-                if let Some(a) = part.strip_prefix('+') {
-                    out.ahead = a.parse().unwrap_or(0);
-                } else if let Some(b) = part.strip_prefix('-') {
-                    out.behind = b.parse().unwrap_or(0);
+        if entry.starts_with(b"# ") {
+            let header = String::from_utf8_lossy(entry);
+            if let Some(head) = header.strip_prefix("# branch.head ") {
+                let head = head.trim();
+                if head == "(detached)" {
+                    out.detached = true;
+                    out.branch = git_text(top, &[], &["rev-parse", "--short", "HEAD"]).ok();
+                } else {
+                    out.branch = Some(head.to_string());
+                }
+            } else if let Some(up) = header.strip_prefix("# branch.upstream ") {
+                out.upstream = Some(up.trim().to_string());
+            } else if let Some(ab) = header.strip_prefix("# branch.ab ") {
+                for part in ab.split_whitespace() {
+                    if let Some(a) = part.strip_prefix('+') {
+                        out.ahead = a.parse().unwrap_or(0);
+                    } else if let Some(b) = part.strip_prefix('-') {
+                        out.behind = b.parse().unwrap_or(0);
+                    }
                 }
             }
             continue;
         }
-        if token.starts_with('#') {
-            continue;
-        }
 
-        if let Some(rest) = token.strip_prefix("? ") {
-            if let Some(path) = to_workspace_rel(rest, &ws_prefix) {
+        if let Some(rest) = entry.strip_prefix(b"? ") {
+            if let Some((path, unrepresentable_path)) = decode_git_path_bytes(rest, ws_prefix) {
                 if out.untracked.len() < UNTRACKED_CAP {
-                    out.untracked.push(GitFile { path, orig_path: None, status: "?".to_string() });
+                    out.untracked.push(GitFile {
+                        path,
+                        orig_path: None,
+                        status: "?".to_string(),
+                        unrepresentable_path,
+                    });
                 } else {
                     out.untracked_truncated = true;
                 }
@@ -502,63 +803,154 @@ fn status_single(workspace: &Path, trusted: bool) -> Result<GitStatus, String> {
             continue;
         }
 
-        if token.starts_with("u ") {
+        if entry.starts_with(b"u ") {
             // Unmerged entry: `u <xy> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
-            let parts: Vec<&str> = token.splitn(11, ' ').collect();
+            let parts = splitn_bytes(entry, b' ', 11);
             if parts.len() == 11
-                && let Some(path) = to_workspace_rel(parts[10], &ws_prefix)
+                && let Some((path, unrepresentable_path)) = decode_git_path_bytes(parts[10], ws_prefix)
             {
-                out.conflicts.push(GitFile { path, orig_path: None, status: "U".to_string() });
+                out.conflicts.push(GitFile {
+                    path,
+                    orig_path: None,
+                    status: "U".to_string(),
+                    unrepresentable_path,
+                });
             }
             continue;
         }
 
-        if token.starts_with("1 ") {
+        if entry.starts_with(b"1 ") {
             // Ordinary entry: `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`
-            let parts: Vec<&str> = token.splitn(9, ' ').collect();
+            let parts = splitn_bytes(entry, b' ', 9);
             if parts.len() == 9 {
-                let xy: Vec<char> = parts[1].chars().collect();
-                let x = xy.first().copied().unwrap_or('.');
-                let y = xy.get(1).copied().unwrap_or('.');
-                if let Some(path) = to_workspace_rel(parts[8], &ws_prefix) {
+                let xy = parts[1];
+                let x = xy.first().copied().map(char::from).unwrap_or('.');
+                let y = xy.get(1).copied().map(char::from).unwrap_or('.');
+                if let Some((path, unrepresentable_path)) = decode_git_path_bytes(parts[8], ws_prefix) {
                     if x != '.' {
-                        out.staged.push(GitFile { path: path.clone(), orig_path: None, status: x.to_string() });
+                        out.staged.push(GitFile {
+                            path: path.clone(),
+                            orig_path: None,
+                            status: x.to_string(),
+                            unrepresentable_path,
+                        });
                     }
                     if y != '.' {
-                        out.unstaged.push(GitFile { path, orig_path: None, status: y.to_string() });
+                        out.unstaged.push(GitFile {
+                            path,
+                            orig_path: None,
+                            status: y.to_string(),
+                            unrepresentable_path,
+                        });
                     }
                 }
             }
             continue;
         }
 
-        if token.starts_with("2 ") {
+        if entry.starts_with(b"2 ") {
             // Renamed/copied entry: `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>` followed by `<origPath>\0`
-            let orig_raw = if idx < tokens.len() {
-                let s = String::from_utf8_lossy(tokens[idx]).into_owned();
+            let orig_bytes = if idx < tokens.len() {
+                let raw_orig = tokens[idx];
                 idx += 1;
-                Some(s)
+                Some(raw_orig)
             } else {
                 None
             };
-            let parts: Vec<&str> = token.splitn(10, ' ').collect();
+            let parts = splitn_bytes(entry, b' ', 10);
             if parts.len() == 10 {
-                let xy: Vec<char> = parts[1].chars().collect();
-                let x = xy.first().copied().unwrap_or('.');
-                let y = xy.get(1).copied().unwrap_or('.');
-                let orig_path = orig_raw.as_deref().and_then(|o| to_workspace_rel(o, &ws_prefix));
-                if let Some(path) = to_workspace_rel(parts[9], &ws_prefix) {
+                let xy = parts[1];
+                let x = xy.first().copied().map(char::from).unwrap_or('.');
+                let y = xy.get(1).copied().map(char::from).unwrap_or('.');
+                let (orig_path, orig_unrep) = match orig_bytes.and_then(|b| decode_git_path_bytes(b, ws_prefix)) {
+                    Some((p, bad)) => (Some(p), bad),
+                    None => (None, orig_bytes.is_some_and(|b| std::str::from_utf8(b).is_err())),
+                };
+                if let Some((path, new_unrep)) = decode_git_path_bytes(parts[9], ws_prefix) {
+                    let unrepresentable_path = new_unrep || orig_unrep;
                     if x != '.' {
-                        out.staged.push(GitFile { path: path.clone(), orig_path: orig_path.clone(), status: x.to_string() });
+                        out.staged.push(GitFile {
+                            path: path.clone(),
+                            orig_path: orig_path.clone(),
+                            status: x.to_string(),
+                            unrepresentable_path,
+                        });
                     }
                     if y != '.' {
-                        out.unstaged.push(GitFile { path, orig_path, status: y.to_string() });
+                        out.unstaged.push(GitFile {
+                            path,
+                            orig_path,
+                            status: y.to_string(),
+                            unrepresentable_path,
+                        });
                     }
                 }
             }
         }
     }
+    out
+}
 
+fn status_single(workspace: &Path, trusted: bool) -> Result<GitStatus, String> {
+    let Some((top, ws_prefix)) = repo_context(workspace) else {
+        return Ok(GitStatus::not_a_repo());
+    };
+    let (merge_head, rebase_head) = match resolve_git_dir(&top) {
+        Some(gd) => (
+            gd.join("MERGE_HEAD").is_file(),
+            gd.join("REBASE_HEAD").is_file() || gd.join("rebase-merge").is_dir() || gd.join("rebase-apply").is_dir(),
+        ),
+        None => (false, false),
+    };
+
+    let already_degraded = degraded_untracked_repos()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&top);
+
+    let (raw, force_truncated, slow_untracked) = if already_degraded {
+        let bytes = git_bytes_with_trust(
+            &top,
+            trusted,
+            &["-c", "core.quotepath=false"],
+            &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"],
+        )?;
+        (bytes, true, false)
+    } else {
+        let started = Instant::now();
+        match git_bytes_with_timeout(
+            &top,
+            trusted,
+            &["-c", "core.quotepath=false"],
+            &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
+            UNTRACKED_ALL_TIMEOUT,
+        ) {
+            Ok(bytes) => (bytes, false, started.elapsed() >= UNTRACKED_SLOW_THRESHOLD),
+            Err(err) if err.contains("执行超时") => {
+                degraded_untracked_repos()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(top.clone());
+                let fallback = git_bytes_with_trust(
+                    &top,
+                    trusted,
+                    &["-c", "core.quotepath=false"],
+                    &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"],
+                )?;
+                (fallback, true, false)
+            }
+            Err(err) => return Err(err),
+        }
+    };
+
+    let mut out = parse_porcelain_v2_z(&raw, &ws_prefix, &top, merge_head, rebase_head, force_truncated);
+    if !already_degraded && (out.untracked_truncated || (slow_untracked && !out.untracked.is_empty())) {
+        out.untracked_truncated = true;
+        degraded_untracked_repos()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(top);
+    }
     Ok(out)
 }
 
@@ -894,6 +1286,8 @@ pub fn commit(workspace: &Path, message: &str, stage_all: bool) -> Result<GitCom
 }
 
 /// Commit staged changes with explicit workspace trust (`!trusted` disables `pre-commit` / `commit-msg` / `post-commit` hooks).
+/// When `<git_dir>/MERGE_HEAD` exists and the index has no unmerged conflict entries (`ls-files -u` is empty),
+/// allows zero-diff merge commits (such as resolving all conflicts with `--ours`).
 pub fn commit_with_trust(
     workspace: &Path,
     message: &str,
@@ -908,7 +1302,12 @@ pub fn commit_with_trust(
     if stage_all {
         stage_with_trust(workspace, &[], trusted)?;
     }
-    if git_bytes_with_trust(&top, trusted, &[], &["diff", "--cached", "--quiet"]).is_ok() {
+    let merge_in_progress = resolve_git_dir(&top).is_some_and(|gd| gd.join("MERGE_HEAD").is_file());
+    let has_unmerged = !git_bytes_with_trust(&top, trusted, &[], &["ls-files", "-u"])?.is_empty();
+    if has_unmerged {
+        return Err("仓库仍存在未解决的合并冲突，请先解决冲突并暂存后再提交。".to_string());
+    }
+    if !merge_in_progress && git_bytes_with_trust(&top, trusted, &[], &["diff", "--cached", "--quiet"]).is_ok() {
         return Err("暂存区还是空的，请先勾选暂存要提交的改动。".to_string());
     }
     git_bytes_with_trust(&top, trusted, identity(&top), &["commit", "-m", msg])?;
@@ -934,7 +1333,7 @@ pub fn branches(workspace: &Path) -> Result<Vec<GitBranch>, String> {
     )?;
     let top_canon = top.canonicalize().ok();
     let mut locals: Vec<GitBranch> = Vec::new();
-    let mut local_names = std::collections::HashSet::new();
+    let mut local_names = HashSet::new();
     let mut remotes: Vec<GitBranch> = Vec::new();
 
     for line in text.lines() {
@@ -1047,6 +1446,10 @@ pub fn commit_files(workspace: &Path, commit: &str) -> Result<Vec<GitFile>, Stri
         &["-c", "core.quotepath=false"],
         &["diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-z", rev],
     )?;
+    Ok(parse_diff_tree_z(&bytes, &ws_prefix))
+}
+
+fn parse_diff_tree_z(bytes: &[u8], ws_prefix: &str) -> Vec<GitFile> {
     let tokens: Vec<&[u8]> = bytes.split(|b| *b == 0).collect();
     let mut files = Vec::new();
     let mut idx = 0usize;
@@ -1061,25 +1464,122 @@ pub fn commit_files(workspace: &Path, commit: &str) -> Result<Vec<GitFile>, Stri
             if idx + 1 >= tokens.len() {
                 break;
             }
-            let old_p = String::from_utf8_lossy(tokens[idx]).into_owned();
-            let new_p = String::from_utf8_lossy(tokens[idx + 1]).into_owned();
+            let old_bytes = tokens[idx];
+            let new_bytes = tokens[idx + 1];
             idx += 2;
-            if let Some(path) = to_workspace_rel(&new_p, &ws_prefix) {
+            let (orig_path, old_unrep) = match decode_git_path_bytes(old_bytes, ws_prefix) {
+                Some((p, bad)) => (Some(p), bad),
+                None => (None, std::str::from_utf8(old_bytes).is_err()),
+            };
+            if let Some((path, new_unrep)) = decode_git_path_bytes(new_bytes, ws_prefix) {
                 files.push(GitFile {
                     path,
-                    orig_path: to_workspace_rel(&old_p, &ws_prefix),
+                    orig_path,
                     status: code.to_string(),
+                    unrepresentable_path: old_unrep || new_unrep,
                 });
             }
         } else {
-            let p = String::from_utf8_lossy(tokens[idx]).into_owned();
+            let p_bytes = tokens[idx];
             idx += 1;
-            if let Some(path) = to_workspace_rel(&p, &ws_prefix) {
-                files.push(GitFile { path, orig_path: None, status: code.to_string() });
+            if let Some((path, unrepresentable_path)) = decode_git_path_bytes(p_bytes, ws_prefix) {
+                files.push(GitFile {
+                    path,
+                    orig_path: None,
+                    status: code.to_string(),
+                    unrepresentable_path,
+                });
             }
         }
     }
-    Ok(files)
+    files
+}
+
+async fn run_async_command_with_timeout(
+    mut cmd: tokio::process::Command,
+    timeout: Duration,
+    timeout_msg: String,
+    spawn_err_prefix: &str,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), String> {
+    use tokio::io::AsyncReadExt;
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let mut child = cmd.spawn().map_err(|e| format!("{spawn_err_prefix}：{e}"))?;
+    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let read_capped = |pipe: Option<tokio::process::ChildStdout>, cap: usize| async move {
+        let Some(mut p) = pipe else { return Vec::new() };
+        let mut kept = Vec::new();
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = p.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let room = cap.saturating_sub(kept.len());
+            if room > 0 {
+                kept.extend_from_slice(&buf[..n.min(room)]);
+            }
+        }
+        kept
+    };
+    let read_err_capped = |pipe: Option<tokio::process::ChildStderr>, cap: usize| async move {
+        let Some(mut p) = pipe else { return Vec::new() };
+        let mut kept = Vec::new();
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = p.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let room = cap.saturating_sub(kept.len());
+            if room > 0 {
+                kept.extend_from_slice(&buf[..n.min(room)]);
+            }
+        }
+        kept
+    };
+
+    let out_task = tokio::spawn(read_capped(stdout, MAX_STDOUT_BYTES));
+    let err_task = tokio::spawn(read_err_capped(stderr, MAX_STDERR_BYTES));
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(st)) => st,
+        Ok(Err(e)) => return Err(format!("{spawn_err_prefix}：{e}")),
+        Err(_) => {
+            #[cfg(unix)]
+            if let Some(p) = pid {
+                kill_process_group_async(p).await;
+            }
+            #[cfg(not(unix))]
+            let _ = pid;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            out_task.abort();
+            err_task.abort();
+            return Err(timeout_msg);
+        }
+    };
+
+    let out_bytes = tokio::time::timeout(Duration::from_secs(2), out_task)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let err_bytes = tokio::time::timeout(Duration::from_secs(2), err_task)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    Ok((status, out_bytes, err_bytes))
 }
 
 /// Run `fetch`, `pull`, or `push` asynchronously with interactive prompts disabled and a safety timeout.
@@ -1113,24 +1613,19 @@ pub async fn sync_with_trust(workspace: &Path, action: &str, trusted: bool) -> R
     }
     cmd.args(&args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(0x0800_0000);
-    }
+        .env("GCM_INTERACTIVE", "never");
 
-    let out = tokio::time::timeout(SYNC_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| format!("git {action} 超时（超过 {} 秒），请检查网络或远端凭据。", SYNC_TIMEOUT.as_secs()))?
-        .map_err(|error| format!("无法执行 git {action}：{error}"))?;
+    let (status, out_bytes, err_bytes) = run_async_command_with_timeout(
+        cmd,
+        SYNC_TIMEOUT,
+        format!("git {action} 超时（超过 {} 秒），已终止进程，请检查网络或远端凭据。", SYNC_TIMEOUT.as_secs()),
+        &format!("无法执行 git {action}"),
+    )
+    .await?;
 
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if out.status.success() {
+    let stdout = String::from_utf8_lossy(&out_bytes).trim().to_string();
+    let stderr = String::from_utf8_lossy(&err_bytes).trim().to_string();
+    if status.success() {
         let note = [stdout, stderr].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
         Ok(note)
     } else {
@@ -1229,7 +1724,14 @@ pub async fn create_pr_with_trust(
     // Ensure the branch is pushed to origin before creating the PR.
     sync_with_trust(&top, "push", trusted).await?;
 
-    let mut args = vec!["pr".to_string(), "create".to_string(), "--title".to_string(), title.to_string(), "--body".to_string(), body.to_string()];
+    let mut args = vec![
+        "pr".to_string(),
+        "create".to_string(),
+        "--title".to_string(),
+        title.to_string(),
+        "--body".to_string(),
+        body.to_string(),
+    ];
     if let Some(base) = base.map(str::trim).filter(|b| !b.is_empty() && *b != branch) {
         args.push("--base".to_string());
         args.push(base.to_string());
@@ -1238,22 +1740,19 @@ pub async fn create_pr_with_trust(
         args.push("--draft".to_string());
     }
     let mut cmd = tokio::process::Command::new(&gh);
-    cmd.args(&args)
-        .current_dir(&top)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
+    cmd.args(&args).current_dir(&top);
 
-    let out = tokio::time::timeout(SYNC_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| format!("创建 PR 超时（超过 {} 秒）。", SYNC_TIMEOUT.as_secs()))?
-        .map_err(|error| format!("无法执行 gh pr create：{error}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if !out.status.success() {
+    let (status, out_bytes, err_bytes) = run_async_command_with_timeout(
+        cmd,
+        SYNC_TIMEOUT,
+        format!("创建 PR 超时（超过 {} 秒），已终止进程。", SYNC_TIMEOUT.as_secs()),
+        "无法执行 gh pr create",
+    )
+    .await?;
+
+    let stdout = String::from_utf8_lossy(&out_bytes).trim().to_string();
+    let stderr = String::from_utf8_lossy(&err_bytes).trim().to_string();
+    if !status.success() {
         let msg = [stderr, stdout].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
         return Err(if msg.is_empty() { "gh pr create 执行失败".to_string() } else { msg });
     }
@@ -1302,10 +1801,13 @@ mod tests {
         let st = status(&root).unwrap();
         assert!(st.is_repo);
         assert_eq!(st.branch.as_deref(), Some("main"));
+        assert!(!st.merge_head && !st.rebase_head);
         assert_eq!(st.unstaged.len(), 1);
         assert_eq!(st.unstaged[0].path, "src/hello.rs");
+        assert!(!st.unstaged[0].unrepresentable_path);
         assert_eq!(st.untracked.len(), 1);
         assert_eq!(st.untracked[0].path, "说明文档.md");
+        assert!(!st.untracked[0].unrepresentable_path);
 
         // Unstaged diff on tracked file has old & new line numbers.
         let mod_diff = diff(&root, "src/hello.rs", DiffStage::Unstaged, None).unwrap();
@@ -1405,6 +1907,166 @@ mod tests {
         let st_a = status_for(workspace, Some("app-a")).unwrap();
         assert_eq!(st_a.active_repo.as_deref(), Some("app-a"));
         assert!(st_a.unstaged.is_empty());
+    }
+
+    #[test]
+    fn empty_diff_merge_head_commit_succeeds_and_blocks_unresolved_conflicts() {
+        let (_dir, root) = init_repo();
+
+        checkout(&root, "feat/conflict", true).unwrap();
+        fs::write(root.join("src/hello.rs"), "fn main() {\n    println!(\"theirs\");\n}\n").unwrap();
+        commit(&root, "theirs change", true).unwrap();
+
+        checkout(&root, "main", false).unwrap();
+        fs::write(root.join("src/hello.rs"), "fn main() {\n    println!(\"ours\");\n}\n").unwrap();
+        commit(&root, "ours change", true).unwrap();
+
+        // Trigger a merge conflict on `main`.
+        let merge_status = Command::new("git")
+            .current_dir(&root)
+            .args(["-c", "user.name=Test", "-c", "user.email=test@localhost", "merge", "feat/conflict"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!merge_status.success(), "expected merge conflict");
+
+        let conflicted = status(&root).unwrap();
+        assert!(conflicted.merge_head, "MERGE_HEAD must be reported");
+        assert_eq!(conflicted.conflicts.len(), 1);
+        assert!(commit(&root, "should fail while conflicted", false).is_err());
+
+        // Resolve conflict by keeping `--ours` (identical to HEAD -> `git diff --cached --quiet` exits 0!).
+        git_bytes(&root, &[], &["checkout", "--ours", "--", "src/hello.rs"]).unwrap();
+        stage(&root, &["src/hello.rs".to_string()]).unwrap();
+
+        let resolved = status(&root).unwrap();
+        assert!(resolved.merge_head, "MERGE_HEAD still present before commit");
+        assert!(resolved.conflicts.is_empty());
+        assert!(resolved.staged.is_empty(), "staged diff vs HEAD is empty");
+
+        let merged = commit(&root, "Merge feat/conflict keeping ours", false).unwrap();
+        assert!(!merged.hash.is_empty());
+
+        let after = status(&root).unwrap();
+        assert!(!after.merge_head, "MERGE_HEAD cleared after merge commit");
+        let top_commit = &log(&root, 3).unwrap()[0];
+        assert_eq!(top_commit.parents.len(), 2, "expected 2-parent merge commit");
+        assert_eq!(top_commit.subject, "Merge feat/conflict keeping ours");
+    }
+
+    #[test]
+    fn discovers_submodules_even_when_root_has_dot_git_and_switches_repos() {
+        let (_dir, root) = init_repo();
+
+        // Place an initialized submodule inside `vendor/third-party/sublib` (depth 3 & under `vendor`,
+        // declared in `.gitmodules`) plus a direct child repo `plugins/ext`.
+        let sub_mod = root.join("vendor/third-party/sublib");
+        let child_repo = root.join("plugins/ext");
+        fs::create_dir_all(&sub_mod).unwrap();
+        fs::create_dir_all(&child_repo).unwrap();
+
+        for (dir, branch, file) in [(&sub_mod, "sub-main", "lib.rs"), (&child_repo, "ext-dev", "ext.rs")] {
+            git_bytes(dir, &[], &["init", "--quiet", "--initial-branch", branch]).unwrap();
+            fs::write(dir.join(file), "pub fn ok() {}\n").unwrap();
+            stage(dir, &[file.to_string()]).unwrap();
+            commit(dir, "init sub", false).unwrap();
+        }
+        // Uninitialized submodule entry (no `.git`) must NOT be treated as a separate initialized repo.
+        fs::create_dir_all(root.join("vendor/uninitialized")).unwrap();
+        fs::write(
+            root.join(".gitmodules"),
+            "[submodule \"sublib\"]\n\tpath = vendor/third-party/sublib\n\turl = https://example.com/sublib.git\n\
+             [submodule \"uninit\"]\n\tpath = vendor/uninitialized\n\turl = https://example.com/uninit.git\n\
+             [submodule \"escape\"]\n\tpath = ../../outside\n\turl = https://example.com/evil.git\n",
+        )
+        .unwrap();
+
+        let discovered = discover_repos(&root);
+        assert_eq!(discovered, vec!["plugins/ext".to_string(), "vendor/third-party/sublib".to_string()]);
+
+        // Default status on root repo keeps root active (`active_repo == None`) while listing root + submodules in `repos`.
+        let root_st = status(&root).unwrap();
+        assert!(root_st.is_repo);
+        assert_eq!(root_st.active_repo, None);
+        assert_eq!(root_st.branch.as_deref(), Some("main"));
+        assert_eq!(root_st.repos.len(), 3);
+        assert_eq!(root_st.repos[0].path, "");
+        assert_eq!(root_st.repos[1].path, "plugins/ext");
+        assert_eq!(root_st.repos[2].path, "vendor/third-party/sublib");
+
+        // Switching explicitly to the `.gitmodules` submodule reports its branch and dirty state.
+        fs::write(sub_mod.join("lib.rs"), "pub fn changed() {}\n").unwrap();
+        let sub_st = status_for(&root, Some("vendor/third-party/sublib")).unwrap();
+        assert_eq!(sub_st.active_repo.as_deref(), Some("vendor/third-party/sublib"));
+        assert_eq!(sub_st.branch.as_deref(), Some("sub-main"));
+        assert_eq!(sub_st.unstaged.len(), 1);
+        assert_eq!(sub_st.unstaged[0].path, "lib.rs");
+    }
+
+    #[test]
+    fn flags_non_utf8_paths_and_degrades_large_untracked_directories() {
+        let (_dir, root) = init_repo();
+
+        // 1. Verify raw `-z` NUL parser flags non-UTF-8 byte paths while keeping valid Unicode clean.
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"# branch.head main\0");
+        raw.extend_from_slice("1 M. N... 100644 100644 100644 0000 0000 src/正常中文.rs\0".as_bytes());
+        raw.extend_from_slice(b"1 .M N... 100644 100644 100644 0000 0000 src/bad_\xff_name.bin\0");
+        raw.extend_from_slice(b"? untracked_\xfe.dat\0");
+        raw.extend_from_slice(b"2 R. N... 100644 100644 100644 0000 0000 R100 src/clean_new.rs\0src/old_\x80.rs\0");
+
+        let parsed = parse_porcelain_v2_z(&raw, "", &root, false, true, false);
+        assert!(parsed.rebase_head && !parsed.merge_head);
+        assert_eq!(parsed.staged.len(), 2);
+        assert!(!parsed.staged[0].unrepresentable_path);
+        assert!(parsed.staged[1].unrepresentable_path, "non-UTF-8 orig_path in rename must flag unrepresentable_path");
+        assert_eq!(parsed.unstaged.len(), 1);
+        assert!(parsed.unstaged[0].unrepresentable_path);
+        assert_eq!(parsed.untracked.len(), 1);
+        assert!(parsed.untracked[0].unrepresentable_path);
+
+        let mut dt_raw = Vec::new();
+        dt_raw.extend_from_slice(b"M\0src/bad_\xff.bin\0A\0src/ok.rs\0");
+        let dt_files = parse_diff_tree_z(&dt_raw, "");
+        assert_eq!(dt_files.len(), 2);
+        assert!(dt_files[0].unrepresentable_path);
+        assert!(!dt_files[1].unrepresentable_path);
+
+        // 2. Verify > 500 untracked files triggers `untracked_truncated` and caches `--untracked-files=normal` fallback.
+        let bulk = root.join("huge_untracked");
+        fs::create_dir_all(&bulk).unwrap();
+        for i in 0..510 {
+            fs::write(bulk.join(format!("f_{i:04}.txt")), "x").unwrap();
+        }
+        let st1 = status(&root).unwrap();
+        assert!(st1.untracked_truncated);
+        assert_eq!(st1.untracked.len(), UNTRACKED_CAP);
+
+        let st2 = status(&root).unwrap();
+        assert!(st2.untracked_truncated, "cached degraded mode must preserve untracked_truncated");
+        assert!(
+            st2.untracked.len() < UNTRACKED_CAP,
+            "expected `--untracked-files=normal` directory folding on second call, got {} entries",
+            st2.untracked.len()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_subprocess_timeout_terminates_hung_command_promptly() {
+        let (_dir, root) = init_repo();
+        let start = Instant::now();
+        let err = git_bytes_with_timeout(
+            &root,
+            true,
+            &["-c", "alias.hang=!sleep 10"],
+            &["hang"],
+            Duration::from_millis(120),
+        )
+        .unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(3), "hung git alias was not killed promptly: {:?}", start.elapsed());
+        assert!(err.contains("执行超时"), "unexpected timeout message: {err}");
     }
 
     #[test]

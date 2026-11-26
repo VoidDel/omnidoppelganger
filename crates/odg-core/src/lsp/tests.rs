@@ -482,3 +482,331 @@ async fn checks_gopls_with_version_subcommand_instead_of_flag() {
     assert!(servers::works(&fake_gopls, go.version_arg).await);
     assert!(!servers::works(&fake_gopls, "--version").await);
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn singleflight_slots_do_not_block_other_languages_and_shutdown_kills_inflight_server() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if crate::runtime::target().is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("lsp-root");
+    let workspace = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // Language A: spawns a grandchild `sleep 60`, records both PIDs, and hangs during `initialize`.
+    let pid_file = dir.path().join("slow-pids.txt");
+    let slow_script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'slow 1.0'; exit 0; fi\nsleep 60 &\ngpid=$!\nprintf '%s %s\\n' \"$$\" \"$gpid\" > \"{}\"\nwait\n",
+        pid_file.display()
+    );
+    let slow_dir = root.join("odg-slow-lsp/1.0");
+    std::fs::create_dir_all(&slow_dir).unwrap();
+    let slow_bin = slow_dir.join(executable("odg-slow-lsp"));
+    std::fs::write(&slow_bin, slow_script).unwrap();
+    std::fs::set_permissions(&slow_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Language B: downloaded binary does not exist -> immediately returns `missing` without blocking on Language A!
+    static SLOW_DOWNLOAD: Download = Download {
+        name: "Slow",
+        program: "odg-slow-lsp",
+        args: &["--serve"],
+        version: "1.0",
+        address: "https://example.invalid",
+        builds: &[
+            ("aarch64-apple-darwin", "slow.gz", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
+            ("x86_64-apple-darwin", "slow.gz", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
+            ("x86_64-unknown-linux-gnu", "slow.gz", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
+            ("aarch64-unknown-linux-gnu", "slow.gz", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
+            ("x86_64-pc-windows-msvc", "slow.zip", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
+            ("aarch64-pc-windows-msvc", "slow.zip", "0000000000000000000000000000000000000000000000000000000000000000", 1_000_000),
+        ],
+    };
+    static SLOW_LANG: Language = Language {
+        key: "slow_a",
+        name: "SlowA",
+        program: "odg-nonexistent-slow-lsp",
+        version_arg: "--version",
+        args: &[],
+        extensions: &["slowa"],
+        install: "install slow",
+        runs_project_code: false,
+        env: &[],
+        download: Some(&SLOW_DOWNLOAD),
+    };
+    static FAST_LANG: Language = Language {
+        key: "fast_b",
+        name: "FastB",
+        program: "odg-nonexistent-fast-lsp",
+        version_arg: "--version",
+        args: &[],
+        extensions: &["fastb"],
+        install: "install fast",
+        runs_project_code: false,
+        env: &[],
+        download: None,
+    };
+
+    let hub = Arc::new(LspHub::new(root));
+    // Also insert a live scripted client under ` FAST_LANG ` in another workspace to verify `shutdown_language`.
+    let other_ws = dir.path().join("ws2");
+    std::fs::create_dir_all(&other_ws).unwrap();
+    let live_b = scripted(&other_ws, Arc::new(Mutex::new(Value::Null))).await;
+    hub.insert(&other_ws, &FAST_LANG, live_b.clone()).await;
+
+    let hub_a = hub.clone();
+    let ws_a = workspace.clone();
+    let slow_task = tokio::spawn(async move { hub_a.client(&ws_a, &SLOW_LANG).await });
+
+    // Wait until Language A has spawned its process group and is hanging inside `initialize`.
+    for _ in 0..100 {
+        if pid_file.is_file() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let raw_pids = std::fs::read_to_string(&pid_file).expect("slow LSP should have started and written PIDs");
+    let pids: Vec<u32> = raw_pids
+        .split_whitespace()
+        .filter_map(|s| s.parse::<u32>().ok())
+        .collect();
+    assert_eq!(pids.len(), 2, "expected child and grandchild PIDs: {raw_pids}");
+
+    // Language B in the same workspace is NOT blocked by Language A's hanging `initialize`!
+    let t0 = tokio::time::Instant::now();
+    let fast_res = hub.client(&workspace, &FAST_LANG).await;
+    assert!(fast_res.is_err());
+    assert!(t0.elapsed() < Duration::from_secs(1), "Language B blocked for {:?}", t0.elapsed());
+
+    // Targeted `shutdown_language("fast_b")` closes `live_b` without disturbing `slow_a`.
+    assert!(!live_b.closed());
+    hub.shutdown_language("fast_b").await;
+    assert!(live_b.closed());
+    assert!(!slow_task.is_finished());
+
+    // `hub.shutdown()` never fails with `try_lock` and immediately kills Language A's entire process group!
+    let shutdown_t0 = tokio::time::Instant::now();
+    hub.shutdown();
+    let slow_err = tokio::time::timeout(Duration::from_secs(2), slow_task)
+        .await
+        .expect("slow_task must abort promptly after shutdown")
+        .unwrap()
+        .err()
+        .expect("expected startup error");
+    assert!(shutdown_t0.elapsed() < Duration::from_secs(2), "shutdown took {:?}", shutdown_t0.elapsed());
+    assert!(!slow_err.is_empty());
+
+    for pid in pids {
+        for _ in 0..30 {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let still_alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(!still_alive, "process {pid} should have been killed by LspHub::shutdown");
+    }
+}
+
+#[tokio::test]
+async fn cancelled_first_navigate_preserves_first_settle_budget_and_aborts_rpc() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "fn f() {}\nfn g() { f(); }\n").unwrap();
+
+    let (client_side, server_side) = tokio::io::duplex(1 << 16);
+    let (client_read, client_write) = tokio::io::split(client_side);
+    let (server_read, server_write) = tokio::io::split(server_side);
+    let writer: Writer = Arc::new(tokio::sync::Mutex::new(Box::new(server_write)));
+    let hang_rpc = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hang_rpc_server = hang_rpc.clone();
+
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(Box::new(server_read) as Box<dyn AsyncRead + Send + Unpin>);
+        while let Some(message) = receive(&mut reader).await {
+            let reply = |result: Value| json!({ "jsonrpc": "2.0", "id": message["id"], "result": result });
+            match message["method"].as_str() {
+                Some("initialize") => {
+                    send(&writer, &reply(json!({ "capabilities": { "definitionProvider": true } }))).await.unwrap();
+                }
+                Some("initialized") => {
+                    send(&writer, &json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": "idx", "value": { "kind": "begin" } } })).await.unwrap();
+                    let writer_bg = writer.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        let _ = send(&writer_bg, &json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": "idx", "value": { "kind": "end" } } })).await;
+                        let _ = send(&writer_bg, &json!({ "jsonrpc": "2.0", "method": "experimental/serverStatus", "params": { "quiescent": true } })).await;
+                    });
+                }
+                Some("textDocument/definition") => {
+                    if hang_rpc_server.load(Ordering::Acquire) {
+                        // Do not answer: exercise `client.request(..., cancel)` immediate cancellation.
+                        continue;
+                    }
+                    let doc = message["params"]["textDocument"]["uri"].clone();
+                    send(&writer, &reply(json!([{ "uri": doc, "range": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 4 } } }]))).await.unwrap();
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let client = Client::start("rust-analyzer", root, Box::new(client_read), Box::new(client_write), None).await.unwrap();
+    let hub = LspHub::default();
+    hub.insert(root, &LANGUAGES[0], client.clone()).await;
+
+    // 1) Cancel the first `navigate` after 40ms while indexing is still busy: `settled` must remain `false`!
+    let cancel1 = CancellationToken::new();
+    let c1_trigger = cancel1.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        c1_trigger.cancel();
+    });
+    let err1 = navigate(&hub, root, &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }), &cancel1)
+        .await
+        .unwrap_err();
+    assert_eq!(err1, "Cancelled.");
+    assert!(!client.settled.load(Ordering::Acquire), "settled must not be set when first settle was cancelled");
+
+    // 2) Second `navigate` still gets `FIRST_SETTLE`, finishes indexing cleanly, and sets `settled = true`.
+    let cancel2 = CancellationToken::new();
+    let ok2 = navigate(&hub, root, &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }), &cancel2)
+        .await
+        .unwrap();
+    assert!(ok2.content.starts_with("Defined at (1):"), "{}", ok2.content);
+    assert!(client.settled.load(Ordering::Acquire));
+
+    // 3) Hang RPC and cancel mid-flight: `client.request` aborts within milliseconds instead of waiting 60s.
+    hang_rpc.store(true, Ordering::Release);
+    let cancel3 = CancellationToken::new();
+    let c3_trigger = cancel3.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        c3_trigger.cancel();
+    });
+    let t_rpc = tokio::time::Instant::now();
+    let err3 = navigate(&hub, root, &json!({ "operation": "definition", "path": "a.rs", "line": 2, "symbol": "f" }), &cancel3)
+        .await
+        .unwrap_err();
+    assert_eq!(err3, "Cancelled.");
+    assert!(t_rpc.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_large_server_requests_and_client_sync_never_deadlock_and_bound_lru_and_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    // Deliberately tiny 1 KB duplex pipe buffer: would immediately deadlock if reader task wrote to `stdin` directly!
+    let (client_side, server_side) = tokio::io::duplex(1024);
+    let (client_read, client_write) = tokio::io::split(client_side);
+    let (server_read, server_write) = tokio::io::split(server_side);
+    let writer: Writer = Arc::new(tokio::sync::Mutex::new(Box::new(server_write)));
+    let did_close_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let did_close_seen = did_close_count.clone();
+
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(Box::new(server_read) as Box<dyn AsyncRead + Send + Unpin>);
+        while let Some(message) = receive(&mut reader).await {
+            let reply = |result: Value| json!({ "jsonrpc": "2.0", "id": message["id"], "result": result });
+            match message["method"].as_str() {
+                Some("initialize") => {
+                    send(&writer, &reply(json!({ "capabilities": { "definitionProvider": true } }))).await.unwrap();
+                }
+                Some("initialized") => {
+                    let _ = send(&writer, &json!({ "jsonrpc": "2.0", "method": "experimental/serverStatus", "params": { "quiescent": true } })).await;
+                }
+                Some("textDocument/didOpen") => {
+                    // Flood large server->client requests concurrently while client is sending `didOpen` frames!
+                    let pad = "x".repeat(8 * 1024);
+                    let writer_req = writer.clone();
+                    tokio::spawn(async move {
+                        let _ = send(
+                            &writer_req,
+                            &json!({
+                                "jsonrpc": "2.0",
+                                "id": 5000,
+                                "method": "workspace/configuration",
+                                "params": { "items": [{ "section": "rust-analyzer", "pad": pad }] }
+                            }),
+                        )
+                        .await;
+                    });
+                }
+                Some("textDocument/didClose") => {
+                    did_close_seen.fetch_add(1, Ordering::Release);
+                }
+                Some("textDocument/definition") => {
+                    let doc = message["params"]["textDocument"]["uri"].clone();
+                    let _ = send(&writer, &reply(json!([{ "uri": doc, "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 2 } } }]))).await;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let client = Client::start("rust-analyzer", root, Box::new(client_read), Box::new(client_write), None).await.unwrap();
+
+    // Concurrently sync 70 files (~4 KB each) > MAX_OPEN_DOCUMENTS (64), verifying zero deadlock and LRU eviction.
+    let mut handles = Vec::new();
+    for idx in 0..70usize {
+        let path = root.join(format!("mod_{idx}.rs"));
+        std::fs::write(&path, format!("pub fn item_{idx}() {{ /* {} */ }}\n", "a".repeat(4096))).unwrap();
+        let c = client.clone();
+        handles.push(tokio::spawn(async move { c.sync(&path).await.unwrap() }));
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for h in handles {
+            h.await.unwrap();
+        }
+    })
+    .await
+    .expect("concurrent sync + server requests must not deadlock");
+
+    assert_eq!(client.open_document_count().await, 64);
+    // Roundtrip a FIFO request over `outbound_tx` so all preceding `didOpen` / `didClose` frames
+    // and concurrent 8 KB `workspace/configuration` replies have drained across the 1 KB duplex pipe.
+    let def = client
+        .request(
+            "textDocument/definition",
+            json!({
+                "textDocument": { "uri": uri(&root.join("mod_69.rs")) },
+                "position": { "line": 0, "character": 0 }
+            }),
+            Duration::from_secs(5),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("FIFO definition request after flood must succeed without deadlocking");
+    assert!(def.is_array());
+    assert_eq!(did_close_count.load(Ordering::Acquire), 6);
+
+    // Oversized > 10 MB file is rejected by `Client::sync`.
+    let huge_file = root.join("huge.rs");
+    {
+        let f = std::fs::File::create(&huge_file).unwrap();
+        f.set_len(10 * 1024 * 1024 + 1).unwrap();
+    }
+    let sync_err = client.sync(&huge_file).await.unwrap_err();
+    assert!(sync_err.contains("sync limit"), "{sync_err}");
+
+    // Oversized > 64 MB `Content-Length` frame is rejected without allocating the body.
+    let bomb = b"Content-Length: 99999999\r\n\r\n{}";
+    let mut bomb_reader = BufReader::new(Box::new(&bomb[..]) as Box<dyn AsyncRead + Send + Unpin>);
+    let frame_err = receive_checked(&mut bomb_reader).await.unwrap_err();
+    assert!(frame_err.contains("exceeds"), "{frame_err}");
+}

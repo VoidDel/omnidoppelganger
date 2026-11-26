@@ -1,8 +1,12 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 // @ts-expect-error type error without @types/node package
+import fs from "node:fs";
+// @ts-expect-error type error without @types/node package
 import process from "node:process";
+
 const host = process.env.TAURI_DEV_HOST;
+const pkg = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 
 /**
  * Font stylesheets (@fontsource and KaTeX) list fallback `.woff` and `.ttf` copies
@@ -24,12 +28,18 @@ const woff2Only = {
 export default defineConfig(() => ({
   plugins: [react(), woff2Only],
 
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
+
   build: {
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (id.includes("node_modules/@xterm/")) return "xterm";
-          if (id.includes("node_modules/highlight.js/")) return "highlight";
+          if (id.includes("node_modules/lowlight/") || id.includes("node_modules/highlight.js/")) {
+            return "highlight";
+          }
           if (
             id.includes("node_modules/katex/") ||
             id.includes("node_modules/rehype-katex/") ||
@@ -40,7 +50,6 @@ export default defineConfig(() => ({
           if (
             id.includes("node_modules/react-markdown/") ||
             id.includes("node_modules/remark-gfm/") ||
-            id.includes("node_modules/rehype-highlight/") ||
             id.includes("node_modules/micromark") ||
             id.includes("node_modules/mdast-") ||
             id.includes("node_modules/hast-") ||
@@ -55,11 +64,7 @@ export default defineConfig(() => ({
     },
   },
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,
@@ -72,7 +77,6 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
   },

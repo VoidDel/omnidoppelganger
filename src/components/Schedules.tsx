@@ -1,3 +1,4 @@
+import "../styles/pages.css";
 import { useEffect, useState } from "react";
 import { MODES, modeOf } from "../lib/modes";
 import { Combo } from "./Combo";

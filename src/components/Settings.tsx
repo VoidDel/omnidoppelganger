@@ -1,3 +1,4 @@
+import "../styles/pages.css";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { MODES } from "../lib/modes";
@@ -447,10 +448,11 @@ function PainterSection({ view, onSave }: { view: SettingsView; onSave: (setting
   );
 }
 
-function UpdateSection() {
+function UpdateSection({ version }: { version?: string }) {
   const [checking, setChecking] = useState(false);
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const shownVersion = status?.current_version ?? version ?? __APP_VERSION__;
 
   const checkNow = () => {
     setChecking(true);
@@ -477,7 +479,8 @@ function UpdateSection() {
       <div className="provider-card">
         <div className="who">
           <span>
-            当前版本 {status ? <strong className="mono">v{status.current_version}</strong> : <span className="muted">点右上角「检查更新」比对 GitHub 最新发布</span>}
+            当前版本 <strong className="mono">v{shownVersion}</strong>
+            {!status && <span className="muted"> · 点右上角「检查更新」比对 GitHub 最新发布</span>}
           </span>
           {error && <span className="hint failed">{error}</span>}
           {status && !status.has_update && (
@@ -979,7 +982,7 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             ))}
           </fieldset>
         </section>
-        <UpdateSection />
+        <UpdateSection version={view.version} />
         <HelpSection />
           </>
         )}

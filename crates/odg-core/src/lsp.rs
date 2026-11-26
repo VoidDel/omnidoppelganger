@@ -32,9 +32,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 pub use client::{Client, RpcError};
-use client::{CONTENT_MODIFIED, SERVER_CANCELLED};
+use client::{CONTENT_MODIFIED, ProcessGroupGuard, SERVER_CANCELLED};
 #[cfg(test)]
-use client::{Writer, receive, send};
+use client::{Writer, receive, receive_checked, send};
 pub use servers::{Download, LANGUAGES, Language, Located, downloaded, install, installed, language_by_key, language_for, locate, remove, server_tool};
 use servers::missing;
 #[cfg(test)]
@@ -130,11 +130,23 @@ fn from_utf16(line: &str, units: usize) -> usize {
     line.chars().count()
 }
 
+struct InflightStartup {
+    cancel: CancellationToken,
+    guard: Arc<Mutex<ProcessGroupGuard>>,
+    done: Arc<tokio::sync::Notify>,
+}
+
+type SlotKey = (PathBuf, &'static str);
+type ClientSlot = Arc<tokio::sync::OnceCell<Arc<Client>>>;
+
 /// The language servers running, one per workspace and language, shared by every session.
 #[derive(Default)]
 pub struct LspHub {
-    /// By workspace and language key.
-    clients: tokio::sync::Mutex<HashMap<(PathBuf, &'static str), Arc<Client>>>,
+    /// Per-(workspace, language) singleflight slot so slow `locate` + `initialize` on one language
+    /// never blocks other languages/workspaces and `shutdown()` never misses an active lock.
+    clients: Mutex<HashMap<SlotKey, ClientSlot>>,
+    /// Tracks slots currently mid-startup so `shutdown` / `shutdown_language` can cancel and kill them immediately.
+    inflight: Mutex<HashMap<SlotKey, InflightStartup>>,
     /// Where servers downloaded for the app are kept; `None` where nothing is downloaded.
     root: Option<PathBuf>,
 }
@@ -142,7 +154,11 @@ pub struct LspHub {
 impl LspHub {
     /// A hub whose downloaded servers are kept under `root`.
     pub fn new(root: PathBuf) -> Self {
-        Self { clients: tokio::sync::Mutex::default(), root: Some(root) }
+        Self {
+            clients: Mutex::default(),
+            inflight: Mutex::default(),
+            root: Some(root),
+        }
     }
 
     /// Where servers downloaded for the app are kept.
@@ -150,68 +166,199 @@ impl LspHub {
         self.root.as_deref()
     }
 
-    /// The server for `language` in `root`: the one running, or a new one, started now.
+    /// The server for `language` in `root`: the one running, or a new one, started now in its own singleflight slot.
     pub async fn client(&self, root: &Path, language: &'static Language) -> Result<Arc<Client>, String> {
-        let mut clients = self.clients.lock().await;
         let key = (root.to_path_buf(), language.key);
-        if let Some(client) = clients.get(&key).filter(|client| !client.closed()) {
-            return Ok(client.clone());
-        }
-        let (path, name, args) = match (locate(self.root.as_deref(), language).await, language.download) {
-            (Located::System(path), _) => (path, language.program, language.args),
-            (Located::Downloaded(path), Some(download)) => (path, download.program, download.args),
-            (Located::Downloaded(_) | Located::Missing, _) => return Err(missing(language)),
+        let cell = {
+            let mut clients = self.clients.lock().unwrap();
+            if clients
+                .get(&key)
+                .and_then(|existing| existing.get())
+                .is_some_and(|client| client.closed())
+            {
+                clients.remove(&key);
+            }
+            clients
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+                .clone()
         };
-        let mut command = tokio::process::Command::new(path);
-        command.args(args).envs(language.env.iter().copied()).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
-        let mut child = command.spawn().map_err(|error| format!("Cannot start {name}: {error}"))?;
-        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
-            return Err(format!("Cannot talk to {name}."));
-        };
-        // What it says on its error stream, the last of it kept: why it would not start, if it would not.
-        let said = Arc::new(Mutex::new(String::new()));
-        if let Some(stderr) = child.stderr.take() {
-            let said = said.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let mut said = said.lock().unwrap();
-                    said.push_str(&line);
-                    said.push('\n');
-                    let excess = said.len().saturating_sub(2000);
-                    if excess > 0 {
-                        let cut = (excess..said.len()).find(|at| said.is_char_boundary(*at)).unwrap_or(said.len());
-                        said.drain(..cut);
+
+        let result = cell
+            .get_or_try_init(|| async {
+                let startup_cancel = CancellationToken::new();
+                let group_guard = Arc::new(Mutex::new(ProcessGroupGuard(None)));
+                let done = Arc::new(tokio::sync::Notify::new());
+                self.inflight.lock().unwrap().insert(
+                    key.clone(),
+                    InflightStartup {
+                        cancel: startup_cancel.clone(),
+                        guard: group_guard.clone(),
+                        done: done.clone(),
+                    },
+                );
+
+                let init_outcome: Result<Arc<Client>, String> = async {
+                    let located = tokio::select! {
+                        biased;
+                        () = startup_cancel.cancelled() => return Err("Language server startup cancelled.".to_string()),
+                        res = locate(self.root.as_deref(), language) => res,
+                    };
+                    let (path, name, args) = match (located, language.download) {
+                        (Located::System(path), _) => (path, language.program, language.args),
+                        (Located::Downloaded(path), Some(download)) => (path, download.program, download.args),
+                        (Located::Downloaded(_) | Located::Missing, _) => return Err(missing(language)),
+                    };
+                    if startup_cancel.is_cancelled() {
+                        return Err("Language server startup cancelled.".to_string());
+                    }
+                    let mut command = tokio::process::Command::new(path);
+                    command
+                        .args(args)
+                        .envs(language.env.iter().copied())
+                        .current_dir(root)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .kill_on_drop(true);
+                    #[cfg(windows)]
+                    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
+                    #[cfg(unix)]
+                    command.process_group(0);
+
+                    let mut child = command.spawn().map_err(|error| format!("Cannot start {name}: {error}"))?;
+                    group_guard.lock().unwrap().0 = child.id();
+                    if startup_cancel.is_cancelled() {
+                        group_guard.lock().unwrap().kill_now();
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        return Err("Language server startup cancelled.".to_string());
+                    }
+                    let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
+                        group_guard.lock().unwrap().kill_now();
+                        return Err(format!("Cannot talk to {name}."));
+                    };
+                    // What it says on its error stream, the last of it kept: why it would not start, if it would not.
+                    let said = Arc::new(Mutex::new(String::new()));
+                    if let Some(stderr) = child.stderr.take() {
+                        let said = said.clone();
+                        tokio::spawn(async move {
+                            let mut lines = BufReader::new(stderr).lines();
+                            while let Ok(Some(line)) = lines.next_line().await {
+                                let mut said = said.lock().unwrap();
+                                said.push_str(&line);
+                                said.push('\n');
+                                let excess = said.len().saturating_sub(2000);
+                                if excess > 0 {
+                                    let cut = (excess..said.len()).find(|at| said.is_char_boundary(*at)).unwrap_or(said.len());
+                                    said.drain(..cut);
+                                }
+                            }
+                        });
+                    }
+                    match Client::start_with_guard(
+                        name,
+                        root,
+                        Box::new(stdout),
+                        Box::new(stdin),
+                        Some(child),
+                        group_guard.clone(),
+                        &startup_cancel,
+                    )
+                    .await
+                    {
+                        Ok(client) => Ok(client),
+                        Err(error) => {
+                            group_guard.lock().unwrap().kill_now();
+                            if !startup_cancel.is_cancelled() {
+                                // A moment for the last of what it said to be read.
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                            }
+                            let said = said.lock().unwrap().trim().to_string();
+                            let said = if said.is_empty() { String::new() } else { format!(" It said: {said}") };
+                            Err(format!("{error}.{said} {}", missing(language)))
+                        }
                     }
                 }
-            });
-        }
-        let client = match Client::start(name, root, Box::new(stdout), Box::new(stdin), Some(child)).await {
-            Ok(client) => client,
+                .await;
+
+                self.inflight.lock().unwrap().remove(&key);
+                done.notify_waiters();
+                init_outcome
+            })
+            .await;
+
+        match result {
+            Ok(client) => Ok(client.clone()),
             Err(error) => {
-                // A moment for the last of what it said to be read.
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let said = said.lock().unwrap().trim().to_string();
-                let said = if said.is_empty() { String::new() } else { format!(" It said: {said}") };
-                return Err(format!("{error}.{said} {}", missing(language)));
+                let mut clients = self.clients.lock().unwrap();
+                if clients.get(&key).is_some_and(|current| Arc::ptr_eq(current, &cell)) {
+                    clients.remove(&key);
+                }
+                Err(error)
             }
-        };
-        clients.insert(key, client.clone());
-        Ok(client)
+        }
     }
 
-    /// End every server.
+    /// Deterministically terminate every active and starting language server (including process groups).
     pub fn shutdown(&self) {
-        if let Ok(mut clients) = self.clients.try_lock() {
-            clients.clear();
+        let drained_clients: Vec<Arc<tokio::sync::OnceCell<Arc<Client>>>> = {
+            let mut clients = self.clients.lock().unwrap();
+            clients.drain().map(|(_, cell)| cell).collect()
+        };
+        let drained_inflight: Vec<InflightStartup> = {
+            let mut inflight = self.inflight.lock().unwrap();
+            inflight.drain().map(|(_, entry)| entry).collect()
+        };
+        for startup in drained_inflight {
+            startup.cancel.cancel();
+            startup.guard.lock().unwrap().kill_now();
+        }
+        for cell in drained_clients {
+            if let Some(client) = cell.get() {
+                client.close_now();
+            }
+        }
+    }
+
+    /// Deterministically shut down all active and starting servers for a single language `key`
+    /// (e.g. `"rust"`, `"typescript"`, `"python"`), awaiting child exit so binary files can be removed cleanly.
+    pub async fn shutdown_language(&self, key: &str) {
+        let matching_cells: Vec<Arc<tokio::sync::OnceCell<Arc<Client>>>> = {
+            let mut clients = self.clients.lock().unwrap();
+            let keys: Vec<(PathBuf, &'static str)> = clients
+                .keys()
+                .filter(|(_, lang_key)| *lang_key == key)
+                .cloned()
+                .collect();
+            keys.into_iter().filter_map(|k| clients.remove(&k)).collect()
+        };
+        let matching_inflight: Vec<InflightStartup> = {
+            let mut inflight = self.inflight.lock().unwrap();
+            let keys: Vec<(PathBuf, &'static str)> = inflight
+                .keys()
+                .filter(|(_, lang_key)| *lang_key == key)
+                .cloned()
+                .collect();
+            keys.into_iter().filter_map(|k| inflight.remove(&k)).collect()
+        };
+        for startup in &matching_inflight {
+            let notified = startup.done.notified();
+            startup.cancel.cancel();
+            startup.guard.lock().unwrap().kill_now();
+            let _ = tokio::time::timeout(Duration::from_secs(2), notified).await;
+        }
+        for cell in matching_cells {
+            if let Some(client) = cell.get() {
+                client.shutdown_and_wait().await;
+            }
         }
     }
 
     #[cfg(test)]
     pub async fn insert(&self, root: &Path, language: &'static Language, client: Arc<Client>) {
-        self.clients.lock().await.insert((root.to_path_buf(), language.key), client);
+        let cell = Arc::new(tokio::sync::OnceCell::new_with(Some(client)));
+        self.clients.lock().unwrap().insert((root.to_path_buf(), language.key), cell);
     }
 }
 
@@ -351,11 +498,14 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
         return Err(format!("{} is not a file.", asked.shown));
     }
     let client = hub.client(workspace, language).await?;
-    // The first question waits for the project to be indexed; later ones only for the server to catch up.
-    let first = !client.settled.swap(true, Ordering::Relaxed);
+    // The first question waits for the project to be indexed; `settled` is set only once indexing truly completes without cancellation.
+    let first = !client.settled.load(Ordering::Acquire);
     let ready = client.settle(if first { FIRST_SETTLE } else { LATER_SETTLE }, cancel).await;
     if cancel.is_cancelled() {
         return Err("Cancelled.".to_string());
+    }
+    if ready {
+        client.settled.store(true, Ordering::Release);
     }
     let (document, text) = client.sync(&asked.path).await?;
     let place = if *placed { Some(position(&text, input, &asked.shown)?) } else { None };
@@ -417,13 +567,17 @@ pub async fn navigate(hub: &LspHub, workspace: &Path, input: &Value, cancel: &Ca
     // The code may change under the question while the server reads it: then it is asked again.
     let mut answer = Value::Null;
     for attempt in 0..3 {
-        match client.request(method, params.clone(), Duration::from_secs(60)).await {
+        match client.request(method, params.clone(), Duration::from_secs(60), cancel).await {
             Ok(got) => {
                 answer = got;
                 break;
             }
+            Err(_) if cancel.is_cancelled() => return Err("Cancelled.".to_string()),
             Err(error) if matches!(error.code, CONTENT_MODIFIED | SERVER_CANCELLED) && attempt < 2 => {
                 client.settle(LATER_SETTLE, cancel).await;
+                if cancel.is_cancelled() {
+                    return Err("Cancelled.".to_string());
+                }
             }
             Err(error) => return Err(format!("{} could not answer: {}", client.program, error.message)),
         }

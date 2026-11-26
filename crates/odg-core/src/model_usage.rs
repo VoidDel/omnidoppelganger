@@ -6,7 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{DateTime, Duration, Local, Utc};
 use regex::Regex;
@@ -81,10 +82,50 @@ fn clear_expired_cooldown(entry: &mut ModelUsageEntry, now: DateTime<Utc>) {
     }
 }
 
-/// Thread-safe store of per-model token usage and cooldown timers.
-pub struct ModelUsageStore {
+const USAGE_FLUSH_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+struct StoreInner {
     path: PathBuf,
     data: Mutex<UsageFile>,
+    dirty: AtomicBool,
+    flush_scheduled: AtomicBool,
+}
+
+impl StoreInner {
+    fn flush_sync(&self) {
+        let guard = self.data.lock().unwrap_or_else(|e| e.into_inner());
+        if self.dirty.swap(false, Ordering::AcqRel) {
+            save_file(&self.path, &guard);
+        }
+    }
+
+    fn run_scheduled_flush(&self) {
+        loop {
+            self.flush_sync();
+            self.flush_scheduled.store(false, Ordering::Release);
+            if !self.dirty.load(Ordering::Acquire) {
+                break;
+            }
+            if self
+                .flush_scheduled
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+}
+
+/// Thread-safe store of per-model token usage and cooldown timers.
+pub struct ModelUsageStore {
+    inner: Arc<StoreInner>,
+}
+
+impl Drop for ModelUsageStore {
+    fn drop(&mut self) {
+        self.flush_sync();
+    }
 }
 
 impl ModelUsageStore {
@@ -98,7 +139,48 @@ impl ModelUsageStore {
     pub fn at(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let file = load_file(&path);
-        Self { path, data: Mutex::new(file) }
+        Self {
+            inner: Arc::new(StoreInner {
+                path,
+                data: Mutex::new(file),
+                dirty: AtomicBool::new(false),
+                flush_scheduled: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    fn schedule_debounced_flush(&self) {
+        if self
+            .inner
+            .flush_scheduled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let weak = Arc::downgrade(&self.inner);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                tokio::time::sleep(USAGE_FLUSH_DEBOUNCE).await;
+                if let Some(inner) = weak.upgrade() {
+                    let _ = tokio::task::spawn_blocking(move || inner.run_scheduled_flush()).await;
+                }
+            });
+        } else {
+            let _ = std::thread::Builder::new()
+                .name("odg-usage-flush".to_string())
+                .spawn(move || {
+                    std::thread::sleep(USAGE_FLUSH_DEBOUNCE);
+                    if let Some(inner) = weak.upgrade() {
+                        inner.run_scheduled_flush();
+                    }
+                });
+        }
+    }
+
+    /// Synchronously flush any pending in-memory `record_usage` updates to disk.
+    pub fn flush_sync(&self) {
+        self.inner.flush_sync();
     }
 
     /// Record token usage from one completed assistant message / turn.
@@ -110,38 +192,41 @@ impl ModelUsageStore {
         }
         let today = today_string();
         let now = Utc::now().to_rfc3339();
-        let mut guard = self.data.lock().unwrap();
-        let key = entry_key(provider, model);
-        let entry = guard.entries.entry(key).or_insert_with(|| ModelUsageEntry {
-            provider: provider.to_string(),
-            model: model.to_string(),
-            requests: 0,
-            input_tokens: 0,
-            cached_tokens: 0,
-            output_tokens: 0,
-            today_key: today.clone(),
-            today_requests: 0,
-            today_input_tokens: 0,
-            today_cached_tokens: 0,
-            today_output_tokens: 0,
-            last_used_at: None,
-            cooldown_until: None,
-            cooldown_reason: None,
-        });
-        rollover_today(entry, &today);
-        entry.requests = entry.requests.saturating_add(1);
-        entry.input_tokens = entry.input_tokens.saturating_add(tokens.input);
-        entry.cached_tokens = entry.cached_tokens.saturating_add(tokens.cached);
-        entry.output_tokens = entry.output_tokens.saturating_add(tokens.output);
-        entry.today_requests = entry.today_requests.saturating_add(1);
-        entry.today_input_tokens = entry.today_input_tokens.saturating_add(tokens.input);
-        entry.today_cached_tokens = entry.today_cached_tokens.saturating_add(tokens.cached);
-        entry.today_output_tokens = entry.today_output_tokens.saturating_add(tokens.output);
-        entry.last_used_at = Some(now);
-        // A successful response means the model is no longer cooling down.
-        entry.cooldown_until = None;
-        entry.cooldown_reason = None;
-        save_file(&self.path, &guard);
+        {
+            let mut guard = self.inner.data.lock().unwrap();
+            let key = entry_key(provider, model);
+            let entry = guard.entries.entry(key).or_insert_with(|| ModelUsageEntry {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                requests: 0,
+                input_tokens: 0,
+                cached_tokens: 0,
+                output_tokens: 0,
+                today_key: today.clone(),
+                today_requests: 0,
+                today_input_tokens: 0,
+                today_cached_tokens: 0,
+                today_output_tokens: 0,
+                last_used_at: None,
+                cooldown_until: None,
+                cooldown_reason: None,
+            });
+            rollover_today(entry, &today);
+            entry.requests = entry.requests.saturating_add(1);
+            entry.input_tokens = entry.input_tokens.saturating_add(tokens.input);
+            entry.cached_tokens = entry.cached_tokens.saturating_add(tokens.cached);
+            entry.output_tokens = entry.output_tokens.saturating_add(tokens.output);
+            entry.today_requests = entry.today_requests.saturating_add(1);
+            entry.today_input_tokens = entry.today_input_tokens.saturating_add(tokens.input);
+            entry.today_cached_tokens = entry.today_cached_tokens.saturating_add(tokens.cached);
+            entry.today_output_tokens = entry.today_output_tokens.saturating_add(tokens.output);
+            entry.last_used_at = Some(now);
+            // A successful response means the model is no longer cooling down.
+            entry.cooldown_until = None;
+            entry.cooldown_reason = None;
+            self.inner.dirty.store(true, Ordering::Release);
+        }
+        self.schedule_debounced_flush();
     }
 
     /// Record an explicit cooldown deadline for `(provider, model)`.
@@ -152,7 +237,7 @@ impl ModelUsageStore {
             return;
         }
         let today = today_string();
-        let mut guard = self.data.lock().unwrap();
+        let mut guard = self.inner.data.lock().unwrap();
         let key = entry_key(provider, model);
         let entry = guard.entries.entry(key).or_insert_with(|| ModelUsageEntry {
             provider: provider.to_string(),
@@ -173,7 +258,8 @@ impl ModelUsageStore {
         rollover_today(entry, &today);
         entry.cooldown_until = Some(until.to_rfc3339());
         entry.cooldown_reason = Some(reason);
-        save_file(&self.path, &guard);
+        self.inner.dirty.store(false, Ordering::Release);
+        save_file(&self.inner.path, &guard);
     }
 
     /// Inspect an error string from an API or CLI turn; if it indicates a rate limit or quota
@@ -189,19 +275,21 @@ impl ModelUsageStore {
 
     /// Manually clear cooldown for one `(provider, model)`.
     pub fn clear_cooldown(&self, provider: &str, model: &str) {
-        let mut guard = self.data.lock().unwrap();
+        let mut guard = self.inner.data.lock().unwrap();
         if let Some(entry) = guard.entries.get_mut(&entry_key(provider.trim(), model.trim())) {
             entry.cooldown_until = None;
             entry.cooldown_reason = None;
-            save_file(&self.path, &guard);
+            self.inner.dirty.store(false, Ordering::Release);
+            save_file(&self.inner.path, &guard);
         }
     }
 
     /// Clear all usage statistics and cooldowns.
     pub fn reset_all(&self) {
-        let mut guard = self.data.lock().unwrap();
+        let mut guard = self.inner.data.lock().unwrap();
         guard.entries.clear();
-        save_file(&self.path, &guard);
+        self.inner.dirty.store(false, Ordering::Release);
+        save_file(&self.inner.path, &guard);
     }
 
     /// Return all entries, rolling over stale `today_*` counters and pruning expired cooldowns.
@@ -209,7 +297,7 @@ impl ModelUsageStore {
     pub fn list(&self) -> Vec<ModelUsageEntry> {
         let today = today_string();
         let now = Utc::now();
-        let mut guard = self.data.lock().unwrap();
+        let mut guard = self.inner.data.lock().unwrap();
         let mut changed = false;
         for entry in guard.entries.values_mut() {
             if entry.today_key != today {
@@ -224,7 +312,8 @@ impl ModelUsageStore {
             }
         }
         if changed {
-            save_file(&self.path, &guard);
+            self.inner.dirty.store(false, Ordering::Release);
+            save_file(&self.inner.path, &guard);
         }
         let mut list: Vec<ModelUsageEntry> = guard.entries.values().cloned().collect();
         list.sort_by(|a, b| {
@@ -387,6 +476,7 @@ mod tests {
 
         store.record_usage("antigravity", "gemini-4-neon", &Tokens { input: 1000, cached: 400, output: 250 });
         store.record_usage("antigravity", "gemini-4-neon", &Tokens { input: 500, cached: 100, output: 50 });
+        store.flush_sync();
 
         let reloaded = ModelUsageStore::at(&path);
         let list = reloaded.list();
@@ -398,6 +488,28 @@ mod tests {
         assert_eq!(entry.cached_tokens, 500);
         assert_eq!(entry.output_tokens, 300);
         assert!(entry.cooldown_until.is_none());
+    }
+
+    #[tokio::test]
+    async fn debounces_usage_writes_and_flushes_on_demand_or_timer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("debounced-usage.json");
+        let store = ModelUsageStore::at(&path);
+
+        store.record_usage("anthropic", "claude-sonnet-5-5", &Tokens { input: 300, cached: 100, output: 40 });
+        // Updated in memory immediately without blocking on synchronous disk fsync.
+        assert_eq!(store.list()[0].input_tokens, 300);
+        assert!(!path.exists(), "record_usage must not synchronously write disk before debounce");
+
+        // Explicit flush_sync persists immediately.
+        store.flush_sync();
+        assert!(path.exists());
+        assert_eq!(ModelUsageStore::at(&path).list()[0].input_tokens, 300);
+
+        // A second usage update coalesces into the background debounce flush.
+        store.record_usage("anthropic", "claude-sonnet-5-5", &Tokens { input: 200, cached: 0, output: 10 });
+        tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+        assert_eq!(ModelUsageStore::at(&path).list()[0].input_tokens, 500);
     }
 
     #[test]

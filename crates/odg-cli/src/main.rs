@@ -23,6 +23,8 @@ use odg_core::session::{NewSession, SessionStore};
 use odg_core::settings::{self, SettingsStore};
 use serde_json::json;
 
+const VERSION: &str = concat!("odg ", env!("CARGO_PKG_VERSION"));
+
 const USAGE: &str = "\
 odg: run tasks with the OmniDoppelganger agent from the command line.
 
@@ -44,6 +46,7 @@ Options:
       --yes               Approve everything the agent asks for. It will run any command.
       --no                Decline everything the agent asks for. The default when
                           standard input is not a terminal.
+  -V, --version           Show the version.
   -h, --help              Show this.
 
 The agent's words go to standard output (or NDJSON events with --json); its
@@ -83,6 +86,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
         let mut value = |name: &str| arguments.next().ok_or(format!("{name} needs a value"));
         match argument.as_str() {
             "-h" | "--help" => return Err(USAGE.to_string()),
+            "-V" | "--version" => return Err(VERSION.to_string()),
             "-C" | "--workspace" => options.workspace = PathBuf::from(value("--workspace")?),
             "-c" | "--continue" => options.continue_latest = true,
             "-r" | "--resume" => options.resume = Some(value("--resume")?),
@@ -919,8 +923,8 @@ fn main() -> ExitCode {
 async fn runtime_main() -> ExitCode {
     let options = match parse(std::env::args().skip(1)) {
         Ok(options) => options,
-        Err(message) if message == USAGE => {
-            println!("{USAGE}");
+        Err(message) if message == USAGE || message == VERSION => {
+            println!("{message}");
             return ExitCode::SUCCESS;
         }
         Err(message) => {
@@ -998,6 +1002,8 @@ mod tests {
         assert_eq!(parsed(&["--", "explain", "--mode"]).unwrap().task, "explain --mode");
 
         assert_eq!(parsed(&["--help"]).unwrap_err(), USAGE);
+        assert_eq!(parsed(&["--version"]).unwrap_err(), VERSION);
+        assert_eq!(parsed(&["-V"]).unwrap_err(), VERSION);
         assert!(parsed(&[]).unwrap_err().contains("give the task"));
         assert!(parsed(&["-c", "-r", "abc", "hi"]).unwrap_err().contains("cannot be used together"));
         assert!(parsed(&["-w", "-c", "hi"]).unwrap_err().contains("cannot be combined"));

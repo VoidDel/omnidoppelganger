@@ -2,7 +2,20 @@
 // so reopening a session shows exactly what was on screen before.
 
 import { estimateTokensUsd } from "./pricing";
-import type { ContentBlock, Decision, DiffHunk, DocumentKind, Envelope, Image, Question, Reply, StreamDelta, Todo, Tokens, ToolMeta } from "./types";
+import type {
+  ContentBlock,
+  Decision,
+  DiffHunk,
+  DocumentKind,
+  Envelope,
+  Image,
+  Question,
+  Reply,
+  StreamDelta,
+  Todo,
+  Tokens,
+  ToolMeta,
+} from "./types";
 
 export interface ToolItem {
   kind: "tool";
@@ -37,7 +50,17 @@ export type Item =
   | { kind: "compacted"; summary: string; tokensBefore: number; focus?: string; keptFromTurn?: number }
   | { kind: "restored"; turn: number; restored: string[]; skipped: string[] }
   /** A deliverable restored to an earlier snapshotted version. */
-  | { kind: "artifact_restored"; file: string; path: string; version: number; snapshot: string; bytes: number; previous?: string; previousBytes?: number; ts?: string }
+  | {
+      kind: "artifact_restored";
+      file: string;
+      path: string;
+      version: number;
+      snapshot: string;
+      bytes: number;
+      previous?: string;
+      previousBytes?: number;
+      ts?: string;
+    }
   /** Files the turn left in the workspace that no tool told of (or modified after a tool told of them): absolute paths. */
   | { kind: "made"; turn: number; files: string[]; snapshots?: Record<string, string>; sizes?: Record<string, number>; ts?: string }
   /** The project's instructions for agents were read; empty `content` means the file is gone. */
@@ -67,7 +90,8 @@ export function mcpTool(name: string): { server: string; tool: string } | null {
 }
 
 /** Whether a tool changes files: its result carries a diff and can be undone. */
-export const editsFiles = (name: string) => name === "edit_file" || name === "write_file" || name === "delete_file" || name === "move_file";
+export const editsFiles = (name: string) =>
+  name === "edit_file" || name === "write_file" || name === "delete_file" || name === "move_file";
 
 /** The paths, as shown, of the files an edit changed: a move changes two. */
 const touched = (tool: ToolItem) => [tool.result?.meta?.path, tool.result?.meta?.to].filter((path): path is string => !!path);
@@ -88,159 +112,322 @@ function blockItem(block: ContentBlock, turn: number): Item | null {
   }
 }
 
-export function fold(events: Envelope[]): Row[] {
-  const rows: Row[] = [];
-  const tools = new Map<string, ToolItem>();
-  const current = () => rows[rows.length - 1];
-  let turn = 0;
-  for (const event of events) {
-    switch (event.type) {
-      case "turn/start":
-        turn = event.data.turn;
-        break;
-      case "user/message":
-        rows.push({ key: `row-${event.seq}`, turn, prompt: {
-            text: event.data.text,
-            ts: event.ts,
-            steering: event.data.steering,
-            images: event.data.images ?? [],
-            files: (event.data.files ?? []).map((file) => ({
-              path: file.path,
-              bytes: file.bytes,
-              inline: file.content !== undefined,
-              document: file.document,
-              parts: file.parts,
-              is_dir: file.is_dir,
-            })),
-          },
-          items: [],
-        });
-        break;
-      case "files/restored":
-        for (const tool of tools.values()) {
-          if (tool.turn >= event.data.turn && editsFiles(tool.name) && touched(tool).some((path) => event.data.restored.includes(path))) tool.undone = true;
-        }
-        current()?.items.push({ kind: "restored", turn: event.data.turn, restored: event.data.restored, skipped: event.data.skipped });
-        break;
-      case "assistant/message":
-        for (const block of event.data.content) {
-          const item = blockItem(block, turn);
-          if (!item || !current()) continue;
-          current().items.push(item);
-          if (item.kind === "tool") tools.set(item.id, item);
-        }
-        break;
-      case "subagent/started": {
-        const tool = tools.get(event.data.tool_use_id);
-        if (tool) tool.agents = [...(tool.agents ?? []), { session: event.data.session, name: event.data.name }];
-        break;
-      }
-      case "approval/requested": {
-        const tool = tools.get(event.data.tool_use_id);
-        if (tool) tool.approval = { reason: event.data.reason, detail: event.data.detail, grant: event.data.grant, expiresAt: event.data.expires_at };
-        break;
-      }
-      case "question/asked": {
-        const tool = tools.get(event.data.tool_use_id);
-        if (tool) tool.question = { questions: event.data.questions, expiresAt: event.data.expires_at };
-        break;
-      }
-      case "question/answered": {
-        const tool = tools.get(event.data.tool_use_id);
-        if (tool?.question) tool.question.answered = { answers: event.data.answers ?? [], declined: !!event.data.declined, timedOut: !!event.data.timed_out };
-        break;
-      }
-      case "approval/resolved": {
-        const tool = tools.get(event.data.tool_use_id);
-        if (tool?.approval) {
-          tool.approval.decision = event.data.decision;
-          tool.approval.timedOut = !!event.data.timed_out;
-        }
-        break;
-      }
-      case "guardian/reviewed": {
-        const tool = tools.get(event.data.tool_use_id);
-        if (tool) tool.review = { allowed: event.data.allowed, reason: event.data.reason, model: event.data.model, failed: !!event.data.failed };
-        break;
-      }
-      case "tool/result": {
-        const tool = tools.get(event.data.tool_use_id);
-        if (tool) {
-          tool.result = { content: event.data.content, isError: event.data.is_error, meta: event.data.meta, images: event.data.images };
-          tool.ts = event.ts;
-        }
-        break;
-      }
-      case "instructions/loaded":
-        current()?.items.push({ kind: "instructions", path: event.data.path, content: event.data.content });
-        break;
-      case "files/made": {
-        // What the turn's own acts already show at the same content snapshot is not said twice.
-        const shown = new Map<string, string | undefined>();
-        for (const item of current()?.items ?? []) {
-          if (item.kind !== "tool" || !item.result || item.result.isError) continue;
-          const meta = item.result.meta;
-          if (item.name === "deliver_files" && Array.isArray(meta?.files)) {
-            for (const path of meta.files) shown.set(path, meta.snapshots?.[path]);
-          } else if ((item.name === "edit_file" || item.name === "write_file" || item.name === "generate_image") && meta?.file) {
-            shown.set(meta.file, meta.snapshot);
-          }
-        }
-        const madeSnaps = event.data.snapshots;
-        const files = event.data.files.filter((path) => {
-          if (!shown.has(path)) return true;
-          const madeSnap = madeSnaps?.[path];
-          const prevSnap = shown.get(path);
-          return !!madeSnap && !!prevSnap && madeSnap !== prevSnap;
-        });
-        if (files.length) {
-          const item: Extract<Item, { kind: "made" }> = { kind: "made", turn: event.data.turn, files, ts: event.ts };
-          if (madeSnaps) {
-            const keptSnaps: Record<string, string> = {};
-            const keptSizes: Record<string, number> = {};
-            for (const path of files) {
-              if (madeSnaps[path]) keptSnaps[path] = madeSnaps[path];
-              if (event.data.sizes?.[path] !== undefined) keptSizes[path] = event.data.sizes[path];
-            }
-            if (Object.keys(keptSnaps).length) item.snapshots = keptSnaps;
-            if (Object.keys(keptSizes).length) item.sizes = keptSizes;
-          }
-          current()?.items.push(item);
-        }
-        break;
-      }
-      case "artifact/restored":
-        current()?.items.push({
-          kind: "artifact_restored",
-          file: event.data.file,
-          path: event.data.path,
-          version: event.data.version,
-          snapshot: event.data.snapshot,
-          bytes: event.data.bytes,
-          previous: event.data.previous,
-          previousBytes: event.data.previous_bytes,
-          ts: event.ts,
-        });
-        break;
-      case "context/compacted":
-        current()?.items.push({
-          kind: "compacted",
-          summary: event.data.summary,
-          tokensBefore: event.data.tokens_before,
-          focus: event.data.focus,
-          keptFromTurn: event.data.kept_from_turn,
-        });
-        break;
-      case "turn/end":
-        if (event.data.reason !== "completed" && current()) {
-          current().items.push({ kind: "notice", reason: event.data.reason, error: event.data.error });
-        }
-        break;
-      default:
-        break;
-    }
+interface ToolLocation {
+  rowIdx: number;
+  itemIdx: number;
+}
+
+export interface FoldState {
+  rows: Row[];
+  tools: Map<string, ToolLocation>;
+  turn: number;
+  /** Rows with index `< frozenCount` belong to an earlier snapshot and must be copied on write before mutation. */
+  frozenCount: number;
+  clonedRows: Set<number>;
+}
+
+export function createFoldState(): FoldState {
+  return {
+    rows: [],
+    tools: new Map(),
+    turn: 0,
+    frozenCount: 0,
+    clonedRows: new Set(),
+  };
+}
+
+function ensureMutableRow(state: FoldState, rowIdx: number): Row | undefined {
+  const existing = state.rows[rowIdx];
+  if (!existing) return undefined;
+  if (rowIdx < state.frozenCount && !state.clonedRows.has(rowIdx)) {
+    const cloned: Row = { ...existing, items: existing.items.slice() };
+    state.rows[rowIdx] = cloned;
+    state.clonedRows.add(rowIdx);
+    return cloned;
   }
-  return rows;
+  return existing;
+}
+
+function ensureMutableTool(state: FoldState, id: string): ToolItem | undefined {
+  const loc = state.tools.get(id);
+  if (!loc) return undefined;
+  const row = state.rows[loc.rowIdx];
+  if (!row) return undefined;
+  const item = row.items[loc.itemIdx];
+  if (!item || item.kind !== "tool") return undefined;
+  if (loc.rowIdx < state.frozenCount) {
+    const mutRow = ensureMutableRow(state, loc.rowIdx)!;
+    const cur = mutRow.items[loc.itemIdx] as ToolItem;
+    const clonedTool: ToolItem = {
+      ...cur,
+      ...(cur.approval ? { approval: { ...cur.approval } } : {}),
+      ...(cur.question ? { question: { ...cur.question } } : {}),
+    };
+    mutRow.items[loc.itemIdx] = clonedTool;
+    return clonedTool;
+  }
+  return item;
+}
+
+/** Advance `FoldState` by a single `Envelope`, preserving strict `===` references for untouched frozen rows. */
+export function foldStep(state: FoldState, event: Envelope): void {
+  const pushToCurrent = (item: Item): ToolLocation | null => {
+    const rowIdx = state.rows.length - 1;
+    if (rowIdx < 0) return null;
+    const row = ensureMutableRow(state, rowIdx)!;
+    const itemIdx = row.items.length;
+    row.items.push(item);
+    return { rowIdx, itemIdx };
+  };
+
+  switch (event.type) {
+    case "turn/start":
+      state.turn = event.data.turn;
+      break;
+    case "user/message":
+      state.rows.push({
+        key: `row-${event.seq}`,
+        turn: state.turn,
+        prompt: {
+          text: event.data.text,
+          ts: event.ts,
+          steering: event.data.steering,
+          images: event.data.images ?? [],
+          files: (event.data.files ?? []).map((file) => ({
+            path: file.path,
+            bytes: file.bytes,
+            inline: file.content !== undefined,
+            document: file.document,
+            parts: file.parts,
+            is_dir: file.is_dir,
+          })),
+        },
+        items: [],
+      });
+      break;
+    case "files/restored":
+      for (const [id, loc] of state.tools.entries()) {
+        const candidate = state.rows[loc.rowIdx]?.items[loc.itemIdx];
+        if (
+          candidate &&
+          candidate.kind === "tool" &&
+          candidate.turn >= event.data.turn &&
+          editsFiles(candidate.name) &&
+          touched(candidate).some((path) => event.data.restored.includes(path))
+        ) {
+          const mutTool = ensureMutableTool(state, id);
+          if (mutTool) mutTool.undone = true;
+        }
+      }
+      pushToCurrent({ kind: "restored", turn: event.data.turn, restored: event.data.restored, skipped: event.data.skipped });
+      break;
+    case "assistant/message":
+      for (const block of event.data.content) {
+        const item = blockItem(block, state.turn);
+        if (!item || state.rows.length === 0) continue;
+        const loc = pushToCurrent(item);
+        if (loc && item.kind === "tool") state.tools.set(item.id, loc);
+      }
+      break;
+    case "subagent/started": {
+      const tool = ensureMutableTool(state, event.data.tool_use_id);
+      if (tool) tool.agents = [...(tool.agents ?? []), { session: event.data.session, name: event.data.name }];
+      break;
+    }
+    case "approval/requested": {
+      const tool = ensureMutableTool(state, event.data.tool_use_id);
+      if (tool) {
+        tool.approval = {
+          reason: event.data.reason,
+          detail: event.data.detail,
+          grant: event.data.grant,
+          expiresAt: event.data.expires_at,
+        };
+      }
+      break;
+    }
+    case "question/asked": {
+      const tool = ensureMutableTool(state, event.data.tool_use_id);
+      if (tool) tool.question = { questions: event.data.questions, expiresAt: event.data.expires_at };
+      break;
+    }
+    case "question/answered": {
+      const tool = ensureMutableTool(state, event.data.tool_use_id);
+      if (tool?.question) {
+        tool.question = {
+          ...tool.question,
+          answered: {
+            answers: event.data.answers ?? [],
+            declined: !!event.data.declined,
+            timedOut: !!event.data.timed_out,
+          },
+        };
+      }
+      break;
+    }
+    case "approval/resolved": {
+      const tool = ensureMutableTool(state, event.data.tool_use_id);
+      if (tool?.approval) {
+        tool.approval = {
+          ...tool.approval,
+          decision: event.data.decision,
+          timedOut: !!event.data.timed_out,
+        };
+      }
+      break;
+    }
+    case "guardian/reviewed": {
+      const tool = ensureMutableTool(state, event.data.tool_use_id);
+      if (tool) {
+        tool.review = {
+          allowed: event.data.allowed,
+          reason: event.data.reason,
+          model: event.data.model,
+          failed: !!event.data.failed,
+        };
+      }
+      break;
+    }
+    case "tool/result": {
+      const tool = ensureMutableTool(state, event.data.tool_use_id);
+      if (tool) {
+        tool.result = {
+          content: event.data.content,
+          isError: event.data.is_error,
+          meta: event.data.meta,
+          images: event.data.images,
+        };
+        tool.ts = event.ts;
+      }
+      break;
+    }
+    case "instructions/loaded":
+      pushToCurrent({ kind: "instructions", path: event.data.path, content: event.data.content });
+      break;
+    case "files/made": {
+      const curRow = state.rows[state.rows.length - 1];
+      const shown = new Map<string, string | undefined>();
+      for (const item of curRow?.items ?? []) {
+        if (item.kind !== "tool" || !item.result || item.result.isError) continue;
+        const meta = item.result.meta;
+        if (item.name === "deliver_files" && Array.isArray(meta?.files)) {
+          for (const path of meta.files) shown.set(path, meta.snapshots?.[path]);
+        } else if ((item.name === "edit_file" || item.name === "write_file" || item.name === "generate_image") && meta?.file) {
+          shown.set(meta.file, meta.snapshot);
+        }
+      }
+      const madeSnaps = event.data.snapshots;
+      const files = event.data.files.filter((path) => {
+        if (!shown.has(path)) return true;
+        const madeSnap = madeSnaps?.[path];
+        const prevSnap = shown.get(path);
+        return !!madeSnap && !!prevSnap && madeSnap !== prevSnap;
+      });
+      if (files.length) {
+        const item: Extract<Item, { kind: "made" }> = { kind: "made", turn: event.data.turn, files, ts: event.ts };
+        if (madeSnaps) {
+          const keptSnaps: Record<string, string> = {};
+          const keptSizes: Record<string, number> = {};
+          for (const path of files) {
+            if (madeSnaps[path]) keptSnaps[path] = madeSnaps[path];
+            if (event.data.sizes?.[path] !== undefined) keptSizes[path] = event.data.sizes[path];
+          }
+          if (Object.keys(keptSnaps).length) item.snapshots = keptSnaps;
+          if (Object.keys(keptSizes).length) item.sizes = keptSizes;
+        }
+        pushToCurrent(item);
+      }
+      break;
+    }
+    case "artifact/restored":
+      pushToCurrent({
+        kind: "artifact_restored",
+        file: event.data.file,
+        path: event.data.path,
+        version: event.data.version,
+        snapshot: event.data.snapshot,
+        bytes: event.data.bytes,
+        previous: event.data.previous,
+        previousBytes: event.data.previous_bytes,
+        ts: event.ts,
+      });
+      break;
+    case "context/compacted":
+      pushToCurrent({
+        kind: "compacted",
+        summary: event.data.summary,
+        tokensBefore: event.data.tokens_before,
+        focus: event.data.focus,
+        keptFromTurn: event.data.kept_from_turn,
+      });
+      break;
+    case "turn/end":
+      if (event.data.reason !== "completed" && state.rows.length > 0) {
+        pushToCurrent({ kind: "notice", reason: event.data.reason, error: event.data.error });
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+export interface FoldCache {
+  events: Envelope[];
+  length: number;
+  firstEvent: Envelope | undefined;
+  lastEvent: Envelope | undefined;
+  state: FoldState;
+  rows: Row[];
+}
+
+/**
+ * Incrementally fold `events` from `prev` when `events` appends to the previously folded log,
+ * freezing untouched historical `Row` references (`===`) so completed turns skip re-rendering.
+ */
+export function foldIncremental(prev: FoldCache | null, events: Envelope[]): FoldCache {
+  if (
+    prev &&
+    events.length >= prev.length &&
+    (prev.length === 0 ||
+      (events[0] === prev.firstEvent && events[prev.length - 1] === prev.lastEvent))
+  ) {
+    if (events.length === prev.length) return prev;
+    const nextState: FoldState = {
+      rows: prev.state.rows.slice(),
+      tools: new Map(prev.state.tools),
+      turn: prev.state.turn,
+      frozenCount: prev.state.rows.length,
+      clonedRows: new Set(),
+    };
+    for (let i = prev.length; i < events.length; i++) {
+      foldStep(nextState, events[i]);
+    }
+    return {
+      events,
+      length: events.length,
+      firstEvent: events[0],
+      lastEvent: events[events.length - 1],
+      state: nextState,
+      rows: nextState.rows,
+    };
+  }
+
+  const fresh = createFoldState();
+  for (const event of events) {
+    foldStep(fresh, event);
+  }
+  return {
+    events,
+    length: events.length,
+    firstEvent: events[0],
+    lastEvent: events[events.length - 1],
+    state: fresh,
+    rows: fresh.rows,
+  };
+}
+
+export function fold(events: Envelope[]): Row[] {
+  return foldIncremental(null, events).rows;
 }
 
 /**
@@ -258,7 +445,6 @@ export const shortCount = (count: number) => {
   return String(count);
 };
 
-/** What the session has spent, and how full its context is. */
 /** Per-category token breakdown of the active conversation context. */
 export interface UsageBreakdown {
   /** System prompt, tool schemas, and project instructions (CLAUDE.md / AGENTS.md). */
@@ -298,69 +484,142 @@ export function estimateTokens(text: string | undefined | null): number {
   return Math.ceil(cjk * 0.7 + other / 4);
 }
 
+interface CachedTokenEst {
+  input: number;
+  output: number;
+  skill: number;
+  mcp: number;
+  tools: number;
+  instructions?: number;
+  skillsCatalog?: number;
+  summary?: number;
+}
+
+const tokenEstCache = new WeakMap<Envelope, CachedTokenEst>();
+
+function estimateEnvelopeTokens(event: Envelope): CachedTokenEst {
+  const cached = tokenEstCache.get(event);
+  if (cached) return cached;
+
+  const est: CachedTokenEst = { input: 0, output: 0, skill: 0, mcp: 0, tools: 0 };
+  if (event.type === "instructions/loaded") {
+    est.instructions = estimateTokens(event.data.content);
+  } else if (event.type === "skills/listed") {
+    est.skillsCatalog = event.data.skills.reduce(
+      (sum, s) => sum + estimateTokens(s.name) + estimateTokens(s.description) + 6,
+      0,
+    );
+  } else if (event.type === "user/message") {
+    est.input += estimateTokens(event.data.text);
+    est.input += (event.data.images?.length ?? 0) * 1000;
+    for (const file of event.data.files ?? []) {
+      est.input += file.content ? estimateTokens(file.content) : 30;
+    }
+  } else if (event.type === "assistant/message") {
+    for (const block of event.data.content ?? []) {
+      if (block.type === "text") est.output += estimateTokens(block.text);
+      else if (block.type === "thinking") est.output += estimateTokens(block.thinking);
+      else if (block.type === "tool_use") {
+        const argTokens = estimateTokens(JSON.stringify(block.input ?? {})) + 12;
+        if (block.name === "load_skill") est.skill += argTokens;
+        else if (mcpTool(block.name) || block.name === "list_mcp_resources" || block.name === "read_mcp_resource") {
+          est.mcp += argTokens;
+        } else {
+          est.output += argTokens;
+        }
+      }
+    }
+  } else if (event.type === "tool/result") {
+    const bodyTokens = estimateTokens(event.data.content) + (event.data.images?.length ?? 0) * 1000;
+    if (event.data.tool === "load_skill") est.skill += bodyTokens;
+    else if (mcpTool(event.data.tool) || event.data.tool === "list_mcp_resources" || event.data.tool === "read_mcp_resource") {
+      est.mcp += bodyTokens;
+    } else {
+      est.tools += bodyTokens;
+    }
+  } else if (event.type === "context/compacted") {
+    est.summary = event.data.tokens?.output ?? estimateTokens(event.data.summary);
+  }
+
+  tokenEstCache.set(event, est);
+  return est;
+}
+
 export function usage(events: Envelope[]): Usage {
   const spent: Tokens = { input: 0, cached: 0, output: 0 };
   let context = 0;
   const raw: UsageBreakdown = { prompt: 0, input: 0, output: 0, skill: 0, mcp: 0, tools: 0 };
   let instructionsTokens = 0;
   let skillsCatalogTokens = 0;
+
   const add = (tokens: Tokens | undefined) => {
     if (!tokens) return;
     spent.input += tokens.input;
     spent.cached += tokens.cached;
     spent.output += tokens.output;
   };
-  for (const event of events) {
-    if (event.type === "instructions/loaded") {
-      instructionsTokens = estimateTokens(event.data.content);
-    } else if (event.type === "skills/listed") {
-      skillsCatalogTokens = event.data.skills.reduce((sum, s) => sum + estimateTokens(s.name) + estimateTokens(s.description) + 6, 0);
-    } else if (event.type === "user/message") {
-      raw.input += estimateTokens(event.data.text);
-      raw.input += (event.data.images?.length ?? 0) * 1000;
-      for (const file of event.data.files ?? []) {
-        raw.input += file.content ? estimateTokens(file.content) : 30;
+
+  // Locate the last compaction event in reverse so pre-compaction message/tool payloads skip character-level token scanning.
+  let lastCompactedIdx = -1;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === "context/compacted") {
+      lastCompactedIdx = i;
+      break;
+    }
+  }
+
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i];
+    if (i < lastCompactedIdx) {
+      if (event.type === "instructions/loaded") {
+        instructionsTokens = estimateEnvelopeTokens(event).instructions ?? 0;
+      } else if (event.type === "skills/listed") {
+        skillsCatalogTokens = estimateEnvelopeTokens(event).skillsCatalog ?? 0;
+      } else if (event.type === "assistant/message" || event.type === "guardian/reviewed" || event.type === "context/compacted") {
+        add(event.data.tokens);
+      } else if (event.type === "tool/result") {
+        add(event.data.meta?.tokens);
       }
+      continue;
+    }
+
+    if (event.type === "instructions/loaded") {
+      instructionsTokens = estimateEnvelopeTokens(event).instructions ?? 0;
+    } else if (event.type === "skills/listed") {
+      skillsCatalogTokens = estimateEnvelopeTokens(event).skillsCatalog ?? 0;
+    } else if (event.type === "user/message") {
+      const est = estimateEnvelopeTokens(event);
+      raw.input += est.input;
     } else if (event.type === "assistant/message") {
       add(event.data.tokens);
       if (event.data.tokens) context = event.data.tokens.input + event.data.tokens.output;
-      for (const block of event.data.content ?? []) {
-        if (block.type === "text") raw.output += estimateTokens(block.text);
-        else if (block.type === "thinking") raw.output += estimateTokens(block.thinking);
-        else if (block.type === "tool_use") {
-          const argTokens = estimateTokens(JSON.stringify(block.input ?? {})) + 12;
-          if (block.name === "load_skill") raw.skill += argTokens;
-          else if (mcpTool(block.name) || block.name === "list_mcp_resources" || block.name === "read_mcp_resource") raw.mcp += argTokens;
-          else raw.output += argTokens;
-        }
-      }
+      const est = estimateEnvelopeTokens(event);
+      raw.output += est.output;
+      raw.skill += est.skill;
+      raw.mcp += est.mcp;
     } else if (event.type === "guardian/reviewed") {
-      // The 护法's requests are spent too; they are no part of the conversation.
       add(event.data.tokens);
     } else if (event.type === "tool/result") {
-      // So is a search a provider ran in a request of its own.
       add(event.data.meta?.tokens);
-      const bodyTokens = estimateTokens(event.data.content) + (event.data.images?.length ?? 0) * 1000;
-      if (event.data.tool === "load_skill") raw.skill += bodyTokens;
-      else if (mcpTool(event.data.tool) || event.data.tool === "list_mcp_resources" || event.data.tool === "read_mcp_resource") raw.mcp += bodyTokens;
-      else raw.tools += bodyTokens;
+      const est = estimateEnvelopeTokens(event);
+      raw.skill += est.skill;
+      raw.mcp += est.mcp;
+      raw.tools += est.tools;
     } else if (event.type === "context/compacted") {
       add(event.data.tokens);
-      // Only the summary is left, which is what its request wrote.
       context = event.data.tokens?.output ?? 0;
+      const est = estimateEnvelopeTokens(event);
       raw.input = 0;
-      raw.output = event.data.tokens?.output ?? estimateTokens(event.data.summary);
+      raw.output = est.summary ?? 0;
       raw.skill = 0;
       raw.mcp = 0;
       raw.tools = 0;
     }
   }
+
   raw.prompt = instructionsTokens;
   raw.skill += skillsCatalogTokens;
 
-  // Reconcile estimates with the provider's actual `context` token count:
-  // Any unattributed remainder belongs to the system prompt & tool schemas;
-  // if estimates exceed actual `context`, scale proportionally so the bars sum to `context`.
   const nonPrompt = raw.input + raw.output + raw.skill + raw.mcp + raw.tools;
   const totalEst = raw.prompt + nonPrompt;
   let breakdown: UsageBreakdown = raw;
@@ -499,7 +758,6 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
     if (!meta?.path) continue;
     const entry = (path: string): ChangedFile => files.get(path) ?? { path, added: 0, removed: 0, created: false, hunks: [] };
     if (item.name === "move_file" && meta.to) {
-      // Where it went is the row that counts; where it was, if already listed, is now empty.
       const left = files.get(meta.path);
       if (left) Object.assign(left, { gone: true, file: undefined });
       const arrived = entry(meta.to);
@@ -509,7 +767,6 @@ export function changedFiles(rows: Row[]): ChangedFile[] {
     }
     const file = entry(meta.path);
     if (!files.has(meta.path)) file.created = !!meta.created;
-    // Gone if deleted last; written again, it is back.
     file.gone = item.name === "delete_file" || undefined;
     file.file = file.gone ? undefined : (meta.file ?? file.file);
     file.added += meta.added ?? 0;
@@ -576,13 +833,11 @@ export function products(rows: Row[]): Product[] {
     const last = existing.versions[existing.versions.length - 1];
     existing.how = bestHow(existing.how, how);
     if (snapshot && last?.snapshot === snapshot) {
-      // Same exact bytes already recorded as the latest version: upgrade metadata without creating a duplicate version.
       if (last.how !== "backup") last.how = bestHow(last.how, how);
       if (last.bytes === undefined && bytes !== undefined) last.bytes = bytes;
       if (!last.ts && ts) last.ts = ts;
       existing.currentSnapshot = snapshot;
     } else if (!snapshot && !last?.snapshot) {
-      // Legacy log without snapshots: update the single record in place.
       existing.turn = turn;
       if (last) {
         last.turn = turn;
@@ -600,7 +855,6 @@ export function products(rows: Row[]): Product[] {
       });
       if (snapshot) existing.currentSnapshot = snapshot;
     }
-    // Move to the end so the most recently updated product appears first when reversed.
     made.delete(path);
     made.set(path, existing);
   };
@@ -647,7 +901,12 @@ export function products(rows: Row[]): Product[] {
 
 /** An edit the user can still undo: it succeeded, has a snapshot, and was not undone. */
 const undoable = (item: Item) =>
-  item.kind === "tool" && editsFiles(item.name) && !!item.result && !item.result.isError && !!(item.result.meta?.after || item.result.meta?.changes?.length) && !item.undone;
+  item.kind === "tool" &&
+  editsFiles(item.name) &&
+  !!item.result &&
+  !item.result.isError &&
+  !!(item.result.meta?.after || item.result.meta?.changes?.length) &&
+  !item.undone;
 
 /**
  * The turns from which undoing would restore something: each turn that has
@@ -655,7 +914,6 @@ const undoable = (item: Item) =>
  * takes every later turn's edits with it.
  */
 export function undoableTurns(rows: Row[], copied = 0): Set<number> {
-  // In a fork, the turns copied from the other session are that session's to undo: it keeps what the files held.
   const own = rows.filter((row) => row.turn > copied);
   const last = Math.max(0, ...own.filter((row) => row.items.some(undoable)).map((row) => row.turn));
   return new Set(own.map((row) => row.turn).filter((turn) => turn > 0 && turn <= last));
@@ -665,7 +923,11 @@ export function undoableTurns(rows: Row[], copied = 0): Set<number> {
 export function todosOf(item: ToolItem): Todo[] | null {
   if (item.result?.meta?.todos) return item.result.meta.todos;
   if (item.name !== "update_todos" && item.name !== "update_steps" && item.name !== "TodoWrite") return null;
-  const raw = Array.isArray(item.input.todos) ? item.input.todos : Array.isArray(item.input.steps) ? item.input.steps : null;
+  const raw = Array.isArray(item.input.todos)
+    ? item.input.todos
+    : Array.isArray(item.input.steps)
+      ? item.input.steps
+      : null;
   if (!raw) return null;
   const parsed: Todo[] = [];
   for (const entry of raw) {
@@ -696,9 +958,11 @@ export function todos(rows: Row[]): Todo[] {
 
 /** Commands that ran, in order, for the terminal panel. */
 export function commandRuns(rows: Row[]): ToolItem[] {
-  // A background command's output arrives through the calls that read or stop it.
-  const shows = (name: string) => name === "run_command" || name === "command_output" || name === "command_input" || name === "stop_command";
-  return rows.flatMap((row) => row.items).filter((item): item is ToolItem => item.kind === "tool" && shows(item.name) && !!item.result?.meta?.command);
+  const shows = (name: string) =>
+    name === "run_command" || name === "command_output" || name === "command_input" || name === "stop_command";
+  return rows
+    .flatMap((row) => row.items)
+    .filter((item): item is ToolItem => item.kind === "tool" && shows(item.name) && !!item.result?.meta?.command);
 }
 
 /** Whether an `ask_user` call is waiting on 本尊's answers: asked, and neither answered nor ended. */

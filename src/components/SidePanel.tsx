@@ -1,3 +1,4 @@
+import "../styles/panel.css";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type ChangedFile, type Product, type ProductVersion, type ToolItem, fileSize } from "../lib/fold";
 import type { RestoredArtifact, Todo } from "../lib/types";

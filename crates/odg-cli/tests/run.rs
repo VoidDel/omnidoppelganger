@@ -201,6 +201,14 @@ fn says_what_is_wrong_with_its_arguments_or_the_run() {
     assert!(String::from_utf8_lossy(&none.stderr).contains("give the task"));
     let help = run(&["--help"]);
     assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).starts_with("odg: run tasks"));
+    for flag in ["--version", "-V"] {
+        let ver = run(&[flag]);
+        assert!(ver.status.success(), "{flag} failed: {}", String::from_utf8_lossy(&ver.stderr));
+        let text = String::from_utf8_lossy(&ver.stdout).replace("\r\n", "\n");
+        assert_eq!(text, format!("odg {}\n", env!("CARGO_PKG_VERSION")));
+        let parts: Vec<&str> = text.trim().strip_prefix("odg ").expect("starts with odg ").split('.').collect();
+        assert!(parts.len() >= 3 && parts[..3].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())), "unexpected version output: {text}");
+    }
     let unknown = run(&["--provider", "nobody", "hello"]);
     assert_eq!(unknown.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("there is no provider `nobody`"));

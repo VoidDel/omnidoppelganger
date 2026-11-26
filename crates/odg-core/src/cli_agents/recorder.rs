@@ -437,6 +437,10 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
     }
 
     fn enrich_file_edit(&mut self, call_key: &str, started: &StartedTool, had_start: bool, clean_output: &mut String, meta: &mut Value) {
+        maybe_block_in_place(|| self.enrich_file_edit_sync(call_key, started, had_start, clean_output, meta));
+    }
+
+    fn enrich_file_edit_sync(&mut self, call_key: &str, started: &StartedTool, had_start: bool, clean_output: &mut String, meta: &mut Value) {
         let Some((ref resolved, ref shown)) = started.target else { return };
         let after_bytes = read_file_bytes_capped(resolved);
         let prior_known = self.known_files.get(resolved).cloned();
@@ -538,6 +542,10 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
     }
 
     fn enrich_file_delete(&mut self, started: &StartedTool, clean_output: &mut String, meta: &mut Value) {
+        maybe_block_in_place(|| self.enrich_file_delete_sync(started, clean_output, meta));
+    }
+
+    fn enrich_file_delete_sync(&mut self, started: &StartedTool, clean_output: &mut String, meta: &mut Value) {
         let Some((ref resolved, ref shown)) = started.target else { return };
         let prior_known = self.known_files.remove(resolved);
         let prev_bytes = started.before_bytes.as_deref().or(prior_known.as_deref());
@@ -637,12 +645,47 @@ fn relativize_tool_input(workspace: &Path, input: &mut Value) -> Option<(PathBuf
     Some((resolved, shown))
 }
 
+fn maybe_block_in_place<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
+
 fn read_file_bytes_capped(path: &Path) -> Option<Vec<u8>> {
+    maybe_block_in_place(|| {
+        let meta = std::fs::metadata(path).ok()?;
+        if !meta.is_file() || meta.len() > crate::tools::READ_FILE_BYTES {
+            return None;
+        }
+        std::fs::read(path).ok()
+    })
+}
+
+const MAX_TRANSCRIPT_TAIL_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_TRANSCRIPT_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+fn read_transcript_tail(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
     let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > crate::tools::READ_FILE_BYTES {
+    if !meta.is_file() || meta.len() > MAX_TRANSCRIPT_FILE_BYTES {
         return None;
     }
-    std::fs::read(path).ok()
+    let len = meta.len();
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    if len > MAX_TRANSCRIPT_TAIL_BYTES {
+        file.seek(SeekFrom::End(-(MAX_TRANSCRIPT_TAIL_BYTES as i64))).ok()?;
+        file.take(MAX_TRANSCRIPT_TAIL_BYTES).read_to_end(&mut buf).ok()?;
+        // Drop any partial leading line cut mid-way by seeking.
+        let pos = buf.iter().position(|&b| b == b'\n')?;
+        buf.drain(..=pos);
+    } else {
+        file.take(MAX_TRANSCRIPT_TAIL_BYTES).read_to_end(&mut buf).ok()?;
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Fallback for `agy --output-format stream-json`, which omits `Target`/`Replacement` and `tool_info.output`
@@ -656,29 +699,27 @@ pub(super) fn lookup_agy_transcript_edit_in(home: &Path, conv_id: &str, call_key
     let step_index = call_key.parse::<u64>().ok()?;
     let needle_tight = format!("\"step_index\":{step_index}");
     let needle_spaced = format!("\"step_index\": {step_index}");
-    for root in [".gemini/antigravity-cli/brain", ".gemini/antigravity/brain"] {
-        let path = home.join(root).join(conv).join(".system_generated").join("logs").join("transcript.jsonl");
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
-        if !meta.is_file() || meta.len() > 20 * 1024 * 1024 {
-            continue;
-        }
-        let Ok(content) = std::fs::read_to_string(&path) else { continue };
-        for line in content.lines().rev() {
-            if !line.contains(&needle_tight) && !line.contains(&needle_spaced) {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-            if v["step_index"].as_u64() != Some(step_index) {
-                continue;
-            }
-            let Some(raw_text) = v["content"].as_str() else { continue };
-            let cleaned = strip_agy_timestamp_envelope(raw_text);
-            if let Some((added, removed)) = parse_plus_minus_lines(&cleaned) {
-                return Some((added, removed, cleaned));
+    maybe_block_in_place(|| {
+        for root in [".gemini/antigravity-cli/brain", ".gemini/antigravity/brain"] {
+            let path = home.join(root).join(conv).join(".system_generated").join("logs").join("transcript.jsonl");
+            let Some(content) = read_transcript_tail(&path) else { continue };
+            for line in content.lines().rev() {
+                if !line.contains(&needle_tight) && !line.contains(&needle_spaced) {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+                if v["step_index"].as_u64() != Some(step_index) {
+                    continue;
+                }
+                let Some(raw_text) = v["content"].as_str() else { continue };
+                let cleaned = strip_agy_timestamp_envelope(raw_text);
+                if let Some((added, removed)) = parse_plus_minus_lines(&cleaned) {
+                    return Some((added, removed, cleaned));
+                }
             }
         }
-    }
-    None
+        None
+    })
 }
 
 fn lookup_agy_transcript_edit(conv_id: Option<&str>, call_key: &str) -> Option<(usize, usize, String)> {

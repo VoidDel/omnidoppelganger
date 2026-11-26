@@ -8,15 +8,18 @@
 //! which all start alike. Of those, an old spreadsheet (.xls) is read; an old
 //! Word or PowerPoint file (.doc, .ppt) is refused, with how to make it readable.
 
+use std::collections::VecDeque;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
 /// The largest document read: manuals and decks of pictures run to tens of megabytes, far more than their words.
 pub const DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
+/// Maximum number of ZIP central-directory entries inspected for an Office/OpenDocument archive.
+pub const MAX_ZIP_ENTRIES: usize = 20_000;
 /// The most text kept of one document: a read shows a part of it at a time, but all of it is held while it is read.
 pub(crate) const TEXT_BYTES: usize = 20 * 1024 * 1024;
 
@@ -116,7 +119,15 @@ const ZIP: &[u8] = b"PK\x03\x04";
 const OLE: &[u8] = &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 
 /// What kind of document a zip is, by the parts it holds; `None` for any other zip.
+/// Archives exceeding [`MAX_ZIP_ENTRIES`] are rejected without further inspection.
 fn zipped<R: Read + Seek>(mut archive: zip::ZipArchive<R>) -> Option<Result<Kind, DocError>> {
+    if archive.len() > MAX_ZIP_ENTRIES {
+        let has_office = archive.index_for_name("word/document.xml").is_some()
+            || archive.index_for_name("xl/workbook.xml").is_some()
+            || archive.index_for_name("xl/workbook.bin").is_some()
+            || archive.index_for_name("ppt/presentation.xml").is_some();
+        return has_office.then_some(Err(DocError::Unreadable));
+    }
     let has = |name: &str| archive.index_for_name(name).is_some();
     if has("word/document.xml") {
         return Some(Ok(Kind::Word));
@@ -131,6 +142,27 @@ fn zipped<R: Read + Seek>(mut archive: zip::ZipArchive<R>) -> Option<Result<Kind
     let mut kind = String::new();
     archive.by_name("mimetype").ok()?.take(100).read_to_string(&mut kind).ok()?;
     (kind.trim() == "application/vnd.oasis.opendocument.spreadsheet").then_some(Ok(Kind::Excel))
+}
+
+/// Fast header + extension classification for files exceeding [`DOCUMENT_BYTES`] without opening `ZipArchive`.
+pub fn sniff_oversized_kind(path: &Path) -> Option<Kind> {
+    let mut head = [0u8; 1024];
+    let read = std::fs::File::open(path).and_then(|mut file| file.read(&mut head)).ok()?;
+    let head = &head[..read];
+    if crate::pdf::is_pdf(head) {
+        Some(Kind::Pdf)
+    } else if head.starts_with(ZIP) {
+        match path.extension().and_then(|e| e.to_str())?.to_ascii_lowercase().as_str() {
+            "docx" | "docm" => Some(Kind::Word),
+            "xlsx" | "xlsm" | "xlsb" | "ods" => Some(Kind::Excel),
+            "pptx" | "pptm" => Some(Kind::PowerPoint),
+            _ => None,
+        }
+    } else if head.starts_with(OLE) {
+        binary_office(&path.to_string_lossy()).and_then(Result::ok)
+    } else {
+        None
+    }
 }
 
 /// What an old binary Office file is, by its name's ending, which is all that tells them apart.
@@ -148,31 +180,41 @@ fn binary_office(name: &str) -> Option<Result<Kind, DocError>> {
 /// What kind of document the file at `path` is: `None` when it is not one of
 /// these kinds, `Some(Err)` when it is one that cannot be read.
 pub fn kind_of_file(path: &Path) -> Option<Result<Kind, DocError>> {
-    let mut head = [0u8; 1024];
-    let read = std::fs::File::open(path).and_then(|mut file| file.read(&mut head)).ok()?;
-    let head = &head[..read];
-    if crate::pdf::is_pdf(head) {
-        Some(Ok(Kind::Pdf))
-    } else if head.starts_with(ZIP) {
-        zipped(zip::ZipArchive::new(std::io::BufReader::new(std::fs::File::open(path).ok()?)).ok()?)
-    } else if head.starts_with(OLE) {
-        binary_office(&path.to_string_lossy())
-    } else {
-        None
-    }
+    std::panic::catch_unwind(|| {
+        let meta = std::fs::metadata(path).ok()?;
+        if meta.len() > DOCUMENT_BYTES {
+            return sniff_oversized_kind(path).map(Ok);
+        }
+        let mut head = [0u8; 1024];
+        let read = std::fs::File::open(path).and_then(|mut file| file.read(&mut head)).ok()?;
+        let head = &head[..read];
+        if crate::pdf::is_pdf(head) {
+            Some(Ok(Kind::Pdf))
+        } else if head.starts_with(ZIP) {
+            zipped(zip::ZipArchive::new(std::io::BufReader::new(std::fs::File::open(path).ok()?)).ok()?)
+        } else if head.starts_with(OLE) {
+            binary_office(&path.to_string_lossy())
+        } else {
+            None
+        }
+    })
+    .unwrap_or(Some(Err(DocError::Unreadable)))
 }
 
 /// [`kind_of_file`] for a download, with `name` the address it came from, for its ending.
 pub fn kind_of_bytes(bytes: &[u8], name: &str) -> Option<Result<Kind, DocError>> {
-    if crate::pdf::is_pdf(bytes) {
-        Some(Ok(Kind::Pdf))
-    } else if bytes.starts_with(ZIP) {
-        zipped(zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?)
-    } else if bytes.starts_with(OLE) {
-        binary_office(name.split(['?', '#']).next().unwrap_or(name))
-    } else {
-        None
-    }
+    std::panic::catch_unwind(|| {
+        if crate::pdf::is_pdf(bytes) {
+            Some(Ok(Kind::Pdf))
+        } else if bytes.starts_with(ZIP) {
+            zipped(zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?)
+        } else if bytes.starts_with(OLE) {
+            binary_office(name.split(['?', '#']).next().unwrap_or(name))
+        } else {
+            None
+        }
+    })
+    .unwrap_or(Some(Err(DocError::Unreadable)))
 }
 
 /// The words of a document of this kind.
@@ -217,29 +259,86 @@ pub fn text(bytes: &[u8], kind: Kind) -> Result<Extracted, DocError> {
     Ok(Extracted { kind, parts, text })
 }
 
-/// The document last read from disk, as it was then, so that reading it on
-/// in parts does not take its words out again each time.
-type Kept = (PathBuf, u64, Option<SystemTime>, Arc<Extracted>);
-static LAST: Mutex<Option<Kept>> = Mutex::new(None);
+const DOC_CACHE_SLOTS: usize = 4;
+const DOC_CACHE_MAX_SLOT_BYTES: usize = 8 * 1024 * 1024;
+const DOC_CACHE_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
+
+struct CachedDocument {
+    path: PathBuf,
+    bytes: u64,
+    modified: Option<SystemTime>,
+    extracted: Arc<Extracted>,
+    last_accessed: Instant,
+}
+
+#[derive(Default)]
+struct DocumentLruCache {
+    entries: VecDeque<CachedDocument>,
+}
+
+impl DocumentLruCache {
+    fn prune_expired(&mut self, now: Instant) {
+        self.entries
+            .retain(|entry| now.saturating_duration_since(entry.last_accessed) <= DOC_CACHE_IDLE_TTL);
+    }
+
+    fn get(&mut self, path: &Path, bytes: u64, modified: Option<SystemTime>, kind: Kind, now: Instant) -> Option<Arc<Extracted>> {
+        self.prune_expired(now);
+        modified?;
+        let pos = self.entries.iter().position(|entry| {
+            entry.path == path && entry.bytes == bytes && entry.modified == modified && entry.extracted.kind == kind
+        })?;
+        let mut hit = self.entries.remove(pos)?;
+        hit.last_accessed = now;
+        let out = hit.extracted.clone();
+        self.entries.push_back(hit);
+        Some(out)
+    }
+
+    fn insert(&mut self, path: PathBuf, bytes: u64, modified: Option<SystemTime>, extracted: Arc<Extracted>, now: Instant) {
+        self.prune_expired(now);
+        self.entries.retain(|entry| entry.path != path);
+        if modified.is_none() || extracted.text.len() > DOC_CACHE_MAX_SLOT_BYTES {
+            return;
+        }
+        while self.entries.len() >= DOC_CACHE_SLOTS {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(CachedDocument {
+            path,
+            bytes,
+            modified,
+            extracted,
+            last_accessed: now,
+        });
+    }
+}
+
+fn doc_cache() -> &'static Mutex<DocumentLruCache> {
+    static CACHE: OnceLock<Mutex<DocumentLruCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(DocumentLruCache::default()))
+}
 
 /// The words of the document at `path`, of this kind, which must be
 /// [`DOCUMENT_BYTES`] or smaller. `Err` carries what to tell of a file that
-/// cannot be read at all.
+/// cannot be read at all. Cached in a bounded 4-slot, <= 8 MB/slot, 5-minute idle TTL LRU.
 pub fn file_text(path: &Path, kind: Kind) -> Result<Result<Arc<Extracted>, DocError>, std::io::Error> {
     let metadata = std::fs::metadata(path)?;
     let (bytes, modified) = (metadata.len(), metadata.modified().ok());
-    if let Some((kept, size, time, text)) = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref()
-        && kept == path
-        && *size == bytes
-        && *time == modified
-        && modified.is_some()
-        && text.kind == kind
+    let now = Instant::now();
+    if let Some(hit) = doc_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(path, bytes, modified, kind, now)
     {
-        return Ok(Ok(text.clone()));
+        return Ok(Ok(hit));
     }
     let read = text(&std::fs::read(path)?, kind).map(Arc::new);
-    if let Ok(text) = &read {
-        *LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((path.to_path_buf(), bytes, modified, text.clone()));
+    if let Ok(extracted) = &read {
+        doc_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(path.to_path_buf(), bytes, modified, extracted.clone(), Instant::now());
     }
     Ok(read)
 }
@@ -370,5 +469,43 @@ pub(crate) mod tests {
         assert!(file_text(&path, Kind::Word).unwrap().unwrap().text.contains("second edition"));
         assert!(file_text(&directory.path().join("gone.docx"), Kind::Word).is_err());
         assert_eq!(kind_of_file(&directory.path().join("gone.docx")), None);
+    }
+
+    #[test]
+    fn document_lru_cache_enforces_four_slots_eight_mb_cap_and_five_minute_ttl() {
+        let mut cache = DocumentLruCache::default();
+        let t0 = Instant::now();
+        let mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000));
+        let make_doc = |label: &str, bytes_len: usize| {
+            Arc::new(Extracted {
+                kind: Kind::Word,
+                parts: None,
+                text: if bytes_len <= label.len() {
+                    label.to_string()
+                } else {
+                    format!("{label}{}", "x".repeat(bytes_len - label.len()))
+                },
+            })
+        };
+
+        // > 8 MB extracted text is never retained in cache.
+        cache.insert(PathBuf::from("/d/huge.docx"), 100, mtime, make_doc("huge", DOC_CACHE_MAX_SLOT_BYTES + 1), t0);
+        assert!(cache.get(Path::new("/d/huge.docx"), 100, mtime, Kind::Word, t0).is_none());
+
+        // Fill 4 slots, touch `/d/1.docx` so `/d/2.docx` becomes LRU, then insert `/d/5.docx`.
+        for i in 1..=4 {
+            cache.insert(PathBuf::from(format!("/d/{i}.docx")), 10, mtime, make_doc(&format!("doc-{i}"), 8), t0 + Duration::from_secs(i));
+        }
+        assert!(cache.get(Path::new("/d/1.docx"), 10, mtime, Kind::Word, t0 + Duration::from_secs(5)).is_some());
+        cache.insert(PathBuf::from("/d/5.docx"), 10, mtime, make_doc("doc-5", 8), t0 + Duration::from_secs(6));
+
+        assert!(cache.get(Path::new("/d/2.docx"), 10, mtime, Kind::Word, t0 + Duration::from_secs(7)).is_none(), "LRU slot 2 should be evicted");
+        for kept in ["/d/1.docx", "/d/3.docx", "/d/4.docx", "/d/5.docx"] {
+            assert!(cache.get(Path::new(kept), 10, mtime, Kind::Word, t0 + Duration::from_secs(7)).is_some(), "{kept} should remain cached");
+        }
+
+        // Idle past 5 minutes expires all untouched entries.
+        let expired_at = t0 + Duration::from_secs(7) + DOC_CACHE_IDLE_TTL + Duration::from_secs(1);
+        assert!(cache.get(Path::new("/d/5.docx"), 10, mtime, Kind::Word, expired_at).is_none());
     }
 }

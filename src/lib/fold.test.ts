@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDelta, asking, changedFiles, commandRuns, documentLabel, fileSize, fold, pendingApproval, products, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
+import { applyDelta, asking, changedFiles, commandRuns, documentLabel, fileSize, fold, foldIncremental, type FoldCache, pendingApproval, products, shortCount, todos, undoableTurns, usage, type StreamBlock, type ToolItem } from "./fold";
 import type { Envelope, SessionEvent } from "./types";
 
 /** A log from its events, numbered from 1 like the real one. */
@@ -511,5 +511,103 @@ describe("side panel", () => {
       ),
     );
     expect(commandRuns(rows).map((tool) => tool.id)).toEqual(["t1"]);
+  });
+});
+
+describe("foldIncremental & pre-compaction usage fast-path (P2-5)", () => {
+  it("matches full fold across 100 mixed events while freezing completed historical Row references (===)", () => {
+    const rawEvents: SessionEvent[] = [{ type: "session/created", data: { id: "s-100", workspace: "/w", model: "m", format: 1 } }];
+    for (let t = 1; t <= 20; t++) {
+      rawEvents.push({ type: "turn/start", data: { turn: t } });
+      rawEvents.push(user(`turn-${t}-prompt`));
+      if (t % 5 === 0) {
+        rawEvents.push(said(call(`del-${t}`, "delegate", { tasks: ["a"] })));
+        rawEvents.push({ type: "subagent/started", data: { tool_use_id: `del-${t}`, session: `sub-${t}`, name: "helper" } });
+        rawEvents.push(result(`del-${t}`, "delegate", { agents: [{ session: `sub-${t}`, name: "helper", reason: "completed" }] }));
+      } else {
+        rawEvents.push(said(call(`ed-${t}`, "edit_file", { path: `f-${t}.ts` }), { type: "text", text: `reply ${t}` }));
+        rawEvents.push({ type: "approval/requested", data: { tool_use_id: `ed-${t}`, tool: "edit_file", reason: "edit", detail: `f-${t}.ts` } });
+        rawEvents.push({ type: "approval/resolved", data: { tool_use_id: `ed-${t}`, decision: "allow_once" } });
+        rawEvents.push(result(`ed-${t}`, "edit_file", { path: `f-${t}.ts`, added: 2, removed: 1, after: `snap-${t}` }));
+      }
+      if (t === 10) {
+        rawEvents.push({ type: "context/compacted", data: { summary: "compacted summary", tokens_before: 5000, tokens: { input: 5000, cached: 1000, output: 200 } } });
+      }
+      if (t === 14) {
+        rawEvents.push({ type: "files/restored", data: { turn: 13, restored: ["f-13.ts"], skipped: [] } });
+      }
+      rawEvents.push({ type: "turn/end", data: { turn: t, reason: "completed", error: null } });
+    }
+
+    const envelopes = log(...rawEvents);
+    expect(envelopes.length).toBeGreaterThanOrEqual(100);
+
+    let cache: FoldCache | null = null;
+    let afterTurn5Row0 = null;
+    let afterTurn5Row3 = null;
+
+    for (let i = 1; i <= envelopes.length; i++) {
+      const prefix = envelopes.slice(0, i);
+      const prevCache = cache;
+      cache = foldIncremental(cache, prefix);
+
+      const lastEnv = prefix[prefix.length - 1];
+      if (lastEnv.type === "turn/end" && lastEnv.data.turn === 5) {
+        afterTurn5Row0 = cache.rows[0];
+        afterTurn5Row3 = cache.rows[3];
+      }
+
+      // Every untouched row prior to the active row (except undo target turn 13 on restored event) keeps === identity!
+      if (prevCache && prefix[prefix.length - 1].type !== "files/restored" && prevCache.rows.length > 1) {
+        for (let r = 0; r < prevCache.rows.length - 1; r++) {
+          expect(cache.rows[r]).toBe(prevCache.rows[r]);
+        }
+      }
+    }
+
+    expect(cache!.rows).toEqual(fold(envelopes));
+    expect(cache!.rows[0]).toBe(afterTurn5Row0);
+    expect(cache!.rows[3]).toBe(afterTurn5Row3);
+    // Turn 13 was undone at turn 14, so its tool item reflects `undone: true` identically to full fold.
+    const row12Tool = cache!.rows[12].items.find((it): it is ToolItem => it.kind === "tool");
+    expect(row12Tool?.undone).toBe(true);
+  });
+
+  it("skips pre-compaction payload token estimation while preserving exact spent totals", () => {
+    const hugePreCompaction = "x".repeat(80_000);
+    const events = log(
+      { type: "instructions/loaded", data: { path: "AGENTS.md", content: "Follow workspace rules." } },
+      user(hugePreCompaction),
+      {
+        type: "assistant/message",
+        data: {
+          content: [{ type: "text", text: hugePreCompaction }],
+          stop_reason: "end_turn",
+          model: "m",
+          tokens: { input: 20_000, cached: 5_000, output: 4_000 },
+        },
+      },
+      {
+        type: "context/compacted",
+        data: { summary: "Short summary", tokens_before: 24_000, tokens: { input: 24_000, cached: 20_000, output: 250 } },
+      },
+      user("Next question"),
+      {
+        type: "assistant/message",
+        data: {
+          content: [{ type: "text", text: "Short answer" }],
+          stop_reason: "end_turn",
+          model: "m",
+          tokens: { input: 500, cached: 200, output: 50 },
+        },
+      },
+    );
+
+    const first = usage(events);
+    const second = usage(events);
+    expect(first).toEqual(second);
+    expect(first.context).toBe(550);
+    expect(first.spent).toEqual({ input: 44_500, cached: 25_200, output: 4_300 });
+    expect(first.breakdown.input + first.breakdown.output + first.breakdown.prompt + first.breakdown.skill + first.breakdown.mcp + first.breakdown.tools).toBe(550);
   });
 });

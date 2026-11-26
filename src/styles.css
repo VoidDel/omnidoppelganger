@@ -1,11 +1,7 @@
-/* The "符箓" stylesheets, loaded in cascade order. */
+/* The core "符箓" shell stylesheets, loaded synchronously on startup; workbench/panel/composer/pages split lazily. */
 @import "./styles/tokens.css";
 @import "./styles/sidebar.css";
 @import "./styles/conversation.css";
 @import "./styles/acts.css";
-@import "./styles/composer.css";
-@import "./styles/panel.css";
-@import "./styles/workbench.css";
 @import "./styles/home.css";
-@import "./styles/pages.css";
 @import "./styles/chrome.css";

@@ -6,7 +6,7 @@
 
 use pdf_extract::{Document, PlainTextOutput, output_doc_page};
 
-use crate::documents::DocError;
+use crate::documents::{DocError, TEXT_BYTES};
 
 /// Whether these bytes are a PDF: its header is to open the file, though readers look for it in the first kilobyte.
 pub fn is_pdf(bytes: &[u8]) -> bool {
@@ -42,6 +42,9 @@ pub(crate) fn read(bytes: &[u8]) -> Result<(usize, String), DocError> {
             _ => text.push_str("(the text of this page could not be read)"),
         }
         text.push_str("\n\n");
+        if text.len() > TEXT_BYTES {
+            break;
+        }
     }
     if !worded {
         return Err(DocError::NoText);

@@ -1,4 +1,3 @@
-import { applyDelta, type StreamBlock } from "./fold";
 import type { Envelope, Schedule, SessionItem, SessionView, SettingsView, Status, UiEvent } from "./types";
 
 export interface BufferedEnvelope {
@@ -18,7 +17,6 @@ export interface State {
   bufferedStatus: { sessionId: string; status: Status } | null;
   events: Envelope[];
   status: Status;
-  stream: StreamBlock[];
   /** Messages sent during a turn that the agent has not picked up yet. */
   queued: string[];
   page: "chat" | "settings" | "schedules" | "mcp" | "skills";
@@ -54,7 +52,6 @@ export const initial: State = {
   buffer: [],
   events: [],
   status: "idle",
-  stream: [],
   queued: [],
   page: "chat",
   settings: null,
@@ -83,14 +80,13 @@ export function removedSessionIds(sessions: SessionItem[], id: string): Set<stri
 export function appendLog(state: State, envelope: Envelope): State {
   const last = state.events[state.events.length - 1]?.seq ?? 0;
   if (envelope.seq <= last) return state;
-  let { stream, queued } = state;
-  if (envelope.type === "assistant/message") stream = [];
+  let { queued } = state;
   // A queued message joins as steering, or opens the next turn when it arrived as the last one ended.
   if (envelope.type === "user/message") {
     const at = queued.indexOf(envelope.data.text);
     if (at >= 0) queued = queued.filter((_, index) => index !== at);
   }
-  return { ...state, events: [...state.events, envelope], stream, queued };
+  return { ...state, events: [...state.events, envelope], queued };
 }
 
 export function reduce(state: State, action: Action): State {
@@ -116,10 +112,6 @@ export function reduce(state: State, action: Action): State {
       const sessions = state.sessions.some((session) => session.id === item.id)
         ? state.sessions.map((session) => (session.id === item.id ? item : session))
         : [item, ...state.sessions];
-      // When superseded by a newer navigation (`action.navSeq < state.navSeq`), silently update only the
-      // session list summary (preserving any live status already tracked in `state.sessions`) without touching
-      // `activeId`, `events`, or another session's `buffer`. Advancing `navSeq` on `>=` handles both
-      // pre-announced `opening` flows (`===`) and direct `opened` dispatches with a newer monotonic `navSeq`.
       if (action.navSeq < state.navSeq) {
         const staleSessions = state.sessions.some((session) => session.id === view.id)
           ? state.sessions.map((session) => (session.id === view.id ? { ...view, status: session.status } : session))
@@ -136,7 +128,6 @@ export function reduce(state: State, action: Action): State {
         bufferedStatus: null,
         events,
         status: item.status,
-        stream: [],
         queued: [],
         page: "chat",
         sessions,
@@ -145,7 +136,6 @@ export function reduce(state: State, action: Action): State {
     }
     case "home":
       if (action.navSeq < state.navSeq) return state;
-      // No 分身 on screen: the home screen, with what stands on its desk.
       return {
         ...state,
         navSeq: action.navSeq,
@@ -154,7 +144,6 @@ export function reduce(state: State, action: Action): State {
         buffer: [],
         bufferedStatus: null,
         events: [],
-        stream: [],
         queued: [],
         status: "idle",
         page: "chat",
@@ -178,7 +167,6 @@ export function reduce(state: State, action: Action): State {
             buffer,
             bufferedStatus,
             events: [],
-            stream: [],
             queued: [],
             status: "idle",
           }
@@ -191,15 +179,19 @@ export function reduce(state: State, action: Action): State {
             bufferedStatus,
           };
     }
-    case "session":
-      return {
-        ...state,
-        sessions: state.sessions.map((session) =>
-          session.id === action.item.id ? { ...action.item, status: session.status } : session,
-        ),
-      };
+    case "session": {
+      if (action.item.aside !== null) return state;
+      const exists = state.sessions.some((session) => session.id === action.item.id);
+      const sessions = exists
+        ? state.sessions.map((session) =>
+            session.id === action.item.id ? { ...action.item, status: session.status } : session,
+          )
+        : [action.item, ...state.sessions];
+      return { ...state, sessions };
+    }
     case "event": {
       const { event } = action;
+      if (event.kind === "stream") return state;
       const active = event.session_id === state.activeId;
       if (event.kind === "log") {
         const nextBuffer =
@@ -209,11 +201,9 @@ export function reduce(state: State, action: Action): State {
         const nextState = nextBuffer === state.buffer ? state : { ...state, buffer: nextBuffer };
         return active ? appendLog(nextState, event.envelope) : nextState;
       }
-      if (event.kind === "stream") return active ? { ...state, stream: applyDelta(state.stream, event.delta) } : state;
       const sessions = state.sessions.map((session) =>
         session.id === event.session_id ? { ...session, status: event.status } : session,
       );
-      // Kept for the session being opened, which may be the one already on screen, opened again.
       const bufferedStatus =
         event.session_id === state.openingId
           ? { sessionId: event.session_id, status: event.status }
@@ -225,12 +215,10 @@ export function reduce(state: State, action: Action): State {
         sessions,
         bufferedStatus,
         status: event.status,
-        stream: idle ? [] : state.stream,
         queued: idle ? [] : state.queued,
       };
     }
     case "queued":
-      // Said to a 分身 that has since left the screen, it is not shown under another's work.
       return action.id === state.activeId ? { ...state, queued: [...state.queued, action.text] } : state;
     case "page":
       return { ...state, page: action.page };

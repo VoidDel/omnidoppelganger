@@ -1,0 +1,41 @@
+: openai responses keepalive
+event: ping
+
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_01Gold","model":"gpt-6.2-astra","status":"in_progress"}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"分析模块依赖关系 ⚙️"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_01","summary":[{"type":"summary_text","text":"分析模块依赖关系 ⚙️"}],"encrypted_content":"enc_sig_openai_xyz123"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","output_index":1,"delta":"正在并行检索两个文件。"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_01","role":"assistant","status":"completed","content":[{"type":"output_text","text":"正在并行检索两个文件。","annotations":[]}]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_01","call_id":"call_oa_1","name":"read_file","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":\"Cargo.toml\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_01","call_id":"call_oa_1","name":"read_file","arguments":"{\"path\":\"Cargo.toml\"}","status":"completed"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","id":"fc_02","call_id":"call_oa_2","name":"search","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":3,"delta":"{\"pattern\":\"LspHub\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":3,"item":{"type":"function_call","id":"fc_02","call_id":"call_oa_2","name":"search","arguments":"{\"pattern\":\"LspHub\"}","status":"completed"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_01Gold","model":"gpt-6.2-astra","status":"completed","output":[{"type":"reasoning","id":"rs_01","summary":[{"type":"summary_text","text":"分析模块依赖关系 ⚙️"}],"encrypted_content":"enc_sig_openai_xyz123"},{"type":"message","id":"msg_01","role":"assistant","status":"completed","content":[{"type":"output_text","text":"正在并行检索两个文件。","annotations":[]}]},{"type":"function_call","id":"fc_01","call_id":"call_oa_1","name":"read_file","arguments":"{\"path\":\"Cargo.toml\"}","status":"completed"},{"type":"function_call","id":"fc_02","call_id":"call_oa_2","name":"search","arguments":"{\"pattern\":\"LspHub\"}","status":"completed"}],"usage":{"input_tokens":3400,"input_tokens_details":{"cached_tokens":2048},"output_tokens":140}}}
+
+data: [DONE]
+

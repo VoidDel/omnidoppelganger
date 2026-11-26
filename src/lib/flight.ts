@@ -140,6 +140,8 @@ export function land(target: HTMLElement | null) {
   // Who said it and when, under the message, comes in with it.
   target.parentElement?.querySelector(".said-foot")?.animate([{ opacity: 0 }, { opacity: 1 }], unroll);
 
-  const arrived = () => boxes.forEach((box) => box.remove());
+  const arrived = () => {
+    for (const box of boxes) box.remove();
+  };
   Promise.allSettled(moves.map((move) => move.finished)).then(arrived);
 }

@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","session_id":"claude-ses-202"}
+{"type":"assistant","session_id":"claude-ses-202","message":{"content":[{"type":"tool_use","id":"tu_read_1","name":"Read","input":{"file_path":"Cargo.toml"}},{"type":"tool_use","id":"tu_bash_2","name":"Bash","input":{"command":"git status -s"}}],"usage":{"input_tokens":200,"cache_read_input_tokens":1200,"cache_creation_input_tokens":100,"output_tokens":35}}}
+{"type":"user","session_id":"claude-ses-202","message":{"content":[{"type":"tool_result","tool_use_id":"tu_read_1","content":"[package]\nname = \"odg-core\""},{"type":"tool_result","tool_use_id":"tu_bash_2","content":"M src/lsp.rs"}]}}
+{"type":"stream_event","session_id":"claude-ses-202","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"已完成审查 "}}}
+{"type":"stream_event","session_id":"claude-ses-202","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"🎯。"}}}
+{"type":"assistant","session_id":"claude-ses-202","message":{"content":[{"type":"text","text":"已完成审查 🎯。"}],"usage":{"input_tokens":250,"cache_read_input_tokens":1400,"cache_creation_input_tokens":0,"output_tokens":25}}}
+{"type":"result","subtype":"success","session_id":"claude-ses-202","is_error":false,"result":"已完成审查 🎯。","usage":{"input_tokens":450,"cache_read_input_tokens":2600,"cache_creation_input_tokens":100,"output_tokens":60}}

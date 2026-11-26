@@ -235,13 +235,42 @@ pub(super) fn clip(line: &str) -> String {
     }
 }
 
+fn blocking_context(context: &ToolContext) -> ToolContext {
+    ToolContext {
+        workspace: context.workspace.clone(),
+        cancel: context.cancel.clone(),
+        snapshots: context.snapshots.clone(),
+        jobs: None,
+        mcp: None,
+        skills: Vec::new(),
+        search: None,
+        sandbox: None,
+        runtime: None,
+        painter: None,
+        vision: context.vision,
+        lsp: None,
+    }
+}
+
+async fn run_blocking_tool(
+    input: &Value,
+    context: &ToolContext,
+    tool_fn: fn(&Value, &ToolContext) -> Result<ToolOutput, ToolOutput>,
+) -> Result<ToolOutput, ToolOutput> {
+    let owned_input = input.clone();
+    let owned_context = blocking_context(context);
+    tokio::task::spawn_blocking(move || tool_fn(&owned_input, &owned_context))
+        .await
+        .map_err(|error| ToolOutput::error(format!("Tool execution failed: {error}")))?
+}
+
 /// Run one tool. Unknown tools and bad arguments come back as error results, never as panics.
 pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOutput {
     let result = match name {
         "read_file" => files::read_file(input, context).await,
-        "edit_file" => files::edit_file(input, context),
-        "write_file" => files::write_file(input, context),
-        "delete_file" => files::delete_file(input, context),
+        "edit_file" => run_blocking_tool(input, context, files::edit_file).await,
+        "write_file" => run_blocking_tool(input, context, files::write_file).await,
+        "delete_file" => run_blocking_tool(input, context, files::delete_file).await,
         "language_server" => match &context.lsp {
             Some(hub) => crate::lsp::server_tool(hub, input, &context.cancel).await.map_err(ToolOutput::error),
             None => Err(ToolOutput::error("Language servers are not available here.")),
@@ -250,7 +279,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
             Some(hub) => crate::lsp::navigate(hub, &context.workspace, input, &context.cancel).await.map_err(ToolOutput::error),
             None => Err(ToolOutput::error("Code navigation is not available here. Use `search` instead.")),
         },
-        "move_file" => files::move_file(input, context),
+        "move_file" => run_blocking_tool(input, context, files::move_file).await,
         "search" => files::search(input, context).await,
         "find_files" => files::find_files(input, context).await,
         "batch_inspect" => files::batch_inspect(input, context).await,
@@ -263,7 +292,7 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
         "update_todos" => extras::update_todos(input),
         "install_skill" => extras::install_skill(input, context).await,
         "document_runtime" => extras::document_runtime(input, context).await,
-        "deliver_files" => extras::deliver_files(input, context),
+        "deliver_files" => run_blocking_tool(input, context, extras::deliver_files).await,
         "generate_image" => extras::generate_image(input, context).await,
         "add_mcp_server" => extras::add_mcp_server(input, context).await,
         "web_search" => match (string_arg(input, "query"), &context.search) {

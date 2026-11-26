@@ -1,4 +1,4 @@
-import type { CliBackend, Provider, SettingsView } from "./types";
+import type { CliBackend, KeyStatus, Provider, SettingsView } from "./types";
 
 export const CLI_INFO: Record<CliBackend, { bin: string; label: string }> = {
   antigravity: { bin: "agy", label: "Antigravity (agy)" },
@@ -16,13 +16,36 @@ export function cliOf(provider?: { protocol?: Provider["protocol"] } | null): Cl
 }
 
 /**
+ * Whether a provider has credentials ready (or needs none, such as local Ollama, Magpie, or custom endpoints).
+ * Shared by both the main session composer and the side conversation (旁聊) composer.
+ */
+export function isProviderKeyed(
+  providerId: string,
+  providers: Pick<Provider, "id" | "kind">[],
+  keys: Record<string, KeyStatus> | undefined,
+): boolean {
+  const kind = providers.find((known) => known.id === providerId)?.kind ?? providerId;
+  return (
+    (keys?.[providerId]?.source ?? "none") !== "none" ||
+    kind.startsWith("custom") ||
+    kind === "magpie" ||
+    kind === "ollama"
+  );
+}
+
+/**
  * Whether a provider is in the list the user keeps: it has a key or an address of its own, or the user added it
  * beside the first of its kind, or new 分身 come from it (so that a missing key shows). These are the 宗门 the
  * settings list and the model menu offers; the other kinds wait to be added.
  */
 export function isSetUp(view: SettingsView, provider: Provider): boolean {
   const { settings } = view;
-  return (view.keys[provider.id]?.source ?? "none") !== "none" || !!settings.base_urls[provider.id] || provider.id !== provider.kind || provider.id === settings.provider;
+  return (
+    (view.keys[provider.id]?.source ?? "none") !== "none" ||
+    !!settings.base_urls[provider.id] ||
+    provider.id !== provider.kind ||
+    provider.id === settings.provider
+  );
 }
 
 /** The providers in the list the user keeps, in the order the settings give them. */
@@ -32,7 +55,10 @@ export function setUp(view: SettingsView): Provider[] {
 
 /** Whether a set-up provider is switched on and offered in the 默认分身 and 心法 menus. */
 export function isProviderEnabled(view: SettingsView, provider: Provider): boolean {
-  return isSetUp(view, provider) && (provider.id === view.settings.provider || !(view.settings.disabled_providers ?? []).includes(provider.id));
+  return (
+    isSetUp(view, provider) &&
+    (provider.id === view.settings.provider || !(view.settings.disabled_providers ?? []).includes(provider.id))
+  );
 }
 
 /** Set-up providers that are currently switched on. */

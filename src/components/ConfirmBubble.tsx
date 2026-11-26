@@ -32,7 +32,7 @@ export function ConfirmBubble({ label, confirm, onConfirm, onCancel, children }:
       const anchor = bubble.current?.parentElement;
       if (event.target instanceof Node && !anchor?.contains(event.target)) cancel.current();
     };
-    const escape = (event: KeyboardEvent) => {
+    const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       // In a dialog, Escape puts the bubble away, not the dialog.
       event.preventDefault();
@@ -40,10 +40,10 @@ export function ConfirmBubble({ label, confirm, onConfirm, onCancel, children }:
       cancel.current();
     };
     document.addEventListener("pointerdown", away, true);
-    document.addEventListener("keydown", escape, true);
+    document.addEventListener("keydown", onEscape, true);
     return () => {
       document.removeEventListener("pointerdown", away, true);
-      document.removeEventListener("keydown", escape, true);
+      document.removeEventListener("keydown", onEscape, true);
     };
   }, []);
   return (

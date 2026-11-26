@@ -1,10 +1,11 @@
+import "../styles/workbench.css";
 import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import type { PtyInfo } from "../lib/types";
+import type { PtyInfo, PtyOutputPayload } from "../lib/types";
 
 export interface TerminalPaneProps {
   sessionId: string;
@@ -12,11 +13,6 @@ export interface TerminalPaneProps {
   onError: (message: string) => void;
 }
 
-/**
- * The light palette is chosen against its own paper (#fbfcfa): every one of the sixteen colours reads at a WCAG
- * contrast of at least 5.9:1. "White" and "bright white" are greys of ink here, since on paper a program's white
- * text would otherwise vanish; the bright colours are deeper rather than paler, for emphasis that still reads.
- */
 const LIGHT_THEME: ITheme = {
   background: "#fbfcfa",
   foreground: "#1b2a2b",
@@ -41,7 +37,6 @@ const LIGHT_THEME: ITheme = {
   brightWhite: "#3f4f53",
 };
 
-/** On paper, colours a program names outright (256 colours, true colour) are darkened by xterm until they read. */
 const LIGHT_MIN_CONTRAST = 4.5;
 
 const DARK_THEME: ITheme = {
@@ -76,9 +71,46 @@ function currentXtermTheme(): ITheme {
   return isDark() ? DARK_THEME : LIGHT_THEME;
 }
 
-/** 1 leaves colours as programs give them, which the dark palette is drawn for. */
 function currentMinContrast(): number {
   return isDark() ? 1 : LIGHT_MIN_CONTRAST;
+}
+
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+/**
+ * Filter and slice buffered `PtyOutputPayload` chunks that arrived while `ptyList`/`ptySpawn` was in flight,
+ * deduplicating any bytes already covered by `info.backlog_end_offset`.
+ */
+export function filterIncrementalPtyOutput(
+  info: Pick<PtyInfo, "backlog" | "backlog_end_offset">,
+  chunks: PtyOutputPayload[],
+  isFreshSpawn = false,
+): string {
+  if (chunks.length === 0) return "";
+  const backlogEnd = info.backlog_end_offset ?? 0;
+  let cursor = backlogEnd;
+  let out = "";
+
+  for (const chunk of chunks) {
+    if (chunk.end_offset !== undefined) {
+      if (chunk.end_offset <= cursor) continue;
+      const chunkBytes = utf8Encoder.encode(chunk.data);
+      const start = chunk.start_offset ?? chunk.end_offset - chunkBytes.byteLength;
+      if (start < cursor) {
+        const skip = cursor - start;
+        if (skip < chunkBytes.byteLength) {
+          out += utf8Decoder.decode(chunkBytes.subarray(skip));
+        }
+      } else {
+        out += chunk.data;
+      }
+      cursor = chunk.end_offset;
+    } else if (isFreshSpawn && !info.backlog) {
+      out += chunk.data;
+    }
+  }
+  return out;
 }
 
 interface MountedTerm {
@@ -86,6 +118,8 @@ interface MountedTerm {
   fit: FitAddon;
   host: HTMLDivElement;
 }
+
+const MAX_PENDING_CHUNKS = 512;
 
 export default function TerminalPane({ sessionId, onSendToChat, onError }: TerminalPaneProps) {
   const [ptys, setPtys] = useState<PtyInfo[]>([]);
@@ -98,10 +132,13 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
   const activePtyRef = useRef<string | null>(null);
   activePtyRef.current = activePtyId;
 
-  /** What a shell printed before its terminal was on screen: it starts printing as soon as it is spawned. */
-  const pendingRef = useRef<Map<string, string>>(new Map());
+  const mountedSessionRef = useRef<string>(sessionId);
+  mountedSessionRef.current = sessionId;
+  const disposedRef = useRef<boolean>(false);
 
-  /** A terminal in a host of its own on the stage, not yet joined to any shell. */
+  const pendingRef = useRef<Map<string, PtyOutputPayload[]>>(new Map());
+  const spawningRef = useRef<boolean>(false);
+
   const openTerminal = useCallback((visible: boolean): MountedTerm | null => {
     const stage = stageRef.current;
     if (!stage) return null;
@@ -114,7 +151,7 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
       cursorBlink: true,
       fontSize: 13,
       lineHeight: 1.35,
-      fontFamily: '"JetBrains Mono", "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", ui-monospace, monospace',
+      fontFamily: '"JetBrains Mono", "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", ui-monospace, monospace',
       scrollback: 5000,
       allowProposedApi: false,
       theme: currentXtermTheme(),
@@ -131,10 +168,9 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
     return { term, fit, host };
   }, []);
 
-  /** Join a terminal to its shell: keys go to the shell, and what it printed so far is shown. */
-  const attachTerminal = useCallback((info: PtyInfo, mounted: MountedTerm, earlier: string) => {
+  const attachTerminal = useCallback((info: PtyInfo, mounted: MountedTerm, initialText: string) => {
     const { term } = mounted;
-    if (earlier) term.write(earlier);
+    if (initialText) term.write(initialText);
     if (info.exited !== null) {
       term.write(`\r\n\x1b[90m[进程已结束，退出码 ${info.exited}]\x1b[0m\r\n`);
     }
@@ -149,66 +185,110 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
     mountedRef.current.set(info.id, mounted);
   }, []);
 
-  /** A terminal for a shell that was already running: its backlog says what it printed, so nothing waiting is added. */
   const ensureTerminalInstance = useCallback(
     (info: PtyInfo) => {
       const existing = mountedRef.current.get(info.id);
       if (existing) return existing;
       const mounted = openTerminal(activePtyRef.current === info.id);
       if (!mounted) return null;
+      const buffered = pendingRef.current.get(info.id) ?? [];
       pendingRef.current.delete(info.id);
-      attachTerminal(info, mounted, info.backlog);
+      const delta = filterIncrementalPtyOutput(info, buffered, false);
+      attachTerminal(info, mounted, info.backlog + delta);
       return mounted;
     },
     [openTerminal, attachTerminal],
   );
 
-  /**
-   * A new shell, started at the size its terminal has on screen. A shell started at a guessed size draws for that
-   * width: zsh's mark for an unfinished line (a lone `%` and a row of spaces) then wrapped onto a line of its own
-   * once the terminal was fitted, and stayed above the prompt.
-   */
-  const createPty = useCallback(async () => {
-    if (spawning) return;
-    setSpawning(true);
-    // The new terminal is measured alone on the stage: the others step aside while it is.
-    for (const [, inst] of mountedRef.current) inst.host.style.display = "none";
-    const mounted = openTerminal(true);
-    let cols = 80;
-    let rows = 24;
-    if (mounted && mounted.host.clientWidth > 0 && mounted.host.clientHeight > 0) {
-      try {
-        mounted.fit.fit();
-        cols = mounted.term.cols;
-        rows = mounted.term.rows;
-      } catch {
-        // Not laid out yet: the shell starts at the usual size, and is resized when the terminal is fitted.
+  const createPty = useCallback(
+    async (targetSessionId = sessionId, autoInit = false) => {
+      if (!autoInit && spawningRef.current) return;
+      spawningRef.current = true;
+      setSpawning(true);
+      for (const [, inst] of mountedRef.current) inst.host.style.display = "none";
+      const mounted = openTerminal(true);
+      let cols = 80;
+      let rows = 24;
+      if (mounted && mounted.host.clientWidth > 0 && mounted.host.clientHeight > 0) {
+        try {
+          mounted.fit.fit();
+          cols = mounted.term.cols;
+          rows = mounted.term.rows;
+        } catch {
+          // Use default size before layout
+        }
       }
-    }
-    try {
-      const info = await api.ptySpawn(sessionId, cols, rows);
-      const earlier = pendingRef.current.get(info.id) ?? "";
-      pendingRef.current.delete(info.id);
-      if (mounted) attachTerminal(info, mounted, earlier);
-      setPtys((prev) => [...prev, info]);
-      setActivePtyId(info.id);
-      if (mounted) mounted.term.focus();
-      else requestAnimationFrame(() => ensureTerminalInstance(info)?.term.focus());
-    } catch (err) {
-      mounted?.term.dispose();
-      mounted?.host.remove();
-      // The terminal that was on screen comes back.
-      const back = activePtyRef.current ? mountedRef.current.get(activePtyRef.current) : undefined;
-      if (back) back.host.style.display = "block";
-      onError(String(err));
-    } finally {
-      setSpawning(false);
-    }
-  }, [sessionId, spawning, openTerminal, attachTerminal, ensureTerminalInstance, onError]);
+      try {
+        const info = await api.ptySpawn(targetSessionId, cols, rows);
+        if (disposedRef.current || mountedSessionRef.current !== targetSessionId) {
+          mounted?.term.dispose();
+          mounted?.host.remove();
+          pendingRef.current.delete(info.id);
+          if (autoInit) {
+            api.ptyClose(info.id).catch(() => undefined);
+          }
+          return;
+        }
+        const buffered = pendingRef.current.get(info.id) ?? [];
+        pendingRef.current.delete(info.id);
+        const delta = filterIncrementalPtyOutput(info, buffered, true);
+        if (mounted) attachTerminal(info, mounted, info.backlog + delta);
+        setPtys((prev) => (prev.some((p) => p.id === info.id) ? prev : [...prev, info]));
+        setActivePtyId(info.id);
+        if (mounted) mounted.term.focus();
+        else requestAnimationFrame(() => ensureTerminalInstance(info)?.term.focus());
+      } catch (err) {
+        mounted?.term.dispose();
+        mounted?.host.remove();
+        if (!disposedRef.current && mountedSessionRef.current === targetSessionId) {
+          const back = activePtyRef.current ? mountedRef.current.get(activePtyRef.current) : undefined;
+          if (back) back.host.style.display = "block";
+          onError(String(err));
+        }
+      } finally {
+        spawningRef.current = false;
+        if (!disposedRef.current && mountedSessionRef.current === targetSessionId) {
+          setSpawning(false);
+        }
+      }
+    },
+    [sessionId, openTerminal, attachTerminal, ensureTerminalInstance, onError],
+  );
+
+  // Subscribe to PTY output and exit events BEFORE listing/spawning so T0..T2 chunks are captured in `pendingRef`.
+  useEffect(() => {
+    const stopOut = api.onPtyOutput((payload) => {
+      if (payload.session_id !== mountedSessionRef.current) return;
+      const inst = mountedRef.current.get(payload.id);
+      if (inst) {
+        inst.term.write(payload.data);
+        return;
+      }
+      const list = pendingRef.current.get(payload.id) ?? [];
+      list.push(payload);
+      if (list.length > MAX_PENDING_CHUNKS) list.splice(0, list.length - MAX_PENDING_CHUNKS);
+      pendingRef.current.set(payload.id, list);
+    });
+    const stopExit = api.onPtyExit((payload) => {
+      if (payload.session_id !== mountedSessionRef.current) return;
+      const code = payload.exit_code ?? 0;
+      setPtys((prev) => prev.map((p) => (p.id === payload.id ? { ...p, exited: code } : p)));
+      const inst = mountedRef.current.get(payload.id);
+      inst?.term.write(`\r\n\x1b[90m[进程已结束，退出码 ${code}]\x1b[0m\r\n`);
+    });
+    return () => {
+      stopOut.then((fn) => fn()).catch(() => undefined);
+      stopExit.then((fn) => fn()).catch(() => undefined);
+    };
+  }, [sessionId]);
 
   // Load existing PTYs for this session (or auto-spawn the first one) on mount / session switch.
   useEffect(() => {
-    // Dispose DOM terminals from previous sessionId
+    disposedRef.current = false;
+    mountedSessionRef.current = sessionId;
+    spawningRef.current = false;
+    setSpawning(false);
+
     for (const [, inst] of mountedRef.current) {
       inst.term.dispose();
       inst.host.remove();
@@ -216,20 +296,24 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
     mountedRef.current.clear();
     pendingRef.current.clear();
     setSelectedText("");
+    setPtys([]);
+    setActivePtyId(null);
 
+    const targetSession = sessionId;
     let alive = true;
-    api.ptyList(sessionId).then(
+    api.ptyList(targetSession).then(
       (list) => {
-        if (!alive) return;
+        if (!alive || disposedRef.current || mountedSessionRef.current !== targetSession) return;
         if (list.length > 0) {
           setPtys(list);
           const firstId = list[list.length - 1].id;
+          activePtyRef.current = firstId;
           setActivePtyId(firstId);
+          for (const item of list) {
+            ensureTerminalInstance(item);
+          }
           requestAnimationFrame(() => {
-            if (!alive) return;
-            for (const item of list) {
-              ensureTerminalInstance(item);
-            }
+            if (!alive || disposedRef.current || mountedSessionRef.current !== targetSession) return;
             const cur = mountedRef.current.get(firstId);
             if (cur) {
               cur.host.style.display = "block";
@@ -242,51 +326,27 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
             }
           });
         } else {
-          setPtys([]);
-          setActivePtyId(null);
-          void createPty();
+          void createPty(targetSession, true);
         }
       },
-      (err) => alive && onError(String(err)),
+      (err) => {
+        if (alive && !disposedRef.current && mountedSessionRef.current === targetSession) {
+          onError(String(err));
+        }
+      },
     );
 
     return () => {
       alive = false;
+      disposedRef.current = true;
       for (const [, inst] of mountedRef.current) {
         inst.term.dispose();
         inst.host.remove();
       }
       mountedRef.current.clear();
     };
-  }, [sessionId]);
+  }, [sessionId, createPty, ensureTerminalInstance, onError]);
 
-  // Subscribe to PTY output and exit events.
-  useEffect(() => {
-    const stopOut = api.onPtyOutput((payload) => {
-      if (payload.session_id !== sessionId) return;
-      const inst = mountedRef.current.get(payload.id);
-      if (inst) {
-        inst.term.write(payload.data);
-        return;
-      }
-      // A shell whose terminal is not joined yet: kept until it is, at most as much as the backlog holds.
-      const kept = (pendingRef.current.get(payload.id) ?? "") + payload.data;
-      pendingRef.current.set(payload.id, kept.length > 131072 ? kept.slice(-131072) : kept);
-    });
-    const stopExit = api.onPtyExit((payload) => {
-      if (payload.session_id !== sessionId) return;
-      const code = payload.exit_code ?? 0;
-      setPtys((prev) => prev.map((p) => (p.id === payload.id ? { ...p, exited: code } : p)));
-      const inst = mountedRef.current.get(payload.id);
-      inst?.term.write(`\r\n\x1b[90m[进程已结束，退出码 ${code}]\x1b[0m\r\n`);
-    });
-    return () => {
-      stopOut.then((fn) => fn()).catch(() => undefined);
-      stopExit.then((fn) => fn()).catch(() => undefined);
-    };
-  }, [sessionId]);
-
-  // Sync visibility and fit active terminal whenever activePtyId changes.
   useEffect(() => {
     for (const [id, inst] of mountedRef.current) {
       const visible = id === activePtyId;
@@ -308,10 +368,9 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
     }
   }, [activePtyId, ptys.length]);
 
-  // ResizeObserver on stage container so dragging SidePanel width updates PTY cols/rows.
   useEffect(() => {
     const stage = stageRef.current;
-    if (!stage) return;
+    if (!stage || typeof ResizeObserver === "undefined") return;
     let frame = 0;
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(frame);
@@ -337,7 +396,6 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
     };
   }, []);
 
-  // Live light/dark theme sync with `<html data-theme="...">`.
   useEffect(() => {
     const observer = new MutationObserver(() => {
       const theme = currentXtermTheme();

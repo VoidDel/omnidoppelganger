@@ -28,23 +28,6 @@ pub(super) async fn read_file(input: &Value, context: &ToolContext) -> Result<To
     if metadata.is_dir() {
         return Err(ToolOutput::error(format!("{shown} is a directory. Use `find_files` to list it.")));
     }
-    // A PDF or an Office file is read for its words, which take a while to take out of a large one: off the thread the agent runs on.
-    if let Some(found) = crate::documents::kind_of_file(&path) {
-        let kind = found.map_err(|why| ToolOutput::error(format!("{shown} {}.", why.describe())))?;
-        if metadata.len() > crate::documents::DOCUMENT_BYTES {
-            return Err(ToolOutput::error(format!("{shown} is a document of {} bytes, over the {}-byte limit.", metadata.len(), crate::documents::DOCUMENT_BYTES)));
-        }
-        let taken = tokio::task::spawn_blocking(move || crate::documents::file_text(&path, kind)).await;
-        let read = match taken {
-            Ok(Ok(Ok(read))) => read,
-            Ok(Ok(Err(why))) => return Err(ToolOutput::error(format!("{shown} {}.", why.describe()))),
-            Ok(Err(error)) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
-            Err(error) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
-        };
-        let (content, lines, selected) = numbered(&read.text, input, &shown);
-        let content = format!("[{shown} is {}]\n{content}", read.describe());
-        return Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected, "document": read.kind, "parts": read.parts })));
-    }
     let named_picture = crate::events::image_type(&path).is_some();
     if named_picture && metadata.len() > crate::events::IMAGE_FILE_BYTES {
         // Not read whole only to be refused: the picture is said to be too large by its size on disk.
@@ -54,10 +37,46 @@ pub(super) async fn read_file(input: &Value, context: &ToolContext) -> Result<To
             crate::events::IMAGE_FILE_BYTES as f64 / 1_000_000.0
         )));
     }
+    // Enforce the 50 MB ceiling BEFORE `kind_of_file` so oversized `.zip` / datasets never open `ZipArchive`.
+    if metadata.len() > crate::documents::DOCUMENT_BYTES {
+        return Err(ToolOutput::error(format!(
+            "{shown} is {} bytes, over the {}-byte limit.",
+            metadata.len(),
+            crate::documents::DOCUMENT_BYTES
+        )));
+    }
+    // Sniff archive/document headers and extract words off the async runtime thread with `catch_unwind` protection.
+    let probe_path = path.clone();
+    let doc_probe = tokio::task::spawn_blocking(move || {
+        std::panic::catch_unwind(|| match crate::documents::kind_of_file(&probe_path) {
+            Some(Ok(kind)) => Some(Ok(crate::documents::file_text(&probe_path, kind))),
+            Some(Err(why)) => Some(Err(why)),
+            None => None,
+        })
+        .unwrap_or(Some(Err(crate::documents::DocError::Unreadable)))
+    })
+    .await
+    .map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?;
+
+    if let Some(found) = doc_probe {
+        let taken = found.map_err(|why| ToolOutput::error(format!("{shown} {}.", why.describe())))?;
+        let read = match taken {
+            Ok(Ok(read)) => read,
+            Ok(Err(why)) => return Err(ToolOutput::error(format!("{shown} {}.", why.describe()))),
+            Err(error) => return Err(ToolOutput::error(format!("Cannot read {shown}: {error}"))),
+        };
+        let (content, lines, selected) = numbered(&read.text, input, &shown);
+        let content = format!("[{shown} is {}]\n{content}", read.describe());
+        return Ok(ToolOutput::ok(content, json!({ "path": shown, "lines": lines, "shown": selected, "document": read.kind, "parts": read.parts })));
+    }
     if metadata.len() > READ_FILE_BYTES {
         return Err(ToolOutput::error(format!("{shown} is {} bytes, over the {READ_FILE_BYTES}-byte limit.", metadata.len())));
     }
-    let bytes = std::fs::read(&path).map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?;
+    let read_path = path.clone();
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&read_path))
+        .await
+        .map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?
+        .map_err(|error| ToolOutput::error(format!("Cannot read {shown}: {error}")))?;
     // A picture by its name, or by its first bytes whatever it is called, when they give its size too.
     if named_picture || picture(&bytes).is_some_and(|(_, size)| size.is_some()) {
         return read_picture(&path, &shown, bytes, context);
@@ -902,5 +921,46 @@ pub(super) async fn batch_inspect(input: &Value, context: &ToolContext) -> Resul
         Err(ToolOutput { content, is_error: true, meta, images: Vec::new() })
     } else {
         Ok(ToolOutput::ok(content, meta))
+    }
+}
+
+#[cfg(test)]
+mod size_gate_tests {
+    use super::*;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn oversized_zip_is_rejected_before_zip_archive_sniffing() {
+        let dir = tempfile::tempdir().unwrap();
+        let huge_zip = dir.path().join("dataset.zip");
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&huge_zip).unwrap();
+            f.write_all(b"PK\x03\x04corrupt-central-directory").unwrap();
+            f.set_len(crate::documents::DOCUMENT_BYTES + 4096).unwrap();
+        }
+        let ctx = ToolContext {
+            workspace: dir.path().to_path_buf(),
+            cancel: CancellationToken::new(),
+            snapshots: None,
+            jobs: None,
+            mcp: None,
+            skills: Vec::new(),
+            search: None,
+            sandbox: None,
+            runtime: None,
+            painter: None,
+            vision: Some(true),
+            lsp: None,
+        };
+        let t0 = std::time::Instant::now();
+        let err = read_file(&json!({ "path": "dataset.zip" }), &ctx).await.unwrap_err();
+        assert!(t0.elapsed() < std::time::Duration::from_millis(200));
+        assert!(err.is_error);
+        assert!(
+            err.content.contains(&format!("over the {}-byte limit", crate::documents::DOCUMENT_BYTES)),
+            "{}",
+            err.content
+        );
     }
 }

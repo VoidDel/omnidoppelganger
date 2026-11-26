@@ -46,6 +46,7 @@ import type {
 
 export const api = {
   listSessions: () => invoke<SessionItem[]>("list_sessions"),
+  getSessionItem: (id: string): Promise<SessionItem> => invoke<SessionItem>("get_session_item", { id }),
   /** The side conversation (旁聊) beside a session, if it has one. */
   asideSession: (id: string) => invoke<SessionView | null>("aside_session", { id }),
   /** The side conversation beside a session, made now when it has none: read-only, briefed on the session before each message. */
@@ -87,6 +88,12 @@ export const api = {
   attachFiles: (paths: string[]) => invoke<Picked[]>("attach_files", { paths }),
   /** Save a long pasted text snippet as a typed UTF-8 attachment file (e.g. `.svg`, `.html`, `.txt`). */
   savePastedFile: (name: string, content: string) => invoke<Picked>("save_pasted_file", { name, content }),
+  /** Remove an unsent pasted attachment file from disk, ignoring cleanup errors. */
+  removePastedFile: (path: string): Promise<void> =>
+    invoke<void>("remove_pasted_file", { path }).then(
+      () => undefined,
+      () => undefined,
+    ),
   /** Ask for files with the system dialog. Resolves with none when the user closes it. */
   pickFiles: async (): Promise<string[]> => {
     const picked = await open({ multiple: true, title: "选要附给分身的文件" });

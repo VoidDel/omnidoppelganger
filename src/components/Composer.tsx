@@ -1,3 +1,4 @@
+import "../styles/composer.css";
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { EFFORT_HINTS, EFFORT_NAMES, effortNote } from "../lib/efforts";
@@ -721,7 +722,9 @@ export function Composer(props: ComposerProps) {
               onClose={() => setViewingPaste(null)}
               onExpandToInput={() => {
                 const snippet = activePaste.pasted?.content ?? "";
-                setFiles((current) => current.filter((had) => had.path !== activePaste.path));
+                const removedPath = activePaste.path;
+                setFiles((current) => current.filter((had) => had.path !== removedPath));
+                void api.removePastedFile(removedPath);
                 setText((prev) => (prev ? `${prev}\n${snippet}` : snippet));
                 setViewingPaste(null);
                 requestAnimationFrame(() => input.current?.focus());
@@ -784,6 +787,7 @@ export function Composer(props: ComposerProps) {
                       onClick={() => {
                         if (viewingPaste === file.path) setViewingPaste(null);
                         setFiles(files.filter((had) => had.path !== file.path));
+                        void api.removePastedFile(file.path);
                       }}
                     >
                       ×

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import Markdown from "react-markdown";
+import "../styles/workbench.css";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { documentLabel, fileSize } from "../lib/fold";
 import { findInLines, highlightLines } from "../lib/highlight";
@@ -7,8 +7,11 @@ import { sameFileView } from "../lib/refresh";
 import type { FileView } from "../lib/types";
 import type { ComposerQuoteInput } from "./Composer";
 import { Icon } from "./Icon";
-import { markdownParts, markdownPlugins, markdownSyntax } from "./Markdown";
-import { normalizeMath } from "../lib/math";
+import { MarkdownContent } from "./Markdown";
+
+export const LINE_HEIGHT = 20;
+export const OVERSCAN = 60;
+const DEFAULT_VIEWPORT_HEIGHT = 600;
 
 export interface CodeViewerProps {
   sessionId: string;
@@ -81,13 +84,31 @@ export function CodeViewer({
   const findInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState<number>(0);
+  const [viewportHeight, setViewportHeight] = useState<number>(DEFAULT_VIEWPORT_HEIGHT);
 
   useEffect(() => {
     setSelection(null);
     setZoomed(false);
+    setScrollTop(0);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
     const lower = path.toLowerCase();
     setMode(lower.endsWith(".md") || lower.endsWith(".markdown") ? "preview" : "code");
   }, [path]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const syncHeight = () => {
+      const h = el.clientHeight;
+      if (h > 0) setViewportHeight(h);
+    };
+    syncHeight();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(syncHeight);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   /** The file the view on screen was read from; a re-read of the same file replaces it quietly, in place. */
   const shownKey = useRef<string | null>(null);
@@ -145,26 +166,32 @@ export function CodeViewer({
     setFindIndex(0);
   }, [findQuery, path]);
 
-  const scrollToLine = (line: number) => {
+  const scrollToLine = useCallback((line: number) => {
     const container = scrollRef.current;
-    if (!container) return;
-    const row = container.querySelector<HTMLElement>(`[data-line="${line}"]`);
-    row?.scrollIntoView({ block: "center" });
-  };
+    const height = container && container.clientHeight > 0 ? container.clientHeight : DEFAULT_VIEWPORT_HEIGHT;
+    const targetTop = Math.max(0, (line - 1) * LINE_HEIGHT - Math.max(0, (height - LINE_HEIGHT) / 2));
+    setScrollTop(targetTop);
+    if (container) {
+      container.scrollTop = targetTop;
+      if (typeof container.scrollTo === "function") {
+        container.scrollTo({ top: targetTop });
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (!loading && view?.kind === "text" && targetLine && targetLine > 0) {
       setMode("code");
       setSelection({ anchor: targetLine, end: targetLine });
-      requestAnimationFrame(() => scrollToLine(targetLine));
+      scrollToLine(targetLine);
     }
-  }, [loading, view?.kind, targetLine, jumpSeq]);
+  }, [loading, view?.kind, targetLine, jumpSeq, scrollToLine]);
 
   useEffect(() => {
     if (activeMatchLine) {
       scrollToLine(activeMatchLine);
     }
-  }, [activeMatchLine, findIndex]);
+  }, [activeMatchLine, findIndex, scrollToLine]);
 
   const flashCopied = (which: "content" | "path" | "quote") => {
     setCopied(which);
@@ -595,7 +622,12 @@ export function CodeViewer({
         onMouseUp={() => requestAnimationFrame(syncDragQuote)}
         onKeyUp={() => requestAnimationFrame(syncDragQuote)}
         onContextMenu={openCodeContextMenu}
-        onScroll={() => {
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          setScrollTop(el.scrollTop);
+          if (el.clientHeight > 0 && el.clientHeight !== viewportHeight) {
+            setViewportHeight(el.clientHeight);
+          }
           if (dragQuote) setDragQuote(null);
           if (contextMenu) setContextMenu(null);
         }}
@@ -653,9 +685,7 @@ export function CodeViewer({
           </div>
         ) : mode === "preview" && isMarkdown ? (
           <div className="viewer-markdown prose">
-            <Markdown components={markdownParts} remarkPlugins={markdownSyntax} rehypePlugins={markdownPlugins}>
-              {normalizeMath(view.content)}
-            </Markdown>
+            <MarkdownContent text={view.content} />
           </div>
         ) : mode === "preview" && isSvg ? (
           <div className={`viewer-image-stage ${zoomed ? "zoomed" : ""}`}>
@@ -668,66 +698,79 @@ export function CodeViewer({
         ) : view.content.length === 0 ? (
           <div className="viewer-placeholder muted">（空文件）</div>
         ) : (
-          <div className="code-lines" aria-label={`${view.name} 源码`}>
-            <div className="code-gutter" aria-hidden="true">
-              {htmlLines.map((_, idx) => {
-                const lineNo = idx + 1;
-                const isSelected = !!selectedRange && lineNo >= selectedRange.start && lineNo <= selectedRange.end;
-                const isMatched = matchedLineSet.has(lineNo);
-                const isActiveMatch = activeMatchLine === lineNo;
-                return (
-                  <button
-                    key={lineNo}
-                    type="button"
-                    className={[
-                      "line-no",
-                      isSelected && "selected",
-                      isMatched && "matched",
-                      isActiveMatch && "active-match",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    data-line={lineNo}
-                    aria-label={`第 ${lineNo} 行`}
-                    title="点选此行；按住 Shift 点另一行可选区间"
-                    onClick={(e) => {
-                      if (e.shiftKey && selection) {
-                        setSelection({ anchor: selection.anchor, end: lineNo });
-                      } else if (selection && selection.anchor === lineNo && selection.end === lineNo) {
-                        setSelection(null);
-                      } else {
-                        setSelection({ anchor: lineNo, end: lineNo });
-                      }
-                    }}
-                  />
-                );
-              })}
-            </div>
-            <pre className="code-content">
-              {htmlLines.map((lineHtml, idx) => {
-                const lineNo = idx + 1;
-                const isSelected = !!selectedRange && lineNo >= selectedRange.start && lineNo <= selectedRange.end;
-                const isMatched = matchedLineSet.has(lineNo);
-                const isActiveMatch = activeMatchLine === lineNo;
-                const suffix = idx < htmlLines.length - 1 ? "\n" : "";
-                return (
-                  <span
-                    key={lineNo}
-                    data-line={lineNo}
-                    className={[
-                      "code-line",
-                      isSelected && "selected",
-                      isMatched && "matched",
-                      isActiveMatch && "active-match",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    dangerouslySetInnerHTML={{ __html: `${lineHtml}${suffix}` }}
-                  />
-                );
-              })}
-            </pre>
-          </div>
+          (() => {
+            const totalLines = htmlLines.length;
+            const effectiveHeight = viewportHeight > 0 ? viewportHeight : DEFAULT_VIEWPORT_HEIGHT;
+            const startIdx = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN);
+            const endIdx = Math.min(totalLines, Math.ceil((scrollTop + effectiveHeight) / LINE_HEIGHT) + OVERSCAN);
+            const visibleSlice = htmlLines.slice(startIdx, endIdx);
+            const topPad = startIdx * LINE_HEIGHT;
+            const bottomPad = Math.max(0, (totalLines - endIdx) * LINE_HEIGHT);
+            return (
+              <div className="code-lines" aria-label={`${view.name} 源码`}>
+                <div className="code-gutter" aria-hidden="true" style={{ paddingTop: topPad, paddingBottom: bottomPad }}>
+                  {visibleSlice.map((_, offset) => {
+                    const lineNo = startIdx + offset + 1;
+                    const isSelected = !!selectedRange && lineNo >= selectedRange.start && lineNo <= selectedRange.end;
+                    const isMatched = matchedLineSet.has(lineNo);
+                    const isActiveMatch = activeMatchLine === lineNo;
+                    return (
+                      <button
+                        key={lineNo}
+                        type="button"
+                        className={[
+                          "line-no",
+                          "code-ln",
+                          isSelected && "selected",
+                          isMatched && "matched",
+                          isActiveMatch && "active-match",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        data-line={lineNo}
+                        aria-label={`第 ${lineNo} 行`}
+                        title="点选此行；按住 Shift 点另一行可选区间"
+                        onClick={(e) => {
+                          if (e.shiftKey && selection) {
+                            setSelection({ anchor: selection.anchor, end: lineNo });
+                          } else if (selection && selection.anchor === lineNo && selection.end === lineNo) {
+                            setSelection(null);
+                          } else {
+                            setSelection({ anchor: lineNo, end: lineNo });
+                          }
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+                <pre className="code-content" style={{ paddingTop: topPad, paddingBottom: bottomPad }}>
+                  {visibleSlice.map((lineHtml, offset) => {
+                    const idx = startIdx + offset;
+                    const lineNo = idx + 1;
+                    const isSelected = !!selectedRange && lineNo >= selectedRange.start && lineNo <= selectedRange.end;
+                    const isMatched = matchedLineSet.has(lineNo);
+                    const isActiveMatch = activeMatchLine === lineNo;
+                    const suffix = idx < totalLines - 1 ? "\n" : "";
+                    return (
+                      <span
+                        key={lineNo}
+                        data-line={lineNo}
+                        className={[
+                          "code-line",
+                          isSelected && "selected",
+                          isMatched && "matched",
+                          isActiveMatch && "active-match",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        dangerouslySetInnerHTML={{ __html: `${lineHtml}${suffix}` }}
+                      />
+                    );
+                  })}
+                </pre>
+              </div>
+            );
+          })()
         )}
       </div>
       {dragQuote && view && (
