@@ -129,6 +129,7 @@ struct Call {
     /// The `index` the provider gave the call, when it gives one.
     index: Option<u64>,
     id: String,
+    has_provider_id: bool,
     name: String,
     arguments: String,
     /// Arguments sent as a JSON object rather than a string (GLM may do this).
@@ -179,6 +180,7 @@ impl ChatAccumulator {
             let call = &mut self.calls[position];
             if let Some(id) = fragment["id"].as_str().filter(|id| !id.is_empty()) {
                 call.id = id.to_string();
+                call.has_provider_id = true;
             }
             if let Some(name) = fragment["function"]["name"].as_str().filter(|name| !name.is_empty()) {
                 call.name = name.to_string();
@@ -212,15 +214,24 @@ impl ChatAccumulator {
             None => {
                 let new_id = fragment["id"].as_str().filter(|id| !id.is_empty());
                 match (self.calls.last(), new_id) {
-                    (Some(last), Some(id)) if last.id != id => None,
+                    (Some(last), Some(id)) if last.has_provider_id && last.id != id => None,
+                    (Some(last), None)
+                        if !last.has_provider_id
+                            && last.started
+                            && fragment["function"]["name"].as_str().is_some_and(|n| !n.is_empty()) =>
+                    {
+                        None
+                    }
                     (Some(_), _) => Some(self.calls.len() - 1),
                     (None, _) => None,
                 }
             }
         };
         found.unwrap_or_else(|| {
-            self.calls.push(Call { index, ..Default::default() });
-            self.calls.len() - 1
+            let next_pos = self.calls.len();
+            let id = format!("chat_call_{}_{next_pos}", uuid::Uuid::now_v7().simple());
+            self.calls.push(Call { index, id, ..Default::default() });
+            next_pos
         })
     }
 
@@ -265,8 +276,12 @@ impl ChatAccumulator {
         }
         let mut invalid = HashMap::new();
         for (position, call) in self.calls.into_iter().enumerate() {
-            // Every call needs an id for its result to answer.
-            let id = if call.id.is_empty() { format!("call_{position}") } else { call.id };
+            // Every call needs a globally unique id for its result to answer across steps.
+            let id = if call.id.is_empty() {
+                format!("chat_call_{}_{position}", uuid::Uuid::now_v7().simple())
+            } else {
+                call.id
+            };
             let (input, arguments) = match call.object {
                 Some(object) => (object.clone(), object.to_string()),
                 None if call.arguments.trim().is_empty() => (json!({}), "{}".to_string()),
@@ -571,5 +586,24 @@ mod tests {
                 { "type": "text", "text": format!("{}\n\nand this", crate::llm::TOOL_PICTURES) }
             ] })
         );
+    }
+
+    #[test]
+    fn idless_tool_calls_generate_unique_non_empty_ids_across_steps() {
+        let (turn1, deltas1) = replay(&[
+            delta(json!({ "tool_calls": [{ "index": 0, "function": { "name": "read_file", "arguments": "{\"path\":\"a\"}" } }] })),
+            json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
+        ]);
+        let (turn2, deltas2) = replay(&[
+            delta(json!({ "tool_calls": [{ "index": 0, "function": { "name": "edit_file", "arguments": "{\"path\":\"a\"}" } }] })),
+            json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
+        ]);
+        let id1 = turn1.unwrap().content[0]["id"].as_str().unwrap().to_string();
+        let id2 = turn2.unwrap().content[0]["id"].as_str().unwrap().to_string();
+        assert!(!id1.is_empty() && !id2.is_empty());
+        assert_ne!(id1, id2);
+        assert!(id1.len() <= 64 && id2.len() <= 64);
+        assert!(deltas1.contains(&StreamDelta::ToolUseStart { index: TOOLS, id: id1, name: "read_file".into() }));
+        assert!(deltas2.contains(&StreamDelta::ToolUseStart { index: TOOLS, id: id2, name: "edit_file".into() }));
     }
 }

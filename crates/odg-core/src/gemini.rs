@@ -107,9 +107,11 @@ pub fn gemini_contents(messages: &[Value]) -> Vec<Value> {
     }
 
     let mut contents = Vec::new();
+    let mut prev_assistant_calls: Vec<(String, String)> = Vec::new();
     for msg in messages {
         let blocks = msg["content"].as_array().map(Vec::as_slice).unwrap_or_default();
         if msg["role"] == "assistant" {
+            prev_assistant_calls.clear();
             let mut parts = Vec::new();
             for block in blocks {
                 match block["type"].as_str() {
@@ -132,6 +134,9 @@ pub fn gemini_contents(messages: &[Value]) -> Vec<Value> {
                         }
                     }
                     Some("tool_use") => {
+                        let call_id = block["id"].as_str().unwrap_or_default().to_string();
+                        let call_name = block["name"].as_str().unwrap_or_default().to_string();
+                        prev_assistant_calls.push((call_id, call_name));
                         let args = if block["input"].is_object() {
                             block["input"].clone()
                         } else {
@@ -157,14 +162,47 @@ pub fn gemini_contents(messages: &[Value]) -> Vec<Value> {
         } else {
             let mut parts = Vec::new();
             let mut returned_images: Vec<Value> = Vec::new();
+            let mut used_prev = vec![false; prev_assistant_calls.len()];
+            let mut result_idx = 0usize;
             for block in blocks {
                 match block["type"].as_str() {
                     Some("tool_result") => {
                         let id = block["tool_use_id"].as_str().unwrap_or_default();
-                        let name = tool_names
-                            .get(id)
-                            .cloned()
+                        let adjacent_by_id = (!id.is_empty())
+                            .then(|| {
+                                prev_assistant_calls
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(i, (cid, _))| !used_prev[*i] && cid == id)
+                                    .map(|(i, (_, name))| {
+                                        used_prev[i] = true;
+                                        name.clone()
+                                    })
+                            })
+                            .flatten();
+                        let name = adjacent_by_id
+                            .or_else(|| {
+                                if id.is_empty()
+                                    && result_idx < prev_assistant_calls.len()
+                                    && !used_prev[result_idx]
+                                {
+                                    used_prev[result_idx] = true;
+                                    Some(prev_assistant_calls[result_idx].1.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .or_else(|| tool_names.get(id).cloned())
+                            .or_else(|| {
+                                if result_idx < prev_assistant_calls.len() && !used_prev[result_idx] {
+                                    used_prev[result_idx] = true;
+                                    Some(prev_assistant_calls[result_idx].1.clone())
+                                } else {
+                                    None
+                                }
+                            })
                             .unwrap_or_else(|| "tool".to_string());
+                        result_idx += 1;
                         let (words, pictures) = tool_result_parts(block);
                         let is_error = block["is_error"].as_bool().unwrap_or(false);
                         parts.push(json!({
@@ -195,6 +233,7 @@ pub fn gemini_contents(messages: &[Value]) -> Vec<Value> {
                     _ => {}
                 }
             }
+            prev_assistant_calls.clear();
             if !returned_images.is_empty() {
                 parts.push(json!({ "text": TOOL_PICTURES }));
                 for pic in returned_images {
@@ -258,20 +297,30 @@ pub struct GeminiAccumulator {
     finish_reason: Option<String>,
     model: String,
     usage: Value,
-    saw_candidate: bool,
 }
 
 impl GeminiAccumulator {
     pub fn apply(&mut self, chunk: &Value) -> Result<Vec<StreamDelta>, LlmError> {
         if chunk["error"].is_object() {
             let err = &chunk["error"];
-            let kind = err["status"].as_str().unwrap_or("gemini_error").to_string();
+            let status = err["code"].as_u64().map(|c| c as u16);
+            let status_str = err["status"].as_str().unwrap_or("");
+            let retryable = matches!(status, Some(408 | 429 | 500 | 502 | 503 | 504))
+                || matches!(
+                    status_str,
+                    "RESOURCE_EXHAUSTED" | "UNAVAILABLE" | "INTERNAL" | "DEADLINE_EXCEEDED"
+                );
+            let kind = if status_str.is_empty() {
+                "gemini_error".to_string()
+            } else {
+                status_str.to_string()
+            };
             let message = err["message"].as_str().unwrap_or("Gemini stream error").to_string();
             return Err(LlmError::Api {
-                status: err["code"].as_u64().map(|c| c as u16),
+                status,
                 kind,
                 message,
-                retryable: true,
+                retryable,
             });
         }
         if let Some(ver) = chunk["modelVersion"].as_str().filter(|v| !v.is_empty()) {
@@ -282,14 +331,12 @@ impl GeminiAccumulator {
         }
         if let Some(block_reason) = chunk["promptFeedback"]["blockReason"].as_str() {
             self.finish_reason = Some(format!("BLOCKED:{block_reason}"));
-            self.saw_candidate = true;
         }
 
         let mut deltas = Vec::new();
         if let Some(candidates) = chunk["candidates"].as_array()
             && let Some(first) = candidates.first()
         {
-            self.saw_candidate = true;
             if let Some(reason) = first["finishReason"].as_str() {
                 self.finish_reason = Some(reason.to_string());
             }
@@ -324,7 +371,9 @@ impl GeminiAccumulator {
                             .as_str()
                             .filter(|s| !s.is_empty())
                             .map(str::to_string)
-                            .unwrap_or_else(|| format!("gemini_call_{call_idx}"));
+                            .unwrap_or_else(|| {
+                                format!("gemini_call_{}_{call_idx}", uuid::Uuid::now_v7().simple())
+                            });
                         let partial = args.to_string();
                         deltas.push(StreamDelta::ToolUseStart {
                             index: stream_idx,
@@ -361,7 +410,7 @@ impl GeminiAccumulator {
     }
 
     pub fn finished(&self) -> bool {
-        self.saw_candidate || !self.usage.is_null()
+        self.finish_reason.is_some()
     }
 
     pub fn finish(self, requested_model: &str) -> Result<AssistantTurn, LlmError> {
@@ -535,7 +584,7 @@ impl GeminiClient {
         }
         if !accumulator.finished() {
             return Err((
-                LlmError::Network("the stream ended before Gemini returned a candidate".to_string()),
+                LlmError::Network("the stream ended before Gemini sent a finishReason".to_string()),
                 None,
             ));
         }
@@ -677,5 +726,161 @@ mod tests {
         let raw_reqs = recorded.await.unwrap();
         assert!(raw_reqs[0].to_lowercase().contains("x-goog-api-key: gem-test-key"));
         assert!(raw_reqs[0].starts_with("POST /models/gemini-2.5-pro:streamGenerateContent?alt=sse "));
+    }
+
+    #[tokio::test]
+    async fn truncated_stream_without_finish_reason_triggers_retry_and_resets() {
+        let cut_off = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {}\n\n",
+            json!({
+                "candidates": [{
+                    "content": { "role": "model", "parts": [{ "text": "half sentence..." }] }
+                }],
+                "modelVersion": "gemini-2.5-pro"
+            })
+        );
+        let complete = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {}\n\n",
+            json!({
+                "candidates": [{
+                    "content": { "role": "model", "parts": [{ "text": "full recovered answer" }] },
+                    "finishReason": "STOP"
+                }],
+                "modelVersion": "gemini-2.5-pro"
+            })
+        );
+        let (addr, recorded) = serve(vec![cut_off, complete]).await;
+        let client = GeminiClient::new(Arc::new(move |_| Endpoint {
+            base_url: addr.clone(),
+            key: Some("gem-test-key".into()),
+        }))
+        .unwrap();
+
+        let (tx, mut rx) = unbounded_channel();
+        let turn = client
+            .stream(
+                LlmRequest {
+                    provider: "gemini".into(),
+                    session: "s1".into(),
+                    model: "gemini-2.5-pro".into(),
+                    system: String::new(),
+                    messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "hello" }] })],
+                    tools: vec![],
+                    effort: "low".into(),
+                },
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(turn.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(turn.content, vec![json!({ "type": "text", "text": "full recovered answer" })]);
+
+        let mut deltas = Vec::new();
+        while let Ok(d) = rx.try_recv() {
+            deltas.push(d);
+        }
+        assert!(
+            deltas.contains(&StreamDelta::Reset),
+            "cut-off stream must emit Reset before retrying: {deltas:?}"
+        );
+        assert_eq!(recorded.await.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn multi_step_tool_calls_generate_unique_ids_and_preserve_legacy_pairing() {
+        let mut step1 = GeminiAccumulator::default();
+        step1
+            .apply(&json!({
+                "candidates": [{
+                    "content": { "role": "model", "parts": [{ "functionCall": { "name": "read_file", "args": { "path": "a.rs" } } }] },
+                    "finishReason": "STOP"
+                }]
+            }))
+            .unwrap();
+        let turn1 = step1.finish("gemini-2.5-pro").unwrap();
+
+        let mut step2 = GeminiAccumulator::default();
+        step2
+            .apply(&json!({
+                "candidates": [{
+                    "content": { "role": "model", "parts": [{ "functionCall": { "name": "edit_file", "args": { "path": "a.rs" } } }] },
+                    "finishReason": "STOP"
+                }]
+            }))
+            .unwrap();
+        let turn2 = step2.finish("gemini-2.5-pro").unwrap();
+
+        let id1 = turn1.content[0]["id"].as_str().unwrap();
+        let id2 = turn2.content[0]["id"].as_str().unwrap();
+        assert_ne!(id1, id2);
+        assert!(id1.len() <= 64 && id2.len() <= 64);
+
+        // Legacy v0.8.0 sessions stored duplicate `gemini_call_0` across steps: adjacent pairing keeps names distinct.
+        let legacy_messages = vec![
+            json!({ "role": "user", "content": [{ "type": "text", "text": "fix a.rs" }] }),
+            json!({
+                "role": "assistant",
+                "content": [{ "type": "tool_use", "id": "gemini_call_0", "name": "read_file", "input": { "path": "a.rs" } }]
+            }),
+            json!({
+                "role": "user",
+                "content": [{ "type": "tool_result", "tool_use_id": "gemini_call_0", "content": "fn main() {}", "is_error": false }]
+            }),
+            json!({
+                "role": "assistant",
+                "content": [{ "type": "tool_use", "id": "gemini_call_0", "name": "edit_file", "input": { "path": "a.rs" } }]
+            }),
+            json!({
+                "role": "user",
+                "content": [{ "type": "tool_result", "tool_use_id": "gemini_call_0", "content": "edited", "is_error": false }]
+            }),
+        ];
+        let contents = gemini_contents(&legacy_messages);
+        assert_eq!(contents[2]["parts"][0]["functionResponse"]["name"], "read_file");
+        assert_eq!(contents[4]["parts"][0]["functionResponse"]["name"], "edit_file");
+    }
+
+    #[tokio::test]
+    async fn stream_400_error_fails_immediately_without_retries() {
+        let err_stream = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {}\n\n",
+            json!({
+                "error": {
+                    "code": 400,
+                    "status": "INVALID_ARGUMENT",
+                    "message": "Request payload exceeds context window limit"
+                }
+            })
+        );
+        let (addr, recorded) = serve(vec![err_stream]).await;
+        let client = GeminiClient::new(Arc::new(move |_| Endpoint {
+            base_url: addr.clone(),
+            key: Some("gem-test-key".into()),
+        }))
+        .unwrap();
+
+        let (tx, _rx) = unbounded_channel();
+        let err = client
+            .stream(
+                LlmRequest {
+                    provider: "gemini".into(),
+                    session: "s1".into(),
+                    model: "gemini-2.5-pro".into(),
+                    system: String::new(),
+                    messages: vec![json!({ "role": "user", "content": [{ "type": "text", "text": "too big" }] })],
+                    tools: vec![],
+                    effort: "low".into(),
+                },
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(!err.retryable());
+        assert!(err.context_overflow());
+        assert_eq!(recorded.await.unwrap().len(), 1);
     }
 }

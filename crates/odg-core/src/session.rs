@@ -392,24 +392,28 @@ pub fn open_turn(events: &[Envelope]) -> Option<u64> {
 
 /// `(tool_use_id, tool name)` of every tool call that has no result yet, in call order.
 pub fn unanswered_tool_uses(events: &[Envelope]) -> Vec<(String, String)> {
-    let mut calls: Vec<(String, String)> = Vec::new();
-    let mut answered: HashSet<&str> = HashSet::new();
+    let mut open: Vec<(String, String)> = Vec::new();
     for envelope in events {
         match &envelope.event {
             Event::AssistantMessage { content, .. } => {
                 for block in content.iter().filter(|block| block["type"] == "tool_use") {
                     if let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) {
-                        calls.push((id.to_string(), name.to_string()));
+                        open.push((id.to_string(), name.to_string()));
                     }
                 }
             }
             Event::ToolResult { tool_use_id, .. } => {
-                answered.insert(tool_use_id);
+                if let Some(pos) = open.iter().position(|(id, _)| id == tool_use_id) {
+                    open.remove(pos);
+                }
+            }
+            Event::ContextCompacted { kept_from_turn: None, .. } => {
+                open.clear();
             }
             _ => {}
         }
     }
-    calls.into_iter().filter(|(id, _)| !answered.contains(id.as_str())).collect()
+    open
 }
 
 /// What the model reads, ahead of the user's message, when plan mode starts.
@@ -511,24 +515,38 @@ pub fn derive_messages(events: &[Envelope]) -> Vec<Value> {
                     .filter(|(msg_from, _)| *msg_from < messages.len());
                 if let Some((msg_from, spoken_from)) = retained {
                     let mut kept_msgs: Vec<Value> = messages.drain(msg_from..).collect();
-                    let kept_spoken: Vec<(usize, String)> = spoken
+                    let mut kept_spoken: Vec<(usize, String)> = spoken
                         .drain(spoken_from..)
                         .filter(|(idx, _)| *idx >= msg_from)
                         .map(|(idx, spk)| (idx - msg_from, spk))
                         .collect();
-                    messages.clear();
-                    spoken.clear();
-                    pending.clear();
-                    turn_starts.clear();
-                    if let Some(first_content) = kept_msgs.first_mut().filter(|m| m["role"] == "user").and_then(|m| m["content"].as_array_mut()) {
+                    let inserted_header = if let Some(first_content) = kept_msgs
+                        .first_mut()
+                        .filter(|m| m["role"] == "user")
+                        .and_then(|m| m["content"].as_array_mut())
+                    {
                         header.append(first_content);
                         *first_content = header;
+                        0usize
                     } else {
                         kept_msgs.insert(0, json!({ "role": "user", "content": header }));
+                        1usize
+                    };
+                    if inserted_header > 0 {
+                        for (idx, _) in &mut kept_spoken {
+                            *idx += inserted_header;
+                        }
+                    }
+                    turn_starts.retain(|_, (m_idx, _)| *m_idx >= msg_from);
+                    for (m_idx, s_idx) in turn_starts.values_mut() {
+                        *m_idx = (*m_idx - msg_from) + inserted_header;
+                        *s_idx = s_idx.saturating_sub(spoken_from);
                     }
                     messages = kept_msgs;
                     spoken = kept_spoken;
-                    pending.extend(unanswered.iter().cloned());
+                    // Keep `pending` (and `unanswered`) intact: every item in `pending` was recorded
+                    // after the last AssistantMessage in `kept_msgs` (e.g. active turn's ToolResult,
+                    // FilesRestored, ArtifactRestored, or steering UserMessage).
                 } else {
                     messages.clear();
                     spoken.clear();
@@ -1534,5 +1552,163 @@ Read a; it holds x."), PLAN_ON.to_string(), "and hurry".to_string()]);
         forked.append(Event::TurnStart { turn: 2 }).unwrap();
         forked.append(Event::ExternalSession { backend: "antigravity".into(), session_id: "fork-conv-2".into() }).unwrap();
         assert_eq!(external_session(forked.events(), "antigravity"), Some("fork-conv-2"));
+    }
+
+    #[test]
+    fn mid_turn_compaction_with_kept_from_turn_preserves_pending_tool_results() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "anthropic", "claude-sonnet-5-5").unwrap();
+        let user = |text: &str, steering| Event::UserMessage {
+            text: text.into(),
+            steering,
+            mode: Mode::Auto,
+            images: vec![],
+            files: vec![],
+        };
+
+        // Turn 1
+        log.append(Event::TurnStart { turn: 1 }).unwrap();
+        log.append(user("turn 1 question", false)).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "turn 1 answer" })])).unwrap();
+        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+
+        // Turn 2
+        log.append(Event::TurnStart { turn: 2 }).unwrap();
+        log.append(user("turn 2 question", false)).unwrap();
+        log.append(assistant(vec![json!({ "type": "text", "text": "turn 2 answer" })])).unwrap();
+        log.append(Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }).unwrap();
+
+        // Turn 3 mid-turn: tool call + ToolResult + steering UserMessage + ContextCompacted(kept_from_turn: Some(2))
+        log.append(Event::TurnStart { turn: 3 }).unwrap();
+        log.append(user("read Cargo.toml", false)).unwrap();
+        log.append(assistant(vec![json!({
+            "type": "tool_use",
+            "id": "t1",
+            "name": "read_file",
+            "input": { "path": "Cargo.toml" }
+        })]))
+        .unwrap();
+        log.append(Event::ToolResult {
+            tool_use_id: "t1".into(),
+            tool: "read_file".into(),
+            content: "[package]\nname = \"demo\"".into(),
+            is_error: false,
+            meta: Value::Null,
+            images: vec![],
+        })
+        .unwrap();
+        log.append(user("also check dependencies", true)).unwrap();
+        log.append(Event::ContextCompacted {
+            summary: "Turn 1 summary.".into(),
+            tokens_before: 1200,
+            focus: None,
+            kept_from_turn: Some(2),
+            tokens: None,
+        })
+        .unwrap();
+
+        let messages = derive_messages(log.events());
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[3]["role"], "assistant");
+        assert_eq!(messages[3]["content"][0]["id"], "t1");
+
+        let tail = &messages[4];
+        assert_eq!(tail["role"], "user");
+        let tail_blocks = tail["content"].as_array().unwrap();
+        assert_eq!(
+            tail_blocks,
+            &vec![
+                json!({
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": "[package]\nname = \"demo\"",
+                    "is_error": false
+                }),
+                json!({
+                    "type": "text",
+                    "text": "also check dependencies"
+                }),
+            ],
+            "pending ToolResult must remain paired and steering text must appear exactly once"
+        );
+
+        // Also verify inserted_header == 1 offset when kept_msgs begins with an assistant message
+        // and the session later switches providers (`carried` must rewrite the shifted assistant slot).
+        let mut alt = store.create(Path::new("/work"), "anthropic", "claude-sonnet-5-5").unwrap();
+        alt.append(Event::TurnStart { turn: 1 }).unwrap();
+        alt.append(user("first", false)).unwrap();
+        alt.append(assistant(vec![json!({ "type": "text", "text": "ans 1" })])).unwrap();
+        alt.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+        alt.append(Event::TurnStart { turn: 2 }).unwrap();
+        alt.append(assistant(vec![
+            json!({ "type": "thinking", "thinking": "secret", "signature": "sig" }),
+            json!({ "type": "text", "text": "ans 2 without prior user msg" }),
+        ]))
+        .unwrap();
+        alt.append(Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }).unwrap();
+        alt.append(Event::ContextCompacted {
+            summary: "Summary.".into(),
+            tokens_before: 500,
+            focus: None,
+            kept_from_turn: Some(2),
+            tokens: None,
+        })
+        .unwrap();
+        alt.append(Event::ModelChanged { model: "deepseek-chat".into(), provider: Some("deepseek".into()) }).unwrap();
+        alt.append(user("next", false)).unwrap();
+        let alt_msgs = derive_messages(alt.events());
+        assert_eq!(alt_msgs[0]["role"], "user");
+        assert_eq!(alt_msgs[1]["role"], "assistant");
+        assert_eq!(alt_msgs[1]["content"], json!([{ "type": "text", "text": "ans 2 without prior user msg" }]));
+    }
+
+    #[test]
+    fn unanswered_tool_uses_tracks_reused_ids_per_occurrence() {
+        let (_directory, store) = store();
+        let mut log = store.create(Path::new("/work"), "openai", "gpt-5").unwrap();
+
+        log.append(Event::TurnStart { turn: 1 }).unwrap();
+        log.append(assistant(vec![json!({
+            "type": "tool_use",
+            "id": "dup_0",
+            "name": "read_file",
+            "input": {}
+        })]))
+        .unwrap();
+        log.append(Event::ToolResult {
+            tool_use_id: "dup_0".into(),
+            tool: "read_file".into(),
+            content: "ok".into(),
+            is_error: false,
+            meta: Value::Null,
+            images: vec![],
+        })
+        .unwrap();
+        log.append(Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }).unwrap();
+
+        log.append(Event::TurnStart { turn: 2 }).unwrap();
+        log.append(assistant(vec![json!({
+            "type": "tool_use",
+            "id": "dup_0",
+            "name": "edit_file",
+            "input": {}
+        })]))
+        .unwrap();
+
+        assert_eq!(
+            unanswered_tool_uses(log.events()),
+            vec![("dup_0".to_string(), "edit_file".to_string())]
+        );
+
+        // Full compaction (`kept_from_turn: None`) discards all prior messages and clears open tool calls.
+        log.append(Event::ContextCompacted {
+            summary: "Compacted.".into(),
+            tokens_before: 100,
+            focus: None,
+            kept_from_turn: None,
+            tokens: None,
+        })
+        .unwrap();
+        assert!(unanswered_tool_uses(log.events()).is_empty());
     }
 }

@@ -181,7 +181,7 @@ async fn in_auto_mode_the_guardian_lets_a_command_run_without_asking() {
     let review = &requests[1];
     let shown = review.messages[0]["content"][0]["text"].as_str().unwrap();
     assert_eq!((review.model.as_str(), review.system.as_str(), review.tools.len()), ("guard-model", GUARDIAN, 0));
-    assert!(shown.contains("write hi to out.txt") && shown.contains("echo hi > out.txt"), "{shown}");
+    assert!(shown.contains("write hi to out.txt") && shown.contains("echo hi &gt; out.txt"), "{shown}");
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn the_guardian_verdict_is_read_however_it_is_written() {
     let read = |written: &str| verdict(written);
     let ok = |reason: &str| (true, reason.to_string());
     let ask = |reason: &str| (false, reason.to_string());
-    // As told, and the ways a model strays from it while still meaning ALLOW.
+    // Exact standalone first-line ALLOW decisions (with optional emphasis or trailing period).
     assert_eq!(read("ALLOW\n只读检索。"), ok("只读检索。"));
     assert_eq!(read("allow.\n只读检索。"), ok("只读检索。"));
     assert_eq!(read("**ALLOW**\n只读检索。"), ok("只读检索。"));
@@ -197,10 +197,10 @@ fn the_guardian_verdict_is_read_however_it_is_written() {
     assert_eq!(read("\n\n  ALLOW  \n\n只读检索。"), ok("只读检索。"));
     assert_eq!(read("允许\n只读检索。"), ok("只读检索。"));
     assert_eq!(read("放行。\n只读检索。"), ok("只读检索。"));
-    // The reason on the verdict's own line.
-    assert_eq!(read("ALLOW — 只读检索。"), ok("只读检索。"));
-    assert_eq!(read("允许：只读检索。"), ok("只读检索。"));
-    // Anything else is left to the user.
+    // Anything else—including extra words or punctuation on the first line—fails closed to the user.
+    assert_eq!(read("ALLOW — 只读检索。"), ask(""));
+    assert_eq!(read("允许：只读检索。"), ask(""));
+    assert_eq!(read("Allow or Ask: ASK\n要推送。"), ask("要推送。"));
     assert_eq!(read("ASK\n要推送。"), ask("要推送。"));
     assert_eq!(read("不允许\n要推送。"), ask("要推送。"));
     assert_eq!(read("ALLOWING\n要推送。"), ask("要推送。"));

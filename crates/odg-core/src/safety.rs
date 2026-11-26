@@ -325,13 +325,8 @@ impl Scanner<'_> {
                     text.push_str("$(…)");
                 }
                 Some('$') if self.peek(1) == Some('{') => {
-                    let end = self.chars[self.at..].iter().position(|c| *c == '}').ok_or("an unclosed ${")?;
-                    let inner: String = self.chars[self.at..self.at + end + 1].iter().collect();
-                    if inner.contains("$(") {
-                        return Err("a substitution inside ${…}".into());
-                    }
-                    text.push_str(&inner);
-                    self.at += end + 1;
+                    let token = self.scan_simple_braced_var()?;
+                    text.push_str(&token);
                 }
                 Some(c) => {
                     text.push(c);
@@ -344,16 +339,31 @@ impl Scanner<'_> {
         Ok(())
     }
 
-    fn braced_variable(&mut self) -> Result<(), String> {
-        let end = self.chars[self.at..].iter().position(|c| *c == '}').ok_or("an unclosed ${")?;
-        let inner: String = self.chars[self.at..self.at + end + 1].iter().collect();
-        if inner.contains("$(") || inner.contains('`') {
-            return Err("a substitution inside ${…}".into());
+    /// Parse `${NAME}` strictly: only bare ASCII variable identifiers `[A-Za-z_][A-Za-z0-9_]*`
+    /// are allowed without approval. Any quotes, operators (`:-`, `:+`, `:=`, `:?`, `/`, `%`, `#`),
+    /// colons (`${env:...}`), backslashes, spaces, or nested braces fail closed.
+    fn scan_simple_braced_var(&mut self) -> Result<String, String> {
+        let end = self.chars[self.at..]
+            .iter()
+            .position(|c| *c == '}')
+            .ok_or_else(|| "an unclosed ${".to_string())?;
+        let name_chars = &self.chars[self.at + 2..self.at + end];
+        let valid_ident = !name_chars.is_empty()
+            && (name_chars[0].is_ascii_alphabetic() || name_chars[0] == '_')
+            && name_chars.iter().all(|c| c.is_ascii_alphanumeric() || *c == '_');
+        if !valid_ident {
+            return Err("complex or quoted ${…} parameter expansion cannot be verified statically".into());
         }
-        for c in inner.chars() {
+        let token: String = self.chars[self.at..=self.at + end].iter().collect();
+        self.at += end + 1;
+        Ok(token)
+    }
+
+    fn braced_variable(&mut self) -> Result<(), String> {
+        let token = self.scan_simple_braced_var()?;
+        for c in token.chars() {
             self.word.push(c);
         }
-        self.at += end + 1;
         Ok(())
     }
 
@@ -974,6 +984,47 @@ mod tests {
         }
         for command in ["cargo test", "cargo fmt", "cargo build", "cargo metadata", "prettier -w src", "eslint --fix src", "pnpm test", "rm -rf target", "echo hi > out.txt", "git commit -m x", "cat ../secret.txt"] {
             assert!(check_read_only(command, Dialect::Posix, workspace).is_err(), "{command} passed read-only check");
+        }
+    }
+
+    #[test]
+    fn rejects_quoted_or_operator_braced_expansions_in_all_modes() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        for cmd in [
+            "echo ${x:-'}'}; rm -rf . #'",
+            "echo ${x:-'}'}; touch /tmp/pwn \\( #'",
+            "echo \"${x:-\"}\"}\"; rm -rf . #\"",
+            "echo ${PWD:+/etc/passwd}",
+            "cat ${HOME:-/tmp}/secret",
+            "echo ${}",
+            "echo ${1abc}",
+            "echo ${foo bar}",
+            "echo ${ CARGO_PKG_VERSION }",
+            "echo \"${ CARGO_PKG_VERSION }\"",
+            "echo ${foo",
+            "echo \"${foo\"",
+        ] {
+            assert!(check(cmd, Dialect::Posix, workspace).is_err(), "{cmd} passed check");
+            assert!(check_read_only(cmd, Dialect::Posix, workspace).is_err(), "{cmd} passed check_read_only");
+            assert!(grants_needed(cmd, Dialect::Posix, workspace, false).is_err(), "{cmd} passed grants_needed(false)");
+            assert!(grants_needed(cmd, Dialect::Posix, workspace, true).is_err(), "{cmd} passed grants_needed(true)");
+        }
+        for ps_cmd in ["Write-Output ${env:USERPROFILE}", "Get-Content ${c:\\secret.txt}", "Write-Output \"${env:SECRET}\""] {
+            assert!(check(ps_cmd, Dialect::PowerShell, workspace).is_err(), "{ps_cmd} passed PowerShell check");
+            assert!(check_read_only(ps_cmd, Dialect::PowerShell, workspace).is_err(), "{ps_cmd} passed PowerShell check_read_only");
+            assert!(grants_needed(ps_cmd, Dialect::PowerShell, workspace, false).is_err(), "{ps_cmd} passed PowerShell grants_needed");
+        }
+
+        // Bare ASCII variable identifiers still pass, while OUTSIDE_VARIABLES like ${HOME} still fail.
+        for safe in ["echo ${CARGO_PKG_VERSION}", "echo \"${CARGO_PKG_VERSION}\"", "echo ${_BUILD_ID_2}"] {
+            assert!(check(safe, Dialect::Posix, workspace).is_ok(), "{safe} failed check");
+            assert!(check_read_only(safe, Dialect::Posix, workspace).is_ok(), "{safe} failed check_read_only");
+        }
+        for outside in ["cat ${HOME}", "cat \"${HOME}\"", "ls ${TMPDIR}"] {
+            assert!(check(outside, Dialect::Posix, workspace).is_err(), "{outside} passed check");
+            assert!(check_read_only(outside, Dialect::Posix, workspace).is_err(), "{outside} passed check_read_only");
+            assert!(grants_needed(outside, Dialect::Posix, workspace, false).is_err(), "{outside} passed grants_needed");
         }
     }
 }

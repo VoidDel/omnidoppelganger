@@ -123,10 +123,15 @@ type Said = (String, Vec<Image>, Vec<Attached>);
 /// there is nothing to tell. See [`crate::aside`].
 pub type BriefSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
+/// Fetches the human user's messages from the root session that spawned a subagent.
+pub(super) type RootUserMessages = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
 struct Inner<L: Llm> {
     id: String,
     /// The session whose agent set this one off as a subagent.
     parent: Option<String>,
+    /// For a subagent: reads the root session's human `UserMessage` texts without holding this session's locks.
+    root_user_messages: Option<RootUserMessages>,
     /// The session this one is a side conversation (旁聊) beside; such a session is read-only.
     aside: Option<String>,
     /// Where a side conversation's briefings come from, set by whoever opened it.
@@ -245,9 +250,10 @@ impl<L: Llm> Session<L> {
         events: UnboundedSender<UiEvent>,
         runtime: tokio::runtime::Handle,
     ) -> std::io::Result<Self> {
-        Self::new_with_read_only(log, llm, tuning, services, events, runtime, false)
+        Self::new_with_read_only(log, llm, tuning, services, events, runtime, false, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_with_read_only(
         mut log: SessionLog,
         llm: Arc<L>,
@@ -256,6 +262,7 @@ impl<L: Llm> Session<L> {
         events: UnboundedSender<UiEvent>,
         runtime: tokio::runtime::Handle,
         read_only: bool,
+        root_user_messages: Option<RootUserMessages>,
     ) -> std::io::Result<Self> {
         log.repair_tail()?;
         let (workspace, provider, model) = log.header();
@@ -274,6 +281,7 @@ impl<L: Llm> Session<L> {
             inner: Arc::new(Inner {
                 id: log.id().to_string(),
                 parent,
+                root_user_messages,
                 aside,
                 brief: Mutex::new(None),
                 children: Mutex::default(),
@@ -1036,7 +1044,7 @@ impl<L: Llm> Inner<L> {
         }
     }
 
-    async fn run_turn(&self, (text, images, files): Said, cancel: &CancellationToken) {
+    async fn run_turn(self: &Arc<Self>, (text, images, files): Said, cancel: &CancellationToken) {
         let turn = 1 + self.log.lock().unwrap().events().iter().filter(|envelope| matches!(envelope.event, Event::TurnStart { .. })).count() as u64;
         let started = std::time::SystemTime::now();
         let cli_kind = match providers::provider(&self.provider()).map(|known| known.protocol) {
@@ -1188,7 +1196,7 @@ impl<L: Llm> Inner<L> {
     }
 
     /// Run steps until the turn is over. Returns the reason it ended, or what went wrong.
-    async fn run_steps(&self, cancel: &CancellationToken) -> Result<&'static str, String> {
+    async fn run_steps(self: &Arc<Self>, cancel: &CancellationToken) -> Result<&'static str, String> {
         // The provider refused the last request as too long, and the conversation was compacted for it.
         let mut overflowed = false;
         let mut pinned_auto_model: Option<String> = None;

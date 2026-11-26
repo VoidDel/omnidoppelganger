@@ -248,8 +248,7 @@ pub fn check(mode: Mode, tool: &str, input: &Value, workspace: &Path) -> Verdict
             match crate::web::host(url) {
                 // The grant is the site, so its other pages do not ask again.
                 Some(host) => Verdict::Ask { reason: "web", detail: url.to_string(), grant: Some(format!("web:{host}")) },
-                // Not an address that can be fetched: the tool says so itself.
-                None => Verdict::Allow,
+                None => Verdict::Refuse("Only valid http:// or https:// addresses without credentials or backslashes can be fetched."),
             }
         }
         // Reading a server's resource sends the address to it, which may be on another machine: asked about, as
@@ -406,7 +405,12 @@ mod tests {
             let asked = super::check(mode, "fetch_url", &json!({ "url": "https://docs.rs/serde/latest/serde/" }), workspace);
             assert_eq!(asked, Verdict::Ask { reason: "web", detail: "https://docs.rs/serde/latest/serde/".into(), grant: Some("web:docs.rs".into()) });
         }
-        assert_eq!(super::check(Mode::Edit, "fetch_url", &json!({ "url": "file:///etc/passwd" }), workspace), Verdict::Allow);
+        assert_eq!(reason(super::check(Mode::Edit, "fetch_url", &json!({ "url": "file:///etc/passwd" }), workspace)), Some("refused"));
+        for bad_url in ["https://evil.com\\@docs.rs/x", "https://user:pass@docs.rs/", ""] {
+            for mode in [Mode::Manual, Mode::Edit, Mode::Plan, Mode::Auto] {
+                assert_eq!(reason(super::check(mode, "fetch_url", &json!({ "url": bad_url }), workspace)), Some("refused"), "{mode:?} {bad_url}");
+            }
+        }
         // A search asks in every mode too, with one grant for all searches.
         let searched = super::check(Mode::Auto, "web_search", &json!({ "query": "tokio release notes" }), workspace);
         assert_eq!(searched, Verdict::Ask { reason: "search", detail: "tokio release notes".into(), grant: Some("search".into()) });

@@ -8,6 +8,7 @@
 //! address can carry whatever the model puts in it, so every host asks the
 //! user first (see [`crate::policy`]).
 
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -21,13 +22,38 @@ const BODY_BYTES: usize = 5 * 1024 * 1024;
 const TEXT_CHARS: usize = 60_000;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Parse an HTTP(S) URL strictly, refusing raw backslashes, whitespace, non-HTTP(S) schemes,
+/// and embedded userinfo (`user@host`) so policy host extraction and `reqwest` agree identically.
+pub fn parse_http_url(raw: &str) -> Result<reqwest::Url, String> {
+    if raw.contains('\\') || raw.chars().any(char::is_whitespace) {
+        return Err("URL must not contain backslashes or whitespace".into());
+    }
+    let after_scheme = raw.split_once("://").map(|(_, rest)| rest).unwrap_or(raw);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err("URLs with embedded credentials (user@host) are refused".into());
+    }
+    let parsed = reqwest::Url::parse(raw).map_err(|e| e.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("only http and https URLs are supported".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("URLs with embedded credentials (user@host) are refused".into());
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err("URL has no host".into());
+    }
+    Ok(parsed)
+}
+
 /// The host of an http(s) address, lower-cased, with its port when it names one; `None` for anything else.
 pub fn host(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    // What comes before an `@` is a user name, not the host.
-    let host = authority.rsplit('@').next()?.to_lowercase();
-    (!host.is_empty() && !host.contains(char::is_whitespace)).then_some(host)
+    let parsed = parse_http_url(url).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    match parsed.port() {
+        Some(port) => Some(format!("{host}:{port}")),
+        None => Some(host),
+    }
 }
 
 /// The words of an HTML page: its title, and its text with one block per line.
@@ -128,22 +154,122 @@ fn advice(status: u16) -> &'static str {
     }
 }
 
-/// Whether `target` stays on the same HTTP(S) host and explicit port as `origin`, so a redirect
-/// cannot quietly cross to another site or local service without asking the user.
+/// Whether `ip` is loopback, private, link-local / cloud metadata, unique-local, unspecified,
+/// CGNAT (`100.64.0.0/10`), multicast, reserved, or an IPv6 wrapper around such an IPv4 address.
+fn is_non_global_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            let cgnat = octets[0] == 100 && (octets[1] & 0b1100_0000) == 64;
+            let benchmark = octets[0] == 198 && (octets[1] & 0xfe) == 18;
+            let ietf_protocol = octets[0] == 192 && octets[1] == 0 && octets[2] == 0;
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || octets[0] == 0
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || octets[0] >= 240
+                || cgnat
+                || benchmark
+                || ietf_protocol
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_non_global_ip(IpAddr::V4(v4));
+            }
+            let segs = v6.segments();
+            if segs[0] == 0x0064 && segs[1] == 0xff9b && segs[2..6] == [0, 0, 0, 0] {
+                let embedded = std::net::Ipv4Addr::from(((segs[6] as u32) << 16) | (segs[7] as u32));
+                return is_non_global_ip(IpAddr::V4(embedded));
+            }
+            let unique_local = (segs[0] & 0xfe00) == 0xfc00;
+            let link_local = (segs[0] & 0xffc0) == 0xfe80;
+            let site_local = (segs[0] & 0xffc0) == 0xfec0;
+            v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || unique_local || link_local || site_local
+        }
+    }
+}
+
+fn validate_resolved_addrs(host: &str, addrs: Vec<SocketAddr>, allow_local: bool) -> Result<Vec<SocketAddr>, String> {
+    if addrs.is_empty() {
+        return Err(format!("DNS lookup for `{host}` returned no addresses"));
+    }
+    if !allow_local
+        && let Some(blocked) = addrs.iter().find(|addr| is_non_global_ip(addr.ip()))
+    {
+        return Err(format!("refusing to connect external host `{host}` to non-global IP {}", blocked.ip()));
+    }
+    Ok(addrs)
+}
+
+struct SafeDnsResolver {
+    allow_local: bool,
+    #[cfg(test)]
+    override_addrs: Option<Vec<SocketAddr>>,
+}
+
+impl SafeDnsResolver {
+    fn new(allow_local: bool) -> Self {
+        Self {
+            allow_local,
+            #[cfg(test)]
+            override_addrs: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_override(allow_local: bool, addrs: Vec<SocketAddr>) -> Self {
+        Self { allow_local, override_addrs: Some(addrs) }
+    }
+}
+
+impl reqwest::dns::Resolve for SafeDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        let allow_local = self.allow_local;
+        #[cfg(test)]
+        if let Some(addrs) = self.override_addrs.clone() {
+            return Box::pin(async move {
+                let checked = validate_resolved_addrs(&host, addrs, allow_local).map_err(std::io::Error::other)?;
+                let iter: reqwest::dns::Addrs = Box::new(checked.into_iter());
+                Ok(iter)
+            });
+        }
+        Box::pin(async move {
+            let lookup_host = host.clone();
+            let addrs: Vec<SocketAddr> = tokio::task::spawn_blocking(move || (lookup_host.as_str(), 0u16).to_socket_addrs().map(Iterator::collect)).await??;
+            let checked = validate_resolved_addrs(&host, addrs, allow_local).map_err(std::io::Error::other)?;
+            let iter: reqwest::dns::Addrs = Box::new(checked.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
+/// Whether `target` stays on the same HTTP(S) host and effective port as `origin` without
+/// downgrading `https` to `http` or embedding credentials, so a redirect cannot quietly cross
+/// to another site, downgrade TLS, or jump to a local port without asking the user.
 fn same_origin_host(origin: &reqwest::Url, target: &reqwest::Url) -> bool {
-    matches!(target.scheme(), "http" | "https")
+    let scheme_ok = origin.scheme() == target.scheme()
+        || (origin.scheme() == "http" && target.scheme() == "https" && origin.port().is_none() && target.port().is_none());
+    scheme_ok
+        && target.username().is_empty()
+        && target.password().is_none()
         && origin.host_str().map(str::to_ascii_lowercase) == target.host_str().map(str::to_ascii_lowercase)
-        && origin.port() == target.port()
+        && (origin.port_or_known_default() == target.port_or_known_default()
+            || (origin.scheme() == "http" && target.scheme() == "https" && origin.port().is_none() && target.port().is_none()))
 }
 
 /// Get `url` and return its text from character `offset` on.
 pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetched {
-    if host(url).is_none() {
-        return failed(format!("`{url}` is not an http or https address."));
-    }
-    let Ok(origin) = reqwest::Url::parse(url) else {
+    let Ok(origin) = parse_http_url(url) else {
         return failed(format!("`{url}` is not an http or https address."));
     };
+    let allow_local = origin.host_str().is_some_and(|h| {
+        h.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() || h.eq_ignore_ascii_case("localhost")
+    });
     let redirect_origin = origin.clone();
     // Follow redirects only on the approved host: crossing to another host (or a local port) stops so the model can ask for that address.
     let redirects = reqwest::redirect::Policy::custom(move |attempt| {
@@ -155,11 +281,17 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
             attempt.stop()
         }
     });
-    let client = match reqwest::Client::builder().connect_timeout(TIMEOUT).timeout(TIMEOUT).redirect(redirects).build() {
+    let client = match reqwest::Client::builder()
+        .connect_timeout(TIMEOUT)
+        .timeout(TIMEOUT)
+        .redirect(redirects)
+        .dns_resolver(SafeDnsResolver::new(allow_local))
+        .build()
+    {
         Ok(client) => client,
         Err(error) => return failed(format!("Cannot set up the request: {error}")),
     };
-    let request = BROWSER.iter().fold(client.get(url), |request, (name, value)| request.header(*name, *value));
+    let request = BROWSER.iter().fold(client.get(origin.clone()), |request, (name, value)| request.header(*name, *value));
     let download = async {
         let mut response = request.send().await.map_err(|error| format!("Cannot reach {url}: {error}"))?;
         let status = response.status();
@@ -172,8 +304,12 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
             };
             return Err(if target.is_empty() {
                 format!("{url} answered HTTP {} without a redirect address.", status.as_u16())
-            } else if host(&target).is_some() {
-                format!("{url} redirected to {target}, which is on another host. Call `fetch_url` with `{target}` if you want to read it (the user will be asked for that host).")
+            } else if let Some(target_host) = host(&target) {
+                if Some(target_host.as_str()) == host(url).as_deref() {
+                    format!("{url} redirected to `{target}`, which downgrades HTTPS to HTTP and will not be followed.")
+                } else {
+                    format!("{url} redirected to {target}, which is on another host. Call `fetch_url` with `{target}` if you want to read it (the user will be asked for that host).")
+                }
             } else {
                 format!("{url} redirected to `{target}`, which is not an http or https address and will not be followed.")
             });
@@ -253,7 +389,7 @@ pub async fn fetch(url: &str, offset: usize, cancel: &CancellationToken) -> Fetc
     let shown: String = text.chars().skip(offset).take(TEXT_CHARS).collect();
     let end = offset + shown.chars().count();
     let mut content = String::new();
-    if landed != url {
+    if landed != url && landed != origin.as_str() {
         content.push_str(&format!("[redirected to {landed}]\n"));
     }
     if let Some(title) = &title {
@@ -432,9 +568,35 @@ mod tests {
     fn reads_the_host_of_an_address() {
         assert_eq!(host("https://Docs.RS/serde/latest?x=1").as_deref(), Some("docs.rs"));
         assert_eq!(host("http://localhost:1420/").as_deref(), Some("localhost:1420"));
-        assert_eq!(host("https://user:pw@example.com/a").as_deref(), Some("example.com"));
-        for bad in ["ftp://example.com", "file:///etc/passwd", "example.com", "https://", "https:// bad/"] {
+        assert_eq!(host("https://www.npmjs.com/package/@tauri-apps/api").as_deref(), Some("www.npmjs.com"));
+        assert_eq!(host("http://[::1]:8080/health").as_deref(), Some("[::1]:8080"));
+        for bad in ["ftp://example.com", "file:///etc/passwd", "example.com", "https://", "https:// bad/", "https://user:pw@example.com/a"] {
             assert_eq!(host(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn host_rejects_backslashes_and_userinfo_confusion() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        for bad in [
+            "https://evil.com\\@docs.rs/path",
+            "http://evil.com\\docs.rs/path",
+            "https://docs.rs/a\\b",
+            "https://user:pass@docs.rs/",
+            "https://user@docs.rs/",
+            "https://:pass@docs.rs/",
+            "https://@docs.rs/",
+        ] {
+            assert_eq!(host(bad), None, "{bad}");
+            assert!(parse_http_url(bad).is_err(), "{bad}");
+            assert!(
+                matches!(
+                    crate::policy::check(crate::policy::Mode::Auto, "fetch_url", &json!({ "url": bad }), workspace),
+                    crate::policy::Verdict::Refuse(_)
+                ),
+                "{bad}"
+            );
         }
     }
 
@@ -447,6 +609,79 @@ mod tests {
         assert!(!same_origin_host(&url("https://docs.rs/a"), &url("https://other.example/a")));
         assert!(!same_origin_host(&url("http://127.0.0.1:8080/a"), &url("http://127.0.0.1:9090/a")));
         assert!(!same_origin_host(&url("https://docs.rs/a"), &url("file:///etc/passwd")));
+    }
+
+    #[test]
+    fn same_origin_blocks_https_to_http_downgrade_and_port_change() {
+        let url = |text: &str| reqwest::Url::parse(text).unwrap();
+        assert!(!same_origin_host(&url("https://docs.rs/a"), &url("http://docs.rs/b")));
+        assert!(!same_origin_host(&url("https://docs.rs/a"), &url("https://docs.rs:8443/b")));
+        assert!(!same_origin_host(&url("http://docs.rs:8080/a"), &url("https://docs.rs/b")));
+        assert!(!same_origin_host(&url("http://docs.rs:8080/a"), &url("https://docs.rs:8080/b")));
+        assert!(!same_origin_host(&url("https://docs.rs/a"), &url("https://user:pass@docs.rs/b")));
+        assert!(same_origin_host(&url("http://docs.rs/a"), &url("https://docs.rs/a")));
+        assert!(same_origin_host(&url("https://docs.rs:443/a"), &url("https://docs.rs/b")));
+    }
+
+    #[tokio::test]
+    async fn dns_guard_blocks_external_domain_resolving_to_loopback_or_metadata_ip() {
+        use reqwest::dns::{Name, Resolve};
+        use std::str::FromStr;
+
+        for blocked_ip in [
+            "127.0.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "169.254.169.254",
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "100.64.0.1",
+            "0.0.0.0",
+            "fc00::1",
+            "fe80::1",
+            "64:ff9b::7f00:1",
+        ] {
+            let ip: IpAddr = blocked_ip.parse().unwrap();
+            assert!(is_non_global_ip(ip), "{blocked_ip} should be non-global");
+            let resolver = SafeDnsResolver::with_override(false, vec![SocketAddr::new(ip, 0)]);
+            let result = resolver.resolve(Name::from_str("rebind.example").unwrap()).await;
+            assert!(result.is_err(), "{blocked_ip} was not blocked by SafeDnsResolver");
+        }
+
+        // Dual A-record (public + loopback) must also fail closed when allow_local == false.
+        let dual = SafeDnsResolver::with_override(
+            false,
+            vec![
+                SocketAddr::new("93.184.216.34".parse().unwrap(), 0),
+                SocketAddr::new("127.0.0.1".parse().unwrap(), 0),
+            ],
+        );
+        assert!(dual.resolve(Name::from_str("rebind.example").unwrap()).await.is_err());
+
+        // Public IP passes when allow_local == false.
+        let public = SafeDnsResolver::with_override(false, vec![SocketAddr::new("93.184.216.34".parse().unwrap(), 0)]);
+        assert!(public.resolve(Name::from_str("example.com").unwrap()).await.is_ok());
+
+        // End-to-end check with reqwest + local test server: external domain resolving to 127.0.0.1 is blocked,
+        // while explicit http://127.0.0.1:<port>/ request succeeds.
+        let cancel = CancellationToken::new();
+        let (address, requests) = crate::testing::serve_bytes(vec![page("text/plain", "local-ok").into_bytes()]).await;
+        let local_addr: SocketAddr = address.strip_prefix("http://").unwrap().parse().unwrap();
+
+        let guarded_client = reqwest::Client::builder()
+            .no_proxy()
+            .dns_resolver(SafeDnsResolver::with_override(false, vec![local_addr]))
+            .build()
+            .unwrap();
+        let blocked_err = guarded_client.get(format!("http://rebind.example:{}/secret", local_addr.port())).send().await;
+        assert!(blocked_err.is_err(), "reqwest should block external domain resolving to loopback");
+
+        let allowed = fetch(&format!("{address}/ok"), 0, &cancel).await;
+        assert!(!allowed.is_error && allowed.content == "local-ok", "{}", allowed.content);
+        let seen = requests.await.unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].starts_with("GET /ok "));
     }
 
     #[tokio::test]

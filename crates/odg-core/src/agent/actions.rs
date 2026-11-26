@@ -63,22 +63,73 @@ fn choose_retained_turn(events: &[crate::events::Envelope], context_window: u64)
             _ => {}
         }
     }
-    if completed.len() < 2 {
-        return None;
+    let active_est = active.map_or(0, |(_, _, _, est)| est);
+    if completed.len() >= 2
+        && let Some(&(turn, start_idx, est)) = completed.last()
+        && est.saturating_add(active_est) <= context_window / 4
+    {
+        return Some((start_idx, turn));
     }
-    let &(turn, start_idx, est) = completed.last()?;
-    (est <= context_window / 4).then_some((start_idx, turn))
+    if !completed.is_empty()
+        && let Some((act_turn, act_start_idx, true, act_est)) = active
+        && act_est <= context_window / 2
+    {
+        return Some((act_start_idx, act_turn));
+    }
+    None
+}
+
+fn escape_xml(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 impl<L: Llm> Inner<L> {
     /// Start a subagent: a session of its own in this workspace, on this
     /// session's provider, model, and effort, in its mode and with what the
     /// user has allowed it so far.
-    fn spawn(&self, name: &str, read_only: bool) -> Result<Session<L>, String> {
+    fn spawn(self: &std::sync::Arc<Self>, name: &str, read_only: bool) -> Result<Session<L>, String> {
         let provider = self.provider();
         let new = NewSession { workspace: &self.workspace, provider: &provider, model: &self.model(), parent: Some(&self.id), worktree: self.worktree.clone(), schedule: None, aside: None };
         let log = self.store.create_with(new).map_err(|error| error.to_string())?;
-        let child = Session::new_with_read_only(log, self.llm.clone(), self.tuning.clone(), self.services.clone(), self.events.clone(), self.runtime.clone(), read_only).map_err(|error| error.to_string())?;
+        let root_user_messages: super::RootUserMessages = match &self.root_user_messages {
+            Some(existing) => existing.clone(),
+            None => {
+                let root = std::sync::Arc::downgrade(self);
+                std::sync::Arc::new(move || {
+                    let Some(root) = root.upgrade() else { return Vec::new() };
+                    let log = root.log.lock().unwrap();
+                    log.events()
+                        .iter()
+                        .filter_map(|envelope| match &envelope.event {
+                            Event::UserMessage { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+            }
+        };
+        let child = Session::new_with_read_only(
+            log,
+            self.llm.clone(),
+            self.tuning.clone(),
+            self.services.clone(),
+            self.events.clone(),
+            self.runtime.clone(),
+            read_only,
+            Some(root_user_messages),
+        )
+        .map_err(|error| error.to_string())?;
         let (mode, grants) = {
             let state = self.state.lock().unwrap();
             (state.mode, state.grants.clone())
@@ -161,7 +212,7 @@ impl<L: Llm> Inner<L> {
 
     /// Run `delegate`: set off a subagent for each task, wait until all have
     /// finished, and hand back what each reported. Stopping this turn stops them.
-    pub(super) async fn delegate(&self, tool_use_id: &str, input: &Value, cancel: &CancellationToken) -> Result<ToolOutput, String> {
+    pub(super) async fn delegate(self: &std::sync::Arc<Self>, tool_use_id: &str, input: &Value, cancel: &CancellationToken) -> Result<ToolOutput, String> {
         if self.parent.is_some() {
             return Ok(ToolOutput::error("A subagent cannot delegate. Do the task yourself."));
         }
@@ -330,18 +381,69 @@ impl<L: Llm> Inner<L> {
             let count = text.chars().count();
             if count <= most { text.to_string() } else { format!("…{}", text.chars().skip(count - most).collect::<String>()) }
         };
-        let asked: Vec<String> = {
+        let (asked, delegated_task): (Vec<String>, Option<String>) = if self.parent.is_some() {
+            // Lock-ordering invariant: never hold child `self.log` or `self.state` while calling
+            // `root_user_messages()`, which briefly locks the root parent's `log`.
+            let root_raw = self
+                .root_user_messages
+                .as_ref()
+                .map(|fetch| fetch())
+                .unwrap_or_default();
+            let root_msgs: Vec<String> = root_raw
+                .iter()
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| clip(text, 2_000))
+                .collect();
+            if root_msgs.is_empty() {
+                return Ok(false);
+            }
+            let kept = root_msgs[root_msgs.len().saturating_sub(8)..].to_vec();
+            let sub_task = {
+                let log = self.log.lock().unwrap();
+                log.events()
+                    .iter()
+                    .filter_map(|envelope| match &envelope.event {
+                        Event::UserMessage { text, .. } if !text.trim().is_empty() => Some(clip(text, 2_000)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n---\n")
+            };
+            (kept, (!sub_task.is_empty()).then_some(sub_task))
+        } else {
             let log = self.log.lock().unwrap();
-            let messages: Vec<String> = log.events().iter().filter_map(|envelope| if let Event::UserMessage { text, .. } = &envelope.event { Some(clip(text, 2_000)) } else { None }).collect();
-            messages[messages.len().saturating_sub(8)..].to_vec()
+            let messages: Vec<String> = log
+                .events()
+                .iter()
+                .filter_map(|envelope| {
+                    if let Event::UserMessage { text, .. } = &envelope.event {
+                        Some(clip(text, 2_000))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            (messages[messages.len().saturating_sub(8)..].to_vec(), None)
         };
         let intent: Vec<&str> = said.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect();
         let (_, _, shell) = tools::shell();
+        let escaped_asked = asked
+            .iter()
+            .map(|msg| escape_xml(msg))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+        let delegated_section = match &delegated_task {
+            Some(task) => format!("\n<delegated-task>\n{}\n</delegated-task>", escape_xml(task)),
+            None => String::new(),
+        };
         let prompt = format!(
-            "<workspace>{}</workspace>\n<shell>{shell}</shell>\n<user-messages>\n{}\n</user-messages>\n<agent-said>\n{}\n</agent-said>\n<command>\n{command}\n</command>",
-            self.workspace.display(),
-            asked.join("\n---\n"),
-            clip(&intent.join("\n"), 2_000),
+            "<workspace>{}</workspace>\n<shell>{}</shell>\n<user-messages>\n{}\n</user-messages>{}\n<agent-said>\n{}\n</agent-said>\n<command>\n{}\n</command>",
+            escape_xml(&self.workspace.display().to_string()),
+            escape_xml(shell),
+            escaped_asked,
+            delegated_section,
+            escape_xml(&clip(&intent.join("\n"), 2_000)),
+            escape_xml(command),
         );
         let request = LlmRequest {
             provider: self.provider(),
@@ -379,5 +481,58 @@ impl<L: Llm> Inner<L> {
         let log = self.log.lock().unwrap();
         let since = log.events().iter().rposition(|envelope| matches!(envelope.event, Event::ContextCompacted { .. })).unwrap_or(0);
         log.events()[since..].iter().any(|envelope| matches!(envelope.event, Event::AssistantMessage { .. }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::Envelope;
+
+    fn env(seq: u64, event: Event) -> Envelope {
+        Envelope { seq, ts: "2026-01-01T00:00:00Z".into(), event }
+    }
+
+    #[test]
+    fn choose_retained_turn_accounts_for_active_turn_volume() {
+        let user = |s: &str| Event::UserMessage { text: s.into(), steering: false, mode: Mode::Auto, images: vec![], files: vec![] };
+        let asst = |s: &str| Event::AssistantMessage {
+            content: vec![json!({ "type": "tool_use", "id": "t1", "name": "read_file", "input": { "path": s } })],
+            stop_reason: Some("tool_use".into()),
+            model: "m".into(),
+            usage: json!({}),
+            tokens: None,
+        };
+
+        // Window = 4000 -> quarter = 1000, half = 2000.
+        // Turn 1 small, Turn 2 ~600 tok, active Turn 3 ~600 tok -> combined 1200 > quarter (1000),
+        // but active Turn 3 <= half (2000), so it retains only active Turn 3 instead of overflowing!
+        let events = vec![
+            env(1, Event::TurnStart { turn: 1 }),
+            env(2, user("turn1")),
+            env(3, asst("a.rs")),
+            env(4, Event::TurnEnd { turn: 1, reason: "completed".into(), error: None }),
+            env(5, Event::TurnStart { turn: 2 }),
+            env(6, user(&"x".repeat(1800))),
+            env(7, asst("b.rs")),
+            env(8, Event::TurnEnd { turn: 2, reason: "completed".into(), error: None }),
+            env(9, Event::TurnStart { turn: 3 }),
+            env(10, user("turn3")),
+            env(11, asst("c.rs")),
+            env(12, Event::ToolResult { tool_use_id: "t1".into(), tool: "read_file".into(), content: "y".repeat(1800), is_error: false, meta: Value::Null, images: vec![] }),
+        ];
+        assert_eq!(choose_retained_turn(&events, 4000), Some((8, 3)));
+        // With a huge window (40_000), Turn 2 + Turn 3 fit within quarter -> retains from Turn 2.
+        assert_eq!(choose_retained_turn(&events, 40_000), Some((4, 2)));
+        // If active Turn 3 itself exceeds half the window (> 2000), falls back to None (full transcript compaction).
+        assert_eq!(choose_retained_turn(&events, 800), None);
+    }
+
+    #[test]
+    fn xml_escaping_neutralizes_all_metacharacters() {
+        assert_eq!(
+            escape_xml("a & b <tag attr=\"x\" 'y'>"),
+            "a &amp; b &lt;tag attr=&quot;x&quot; &apos;y&apos;&gt;"
+        );
     }
 }

@@ -26,11 +26,12 @@ import { cliOf, isProviderEnabled } from "./lib/providers";
 import { api } from "./lib/api";
 import { notifyBackground } from "./lib/notify";
 import { forwarded } from "./lib/aside";
-import { applyDelta, changedFiles, commandRuns, fold, products, sessionCostUsd, todos, usage, type StreamBlock } from "./lib/fold";
+import { changedFiles, commandRuns, fold, products, sessionCostUsd, todos, usage } from "./lib/fold";
 import { modeHintFor, modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
+import { initial, reduce, removedSessionIds } from "./lib/sessionState";
 import type { SlashCommand } from "./lib/slash";
-import type { Decision, DiffStage, Envelope, GitStatus, Image, Mode, PromptTemplateInfo, Reply, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
+import type { Decision, DiffStage, GitStatus, Image, Mode, PromptTemplateInfo, Reply, Schedule, SessionItem, Settings, SettingsView } from "./lib/types";
 
 /** What "/init" hands the 分身: learn the project, and write down what a 分身 needs to know of it. */
 const INIT_TASK =
@@ -38,155 +39,6 @@ const INIT_TASK =
 /** What "/review" hands the 分身: look over what has changed and not been committed, and change nothing. */
 const REVIEW_TASK =
   "审查洞府里还没提交的改动（git diff，连同暂存的）：找出 bug、漏掉的边界情况、和项目约定不符的地方，以及缺了的测试。按严重程度列出，每条写明文件和行号、会出什么问题、怎么改。只看不改。";
-
-interface State {
-  sessions: SessionItem[];
-  activeId: string | null;
-  /** The session being opened: its log events are kept until its snapshot arrives. */
-  openingId: string | null;
-  buffer: Envelope[];
-  /** The last status the session being opened reported while it was being opened: newer than the view that comes back. */
-  bufferedStatus: Status | null;
-  events: Envelope[];
-  status: Status;
-  stream: StreamBlock[];
-  /** Messages sent during a turn that the agent has not picked up yet. */
-  queued: string[];
-  page: "chat" | "settings" | "schedules" | "mcp" | "skills";
-  settings: SettingsView | null;
-  /** The 功课, read when the app starts and again whenever one comes due. */
-  schedules: Schedule[];
-  error: string | null;
-  /** Something that went well and is worth a line: shown until dismissed. */
-  note: string | null;
-}
-
-type Action =
-  | { type: "sessions"; sessions: SessionItem[] }
-  | { type: "opening"; id: string }
-  | { type: "opened"; view: SessionView }
-  | { type: "session"; item: SessionItem }
-  | { type: "deleted"; id: string }
-  | { type: "home" }
-  | { type: "event"; event: UiEvent }
-  | { type: "queued"; id: string; text: string }
-  | { type: "page"; page: State["page"] }
-  | { type: "settings"; settings: SettingsView }
-  | { type: "schedules"; schedules: Schedule[] }
-  | { type: "error"; error: string | null }
-  | { type: "note"; note: string | null };
-
-const initial: State = {
-  sessions: [],
-  activeId: null,
-  openingId: null,
-  bufferedStatus: null,
-  buffer: [],
-  events: [],
-  status: "idle",
-  stream: [],
-  queued: [],
-  page: "chat",
-  settings: null,
-  schedules: [],
-  error: null,
-  note: null,
-};
-
-/** Add a log event unless the snapshot already holds it. */
-function appendLog(state: State, envelope: Envelope): State {
-  const last = state.events[state.events.length - 1]?.seq ?? 0;
-  if (envelope.seq <= last) return state;
-  let { stream, queued } = state;
-  if (envelope.type === "assistant/message") stream = [];
-  // A queued message joins as steering, or opens the next turn when it arrived as the last one ended.
-  if (envelope.type === "user/message") {
-    const at = queued.indexOf(envelope.data.text);
-    if (at >= 0) queued = queued.filter((_, index) => index !== at);
-  }
-  return { ...state, events: [...state.events, envelope], stream, queued };
-}
-
-function reduce(state: State, action: Action): State {
-  switch (action.type) {
-    case "sessions":
-      return { ...state, sessions: action.sessions };
-    case "opening":
-      return { ...state, openingId: action.id, buffer: [], bufferedStatus: null };
-    case "opened": {
-      const { events, ...view } = action.view;
-      // A status reported while the view was on its way is at least as new as the view: a turn that ended
-      // just after the view was taken would otherwise be shown as running for good.
-      const item = state.openingId === view.id && state.bufferedStatus ? { ...view, status: state.bufferedStatus } : view;
-      const opened: State = {
-        ...state,
-        activeId: item.id,
-        openingId: null,
-        buffer: [],
-        bufferedStatus: null,
-        events,
-        status: item.status,
-        stream: [],
-        queued: [],
-        page: "chat",
-        sessions: state.sessions.some((session) => session.id === item.id)
-          ? state.sessions.map((session) => (session.id === item.id ? item : session))
-          : [item, ...state.sessions],
-      };
-      return state.buffer.reduce(appendLog, opened);
-    }
-    case "home":
-      // No 分身 on screen: the home screen, with what stands on its desk.
-      return { ...state, activeId: null, openingId: null, buffer: [], bufferedStatus: null, events: [], stream: [], queued: [], status: "idle", page: "chat" };
-    case "deleted": {
-      const removed = new Set<string>([action.id]);
-      let grew = true;
-      while (grew) {
-        grew = false;
-        for (const session of state.sessions) {
-          if (!removed.has(session.id) && session.parent && removed.has(session.parent)) {
-            removed.add(session.id);
-            grew = true;
-          }
-        }
-      }
-      const sessions = state.sessions.filter((session) => !removed.has(session.id));
-      return state.activeId && removed.has(state.activeId)
-        ? { ...state, sessions, activeId: null, events: [], stream: [], queued: [], status: "idle" }
-        : { ...state, sessions };
-    }
-    case "session":
-      return { ...state, sessions: state.sessions.map((session) => (session.id === action.item.id ? { ...action.item, status: session.status } : session)) };
-    case "event": {
-      const { event } = action;
-      const active = event.session_id === state.activeId;
-      if (event.kind === "log") {
-        if (active) return appendLog(state, event.envelope);
-        return event.session_id === state.openingId ? { ...state, buffer: [...state.buffer, event.envelope] } : state;
-      }
-      if (event.kind === "stream") return active ? { ...state, stream: applyDelta(state.stream, event.delta) } : state;
-      const sessions = state.sessions.map((session) => (session.id === event.session_id ? { ...session, status: event.status } : session));
-      // Kept for the session being opened, which may be the one already on screen, opened again.
-      const bufferedStatus = event.session_id === state.openingId ? event.status : state.bufferedStatus;
-      if (!active) return { ...state, sessions, bufferedStatus };
-      const idle = event.status === "idle";
-      return { ...state, sessions, bufferedStatus, status: event.status, stream: idle ? [] : state.stream, queued: idle ? [] : state.queued };
-    }
-    case "queued":
-      // Said to a 分身 that has since left the screen, it is not shown under another's work.
-      return action.id === state.activeId ? { ...state, queued: [...state.queued, action.text] } : state;
-    case "page":
-      return { ...state, page: action.page };
-    case "settings":
-      return { ...state, settings: action.settings };
-    case "schedules":
-      return { ...state, schedules: action.schedules };
-    case "error":
-      return { ...state, error: action.error };
-    case "note":
-      return { ...state, note: action.note };
-  }
-}
 
 /** How the user left the side panel, kept in the window's own storage: it is about this screen, not the agent. */
 const PANEL_KEY = "odg.panel";
@@ -296,6 +148,10 @@ export default function App() {
   const fail = useCallback((error: unknown) => dispatch({ type: "error", error: String(error) }), []);
   const refresh = useCallback(() => api.listSessions().then((sessions) => dispatch({ type: "sessions", sessions }), fail), [fail]);
 
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const navSeqRef = useRef(0);
+  const nextNavSeq = useCallback(() => ++navSeqRef.current, []);
   const sessionsRef = useRef(state.sessions);
   sessionsRef.current = state.sessions;
   const lastStatusRef = useRef<Map<string, string>>(new Map());
@@ -384,6 +240,18 @@ export default function App() {
     [made],
   );
 
+  const dispatchDeleted = useCallback(
+    (id: string) => {
+      const cur = stateRef.current;
+      const removed = removedSessionIds(cur.sessions, id);
+      const affectsNav =
+        (cur.activeId !== null && removed.has(cur.activeId)) ||
+        (cur.openingId !== null && removed.has(cur.openingId));
+      dispatch({ type: "deleted", id, navSeq: affectsNav ? nextNavSeq() : undefined });
+    },
+    [nextNavSeq],
+  );
+
   const cleanScheduledSessions = useCallback(
     async (ids: string[]) => {
       if (ids.length === 0) return;
@@ -391,7 +259,7 @@ export default function App() {
       for (const id of ids) {
         try {
           await api.deleteSession(id);
-          dispatch({ type: "deleted", id });
+          dispatchDeleted(id);
           removed++;
         } catch (error) {
           fail(error);
@@ -402,18 +270,23 @@ export default function App() {
         dispatch({ type: "note", note: `已清扫 ${removed} 个已收功的功课分身。` });
       }
     },
-    [fail],
+    [dispatchDeleted, fail],
   );
 
+  const goHome = () => dispatch({ type: "home", navSeq: nextNavSeq() });
   const open = (id: string) => {
-    dispatch({ type: "opening", id });
-    api.openSession(id).then((view) => dispatch({ type: "opened", view }), fail);
+    const navSeq = nextNavSeq();
+    dispatch({ type: "opening", id, navSeq });
+    api.openSession(id).then((view) => dispatch({ type: "opened", view, navSeq }), fail);
   };
   /** Fork the session on the page: before `turn`, bringing that turn's message (and an optional removable summary of abandoned turns) to the box; or all of it. */
   const forkFrom = (turn?: number, text?: string) => {
     if (!state.activeId) return;
+    const navSeq = nextNavSeq();
+    dispatch({ type: "opening", id: null, navSeq });
     api.forkSession(state.activeId, turn).then((view) => {
-      dispatch({ type: "opened", view });
+      dispatch({ type: "opened", view, navSeq });
+      if (navSeq !== navSeqRef.current) return;
       const quote = view.abandoned_brief
         ? { label: "原分支试错摘要", meta: "点 × 可不带入", content: view.abandoned_brief }
         : undefined;
@@ -431,17 +304,28 @@ export default function App() {
     }, fail);
   };
   /** Start a conversation: a 分身 in the folder kept for them, which is made the first time. */
-  const chat = () => api.startChat().then((view) => dispatch({ type: "opened", view }), fail);
+  const chat = () => {
+    const navSeq = nextNavSeq();
+    dispatch({ type: "opening", id: null, navSeq });
+    api.startChat().then((view) => dispatch({ type: "opened", view, navSeq }), fail);
+  };
   /** Whether a session works in the folder kept for conversations. */
   const chatting = (session: SessionItem) => {
     const plain = (path: string) => path.replace(/[\\/]+$/, "").toLowerCase();
     return !!state.settings && plain(session.workspace) === plain(state.settings.chat_folder);
   };
+  const createIn = (workspace: string, isolated?: boolean) => {
+    const navSeq = nextNavSeq();
+    dispatch({ type: "opening", id: null, navSeq });
+    api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view, navSeq }), fail);
+  };
   const create = async () => {
     try {
       const workspace = await api.pickWorkspace();
       if (!workspace) return;
-      dispatch({ type: "opened", view: await api.createSession(workspace) });
+      const navSeq = nextNavSeq();
+      dispatch({ type: "opening", id: null, navSeq });
+      dispatch({ type: "opened", view: await api.createSession(workspace), navSeq });
     } catch (error) {
       fail(error);
     }
@@ -938,7 +822,7 @@ export default function App() {
         aliases: ["新分身", "化出"],
         hint: "在这处洞府再化出一个分身",
         run: () => {
-          api.createSession(session.worktree?.origin ?? session.workspace, false).then((view) => dispatch({ type: "opened", view }), fail);
+          createIn(session.worktree?.origin ?? session.workspace, false);
         },
       },
       {
@@ -1329,24 +1213,27 @@ export default function App() {
                 </Suspense>
               ) : undefined
             }
-            onHome={() => dispatch({ type: "home" })}
+            onHome={goHome}
             onMcp={toMcp}
             onSkills={() => dispatch({ type: "page", page: "skills" })}
             onSchedules={toSchedules}
             onChat={chat}
             onOpen={open}
             onNew={create}
-            onNewIn={(workspace, isolated) => api.createSession(workspace, isolated).then((view) => dispatch({ type: "opened", view }), fail)}
+            onNewIn={(workspace, isolated) => createIn(workspace, isolated)}
             onSettings={toSettings}
             onSearch={api.searchSessions}
             onRenameSession={(id, title) => api.renameSession(id, title).then((item) => dispatch({ type: "session", item }), fail)}
-            onForkSession={(id) =>
+            onForkSession={(id) => {
+              const navSeq = nextNavSeq();
+              dispatch({ type: "opening", id: null, navSeq });
               api.forkSession(id).then((view) => {
-                dispatch({ type: "opened", view });
+                dispatch({ type: "opened", view, navSeq });
+                if (navSeq !== navSeqRef.current) return;
                 dispatch({ type: "note", note: "已分叉：这是一个新的分身，带着到现在为止的全部对话。只分了对话：洞府里的文件是同一份，还是现在的样子。" });
-              }, fail)
-            }
-            onDeleteSession={(id) => api.deleteSession(id).then(() => dispatch({ type: "deleted", id }), fail)}
+              }, fail);
+            }}
+            onDeleteSession={(id) => api.deleteSession(id).then(() => dispatchDeleted(id), fail)}
             onExportSession={exportSession}
             onCleanScheduled={(ids) => void cleanScheduledSessions(ids)}
             onRevealWorkspace={(id) => void api.openWorkspaceEntry(id, "", true).catch(fail)}
@@ -1474,7 +1361,7 @@ export default function App() {
                 }
               }}
               onRename={(title) => api.renameSession(active.id, title).then((item) => dispatch({ type: "session", item }), fail)}
-              onDelete={() => api.deleteSession(active.id).then(() => dispatch({ type: "deleted", id: active.id }), fail)}
+              onDelete={() => api.deleteSession(active.id).then(() => dispatchDeleted(active.id), fail)}
             />
             </Guard>
             {banners}
@@ -1575,7 +1462,7 @@ export default function App() {
           mode={jumping}
           sessions={state.sessions}
           acts={[
-            { id: "home", name: "首页", hint: "回到山前：候旨的、运功的、将至的功课", seal: "山", run: () => dispatch({ type: "home" }) },
+            { id: "home", name: "首页", hint: "回到山前：候旨的、运功的、将至的功课", seal: "山", run: goHome },
             { id: "new", name: "开辟洞府", hint: "选一个文件夹，化出分身", seal: "辟", run: () => void create() },
             { id: "chat", name: "闲谈", hint: "不选文件夹，直接和分身说话", seal: "谈", run: chat },
             ...(isProjectSession
