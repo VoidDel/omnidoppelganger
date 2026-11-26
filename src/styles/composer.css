@@ -727,6 +727,28 @@ dialog.paste-viewer::backdrop {
   color: var(--ink-2);
 }
 
+.file-chip.openable .file-chip-reveal {
+  max-width: 0;
+  padding: 0;
+  border-left-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    max-width var(--d-quick) var(--ease-out),
+    padding var(--d-quick) var(--ease-out),
+    opacity var(--d-quick) var(--ease-out);
+}
+
+.file-chip.openable:hover .file-chip-reveal,
+.file-chip.openable:focus-within .file-chip-reveal {
+  max-width: 32px;
+  padding: 0 7px;
+  border-left-width: 1px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .file-chip-reveal svg,
 .file-chip-reveal .bi {
   color: currentColor;
@@ -819,6 +841,13 @@ dialog.paste-viewer::backdrop {
   max-width: 100%;
 }
 
+.shot img {
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
 .shot:hover img {
   border-color: var(--jade);
 }
@@ -826,6 +855,32 @@ dialog.paste-viewer::backdrop {
 .shot:focus-visible {
   outline: 2px solid var(--jade);
   outline-offset: 2px;
+}
+
+/* Compact file-block-style image chip inside messages and tool outputs. */
+.shot-chip {
+  background: var(--well);
+  border-color: var(--line);
+}
+
+.shot-chip .file-chip-open {
+  padding: 2px 8px 2px 4px;
+  cursor: zoom-in;
+}
+
+.shots .shot-chip-thumb {
+  width: 24px;
+  height: 24px;
+  max-height: 24px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  flex: none;
+  background: var(--sheet);
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* ---------- a picture seen at full size ---------- */
@@ -862,7 +917,7 @@ dialog.paste-viewer::backdrop {
   /* Held to the window, less the room round it, in the window's own measure: a percentage would be of a row that
      takes its height from the picture, and a tall picture would run off the window and be cut. */
   max-width: calc(100vw - 144px);
-  max-height: calc(100vh - 96px);
+  max-height: calc(100vh - 128px);
   width: auto;
   height: auto;
   object-fit: contain;
@@ -870,8 +925,71 @@ dialog.paste-viewer::backdrop {
   border-radius: var(--r-paper);
   background: var(--sheet);
   box-shadow: 0 12px 40px rgb(0 0 0 / 0.35);
-  cursor: auto;
+  transition: transform 80ms ease-out;
+  user-select: none;
   animation: come var(--d-move) var(--ease-out);
+}
+
+.viewer img.can-zoom {
+  cursor: zoom-in;
+}
+
+.viewer img.can-pan {
+  cursor: grab;
+}
+
+.viewer img.is-panning {
+  cursor: grabbing;
+  transition: none;
+}
+
+.img-viewer-bar {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  translate: -50% 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(16, 27, 29, 0.9);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  color: #f2f6f3;
+  font-size: var(--t-micro);
+}
+
+.img-viewer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #f2f6f3;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.img-viewer-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.img-viewer-pct {
+  min-width: 46px;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.img-viewer-sep {
+  padding: 0 6px;
+  color: rgb(242 246 243 / 0.72);
+  font-variant-numeric: tabular-nums;
 }
 
 .viewer-close,

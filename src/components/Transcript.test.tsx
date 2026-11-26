@@ -225,4 +225,67 @@ describe("Transcript component (P1-15 & P1-13)", () => {
     fireEvent.click(screen.getByRole("button", { name: "立即传音" }));
     expect(onDeliverNow).toHaveBeenCalledTimes(1);
   });
+
+  it("renders thinking block content as formatted Markdown when expanded", () => {
+    const row = makeRow({
+      items: [
+        {
+          kind: "thinking",
+          text: "Check `web::fetch` and *redirect* handling.",
+        },
+      ],
+    });
+    const { container } = renderTranscript({ rows: [row] });
+    const details = container.querySelector("details.thinking") as HTMLDetailsElement;
+    expect(details).toBeTruthy();
+    expect(container.querySelector(".thinking-body")).toBeNull();
+
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+
+    expect(container.querySelector(".thinking-body code")?.textContent).toBe("web::fetch");
+    expect(container.querySelector(".thinking-body em")?.textContent).toBe("redirect");
+  });
+
+  it("renders compact image & file chips with copy/quote actions and zoomable Viewer", () => {
+    const onAttachToMain = vi.fn();
+    const onAttachToAside = vi.fn();
+    const onAttachImageToMain = vi.fn();
+    const onAttachImageToAside = vi.fn();
+    const sampleImg = { media_type: "image/png", data: "iVBORw0KGgo=" };
+    const row = makeRow({
+      prompt: {
+        text: "看看这个截图和文件",
+        ts: "2026-11-26T10:00:00.000Z",
+        steering: false,
+        images: [sampleImg],
+        files: [{ path: "/tmp/demo.txt", bytes: 128, inline: true, is_dir: false }],
+      },
+    });
+    renderTranscript({
+      rows: [row],
+      onAttachToMain,
+      onAttachToAside,
+      onAttachImageToMain,
+      onAttachImageToAside,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "引用第 1 张图到对话" }));
+    expect(onAttachImageToMain).toHaveBeenCalledWith(sampleImg);
+    fireEvent.click(screen.getByRole("button", { name: "引用第 1 张图到旁聊" }));
+    expect(onAttachImageToAside).toHaveBeenCalledWith(sampleImg);
+
+    fireEvent.click(screen.getByRole("button", { name: "引用 demo.txt 到对话" }));
+    expect(onAttachToMain).toHaveBeenCalledWith("/tmp/demo.txt");
+    fireEvent.click(screen.getByRole("button", { name: "引用 demo.txt 到旁聊" }));
+    expect(onAttachToAside).toHaveBeenCalledWith("/tmp/demo.txt");
+
+    // Open image in zoomable Viewer and zoom in/reset
+    fireEvent.click(screen.getByTitle("点开看大图（支持缩放）"));
+    expect(screen.getByText("100%")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "放大" }));
+    expect(screen.getByText("125%")).toBeTruthy();
+    fireEvent.click(screen.getByTitle("重置为 100%（0）"));
+    expect(screen.getByText("100%")).toBeTruthy();
+  });
 });

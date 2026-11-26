@@ -65,6 +65,7 @@ export interface ComposerSeed {
   text?: string;
   append?: boolean;
   attachPaths?: string[];
+  attachImages?: Image[];
   quote?: ComposerQuoteInput;
 }
 
@@ -579,6 +580,19 @@ export function Composer(props: ComposerProps) {
     lastSeedId.current = seed.id;
     if (seed.attachPaths && seed.attachPaths.length > 0) {
       taking.current(seed.attachPaths);
+    }
+    if (seed.attachImages && seed.attachImages.length > 0) {
+      if (known.current.vision === false) {
+        setRefused(known.current.blind);
+      } else {
+        const incoming = seed.attachImages;
+        setImages((current) => {
+          if (current.length + incoming.length > IMAGES_PER_MESSAGE) {
+            setRefused(`一次最多附 ${IMAGES_PER_MESSAGE} 张图，多的没有附上。`);
+          }
+          return [...current, ...incoming].slice(0, IMAGES_PER_MESSAGE);
+        });
+      }
     }
     if (seed.quote) {
       const incoming = seed.quote;

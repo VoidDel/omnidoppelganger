@@ -2,10 +2,12 @@ import { type CSSProperties, createContext, useContext, useEffect, useMemo, useR
 import { useI18n } from "../i18n";
 import { type Item, type ToolItem, editsFiles, fileSize, mcpTool, shortCount, todosOf } from "../lib/fold";
 import type { Decision, DiffHunk, Image, Mode, SessionItem } from "../lib/types";
+import { Icon } from "./Icon";
 import { Light } from "./Light";
+import { CommandOutput } from "./CommandOutput";
 import { Diff, ModelText } from "./Markdown";
 import { useSecondsLeft } from "./Questions";
-import { Viewer, imageSource } from "./Viewer";
+import { Viewer, copyImageToClipboard, imageSource } from "./Viewer";
 
 /**
  * Whether what is put on the page now is put there as it happens, not read back from the log: an act that
@@ -19,6 +21,12 @@ export interface Files {
   picture: (path: string, snapshot?: string) => Promise<Image>;
   /** 1-based version number for `(path, snapshot)` when the file has more than one version in this session. */
   versionOf?: (path: string, snapshot?: string) => number | undefined;
+  /** Open a source file in the workbench tab, optionally jumping to a 1-based line number. */
+  openSource?: (path: string, line?: number) => void;
+  attachFileToMain?: (path: string) => void;
+  attachFileToAside?: (path: string) => void;
+  attachImageToMain?: (image: Image) => void;
+  attachImageToAside?: (image: Image) => void;
 }
 
 export const FilesContext = createContext<Files | null>(null);
@@ -48,6 +56,12 @@ export function Written({ path, name, snapshot, version }: { path: string; name:
       current = false;
     };
   }, [files, path, picture, snapshot]);
+  const [copied, setCopied] = useState<"path" | "image" | null>(null);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
   if (!files) return null;
   const open = (reveal: boolean) => {
     setNote(null);
@@ -80,28 +94,127 @@ export function Written({ path, name, snapshot, version }: { path: string; name:
         <button type="button" className="button text small" title="在文件夹中显示" onClick={() => open(true)}>
           在文件夹中显示
         </button>
+        <button
+          type="button"
+          className="button text small"
+          title={image ? "复制图片" : "复制文件路径"}
+          onClick={() => {
+            if (image) {
+              void copyImageToClipboard(image).then((ok) => ok && setCopied("image"));
+            } else {
+              navigator.clipboard?.writeText(path).then(() => setCopied("path"), () => undefined);
+            }
+          }}
+        >
+          {copied ? "已复制" : image ? "复制图片" : "复制路径"}
+        </button>
+        {(image ? files.attachImageToMain : files.attachFileToMain) && (
+          <button
+            type="button"
+            className="button text small"
+            title="附到主对话输入框"
+            onClick={() => (image ? files.attachImageToMain?.(image) : files.attachFileToMain?.(path))}
+          >
+            引用到对话
+          </button>
+        )}
+        {(image ? files.attachImageToAside : files.attachFileToAside) && (
+          <button
+            type="button"
+            className="button text small"
+            title="附到右侧旁聊输入框"
+            onClick={() => (image ? files.attachImageToAside?.(image) : files.attachFileToAside?.(path))}
+          >
+            引用到旁聊
+          </button>
+        )}
         {note && (
           <span className={`file-note ${note.failed ? "failed" : ""}`} role="status">
             {note.text}
           </span>
         )}
       </div>
-      {viewing && image && <Viewer images={[image]} at={0} whose="分身写的" onClose={() => setViewing(false)} />}
+      {viewing && image && (
+        <Viewer
+          images={[image]}
+          at={0}
+          whose="分身写的"
+          onClose={() => setViewing(false)}
+          onAttachMain={files.attachImageToMain}
+          onAttachAside={files.attachImageToAside}
+        />
+      )}
     </div>
   );
 }
 
-/** Inline thumbnails for images returned directly by a tool (e.g. Playwright / Chrome DevTools MCP screenshots). */
+/** Inline image chips for images returned directly by a tool (e.g. Playwright / Chrome DevTools MCP screenshots). */
 function ResultPictures({ images }: { images: Image[] }) {
+  const files = useContext(FilesContext);
   const [viewing, setViewing] = useState<number | null>(null);
+  const [copiedAt, setCopiedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (copiedAt === null) return;
+    const timer = window.setTimeout(() => setCopiedAt(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copiedAt]);
   return (
     <div className="written">
-      {images.map((img, index) => (
-        <button key={index} type="button" className="shot written-shot" title="点开看大图" onClick={() => setViewing(index)}>
-          <img src={imageSource(img)} alt={`工具返回的图片 ${index + 1}`} />
-        </button>
-      ))}
-      {viewing !== null && <Viewer images={images} at={viewing} whose="工具返回的" onClose={() => setViewing(null)} />}
+      <div className="shots">
+        {images.map((img, index) => {
+          const ext = img.media_type.replace(/^image\//, "").toUpperCase() || "IMG";
+          return (
+            <span key={index} className="file-chip openable shot-chip">
+              <button type="button" className="file-chip-open" title="点开看大图（支持缩放）" onClick={() => setViewing(index)}>
+                <img className="shot-chip-thumb" src={imageSource(img)} alt={`工具返回的图片 ${index + 1}`} />
+                <span className="file-chip-name">图片 {index + 1}</span>
+                <span className="file-chip-size">{ext}</span>
+              </button>
+              <button
+                type="button"
+                className="file-chip-reveal"
+                title={copiedAt === index ? "已复制" : "复制图片"}
+                aria-label={`复制图片 ${index + 1}`}
+                onClick={() => void copyImageToClipboard(img).then((ok) => ok && setCopiedAt(index))}
+              >
+                <Icon name={copiedAt === index ? "check-lg" : "copy"} size={13} />
+              </button>
+              {files?.attachImageToMain && (
+                <button
+                  type="button"
+                  className="file-chip-reveal"
+                  title="引用到对话"
+                  aria-label={`引用图片 ${index + 1} 到对话`}
+                  onClick={() => files.attachImageToMain?.(img)}
+                >
+                  <Icon name="quote" size={13} />
+                </button>
+              )}
+              {files?.attachImageToAside && (
+                <button
+                  type="button"
+                  className="file-chip-reveal"
+                  title="引用到旁聊"
+                  aria-label={`引用图片 ${index + 1} 到旁聊`}
+                  onClick={() => files.attachImageToAside?.(img)}
+                >
+                  <Icon name="chat-left-quote" size={13} />
+                </button>
+              )}
+            </span>
+          );
+        })}
+      </div>
+      {viewing !== null && (
+        <Viewer
+          images={images}
+          at={viewing}
+          whose="工具返回的"
+          onClose={() => setViewing(null)}
+          onAttachMain={files?.attachImageToMain}
+          onAttachAside={files?.attachImageToAside}
+        />
+      )}
     </div>
   );
 }
@@ -610,6 +723,7 @@ function ChunkedToolDiffs({ hunks }: { hunks: DiffHunk[] }) {
 
 /** One act, on one line: its seal, what was done to what, and how it came out. What it printed or changed opens under it. */
 export function ToolCard({ tool }: { tool: ToolItem }) {
+  const files = useContext(FilesContext);
   const fresh = useFresh();
   // Its place among those that came with it sets how long it waits to be shown. Having been shown under way,
   // it has waited: its seal comes down the moment it is done.
@@ -618,16 +732,29 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
   const { verb, target, outcome } = describe(tool);
   const { result } = tool;
   const hunks = result && !result.isError ? (result.meta?.hunks?.length ? result.meta.hunks : result.meta?.hunk ? [result.meta.hunk] : []) : [];
-  const output = tool.name === "run_command" || tool.name === "command_output" || tool.name === "command_input" || tool.name === "stop_command" ? result?.meta?.output : undefined;
+  const isCommandTool =
+    tool.name === "run_command" || tool.name === "command_output" || tool.name === "command_input" || tool.name === "stop_command";
+  const output = isCommandTool ? result?.meta?.output : undefined;
+  const cmdText = isCommandTool
+    ? compactCliPaths(
+        typeof tool.input.command === "string" && tool.input.command.trim()
+          ? tool.input.command
+          : (result?.meta?.command ?? ""),
+      )
+    : undefined;
+  const cmdCwd = isCommandTool
+    ? compactCliPaths(result?.meta?.cwd ?? (typeof tool.input.cwd === "string" ? tool.input.cwd : ""))
+    : undefined;
   // A failed call shows what went wrong; a finished command keeps its output one click away.
   // What an MCP tool returned is its whole result, so it is kept one click away like a command's output.
   const returned = (result?.meta?.mcp || ["web_search", "code_nav", "list_mcp_resources", "read_mcp_resource"].includes(tool.name)) && !result?.isError ? result?.content : undefined;
   const failure = result?.isError && !result.meta?.command && tool.approval?.decision !== "deny" && !result.meta?.refused ? result.content : undefined;
+  const isCommandBody = hunks.length === 0 && !!output;
   const body =
     hunks.length > 0 ? (
       <ChunkedToolDiffs hunks={hunks} />
     ) : output ? (
-      <ChunkedPre text={output} />
+      <CommandOutput output={output} command={cmdText} cwd={cmdCwd} onOpenPath={files?.openSource} />
     ) : returned ? (
       <ChunkedPre text={returned} />
     ) : failure ? (
@@ -664,7 +791,7 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
           护法放行{tool.review.reason ? `：${tool.review.reason}` : ""}
         </div>
       )}
-      {body && open && <div className="did-body">{body}</div>}
+      {body && open && <div className={`did-body${isCommandBody ? " did-body-cmd" : ""}`}>{body}</div>}
       {written && !voided(tool) && <Written path={written} name={written.replace(/^.*[\\/]/, "")} snapshot={result?.meta?.snapshot} />}
       {!written && handed.length === 0 && !voided(tool) && result && !result.isError && result.images && result.images.length > 0 && <ResultPictures images={result.images} />}
       {handed.map((path) => (

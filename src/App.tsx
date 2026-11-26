@@ -129,6 +129,21 @@ export default function App() {
     },
     [canAside, summonAside, ctl.setAsideSeed],
   );
+  const attachImageIntoMain = useCallback(
+    (image: import("./lib/types").Image) => {
+      if (wb.showWorkbench) wb.setInWorkbench(false);
+      ctl.setSeed({ id: Date.now(), attachImages: [image] });
+    },
+    [wb.showWorkbench, wb.setInWorkbench, ctl.setSeed],
+  );
+  const attachImageIntoAside = useCallback(
+    (image: import("./lib/types").Image) => {
+      if (!canAside) return;
+      ctl.setAsideSeed({ id: Date.now(), attachImages: [image] });
+      summonAside();
+    },
+    [canAside, summonAside, ctl.setAsideSeed],
+  );
 
   const handleForwardFromAside = useCallback(
     (text: string) => {
@@ -349,6 +364,8 @@ export default function App() {
                 onQuoteIntoAside={quoteIntoAside}
                 onAttachIntoMain={attachIntoMain}
                 onAttachIntoAside={attachIntoAside}
+                onAttachImageIntoMain={attachImageIntoMain}
+                onAttachImageIntoAside={attachImageIntoAside}
                 onSwitchMode={ctl.switchMode}
                 onCarryOut={ctl.carryOut}
                 onSend={ctl.send}

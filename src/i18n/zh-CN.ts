@@ -285,6 +285,17 @@ export const zhCN = {
   "workbench.closeAllTitle": "关闭全部文件标签",
   "workbench.awaitPill": "分身候旨 · 去定夺",
   "workbench.loadMoreLines": "继续加载下 1,000 行（已显示 {shown} / {total} 行）",
+  "cmdOut.lines": "{count} 行",
+  "cmdOut.copyOutput": "复制输出",
+  "cmdOut.copyCommand": "复制命令",
+  "cmdOut.copied": "已复制",
+  "cmdOut.wrap": "换行",
+  "cmdOut.nowrap": "不折行",
+  "cmdOut.lineNumbers": "行号",
+  "cmdOut.expand": "展开",
+  "cmdOut.collapse": "收起",
+  "cmdOut.openPath": "在工作台打开 {path}",
+  "cmdOut.openPathLine": "在工作台打开 {path}（第 {line} 行）",
 
   // Settings
   "settings.tabModel": "心法",

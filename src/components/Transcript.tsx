@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { inFlight, land } from "../lib/flight";
 import { type Item, type Row, type StreamBlock, type ToolItem, documentLabel, fileSize, shortCount, undoableTurns } from "../lib/fold";
 import { useMenuFocus } from "../lib/menuFocus";
@@ -8,7 +8,7 @@ import type { ComposerQuoteInput } from "./Composer";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { Icon } from "./Icon";
 import { Light } from "./Light";
-import { Diff, ModelText, StreamingMarkdown } from "./Markdown";
+import { Diff, MarkdownContent, ModelText, StreamingMarkdown } from "./Markdown";
 import { QuestionSheet } from "./Questions";
 import {
   DelegateCard,
@@ -26,7 +26,7 @@ import {
   voided,
   weigh,
 } from "./ToolCard";
-import { Viewer, imageSource } from "./Viewer";
+import { Viewer, copyImageToClipboard, imageSource } from "./Viewer";
 
 export { Diff };
 
@@ -95,17 +95,26 @@ interface ItemViewProps {
   onForward?: (text: string) => void;
 }
 
+function ThinkingDisclosure({ summary, text }: { summary: ReactNode; text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="thinking" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>{summary}</summary>
+      {open && (
+        <div className="thinking-body prose">
+          <MarkdownContent text={text} />
+        </div>
+      )}
+    </details>
+  );
+}
+
 function ItemView({ item, mode, family, frozen, onDecide, onAnswer, onForward }: ItemViewProps) {
   switch (item.kind) {
     case "text":
       return <ModelText text={item.text} onForward={onForward} />;
     case "thinking":
-      return (
-        <details className="thinking">
-          <summary>分身推演了一番</summary>
-          <p>{item.text}</p>
-        </details>
-      );
+      return <ThinkingDisclosure summary="分身推演了一番" text={item.text} />;
     case "tool":
       if (item.question) return <QuestionSheet tool={item} frozen={frozen} onAnswer={onAnswer} />;
       if (presented(item)) return <PlanCard tool={item} />;
@@ -121,21 +130,20 @@ function ItemView({ item, mode, family, frozen, onDecide, onAnswer, onForward }:
       );
     case "compacted":
       return (
-        <details className="thinking">
-          <summary>
-            分身把约 {shortCount(item.tokensBefore)} token 的前情凝成了一段摘要
-            {item.focus ? `（重点保留：${item.focus}）` : ""}
-            {item.keptFromTurn ? `，并原样保留了第 ${item.keptFromTurn} 轮起的近期上下文` : "，之后只凭摘要接着做"}
-          </summary>
-          <p>{item.summary}</p>
-        </details>
+        <ThinkingDisclosure
+          summary={
+            <>
+              分身把约 {shortCount(item.tokensBefore)} token 的前情凝成了一段摘要
+              {item.focus ? `（重点保留：${item.focus}）` : ""}
+              {item.keptFromTurn ? `，并原样保留了第 ${item.keptFromTurn} 轮起的近期上下文` : "，之后只凭摘要接着做"}
+            </>
+          }
+          text={item.summary}
+        />
       );
     case "instructions":
       return item.content ? (
-        <details className="thinking">
-          <summary>分身读了洞府里的 {item.path}，之后都照里面的规矩办事</summary>
-          <p>{item.content}</p>
-        </details>
+        <ThinkingDisclosure summary={`分身读了洞府里的 ${item.path}，之后都照里面的规矩办事`} text={item.content} />
       ) : (
         <div className="notice">{item.path} 不在了，分身不再照它办事。</div>
       );
@@ -335,12 +343,17 @@ export interface Props {
   onUndo: (turn: number) => void;
   onFork?: (turn: number, text: string) => void;
   onOpenFile?: (path: string, reveal: boolean, snapshot?: string, version?: number) => Promise<string>;
+  onOpenSource?: (path: string, line?: number) => void;
   onPicture?: (path: string, snapshot?: string) => Promise<Image>;
   versionOf?: (path: string, snapshot?: string) => number | undefined;
   onForward?: (text: string) => void;
   onDeliverNow?: () => void;
   onQuoteToMain?: (quote: ComposerQuoteInput) => void;
   onQuoteToAside?: (quote: ComposerQuoteInput) => void;
+  onAttachToMain?: (path: string) => void;
+  onAttachToAside?: (path: string) => void;
+  onAttachImageToMain?: (image: Image) => void;
+  onAttachImageToAside?: (image: Image) => void;
 }
 
 function formatSelectionQuote(raw: string): ComposerQuoteInput {
@@ -476,6 +489,10 @@ interface TurnRowProps {
   onForward?: (text: string) => void;
   onViewImage: (images: Image[], at: number) => void;
   onOpenAttached: (path: string, reveal: boolean) => void;
+  onAttachToMain?: (path: string) => void;
+  onAttachToAside?: (path: string) => void;
+  onAttachImageToMain?: (image: Image) => void;
+  onAttachImageToAside?: (image: Image) => void;
 }
 
 const TurnRow = memo(function TurnRow({
@@ -502,21 +519,22 @@ const TurnRow = memo(function TurnRow({
   onForward,
   onViewImage,
   onOpenAttached,
+  onAttachToMain,
+  onAttachToAside,
+  onAttachImageToMain,
+  onAttachImageToAside,
 }: TurnRowProps) {
   const who = task === "agent" ? "主分身交办" : task === "schedule" ? "功课交办" : row.prompt.steering ? "中途传音" : null;
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!copiedKey) return;
+    const timer = window.setTimeout(() => setCopiedKey(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copiedKey]);
   return (
     <section className={`turn ${last ? "latest" : ""} ${last && closing ? "closing" : ""}`}>
       {ownFirst && SEAM}
       <div className="turn-said">
-        {row.prompt.images.length > 0 && (
-          <div className="shots">
-            {row.prompt.images.map((image, at) => (
-              <button key={at} type="button" className="shot" title="点开看大图" onClick={() => onViewImage(row.prompt.images, at)}>
-                <img src={imageSource(image)} alt={`本尊附的第 ${at + 1} 张图`} />
-              </button>
-            ))}
-          </div>
-        )}
         <div className="said-top">
           {canUndo && <UndoButton turn={row.turn} onUndo={onUndo} />}
           {canFork && (
@@ -539,7 +557,62 @@ const TurnRow = memo(function TurnRow({
           <span className="seal" aria-hidden="true">
             {task === "agent" ? "遣" : task === "schedule" ? "课" : row.prompt.steering ? "音" : "令"}
           </span>
-          {row.prompt.text && <SaidText text={row.prompt.text} />}
+          <div className="original-content">
+            {row.prompt.text && <SaidText text={row.prompt.text} />}
+            {row.prompt.images.length > 0 && (
+              <div className="shots">
+                {row.prompt.images.map((image, at) => {
+                  const ext = image.media_type.replace(/^image\//, "").toUpperCase() || "IMG";
+                  const key = `img-${at}`;
+                  return (
+                    <span key={at} className="file-chip openable shot-chip">
+                      <button
+                        type="button"
+                        className="file-chip-open"
+                        title="点开看大图（支持缩放）"
+                        onClick={() => onViewImage(row.prompt.images, at)}
+                      >
+                        <img className="shot-chip-thumb" src={imageSource(image)} alt={`本尊附的第 ${at + 1} 张图`} />
+                        <span className="file-chip-name">图片 {at + 1}</span>
+                        <span className="file-chip-size">{ext}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="file-chip-reveal"
+                        title={copiedKey === key ? "已复制" : "复制图片"}
+                        aria-label={`复制第 ${at + 1} 张图`}
+                        onClick={() => void copyImageToClipboard(image).then((ok) => ok && setCopiedKey(key))}
+                      >
+                        <Icon name={copiedKey === key ? "check-lg" : "copy"} size={13} />
+                      </button>
+                      {onAttachImageToMain && (
+                        <button
+                          type="button"
+                          className="file-chip-reveal"
+                          title="引用到对话"
+                          aria-label={`引用第 ${at + 1} 张图到对话`}
+                          onClick={() => onAttachImageToMain(image)}
+                        >
+                          <Icon name="quote" size={13} />
+                        </button>
+                      )}
+                      {onAttachImageToAside && (
+                        <button
+                          type="button"
+                          className="file-chip-reveal"
+                          title="引用到旁聊"
+                          aria-label={`引用第 ${at + 1} 张图到旁聊`}
+                          onClick={() => onAttachImageToAside(image)}
+                        >
+                          <Icon name="chat-left-quote" size={13} />
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
         {row.prompt.files.length > 0 && (
           <div className="said-files">
@@ -551,6 +624,7 @@ const TurnRow = memo(function TurnRow({
                     ? "取出的文字与文件路径随这句话一起给了分身，分身也可调用工具处理原文件"
                     : "它的内容随这句话一起给了分身"
                   : "文件路径随这句话给了分身，由分身自行调用工具读取处理";
+              const key = `file-${file.path}`;
               return (
                 <span key={file.path} className="file-chip openable">
                   <button
@@ -583,6 +657,37 @@ const TurnRow = memo(function TurnRow({
                     <Icon name="folder2-open" size={14} />
                     <span className="sr-only">在文件夹中显示 {file.path.replace(/^.*[\\/]/, "")}</span>
                   </button>
+                  <button
+                    type="button"
+                    className="file-chip-reveal"
+                    title={copiedKey === key ? "已复制" : "复制文件路径"}
+                    aria-label={`复制路径 ${file.path.replace(/^.*[\\/]/, "")}`}
+                    onClick={() => navigator.clipboard?.writeText(file.path).then(() => setCopiedKey(key), () => undefined)}
+                  >
+                    <Icon name={copiedKey === key ? "check-lg" : "copy"} size={13} />
+                  </button>
+                  {onAttachToMain && (
+                    <button
+                      type="button"
+                      className="file-chip-reveal"
+                      title="引用到对话"
+                      aria-label={`引用 ${file.path.replace(/^.*[\\/]/, "")} 到对话`}
+                      onClick={() => onAttachToMain(file.path)}
+                    >
+                      <Icon name="quote" size={13} />
+                    </button>
+                  )}
+                  {onAttachToAside && (
+                    <button
+                      type="button"
+                      className="file-chip-reveal"
+                      title="引用到旁聊"
+                      aria-label={`引用 ${file.path.replace(/^.*[\\/]/, "")} 到旁聊`}
+                      onClick={() => onAttachToAside(file.path)}
+                    >
+                      <Icon name="chat-left-quote" size={13} />
+                    </button>
+                  )}
                 </span>
               );
             })}
@@ -639,12 +744,17 @@ export function Transcript({
   onUndo,
   onFork,
   onOpenFile,
+  onOpenSource,
   onPicture,
   versionOf,
   onForward,
   onDeliverNow,
   onQuoteToMain,
   onQuoteToAside,
+  onAttachToMain,
+  onAttachToAside,
+  onAttachImageToMain,
+  onAttachImageToAside,
 }: Props) {
   const family = useMemo<Family>(() => ({ sessions, onOpen }), [sessions, onOpen]);
   const undoable = useMemo(() => undoableTurns(rows, copied), [rows, copied]);
@@ -717,14 +827,26 @@ export function Transcript({
       lastScrollTop.current = element.scrollTop;
     }
     if (arriving) {
-      const messages = element.querySelectorAll<HTMLElement>(".turn-said .original, .turn-said .shots");
+      const messages = element.querySelectorAll<HTMLElement>(".turn-said .original");
       land(messages[messages.length - 1] ?? null);
     }
   }, [totalCount, count, stream]);
 
   const files = useMemo<Files | null>(
-    () => (onOpenFile && onPicture ? { open: onOpenFile, picture: onPicture, versionOf } : null),
-    [onOpenFile, onPicture, versionOf],
+    () =>
+      onOpenFile && onPicture
+        ? {
+            open: onOpenFile,
+            picture: onPicture,
+            versionOf,
+            openSource: onOpenSource,
+            attachFileToMain: frozen ? undefined : onAttachToMain,
+            attachFileToAside: frozen ? undefined : onAttachToAside,
+            attachImageToMain: frozen ? undefined : onAttachImageToMain,
+            attachImageToAside: frozen ? undefined : onAttachImageToAside,
+          }
+        : null,
+    [onOpenFile, onPicture, versionOf, onOpenSource, frozen, onAttachToMain, onAttachToAside, onAttachImageToMain, onAttachImageToAside],
   );
 
   const canQuote = !frozen && (!!onQuoteToMain || !!onQuoteToAside);
@@ -952,6 +1074,10 @@ export function Transcript({
                 onForward={onForward}
                 onViewImage={viewImage}
                 onOpenAttached={openFile}
+                onAttachToMain={frozen ? undefined : onAttachToMain}
+                onAttachToAside={frozen ? undefined : onAttachToAside}
+                onAttachImageToMain={frozen ? undefined : onAttachImageToMain}
+                onAttachImageToAside={frozen ? undefined : onAttachImageToAside}
               />
             );
           })}
@@ -964,7 +1090,16 @@ export function Transcript({
               </div>
             </section>
           )}
-          {viewing && <Viewer images={viewing.images} at={viewing.at} whose="本尊附的" onClose={() => setViewing(null)} />}
+          {viewing && (
+            <Viewer
+              images={viewing.images}
+              at={viewing.at}
+              whose="本尊附的"
+              onClose={() => setViewing(null)}
+              onAttachMain={frozen ? undefined : onAttachImageToMain}
+              onAttachAside={frozen ? undefined : onAttachImageToAside}
+            />
+          )}
           {selectionQuote && (
             <div
               ref={quoteBarRef}

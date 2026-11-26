@@ -72,6 +72,8 @@ export interface ActiveSessionStageProps {
   onQuoteIntoAside: (input: QuotePayload) => void;
   onAttachIntoMain: (absPath: string) => void;
   onAttachIntoAside: (absPath: string) => void;
+  onAttachImageIntoMain: (image: import("../lib/types").Image) => void;
+  onAttachImageIntoAside: (image: import("../lib/types").Image) => void;
   onSwitchMode: (mode: Mode) => Promise<void>;
   onCarryOut: ComponentProps<typeof Composer>["onCarryOut"];
   onSend: ComponentProps<typeof Composer>["onSend"];
@@ -185,11 +187,32 @@ export function ActiveSessionStage(props: ActiveSessionStageProps) {
                 onUndo={(turn) => api.undoTurn(active.id, turn).catch(props.onError)}
                 onFork={active.parent ? undefined : props.onForkFrom}
                 onOpenFile={props.onOpenFile}
+                onOpenSource={
+                  isProjectSession
+                    ? (rawPath, line) => {
+                        const normalized = rawPath.replace(/\\/g, "/");
+                        const ws = active.workspace.replace(/\\/g, "/").replace(/\/+$/, "");
+                        if (ws && normalized.startsWith(`${ws}/`)) {
+                          wb.openWorkbenchFile(normalized.slice(ws.length + 1), false, line);
+                          return;
+                        }
+                        if (normalized.startsWith("/") || normalized.startsWith("~/") || /^[A-Za-z]:\//.test(normalized)) {
+                          props.onOpenFile?.(rawPath, false).catch(props.onError);
+                          return;
+                        }
+                        wb.openWorkbenchFile(normalized.replace(/^\.\//, ""), false, line);
+                      }
+                    : undefined
+                }
                 onPicture={props.onPicture}
                 versionOf={props.versionOf}
                 onDeliverNow={replay ? undefined : () => api.deliverQueued(active.id).catch(props.onError)}
                 onQuoteToMain={replay ? undefined : props.onQuoteIntoMain}
                 onQuoteToAside={canAside ? props.onQuoteIntoAside : undefined}
+                onAttachToMain={replay ? undefined : props.onAttachIntoMain}
+                onAttachToAside={canAside ? props.onAttachIntoAside : undefined}
+                onAttachImageToMain={replay ? undefined : props.onAttachImageIntoMain}
+                onAttachImageToAside={canAside ? props.onAttachImageIntoAside : undefined}
               />
             </Guard>
           )}

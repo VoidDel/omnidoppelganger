@@ -286,6 +286,17 @@ export const en: Messages = {
   "workbench.closeAllTitle": "Close all open file tabs",
   "workbench.awaitPill": "Awaiting Approval · Review",
   "workbench.loadMoreLines": "Load next 1,000 lines ({shown} / {total} shown)",
+  "cmdOut.lines": "{count} lines",
+  "cmdOut.copyOutput": "Copy output",
+  "cmdOut.copyCommand": "Copy cmd",
+  "cmdOut.copied": "Copied",
+  "cmdOut.wrap": "Wrap",
+  "cmdOut.nowrap": "No wrap",
+  "cmdOut.lineNumbers": "Lines",
+  "cmdOut.expand": "Expand",
+  "cmdOut.collapse": "Collapse",
+  "cmdOut.openPath": "Open {path} in workbench",
+  "cmdOut.openPathLine": "Open {path} at line {line}",
 
   // Settings
   "settings.tabModel": "Models",
