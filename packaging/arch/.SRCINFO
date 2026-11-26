@@ -1,6 +1,6 @@
 pkgbase = omnidoppelganger
 	pkgdesc = OmniDoppelganger desktop app and CLI — local AI coding agent workbench
-	pkgver = 1.0.0
+	pkgver = 0.8.1
 	pkgrel = 1
 	url = https://github.com/VoidDel/omnidoppelganger
 	arch = x86_64
@@ -23,7 +23,7 @@ pkgbase = omnidoppelganger
 	optdepends = git: worktree isolation and Git panel support
 	optdepends = github-cli: one-click GitHub pull request creation
 	options = !lto
-	source = omnidoppelganger-1.0.0.tar.gz::https://github.com/VoidDel/omnidoppelganger/archive/refs/tags/v1.0.0.tar.gz
+	source = omnidoppelganger-0.8.1.tar.gz::https://github.com/VoidDel/omnidoppelganger/archive/refs/tags/v0.8.1.tar.gz
 	source = omnidoppelganger.desktop
 	sha256sums = 372bcef8c8c73453539b210cac69e3d7449badbe7199c088988235972965e504
 	sha256sums = 7ca396aba270ea9f01b1c1a9bc9cb44caf4cb0264675d50fdc9547a2add70bbf

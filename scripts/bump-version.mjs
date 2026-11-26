@@ -100,8 +100,25 @@ function updateSrcinfo(content, oldPkgver, nextVersion) {
   return out.replace(/\r?\n/g, eol);
 }
 
+function updateCargoLock(content, pkgNames, version) {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const nameSet = new Set(pkgNames);
+  const blocks = content.split(/(?=^\[\[package\]\]\r?$)/m);
+  const updatedBlocks = blocks.map((block) => {
+    const nameMatch = block.match(/^name\s*=\s*"([^"]+)"\r?$/m);
+    if (!nameMatch || !nameSet.has(nameMatch[1])) {
+      return block;
+    }
+    if (/^source\s*=/m.test(block)) {
+      return block;
+    }
+    return block.replace(/^(version\s*=\s*)"[^"]*"/m, `$1"${version}"`);
+  });
+  return updatedBlocks.join("").replace(/\r?\n/g, eol);
+}
+
 /**
- * Synchronize version across `Cargo.toml`, `package.json`, `src-tauri/tauri.conf.json`, and `packaging/arch/PKGBUILD`.
+ * Synchronize version across `Cargo.toml`, `Cargo.lock` (if present), `package.json`, `src-tauri/tauri.conf.json`, and `packaging/arch/PKGBUILD`.
  * @param {{ rootDir?: string, version: string }} options
  */
 export function bumpVersion(options) {
@@ -109,11 +126,22 @@ export function bumpVersion(options) {
   const version = normalizeVersion(options.version);
   const touched = [];
 
-  // 1. Root Cargo.toml ([workspace.package])
+  // 1. Root Cargo.toml ([workspace.package]) + optional Cargo.lock
   const cargoRel = "Cargo.toml";
   const cargoAbs = join(rootDir, cargoRel);
   writeFileSync(cargoAbs, updateRootCargoToml(readFileSync(cargoAbs, "utf8"), version), "utf8");
   touched.push(cargoRel);
+
+  const cargoLockRel = "Cargo.lock";
+  const cargoLockAbs = join(rootDir, cargoLockRel);
+  if (existsSync(cargoLockAbs)) {
+    const prevLock = readFileSync(cargoLockAbs, "utf8");
+    const nextLock = updateCargoLock(prevLock, ["odg-core", "odg-cli", "omnidoppelganger"], version);
+    if (nextLock !== prevLock) {
+      writeFileSync(cargoLockAbs, nextLock, "utf8");
+      touched.push(cargoLockRel);
+    }
+  }
 
   // 2. package.json & src-tauri/tauri.conf.json
   for (const jsonRel of ["package.json", "src-tauri/tauri.conf.json"]) {

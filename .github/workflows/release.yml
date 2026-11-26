@@ -183,6 +183,14 @@ jobs:
           TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
         run: |
           set -euo pipefail
+          for VAR in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD TAURI_UPDATER_PUBKEY; do
+            if [ -z "${!VAR:-}" ]; then
+              unset "$VAR"
+            fi
+          done
+          if [ "${APPLE_SIGNING_IDENTITY:-}" = "" ] || [ "${APPLE_SIGNING_IDENTITY:-}" = "-" ]; then
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
           EXTRA_CONFIG="$(node -e '
             const cfg = {};
             if (process.env.TAURI_SIGNING_PRIVATE_KEY) {
@@ -248,7 +256,11 @@ jobs:
               fi
               cp LICENSE README.md "$STAGE/"
               ARCHIVE_PATH="$PWD/target/cli-dist/odg-cli-v${VERSION}-${TARGET}.zip"
-              (cd "$STAGE" && 7z a -tzip "$ARCHIVE_PATH" odg.exe LICENSE README.md >/dev/null)
+              ZIP_DEST="$ARCHIVE_PATH"
+              if command -v cygpath >/dev/null 2>&1; then
+                ZIP_DEST="$(cygpath -w "$ARCHIVE_PATH")"
+              fi
+              (cd "$STAGE" && 7z a -tzip "$ZIP_DEST" odg.exe LICENSE README.md >/dev/null)
             else
               BIN_SRC="target/${TARGET}/release/odg"
               cp "$BIN_SRC" "$STAGE/odg"
@@ -414,6 +426,7 @@ jobs:
           echo "Generated SHA256SUMS.txt:"
           cat release-assets/SHA256SUMS.txt
       - name: Attest build provenance
+        continue-on-error: true
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: "release-assets/*"
