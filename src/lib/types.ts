@@ -252,6 +252,23 @@ export interface Skill {
   description: string;
 }
 
+/** A parameterized prompt template from `~/.odg/prompts/*.md` or `<workspace>/.odg/prompts/*.md`. */
+export interface PromptTemplateInfo {
+  name: string;
+  description: string;
+  argument_hint: string | null;
+  scope: "user" | "project";
+}
+
+/** Result of running an inline `!command` from the composer in the session workspace. */
+export interface InlineShellOutput {
+  command: string;
+  output: string;
+  exit_code: number | null;
+  timed_out: boolean;
+  truncated: boolean;
+}
+
 /** One item of the 分身's to-do list. */
 export interface Todo {
   text: string;

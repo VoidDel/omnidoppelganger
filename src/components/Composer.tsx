@@ -263,12 +263,62 @@ export function Composer(props: ComposerProps) {
   }, [sessionKey, drafts, text, images, files, quotes]);
   /** Why something was not taken, until the next attempt. */
   const [refused, setRefused] = useState<string | null>(null);
+  /** Active `!command` currently executing in the session workspace. */
+  const [runningInline, setRunningInline] = useState<string | null>(null);
   /** Files are being dragged over the window: the box shows it will take them. */
   const [dropping, setDropping] = useState(false);
   const busy = status !== "idle";
   const empty = !text.trim() && images.length === 0 && files.length === 0 && quotes.length === 0;
   const sender = useRef<HTMLButtonElement>(null);
+  const inlineRaw =
+    !aside && sessionKey && text.startsWith("!") && !text.startsWith("!!") && !text.includes("\n")
+      ? text.slice(1)
+      : null;
+  const runInline = (rawCmd: string) => {
+    if (!sessionKey || runningInline) return;
+    const cmd = rawCmd.trim();
+    if (!cmd) {
+      setRefused("在 ! 后面输入要在洞府执行的命令，例如 !git status");
+      return;
+    }
+    setRunningInline(cmd);
+    setRefused(null);
+    setText("");
+    api
+      .runInlineCommand(sessionKey, cmd)
+      .then(
+        (res) => {
+          const body = res.output.trim() || "（无输出）";
+          const statusNote = res.timed_out
+            ? "（超时 15s）"
+            : res.exit_code !== null && res.exit_code !== 0
+              ? `（退出码 ${res.exit_code}）`
+              : "";
+          const content = `在洞府执行 \`${res.command}\`${statusNote} 的输出：\n\`\`\`text\n${body}\n\`\`\``;
+          const lines = res.output ? res.output.trimEnd().split(/\r?\n/).length : 0;
+          const meta = res.timed_out
+            ? "超时"
+            : res.exit_code !== null && res.exit_code !== 0
+              ? `退出码 ${res.exit_code}`
+              : lines > 0
+                ? `${lines} 行`
+                : "无输出";
+          const shortLabel = `! ${res.command.length > 28 ? `${res.command.slice(0, 28)}…` : res.command}`;
+          setQuotes((prev) => [...prev, { id: `cmd-${Date.now()}`, label: shortLabel, meta, content }]);
+          requestAnimationFrame(() => input.current?.focus());
+        },
+        (err) => {
+          setText(`!${cmd}`);
+          setRefused(`命令没跑成：${String(err)}`);
+        },
+      )
+      .finally(() => setRunningInline(null));
+  };
   const submit = () => {
+    if (inlineRaw !== null && images.length === 0 && files.length === 0 && quotes.length === 0) {
+      runInline(inlineRaw);
+      return;
+    }
     if (empty) return;
     // The token on the button flies to the message's place in the conversation.
     launchFrom(sender.current);
@@ -574,6 +624,14 @@ export function Composer(props: ComposerProps) {
   return (
     <div className="composer">
       <div className="composer-status" role="status">
+        {runningInline && status === "idle" && (
+          <>
+            <Mark state="working" size={18} />
+            <span>
+              正在洞府执行 <code className="mono">!{runningInline}</code>…
+            </span>
+          </>
+        )}
         {status === "running" && (
           <>
             <Mark state="working" size={18} />
@@ -850,6 +908,11 @@ export function Composer(props: ComposerProps) {
               <p className="slash-foot">↑↓ 选择 · Tab / 回车引用并附入 · Esc 收起</p>
             </div>
           )}
+          {inlineRaw !== null && menu.length === 0 && !atActive && (
+            <p className="slash-foot" style={{ borderTop: "none", borderBottom: "1px solid var(--border)" }}>
+              ! 内联命令：回车在洞府执行并将输出附作上下文引用 · Shift+Enter 换行作普通消息
+            </p>
+          )}
           <label htmlFor="composer-input" className="sr-only">
             给分身的法旨
           </label>
@@ -942,6 +1005,10 @@ export function Composer(props: ComposerProps) {
               // Enter sends; Shift+Enter breaks the line. Enter that confirms an input-method candidate does neither.
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
+                if (inlineRaw !== null) {
+                  runInline(inlineRaw);
+                  return;
+                }
                 submit();
               }
               // Shift+Tab cycles the 禁制 instead of moving focus back.

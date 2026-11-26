@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::events::Image;
 use crate::jobs::Jobs;
 
-pub use commands::shell;
+pub use commands::{InlineShellOutput, run_inline_shell, shell};
 pub(crate) use commands::{kill_tree, strip_ansi};
 pub use extras::{ASK_USER, DelegateTask, OPTIONS, PRESENT_PLAN, QUESTIONS, SUBAGENTS, TODO_STATES, answered, delegate_tasks, questions, todo_items};
 pub use files::edits_files;

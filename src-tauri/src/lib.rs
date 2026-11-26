@@ -1539,6 +1539,73 @@ fn set_workspace_trust(app: State<'_, App>, id: String, trusted: bool) -> Result
     Ok(app.item(session.summary(), session.status()))
 }
 
+fn prompt_roots_for_session(app: &App, id: Option<&str>) -> (PathBuf, Option<PathBuf>) {
+    let user_dir = settings::home().join("prompts");
+    let Some(id) = id.map(str::trim).filter(|s| !s.is_empty()) else {
+        return (user_dir, None);
+    };
+    let summary = app
+        .all_live()
+        .get(id)
+        .map(Session::summary)
+        .or_else(|| app.store.peek(id).ok());
+    let Some(summary) = summary else {
+        return (user_dir, None);
+    };
+    let ws_path = PathBuf::from(&summary.workspace);
+    if ws_path == settings::chat_folder() {
+        return (user_dir, None);
+    }
+    let grant_root = summary
+        .worktree
+        .as_ref()
+        .map_or_else(|| ws_path.clone(), |wt| PathBuf::from(&wt.origin));
+    if app.grants.is_trusted_workspace(&grant_root) {
+        (user_dir, Some(ws_path.join(".odg").join("prompts")))
+    } else {
+        (user_dir, None)
+    }
+}
+
+#[tauri::command]
+fn list_prompt_templates(
+    app: State<'_, App>,
+    id: Option<String>,
+) -> Vec<odg_core::templates::PromptTemplateInfo> {
+    let (user_dir, proj_dir) = prompt_roots_for_session(&app, id.as_deref());
+    odg_core::templates::listing(&user_dir, proj_dir.as_deref())
+}
+
+#[tauri::command]
+fn expand_prompt_template(
+    app: State<'_, App>,
+    id: Option<String>,
+    name: String,
+    args: String,
+) -> Result<String, String> {
+    let (user_dir, proj_dir) = prompt_roots_for_session(&app, id.as_deref());
+    odg_core::templates::expand_named(&user_dir, proj_dir.as_deref(), &name, &args)
+}
+
+#[tauri::command]
+async fn run_inline_command(
+    app: State<'_, App>,
+    id: String,
+    command: String,
+) -> Result<odg_core::tools::InlineShellOutput, String> {
+    let workspace = app
+        .all_live()
+        .get(&id)
+        .map(|s| s.summary().workspace)
+        .or_else(|| app.store.peek(&id).ok().map(|s| s.workspace))
+        .ok_or_else(|| "找不到当前会话的洞府目录".to_string())?;
+    let cwd = PathBuf::from(&workspace);
+    if !cwd.is_dir() {
+        return Err(format!("洞府目录不存在：{}", cwd.display()));
+    }
+    odg_core::tools::run_inline_shell(&command, &cwd, 15, 32_000).await
+}
+
 #[tauri::command]
 async fn compact_session(app: State<'_, App>, id: String, focus: Option<String>) -> Result<u64, String> {
     let session = app.live(&id)?;
@@ -1777,6 +1844,9 @@ pub fn run() {
             cancel_turn,
             deliver_queued,
             set_workspace_trust,
+            list_prompt_templates,
+            expand_prompt_template,
+            run_inline_command,
             compact_session,
             get_settings,
             save_settings,

@@ -29,7 +29,7 @@ import { applyDelta, changedFiles, commandRuns, fold, products, todos, usage, ty
 import { modeOf } from "./lib/modes";
 import { replayStops, turnAt } from "./lib/replay";
 import type { SlashCommand } from "./lib/slash";
-import type { Decision, DiffStage, Envelope, GitStatus, Image, Mode, Reply, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
+import type { Decision, DiffStage, Envelope, GitStatus, Image, Mode, PromptTemplateInfo, Reply, Schedule, SessionItem, SessionView, Settings, SettingsView, Status, UiEvent } from "./lib/types";
 
 /** What "/init" hands the 分身: learn the project, and write down what a 分身 needs to know of it. */
 const INIT_TASK =
@@ -903,6 +903,22 @@ export default function App() {
     api.getSettings().then((settings) => dispatch({ type: "settings", settings }), fail);
     dispatch({ type: "page", page: "mcp" });
   };
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplateInfo[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    api.listPromptTemplates(active?.id ?? null).then(
+      (items) => {
+        if (!cancelled) setPromptTemplates(items);
+      },
+      () => {
+        if (!cancelled) setPromptTemplates([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [active?.id, active?.workspace, active?.project_trusted, fsRefreshTick]);
+
   // The skills the 分身 was last told of, its project's among them; before its first turn, the user's own.
   const listedSkills = useMemo(() => {
     for (let at = state.events.length - 1; at >= 0; at--) {
@@ -1015,12 +1031,32 @@ export default function App() {
       { name: "schedule", label: "功课", aliases: ["功课"], hint: "打开功课页：到点自行去办的事", run: toSchedules },
       { name: "settings", label: "设置", aliases: ["设置"], hint: "打开设置", run: toSettings },
     ];
-    const taken = new Set([...builtIn.map((command) => command.name), "compact", "model", "effort", "mode"]);
+    const taken = new Set([...builtIn.map((command) => command.name.toLowerCase()), "compact", "model", "effort", "mode", "usage"]);
+    const templates: SlashCommand[] = promptTemplates.map((tpl) => {
+      const rawName = tpl.name.trim().replace(/\s+/g, "-");
+      const cmdName = taken.has(rawName.toLowerCase()) ? `tpl-${rawName}` : rawName;
+      taken.add(cmdName.toLowerCase());
+      return {
+        name: cmdName,
+        label: tpl.scope === "project" ? "项目模板" : "模板",
+        aliases: [tpl.name],
+        hint: tpl.description,
+        arg: tpl.argument_hint ?? undefined,
+        unavailable: working,
+        run: (arg) => {
+          api.expandPromptTemplate(session.id, tpl.name, arg).then((expanded) => {
+            if (expanded.trim()) send(expanded);
+          }, fail);
+        },
+      };
+    });
     // Each skill by its name, with what it is to do after it; one named as a command is reached by its alias.
     const skills: SlashCommand[] = (listedSkills ?? state.settings?.skills ?? []).map((skill) => {
       const name = skill.name.trim().replace(/\s+/g, "-");
+      const cmdName = taken.has(name.toLowerCase()) ? `skill-${name}` : name;
+      taken.add(cmdName.toLowerCase());
       return {
-        name: taken.has(name.toLowerCase()) ? `skill-${name}` : name,
+        name: cmdName,
         label: "秘籍",
         aliases: [skill.name],
         hint: skill.description,
@@ -1033,7 +1069,7 @@ export default function App() {
     const fitting = chatting(session)
       ? builtIn.filter((command) => !["init", "review", "files", "git"].includes(command.name))
       : builtIn;
-    return [...fitting, ...skills];
+    return [...fitting, ...templates, ...skills];
   };
   const banners = (
     <>

@@ -39,6 +39,7 @@ pub mod session;
 pub mod settings;
 pub mod skills;
 pub mod sse;
+pub mod templates;
 #[cfg(test)]
 mod testing;
 pub mod tools;

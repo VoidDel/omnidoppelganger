@@ -292,3 +292,105 @@ pub(super) async fn run_command(input: &Value, context: &ToolContext) -> Result<
         images: Vec::new(),
     })
 }
+
+/// Output captured from a user-initiated `!command` inline execution in the composer.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InlineShellOutput {
+    pub command: String,
+    pub output: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub truncated: bool,
+}
+
+/// Run a shell command directly on behalf of the user (`!cmd` in the composer),
+/// capturing merged stdout/stderr with ANSI sequences stripped and bounded by `timeout_secs` and `max_chars`.
+pub async fn run_inline_shell(
+    command_line: &str,
+    cwd: &Path,
+    timeout_secs: u64,
+    max_chars: usize,
+) -> Result<InlineShellOutput, String> {
+    let trimmed = command_line.trim();
+    if trimmed.is_empty() {
+        return Err("命令不能为空".to_string());
+    }
+    let mut command = shell_command(trimmed, cwd, None).map_err(|e| format!("无法启动终端命令：{e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("无法执行命令 `{trimmed}`：{e}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_task = tokio::spawn(async move {
+        match stdout {
+            Some(pipe) => capture(pipe).await,
+            None => Vec::new(),
+        }
+    });
+    let stderr_task = tokio::spawn(async move {
+        match stderr {
+            Some(pipe) => capture(pipe).await,
+            None => Vec::new(),
+        }
+    });
+
+    let mut timed_out = false;
+    let status = match tokio::time::timeout(Duration::from_secs(timeout_secs.max(1)), child.wait()).await {
+        Ok(res) => res.ok(),
+        Err(_) => {
+            timed_out = true;
+            kill_tree(&mut child).await;
+            None
+        }
+    };
+
+    let out_bytes = stdout_task.await.unwrap_or_default();
+    let err_bytes = stderr_task.await.unwrap_or_default();
+    let out_str = strip_ansi(&String::from_utf8_lossy(&out_bytes));
+    let err_str = strip_ansi(&String::from_utf8_lossy(&err_bytes));
+
+    let mut combined = out_str.trim_end().to_string();
+    if !err_str.trim().is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&format!("[stderr]\n{}", err_str.trim_end()));
+    }
+
+    let total = combined.chars().count();
+    let truncated = total > max_chars;
+    if truncated {
+        let half = max_chars / 2;
+        let head: String = combined.chars().take(half).collect();
+        let tail: String = combined.chars().skip(total - half).collect();
+        combined = format!("{head}\n[... 省略 {} 个字符 ...]\n{tail}", total - max_chars);
+    }
+
+    Ok(InlineShellOutput {
+        command: trimmed.to_string(),
+        output: combined,
+        exit_code: status.and_then(|s| s.code()),
+        timed_out,
+        truncated,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn inline_shell_captures_stdout_stderr_and_strips_ansi() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hello.txt"), "odg-inline\n").unwrap();
+        let cmd = if cfg!(windows) {
+            "Write-Output 'ok-line'; [Console]::Error.WriteLine('err-line')"
+        } else {
+            "printf '\\033[32mok-line\\033[0m\\n'; printf 'err-line\\n' >&2"
+        };
+        let out = run_inline_shell(cmd, dir.path(), 5, 4096).await.unwrap();
+        assert_eq!(out.exit_code, Some(0));
+        assert!(!out.timed_out);
+        assert!(out.output.contains("ok-line"));
+        assert!(!out.output.contains('\u{1b}'));
+        assert!(out.output.contains("[stderr]\nerr-line"));
+    }
+}
