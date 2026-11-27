@@ -9,11 +9,14 @@
 #[cfg(any(windows, target_os = "linux"))]
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
 use serde::Serialize;
 
 pub const NOTIFY_MAX_CHARS: usize = 256;
+#[cfg(target_os = "macos")]
 pub const NOTIFICATION_ACTIVATED_EVENT: &str = "notification-activated";
 
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Serialize)]
 pub struct NotificationActivatedPayload {
     pub session_id: Option<String>,
