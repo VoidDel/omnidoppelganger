@@ -166,6 +166,7 @@ fn is_pid_alive(_pid: u32) -> bool {
     false
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn user_home() -> PathBuf {
     #[cfg(windows)]
     {
@@ -308,7 +309,7 @@ pub fn install(exe: &Path, args: &[&str], home: &Path) -> Result<DaemonStatus, S
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return Err(format!("launchctl load 失败：{err}"));
         }
-        return Ok(status(exe));
+        Ok(status(exe))
     }
 
     #[cfg(target_os = "linux")]
@@ -328,7 +329,7 @@ pub fn install(exe: &Path, args: &[&str], home: &Path) -> Result<DaemonStatus, S
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return Err(format!("systemctl enable 失败：{err}"));
         }
-        return Ok(status(exe));
+        Ok(status(exe))
     }
 
     #[cfg(windows)]
@@ -353,7 +354,7 @@ pub fn install(exe: &Path, args: &[&str], home: &Path) -> Result<DaemonStatus, S
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return Err(format!("写入 Windows 启动项失败：{err}"));
         }
-        return Ok(status(exe));
+        Ok(status(exe))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -372,7 +373,7 @@ pub fn uninstall(exe: &Path) -> Result<DaemonStatus, String> {
             let _ = Command::new("launchctl").args(["unload", "-w", &path_str]).output();
             std::fs::remove_file(&plist_path).map_err(|e| format!("删除 LaunchAgent 配置失败：{e}"))?;
         }
-        return Ok(status(exe));
+        Ok(status(exe))
     }
 
     #[cfg(target_os = "linux")]
@@ -385,7 +386,7 @@ pub fn uninstall(exe: &Path) -> Result<DaemonStatus, String> {
             std::fs::remove_file(&unit_path).map_err(|e| format!("删除 systemd 服务文件失败：{e}"))?;
             let _ = Command::new("systemctl").args(["--user", "daemon-reload"]).output();
         }
-        return Ok(status(exe));
+        Ok(status(exe))
     }
 
     #[cfg(windows)]
@@ -395,7 +396,7 @@ pub fn uninstall(exe: &Path) -> Result<DaemonStatus, String> {
         cmd.args(["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE, "/f"]);
         cmd.creation_flags(0x0800_0000);
         let _ = cmd.output();
-        return Ok(status(exe));
+        Ok(status(exe))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]

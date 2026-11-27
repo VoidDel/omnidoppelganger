@@ -186,14 +186,14 @@ pub fn merge_window_sample(
     maximized: bool,
     fullscreen: bool,
 ) -> Option<WindowState> {
-    if maximized || fullscreen {
-        if let Some(prev) = prev {
-            return Some(WindowState {
-                maximized,
-                fullscreen,
-                ..prev.clone()
-            });
-        }
+    if (maximized || fullscreen)
+        && let Some(prev) = prev
+    {
+        return Some(WindowState {
+            maximized,
+            fullscreen,
+            ..prev.clone()
+        });
     }
     let (x, y) = pos?;
     let (width, height) = size?;
