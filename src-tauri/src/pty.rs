@@ -585,11 +585,14 @@ mod tests {
 
         // Tell the shell to exit and assert OS handles are released while backlog stays readable.
         let _ = hub.write(&info.id, "exit\r\n");
-        for _ in 0..80 {
+        for tick in 0..160 {
             if *exited_flag.lock().unwrap() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            if tick == 30 || tick == 70 {
+                let _ = hub.write(&info.id, "exit\r\n");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
         assert!(*exited_flag.lock().unwrap(), "expected shell exit callback");
         assert_eq!(

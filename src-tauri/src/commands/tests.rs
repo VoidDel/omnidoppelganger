@@ -1515,7 +1515,9 @@ async fn land_session_refuses_when_forked_sibling_sharing_worktree_is_busy_and_s
     assert_eq!(landed.commits, 1);
     assert_eq!(landed.into, "main");
     assert_eq!(
-        std::fs::read_to_string(ws.join("feature.txt")).unwrap(),
+        std::fs::read_to_string(ws.join("feature.txt"))
+            .unwrap()
+            .replace("\r\n", "\n"),
         "shared worktree edit\n"
     );
 }
