@@ -850,7 +850,8 @@ impl SettingsStore {
             .or_else(|| provider(provider_id).map(|known| known.base_url.to_string()))
             .unwrap_or_default();
         let key = self.api_key(provider_id).or_else(|| {
-            matches!(crate::providers::kind_id(provider_id), "magpie" | "ollama").then(|| provider_id.to_string())
+            matches!(crate::providers::kind_id(provider_id), "magpie" | "cpa" | "ollama")
+                .then(|| provider_id.to_string())
         });
         Endpoint { base_url, key }
     }

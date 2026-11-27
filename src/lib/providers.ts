@@ -29,6 +29,7 @@ export function isProviderKeyed(
     (keys?.[providerId]?.source ?? "none") !== "none" ||
     kind.startsWith("custom") ||
     kind === "magpie" ||
+    kind === "cpa" ||
     kind === "ollama"
   );
 }

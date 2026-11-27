@@ -546,7 +546,7 @@ impl<L: Llm + 'static> AppCore<L> {
             return true;
         }
         let kind = odg_core::providers::kind_id(provider);
-        matches!(kind, "magpie" | "ollama")
+        matches!(kind, "magpie" | "cpa" | "ollama")
             && (settings.provider == provider
                 || settings.base_urls.contains_key(provider)
                 || settings.provider_names.contains_key(provider)

@@ -344,7 +344,7 @@ pub fn billing_mode_for(provider: &str, home: Option<&Path>) -> BillingMode {
     }
     if matches!(
         kind,
-        "magpie" | "antigravity" | "codex" | "claude_code" | "cursor" | "grok" | "opencode"
+        "magpie" | "cpa" | "antigravity" | "codex" | "claude_code" | "cursor" | "grok" | "opencode"
     ) {
         return BillingMode::Subscription;
     }
@@ -734,7 +734,7 @@ pub fn rate_for(provider: &str, model: &str) -> Option<ModelRate> {
     let kind = crate::providers::kind_id(&p);
     if matches!(
         kind,
-        "ollama" | "magpie" | "antigravity" | "codex" | "claude_code" | "cursor" | "grok" | "opencode"
+        "ollama" | "magpie" | "cpa" | "antigravity" | "codex" | "claude_code" | "cursor" | "grok" | "opencode"
     ) {
         return None;
     }

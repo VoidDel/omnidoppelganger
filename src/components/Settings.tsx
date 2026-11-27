@@ -196,7 +196,7 @@ function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onRefresh, o
   const cli = cliOf(kind);
   const isCli = cli !== null;
   const isKimi = kind.id === "moonshot";
-  const isLocalGateway = kind.id === "magpie" || kind.id === "ollama";
+  const isLocalGateway = kind.id === "magpie" || kind.id === "cpa" || kind.id === "ollama";
   const takesAddress = target !== "anthropic" && !isCli;
 
   const startKimiOAuth = async () => {

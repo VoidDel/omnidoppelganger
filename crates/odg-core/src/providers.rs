@@ -190,6 +190,15 @@ pub const PROVIDERS: &[Provider] = &[
         models: &[],
     },
     Provider {
+        id: "cpa",
+        name: "CPA (CLIProxyAPI)",
+        protocol: Protocol::Chat(Flavor::Generic),
+        base_url: "http://127.0.0.1:8317/v1",
+        other_urls: &[("http://localhost:8317/v1", "localhost 别名")],
+        key_env: Some("CPA_API_KEY"),
+        models: &[],
+    },
+    Provider {
         id: "antigravity",
         name: "Antigravity (agy CLI)",
         protocol: Protocol::Cli(CliKind::Antigravity),
@@ -513,7 +522,7 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
     let key = key
         .map(str::trim)
         .filter(|key| !key.is_empty())
-        .or_else(|| matches!(known.id, "magpie" | "ollama").then_some("local"))
+        .or_else(|| matches!(known.id, "magpie" | "cpa" | "ollama").then_some("local"))
         .ok_or("no API key is saved for this provider")?;
     let base = base_url.trim_end_matches('/');
     if base.is_empty() {
@@ -797,7 +806,7 @@ mod tests {
                 custom
                     || matches!(
                         provider.id,
-                        "magpie" | "ollama" | "antigravity" | "cursor" | "grok" | "opencode"
+                        "magpie" | "cpa" | "ollama" | "antigravity" | "cursor" | "grok" | "opencode"
                     ),
                 "{}",
                 provider.id

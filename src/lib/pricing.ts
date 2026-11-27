@@ -9,7 +9,7 @@ export interface ModelRate {
   source: PriceSource;
 }
 
-const LOCAL_OR_CLI = new Set(["ollama", "magpie", "antigravity", "codex", "claude_code", "cursor", "grok", "opencode"]);
+const LOCAL_OR_CLI = new Set(["ollama", "magpie", "cpa", "antigravity", "codex", "claude_code", "cursor", "grok", "opencode"]);
 let usdToCny = 7.2;
 const hydratedByKey = new Map<string, ModelRate>();
 const hydratedByModel = new Map<string, ModelRate>();
