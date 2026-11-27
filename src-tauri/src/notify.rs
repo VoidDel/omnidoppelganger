@@ -397,7 +397,8 @@ mod macos {
     }
 
     unsafe fn deliver_legacy(title: &str, body: &str, user_info: &AnyObject) -> Result<(), String> {
-        let center: *mut AnyObject = unsafe { msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter] };
+        let center: *mut AnyObject =
+            unsafe { msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter] };
         if center.is_null() {
             return Err("NSUserNotificationCenter unavailable".to_string());
         }
@@ -415,18 +416,14 @@ mod macos {
         Ok(())
     }
 
-    pub fn send(
-        title: &str,
-        body: &str,
-        session_id: Option<&str>,
-        page: Option<&str>,
-    ) -> Result<(), String> {
+    pub fn send(title: &str, body: &str, session_id: Option<&str>, page: Option<&str>) -> Result<(), String> {
         if !is_bundled_app() {
             return Err("unbundled macOS dev process; delegating to WebView Notification".to_string());
         }
 
         let user_info = unsafe { build_user_info(session_id, page) };
-        let un_center: *mut AnyObject = unsafe { msg_send![class!(UNUserNotificationCenter), currentNotificationCenter] };
+        let un_center: *mut AnyObject =
+            unsafe { msg_send![class!(UNUserNotificationCenter), currentNotificationCenter] };
 
         if AUTH_STATE.load(Ordering::Acquire) == AUTH_PENDING {
             request_un_authorization(un_center, true);
@@ -542,8 +539,8 @@ pub async fn notify_desktop(
 #[cfg(test)]
 mod tests {
     use super::{
-        NOTIFY_MAX_CHARS, WIN_TOAST_SCRIPT, build_linux_notify_command,
-        build_windows_notify_command, sanitize_notify_text,
+        NOTIFY_MAX_CHARS, WIN_TOAST_SCRIPT, build_linux_notify_command, build_windows_notify_command,
+        sanitize_notify_text,
     };
     use std::collections::HashMap;
     use std::ffi::OsStr;

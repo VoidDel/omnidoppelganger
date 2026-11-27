@@ -139,11 +139,7 @@ pub fn run() {
                         let mut out = Vec::with_capacity(due.len());
                         for item in &due {
                             let run = core.fire(item);
-                            let spawned_session = if run.error.is_none() {
-                                run.session.clone()
-                            } else {
-                                None
-                            };
+                            let spawned_session = if run.error.is_none() { run.session.clone() } else { None };
                             let _ = core.schedules.record(&item.id, run);
                             out.push((item.name.clone(), spawned_session));
                         }
@@ -159,11 +155,7 @@ pub fn run() {
                             .map(|visible| !visible)
                             .unwrap_or(true);
                         if hidden {
-                            let single_session = if fired.len() == 1 {
-                                fired[0].1.clone()
-                            } else {
-                                None
-                            };
+                            let single_session = if fired.len() == 1 { fired[0].1.clone() } else { None };
                             let summary = fired
                                 .iter()
                                 .map(|(name, _)| name.as_str())
