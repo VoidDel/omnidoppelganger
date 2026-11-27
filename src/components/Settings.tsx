@@ -650,17 +650,31 @@ function PainterSection({ view, onSavePatch }: { view: SettingsView; onSavePatch
   );
 }
 
+function projectDisplayName(workspace: string): string {
+  const trimmed = workspace.replace(/[\\/]+$/, "");
+  if (!trimmed) return workspace;
+  const parts = trimmed.split(/[\\/]/);
+  return parts[parts.length - 1] || trimmed;
+}
+
 function MemorySection() {
   const [snap, setSnap] = useState<MemorySnapshot | null>(null);
   const [selectedWs, setSelectedWs] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const reqSeqRef = useRef(0);
 
   const load = useCallback((ws?: string | null) => {
+    const seq = ++reqSeqRef.current;
     api.getMemory?.(ws ?? null).then(
-      (res) => setSnap(res),
-      (err) => setError(String(err)),
+      (res) => {
+        if (seq === reqSeqRef.current) setSnap(res);
+      },
+      (err) => {
+        if (seq === reqSeqRef.current) setError(String(err));
+      },
     );
   }, []);
 
@@ -681,7 +695,13 @@ function MemorySection() {
     void api.openMemoryFile(scope, ws ?? null, hash ?? null).catch((err) => setError(String(err)));
   };
 
+  const toggleProject = (ws: string) => {
+    setNotice(null);
+    setSelectedWs((prev) => (prev === ws ? null : ws));
+  };
+
   const removeProject = (hash: string, ws: string) => {
+    setRemoving(null);
     setBusy(true);
     setError(null);
     api
@@ -723,54 +743,108 @@ function MemorySection() {
       </section>
 
       <section>
-        <h2>
-          洞府铭碑（按洞府隔离）
-          <Info>
-            按工作区隔离的项目规范、构建命令与架构约定。在任意洞府的对话里输入 /remember 内容，或让分身记住项目约定时会自动沉淀到这里。
-          </Info>
-        </h2>
+        <div className="usage-head">
+          <h2>
+            洞府铭碑（按洞府隔离）
+            <Info>
+              按工作区隔离的项目规范、构建命令与架构约定。在任意洞府的对话里输入 /remember 内容，或让分身记住项目约定时会自动沉淀到这里。
+            </Info>
+          </h2>
+          {snap && snap.projects.length > 0 && <span className="memory-badge">{snap.projects.length} 处洞府</span>}
+        </div>
         {!snap || snap.projects.length === 0 ? (
-          <p className="muted">还没有。</p>
+          <div className="memory-preview memory-empty-card">
+            <p className="memory-empty">暂无洞府铭碑。在任意洞府的对话中使用 /remember 即可沉淀项目约定。</p>
+          </div>
         ) : (
-          <div className="mcp-list">
+          <div className="memory-project-list">
             {snap.projects.map((proj) => {
               const active = selectedWs === proj.workspace;
+              const displayName = projectDisplayName(proj.workspace);
+              const showFullPath = proj.workspace !== displayName;
+              const projectLoaded = snap.project_workspace === proj.workspace;
               return (
-                <div className={`provider-card ${active ? "on" : ""}`} key={proj.hash}>
-                  <div className="who">
-                    <strong className="mono">{proj.workspace}</strong>
-                    <span className="chip">{proj.lines} 条 · {proj.chars} 字</span>
-                  </div>
-                  <div className="usage-actions" style={{ marginTop: 6 }}>
+                <div className={`memory-project-card ${active ? "is-open" : ""}`} key={proj.hash}>
+                  <div className="memory-project-head">
                     <button
                       type="button"
-                      className="button outline small"
-                      onClick={() => {
-                        setNotice(null);
-                        setSelectedWs(active ? null : proj.workspace);
-                      }}
+                      className="memory-project-info"
+                      aria-expanded={active}
+                      onClick={() => toggleProject(proj.workspace)}
                     >
-                      {active ? "收起" : "查看"}
+                      <span className="memory-project-icon" aria-hidden="true">
+                        <Icon name={active ? "folder2-open" : "folder2"} size={15} />
+                      </span>
+                      <span className="memory-project-text">
+                        <span className="memory-project-title-row">
+                          <strong className="memory-project-name">{displayName}</strong>
+                          <span className="memory-badge">
+                            {proj.lines} 条 · {proj.chars} 字
+                          </span>
+                        </span>
+                        {showFullPath && (
+                          <span className="memory-project-path mono" title={proj.workspace}>
+                            {proj.workspace}
+                          </span>
+                        )}
+                      </span>
                     </button>
-                    <button
-                      type="button"
-                      className="button outline small"
-                      onClick={() => openExternal("project", proj.workspace, proj.hash)}
-                    >
-                      打开
-                    </button>
-                    <button
-                      type="button"
-                      className="button text small danger-text"
-                      disabled={busy}
-                      onClick={() => removeProject(proj.hash, proj.workspace)}
-                    >
-                      删除
-                    </button>
+                    <div className="usage-actions memory-project-actions">
+                      <button
+                        type="button"
+                        className={`button outline small ${active ? "is-active" : ""}`}
+                        aria-expanded={active}
+                        onClick={() => toggleProject(proj.workspace)}
+                      >
+                        <Icon name={active ? "chevron-down" : "chevron-right"} size={12} />
+                        {active ? "收起" : "查看"}
+                      </button>
+                      <button
+                        type="button"
+                        className="button outline small"
+                        title={`在外部编辑器中打开 ${displayName} 的洞府铭碑`}
+                        onClick={() => openExternal("project", proj.workspace, proj.hash)}
+                      >
+                        <Icon name="box-arrow-up-right" size={12} />
+                        打开
+                      </button>
+                      <span className="bubble-anchor">
+                        <button
+                          type="button"
+                          className="icon-button danger memory-project-delete"
+                          aria-expanded={removing === proj.hash}
+                          title={`清除 ${displayName} 的洞府铭碑`}
+                          disabled={busy}
+                          onClick={() => setRemoving(removing === proj.hash ? null : proj.hash)}
+                        >
+                          <Icon name="trash3" size={14} />
+                          <span className="sr-only">删除 {displayName}</span>
+                        </button>
+                        {removing === proj.hash && (
+                          <ConfirmBubble
+                            label={`清除 ${displayName} 的洞府铭碑`}
+                            confirm="确认删除"
+                            onConfirm={() => removeProject(proj.hash, proj.workspace)}
+                            onCancel={() => setRemoving(null)}
+                          >
+                            <p>
+                              清除 <strong>{displayName}</strong> 的洞府铭碑？
+                            </p>
+                            <p className="muted">该洞府下记录的项目规范与约定会被永久删除。</p>
+                          </ConfirmBubble>
+                        )}
+                      </span>
+                    </div>
                   </div>
                   {active && (
-                    <div className="field" style={{ marginTop: 10 }}>
-                      <MemoryViewer value={snap.project} emptyText="暂无内容。" />
+                    <div className="memory-project-body">
+                      {projectLoaded ? (
+                        <MemoryViewer value={snap.project} emptyText="暂无内容。" />
+                      ) : (
+                        <div className="memory-preview">
+                          <p className="memory-empty">正在读取…</p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

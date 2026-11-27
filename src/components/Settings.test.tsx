@@ -268,4 +268,60 @@ describe("SettingsPage component (P1-15 & P2-14)", () => {
     expect(document.documentElement.lang).toBe("en");
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ locale: "en" }));
   });
+
+  it("renders workspace memory cards cleanly, toggles preview, and confirms deletion via ConfirmBubble", async () => {
+    const ws = "/Users/xiafeng/project/omnidoppelganger";
+    const hash = "0123456789abcdef";
+    const getMemorySpy = vi.spyOn(api, "getMemory").mockImplementation(async (workspace?: string | null) => ({
+      enabled: true,
+      global: "",
+      project: workspace === ws ? "- Use pnpm or npm test" : "",
+      project_workspace: workspace ?? null,
+      projects: [{ hash, workspace: ws, chars: 178, lines: 1 }],
+      memory_dir: "/tmp/memory",
+    }));
+    const deleteSpy = vi.spyOn(api, "deleteProjectMemory").mockResolvedValue({
+      enabled: true,
+      global: "",
+      project: "",
+      project_workspace: null,
+      projects: [],
+      memory_dir: "/tmp/memory",
+    });
+
+    render(
+      <SettingsPage
+        view={makeMockSettingsView()}
+        listModels={vi.fn().mockResolvedValue([])}
+        onRefresh={vi.fn()}
+        onRevoke={vi.fn()}
+        onSave={vi.fn()}
+        onSaveKey={vi.fn()}
+        onAddProvider={vi.fn()}
+        onRemoveProvider={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "识海" }));
+
+    expect(await screen.findByText("omnidoppelganger")).toBeTruthy();
+    expect(screen.getByText(ws)).toBeTruthy();
+    expect(screen.getByText("1 处洞府")).toBeTruthy();
+    expect(screen.getByText("1 条 · 178 字")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看" }));
+    await waitFor(() => expect(getMemorySpy).toHaveBeenCalledWith(ws));
+    expect(await screen.findByText("Use pnpm or npm test")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "收起" }));
+    expect(screen.queryByText("Use pnpm or npm test")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除 omnidoppelganger" }));
+    expect(deleteSpy).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith(hash, null));
+    expect(await screen.findByText("已清除该洞府的铭碑。")).toBeTruthy();
+    expect(screen.getByText(/暂无洞府铭碑/)).toBeTruthy();
+  });
 });

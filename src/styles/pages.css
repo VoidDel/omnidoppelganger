@@ -740,27 +740,6 @@
   background: var(--sheet);
 }
 
-.memory-viewer-box {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.memory-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.memory-bar-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
 .memory-badge {
   font-size: var(--t-micro);
   color: var(--ink-2);
@@ -768,6 +747,9 @@
   border-radius: 999px;
   background: var(--well);
   border: 1px solid var(--line);
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.45;
 }
 
 .memory-preview {
@@ -778,6 +760,12 @@
   border-radius: var(--r-control);
   background: var(--sheet);
   box-sizing: border-box;
+}
+
+.memory-preview.memory-empty-card {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
 }
 
 .memory-preview > :first-child {
@@ -792,6 +780,135 @@
   margin: 0;
   color: var(--ink-2);
   font-size: var(--t-small);
+}
+
+.memory-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-project-card {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  transition: border-color var(--d-quick) var(--ease-out);
+}
+
+.memory-project-card:hover,
+.memory-project-card.is-open {
+  border-color: var(--line-strong);
+}
+
+.memory-project-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.memory-project-info {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.memory-project-info:focus-visible {
+  outline: 2px solid var(--jade);
+  outline-offset: 4px;
+  border-radius: var(--r-paper);
+}
+
+.memory-project-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+}
+
+.memory-project-card.is-open .memory-project-icon {
+  color: var(--jade);
+}
+
+.memory-project-text {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.memory-project-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.memory-project-name {
+  font-family: var(--text);
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.memory-project-path {
+  display: block;
+  font-size: var(--t-micro);
+  color: var(--ink-2);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-project-actions {
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.memory-project-actions .button.outline.small.is-active {
+  background: var(--control);
+  border-color: var(--line-strong);
+}
+
+.memory-project-delete {
+  width: 28px;
+  height: 28px;
+}
+
+.memory-project-body {
+  border-top: 1px solid var(--line);
+  background: var(--well);
+  border-radius: 0 0 calc(var(--r-control) - 1px) calc(var(--r-control) - 1px);
+}
+
+.memory-project-body .memory-preview {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  min-height: 64px;
+  padding: 12px 14px;
+}
+
+@media (max-width: 600px) {
+  .memory-project-head {
+    flex-wrap: wrap;
+  }
 }
 
 /* The five realms as a path to walk: every stage up to the chosen one is lit. */
