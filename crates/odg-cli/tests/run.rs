@@ -830,7 +830,9 @@ fn lands_isolated_worktree_session_into_origin_and_rejects_invalid_targets() {
     assert_eq!(landed_payload["into"], "main");
     assert_eq!(landed_payload["commits"], 1);
     assert_eq!(
-        std::fs::read_to_string(repo.path().join("landed.txt")).unwrap(),
+        std::fs::read_to_string(repo.path().join("landed.txt"))
+            .unwrap()
+            .replace("\r\n", "\n"),
         "merged from worktree\n"
     );
 
