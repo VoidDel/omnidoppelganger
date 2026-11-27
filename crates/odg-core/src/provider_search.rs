@@ -22,7 +22,10 @@ pub const SEARCHER: &str = "You search the web for a coding agent, which reads y
 
 /// Whether the session's provider can search the web for the agent.
 pub fn can_search(provider: &str) -> bool {
-    matches!(kind_id(provider), "anthropic" | "openai")
+    matches!(
+        kind_id(provider),
+        "anthropic" | "openai" | "gemini" | "moonshot" | "openrouter"
+    )
 }
 
 /// Anthropic's search tool for `model`: the version with dynamic filtering where the model takes it.
@@ -85,6 +88,9 @@ pub fn request(provider: &str, session: &str, model: &str, query: &str, input: &
             }
             tool
         }
+        "gemini" => json!({ "google_search": {} }),
+        "moonshot" => json!({ "type": "builtin_function", "function": { "name": "$web_search" } }),
+        "openrouter" => json!({ "type": crate::openai_chat::OPENROUTER_WEB_PLUGIN_TOOL }),
         _ => {
             return Err(format!(
                 "Web search is not set up: it needs a GLM (Zhipu) API key saved in the settings, and {provider} has no search of its own."
@@ -369,5 +375,71 @@ mod tests {
             told.content
         );
         assert_eq!(told.meta["results"], 1);
+    }
+
+    #[test]
+    fn builds_search_requests_and_extracts_citations_for_gemini_kimi_and_openrouter() {
+        assert!(can_search("gemini") && can_search("moonshot") && can_search("openrouter"));
+        assert!(!can_search("deepseek") && !can_search("ollama"));
+
+        // Gemini: google_search tool + groundingMetadata -> citations
+        let gemini_req = request("gemini", "s", "gemini-2.5-pro", "rust 1.90", &json!({})).unwrap();
+        let gemini_body = crate::gemini::request_body(&gemini_req);
+        assert_eq!(gemini_body["tools"], json!([{ "google_search": {} }]));
+        let mut g_acc = crate::gemini::GeminiAccumulator::default();
+        g_acc
+            .apply(&json!({
+                "candidates": [{
+                    "content": { "parts": [{ "text": "Rust 1.90 is out." }] },
+                    "groundingMetadata": {
+                        "groundingChunks": [
+                            { "web": { "uri": "https://blog.rust-lang.org/1.90", "title": "Rust 1.90" } }
+                        ]
+                    },
+                    "finishReason": "STOP"
+                }]
+            }))
+            .unwrap();
+        let g_turn = g_acc.finish("gemini-2.5-pro").unwrap();
+        let g_out = results(&g_turn, "rust 1.90", &json!({}), "gemini", "gemini-2.5-pro");
+        assert_eq!(g_out.meta["results"], 1);
+        assert!(g_out.content.contains("https://blog.rust-lang.org/1.90"));
+
+        // Kimi: builtin_function `$web_search` passed through unchanged in Chat Completions
+        let kimi_req = request("moonshot", "s", "kimi-k3", "rust 1.90", &json!({})).unwrap();
+        let kimi_body = crate::openai_chat::request_body(crate::providers::Flavor::Kimi, &kimi_req);
+        assert_eq!(
+            kimi_body["tools"],
+            json!([{ "type": "builtin_function", "function": { "name": "$web_search" } }])
+        );
+
+        // OpenRouter: `plugins: [{ id: "web" }]` with no empty `tools` field, plus url_citation annotations
+        let or_req = request("openrouter", "s", "openai/gpt-5", "rust 1.90", &json!({})).unwrap();
+        let or_body = crate::openai_chat::request_body(crate::providers::Flavor::Generic, &or_req);
+        assert_eq!(or_body["plugins"], json!([{ "id": "web" }]));
+        assert!(or_body.get("tools").is_none());
+        let mut c_acc = crate::openai_chat::ChatAccumulator::default();
+        c_acc
+            .apply(&json!({
+                "choices": [{
+                    "delta": {
+                        "content": "Rust 1.90 summary.",
+                        "annotations": [{
+                            "type": "url_citation",
+                            "url_citation": {
+                                "url": "https://rust-lang.org/news",
+                                "title": "Rust News",
+                                "content": "Released today."
+                            }
+                        }]
+                    },
+                    "finish_reason": "stop"
+                }]
+            }))
+            .unwrap();
+        let or_turn = c_acc.finish().unwrap();
+        let or_out = results(&or_turn, "rust 1.90", &json!({}), "openrouter", "openai/gpt-5");
+        assert_eq!(or_out.meta["results"], 1);
+        assert!(or_out.content.contains("https://rust-lang.org/news"));
     }
 }

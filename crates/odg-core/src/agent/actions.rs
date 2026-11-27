@@ -249,26 +249,61 @@ impl<L: Llm> Inner<L> {
     pub(super) async fn search_with_provider(&self, input: &Value, cancel: &CancellationToken) -> Option<ToolOutput> {
         let (provider, model) = (self.provider(), self.model());
         let query = input["query"].as_str().unwrap_or_default();
-        let request = match crate::provider_search::request(&provider, &self.id, &model, query, input) {
+        let mut request = match crate::provider_search::request(&provider, &self.id, &model, query, input) {
             Ok(request) => request,
             Err(message) => return Some(ToolOutput::error(message)),
         };
         let kind = providers::kind_id(&provider);
-        let (sender, mut receiver) = unbounded_channel::<StreamDelta>();
-        // What the searching model writes is not the agent's: it is not shown as it comes.
-        let discard = async { while receiver.recv().await.is_some() {} };
-        let (result, ()) = tokio::join!(self.llm.stream(request, sender, cancel.clone()), discard);
-        match result {
-            Err(LlmError::Cancelled) => None,
-            Err(error) => Some(ToolOutput::error(format!("The search through {kind} failed: {error}"))),
-            Ok(turn) => {
-                let mut output = crate::provider_search::results(&turn, query.trim(), input, kind, &model);
-                if let Some(tokens) = providers::tokens(&provider, &turn.usage) {
-                    output.meta["tokens"] = json!(tokens);
+        let max_rounds = if kind == "moonshot" { 3 } else { 1 };
+        let mut last_turn = None;
+        for round in 0..max_rounds {
+            let (sender, mut receiver) = unbounded_channel::<StreamDelta>();
+            // What the searching model writes is not the agent's: it is not shown as it comes.
+            let discard = async { while receiver.recv().await.is_some() {} };
+            let (result, ()) = tokio::join!(self.llm.stream(request.clone(), sender, cancel.clone()), discard);
+            let turn = match result {
+                Err(LlmError::Cancelled) => return None,
+                Err(error) => return Some(ToolOutput::error(format!("The search through {kind} failed: {error}"))),
+                Ok(turn) => turn,
+            };
+            // Moonshot's `$web_search` builtin_function runs in two rounds: the model emits a `$web_search`
+            // tool_use, and echoing its arguments back in a `tool_result` lets Moonshot execute the search.
+            if kind == "moonshot" && round + 1 < max_rounds && turn.stop_reason.as_deref() == Some("tool_use") {
+                let web_calls: Vec<Value> = turn
+                    .content
+                    .iter()
+                    .filter(|b| b["type"] == "tool_use" && b["name"] == "$web_search")
+                    .map(|b| {
+                        let content = b["arguments"]
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| b["input"].to_string());
+                        json!({
+                            "type": "tool_result",
+                            "tool_use_id": b["id"],
+                            "content": content,
+                        })
+                    })
+                    .collect();
+                if !web_calls.is_empty() {
+                    request
+                        .messages
+                        .push(json!({ "role": "assistant", "content": turn.content }));
+                    request
+                        .messages
+                        .push(json!({ "role": "user", "content": web_calls }));
+                    continue;
                 }
-                Some(output)
             }
+            last_turn = Some(turn);
+            break;
         }
+        let turn = last_turn?;
+        let mut output = crate::provider_search::results(&turn, query.trim(), input, kind, &model);
+        if let Some(tokens) = providers::tokens(&provider, &turn.usage) {
+            output.meta["tokens"] = json!(tokens);
+        }
+        Some(output)
     }
 
     /// Run `delegate`: set off a subagent for each task, wait until all have

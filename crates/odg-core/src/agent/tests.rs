@@ -1240,7 +1240,7 @@ async fn an_mcp_servers_tools_join_the_request_and_ask_before_each_call() {
     let kept = Arc::new(GrantStore::new(home.path().join("grants.json")));
     // Searching is set up, so the model is offered `web_search` as well.
     let search: crate::web::SearchSource = Arc::new(|| {
-        Some(crate::web::SearchConfig {
+        crate::web::SearchMode::Zhipu(crate::web::SearchConfig {
             url: "http://127.0.0.1:9/web_search".into(),
             key: "k".into(),
             engine: "search_std".into(),
@@ -3183,5 +3183,58 @@ async fn cancelling_while_waiting_for_approval_or_question_clears_pending_and_em
     assert!(
         statuses_2.first() == Some(&Status::Running) && statuses_2.last() == Some(&Status::Idle),
         "expected Running before Idle after cancelling question wait, got {statuses_2:?}"
+    );
+}
+
+#[tokio::test]
+async fn disabled_search_withholds_web_search_even_on_anthropic() {
+    let workspace = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let llm = ScriptedLlm::new(vec![says("done")], None);
+    let store = SessionStore::new(home.path().join("sessions"));
+    let log = store.create(workspace.path(), "anthropic", "scripted").unwrap();
+    let (sender, _events) = unbounded_channel();
+    let tuning = Arc::new(|_: &str, _: &str| Tuning {
+        effort: "high".to_string(),
+        context_limit: u64::MAX,
+        context_window: u64::MAX,
+        guardian: None,
+        approval_wait: None,
+    });
+    let services = Services {
+        grants: Arc::new(GrantStore::new(home.path().join("grants.json"))),
+        mcp: None,
+        skills: None,
+        search: Some(Arc::new(|| crate::web::SearchMode::Disabled)),
+        sandbox: None,
+        chat: None,
+        runtime: None,
+        painter: None,
+        lsp: None,
+    };
+    let session = Session::new(
+        log,
+        llm.clone(),
+        tuning,
+        services,
+        sender,
+        tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+    session.send("hi".into());
+    session.wait_idle().await;
+    let requests = llm.requests.lock().unwrap();
+    let tool_names: Vec<&str> = requests[0]
+        .tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(
+        !tool_names.contains(&"web_search"),
+        "web_search must not be offered when SearchMode::Disabled, got {tool_names:?}"
+    );
+    assert!(
+        !tool_names.contains(&"generate_image"),
+        "generate_image must not be offered when painter is None, got {tool_names:?}"
     );
 }

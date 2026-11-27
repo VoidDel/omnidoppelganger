@@ -622,6 +622,7 @@ function PainterSection({ view, onSavePatch }: { view: SettingsView; onSavePatch
   const name = (id: string | null) => view.painters.find(([painter]) => painter === id)?.[1] ?? "";
   const options = [
     { value: "", text: "自动：哪家有密钥就请哪家" },
+    { value: "off", text: "关闭（不使用丹青）" },
     ...view.painters.map(([id, painter, provider]) => ({ value: id, text: keyed(provider) ? painter : `${painter}（还没有 ${providerName(provider)} 的密钥）` })),
   ];
   return (
@@ -637,7 +638,9 @@ function PainterSection({ view, onSavePatch }: { view: SettingsView; onSavePatch
         <div className="inline model-row">
           <Combo id="painter" value={settings.painter} options={options} editable={false} onSave={(painter) => onSavePatch({ painter })} />
         </div>
-        {view.painter_ready === null ? (
+        {settings.painter === "off" ? (
+          <p className="hint">已关闭丹青：分身不会调用图像模型作画，仅在需要时用代码画图。</p>
+        ) : view.painter_ready === null ? (
           <p className="hint missing">还没有 OpenAI 或 GLM（智谱）的密钥，分身现在只能用代码画图。到「心法」那一页给其中一家添上密钥，就能请画师作画。</p>
         ) : settings.painter && settings.painter !== view.painter_ready ? (
           <p className="hint">{name(settings.painter)}还没有密钥，眼下请 {name(view.painter_ready)} 作画。</p>
@@ -1166,6 +1169,7 @@ export function SettingsPage({
               config={view.mcp_config}
               servers={view.mcp_servers}
               home={view.home}
+              settingsView={view}
               onRefresh={onRefresh}
               onSave={onSaveMcp ?? ((cfg) => api.saveMcpConfig(cfg).then(() => (onRefresh(), null), (e) => String(e)))}
             />
@@ -1307,22 +1311,30 @@ export function SettingsPage({
             <div className="label-line">
               <label htmlFor="search-engine">向哪家打探</label>
               <Info>
-                搜索走智谱的搜索接口，用的就是 GLM（智谱）那把密钥，换哪家心法都能搜；每次搜索前要请示，按次花灵石。GLM 的接口地址换成国际站 z.ai 时，只有那边自带的一种搜索，这里的选择不起作用。没有 GLM 密钥时，用 Anthropic 或 OpenAI 心法的分身改由那一家自带的搜索来搜：每次多发一次模型请求，搜索费和这次请求的灵石都算在那一家，同样先请示。
+                默认关闭。选「仅用模型自带搜索」时，使用 Anthropic、OpenAI、Google Gemini、Kimi 或 OpenRouter 心法的分身直接调用各自官方搜索（费用算在该家账上，每次先请示）；选智谱通道时走智谱 Web Search API（需 GLM 密钥，换哪家心法都能搜；国际站 z.ai 固定走其自带引擎）。若用其他模型或中转，也可在侧栏「法器」中启用 Exa（免密钥）或 Magpie Search。
               </Info>
             </div>
             <div className="inline model-row">
               <Combo
                 id="search-engine"
                 value={settings.search_engine}
-                options={view.search_engines.map(([id, what]) => ({ value: id, text: what }))}
+                options={[
+                  { value: "off", text: "关闭（不使用天机阁）" },
+                  { value: "provider", text: "仅用模型自带搜索（Anthropic / OpenAI / Gemini / Kimi / OpenRouter）" },
+                  ...view.search_engines.map(([id, what]) => ({ value: id, text: what })),
+                ]}
                 editable={false}
                 onSave={(engine) => savePatch({ search_engine: engine })}
               />
             </div>
             {/* Searching does not work yet: said in the open, with what puts it right. */}
-            {!view.search_ready && (
-              <p className="hint missing">还没有 GLM 的密钥：用 Anthropic 或 OpenAI 心法的分身改由那一家自带的搜索来搜，用别家心法的分身搜不了。到「心法」那一页给 GLM 添上密钥，或者到侧栏的「法器」里启用 Exa，它不用密钥。</p>
-            )}
+            {settings.search_engine === "off" ? (
+              <p className="hint">已关闭天机阁：分身不会使用联网搜索（包括模型自带搜索）。</p>
+            ) : settings.search_engine === "provider" ? (
+              <p className="hint">仅用模型自带搜索：使用 Anthropic、OpenAI、Google Gemini、Kimi 或 OpenRouter 心法时可直接联网搜索；其他心法可到侧栏「法器」里启用 Exa（免密钥）或 Magpie Search。</p>
+            ) : !view.search_ready ? (
+              <p className="hint missing">还没有 GLM 的密钥：用 Anthropic、OpenAI、Gemini、Kimi 或 OpenRouter 心法的分身会改由各自自带搜索来搜，别家心法搜不了。到「心法」那一页给 GLM 添上密钥，或者到侧栏「法器」里启用 Exa（免密钥）或 Magpie Search。</p>
+            ) : null}
           </div>
         </section>
         <PainterSection view={view} onSavePatch={savePatch} />

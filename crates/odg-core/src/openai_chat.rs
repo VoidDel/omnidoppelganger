@@ -30,11 +30,22 @@ const THINKING: usize = 0;
 const TEXT: usize = 1;
 const TOOLS: usize = 2;
 
-/// Tool definitions as Chat Completions functions.
+/// Internal marker in `LlmRequest::tools` asking Chat Completions to enable OpenRouter's `web` plugin.
+pub const OPENROUTER_WEB_PLUGIN_TOOL: &str = "openrouter_web_plugin";
+
+/// Tool definitions as Chat Completions functions, passing through provider builtin tools (such as Kimi's
+/// `builtin_function`) unchanged and excluding internal plugin markers.
 fn chat_tools(tools: &[Value]) -> Vec<Value> {
     tools
         .iter()
-        .map(|tool| json!({ "type": "function", "function": { "name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"] } }))
+        .filter(|tool| tool["type"].as_str() != Some(OPENROUTER_WEB_PLUGIN_TOOL))
+        .map(|tool| {
+            if tool["type"].as_str() == Some("builtin_function") {
+                tool.clone()
+            } else {
+                json!({ "type": "function", "function": { "name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"] } })
+            }
+        })
         .collect()
 }
 
@@ -109,12 +120,20 @@ fn chat_messages_inner(system: &str, messages: &[Value], require_reasoning_field
 pub fn request_body(flavor: Flavor, request: &LlmRequest) -> Value {
     let effort = effort_for(Protocol::Chat(flavor), &request.effort);
     let require_reasoning_field = matches!(flavor, Flavor::DeepSeek | Flavor::Kimi) && effort.is_some();
+    let has_openrouter_web = request
+        .tools
+        .iter()
+        .any(|tool| tool["type"].as_str() == Some(OPENROUTER_WEB_PLUGIN_TOOL));
+    let tools = chat_tools(&request.tools);
     let mut body = json!({
         "model": request.model,
         "stream": true,
         "messages": chat_messages_inner(&request.system, &request.messages, require_reasoning_field),
-        "tools": chat_tools(&request.tools),
+        "tools": tools,
     });
+    if has_openrouter_web {
+        body["plugins"] = json!([{ "id": "web" }]);
+    }
     if let Some(effort) = effort {
         body["reasoning_effort"] = json!(effort);
     }
@@ -130,7 +149,7 @@ pub fn request_body(flavor: Flavor, request: &LlmRequest) -> Value {
         Flavor::Glm => {}
     }
     // A request without tools (a summary written from a transcript) leaves the field out: an empty list is an error to some servers.
-    if request.tools.is_empty() {
+    if body["tools"].as_array().is_some_and(Vec::is_empty) {
         body.as_object_mut().expect("the body is an object").remove("tools");
     }
     body
@@ -155,6 +174,7 @@ pub struct ChatAccumulator {
     reasoning: String,
     text: String,
     calls: Vec<Call>,
+    annotations: Vec<Value>,
     finish_reason: Option<String>,
     model: String,
     usage: Value,
@@ -232,6 +252,39 @@ impl ChatAccumulator {
                 }
                 object @ Value::Object(_) => call.object = Some(object.clone()),
                 _ => {}
+            }
+        }
+        for source in [delta["annotations"].as_array(), choice["message"]["annotations"].as_array()]
+            .into_iter()
+            .flatten()
+        {
+            for ann in source {
+                let inner = if ann["url_citation"].is_object() {
+                    &ann["url_citation"]
+                } else {
+                    ann
+                };
+                let url = inner["url"].as_str().unwrap_or_default().trim();
+                if !url.is_empty()
+                    && !self
+                        .annotations
+                        .iter()
+                        .any(|existing| existing["url"].as_str() == Some(url))
+                {
+                    let mut entry = json!({
+                        "url": url,
+                        "title": inner["title"].as_str().unwrap_or_default().trim(),
+                    });
+                    if let Some(cited) = inner["content"]
+                        .as_str()
+                        .or_else(|| inner["cited_text"].as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        entry["cited_text"] = json!(cited);
+                    }
+                    self.annotations.push(entry);
+                }
             }
         }
         if let Some(reason) = choice["finish_reason"].as_str() {
@@ -315,7 +368,14 @@ impl ChatAccumulator {
                 .push(json!({ "type": "thinking", "thinking": self.reasoning }));
         }
         if !self.text.is_empty() {
-            turn.content.push(json!({ "type": "text", "text": self.text }));
+            let mut block = json!({ "type": "text", "text": self.text });
+            if !self.annotations.is_empty() {
+                block["citations"] = Value::Array(self.annotations);
+            }
+            turn.content.push(block);
+        } else if !self.annotations.is_empty() {
+            turn.content
+                .push(json!({ "type": "web_search_tool_result", "content": self.annotations }));
         }
         let mut invalid = HashMap::new();
         for (position, call) in self.calls.into_iter().enumerate() {

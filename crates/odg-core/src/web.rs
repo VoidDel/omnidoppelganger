@@ -544,8 +544,26 @@ pub struct SearchConfig {
     pub engine: String,
 }
 
-/// Gives the search configuration in force, or `None` when searching is not set up.
-pub type SearchSource = std::sync::Arc<dyn Fn() -> Option<SearchConfig> + Send + Sync>;
+/// Sentinel `settings.search_engine` value that switches web search off completely
+/// (neither Zhipu search nor provider-native search is offered or called).
+pub const SEARCH_OFF: &str = "off";
+/// Sentinel `settings.search_engine` value that uses only the active session provider's
+/// built-in web search (Anthropic, OpenAI, Google Gemini, Kimi, OpenRouter), never Zhipu.
+pub const SEARCH_PROVIDER: &str = "provider";
+
+/// What the user has set for web search (`web_search`), checked at every request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchMode {
+    /// Search through Zhipu's Web Search API.
+    Zhipu(SearchConfig),
+    /// No Zhipu key is saved: fall back to the session's own provider when it can search (Anthropic / OpenAI).
+    ProviderFallback,
+    /// Explicitly switched off by the user: do not offer or execute `web_search`.
+    Disabled,
+}
+
+/// Gives the search mode in force at the start of a request.
+pub type SearchSource = std::sync::Arc<dyn Fn() -> SearchMode + Send + Sync>;
 
 /// The engines Zhipu's site in China offers, the plainest first: `(id, what it is)`. What each costs is Zhipu's to
 /// say, and changes; it is not said here.

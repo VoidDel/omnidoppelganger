@@ -32,6 +32,14 @@ export interface Builtin {
   entry: (home: string, key: string) => ServerEntry;
 }
 
+/** Derive the Magpie Search MCP URL (`<origin>/mcp/search`) from a Magpie provider's base URL. */
+export function magpieSearchUrl(baseUrl?: string | null): string {
+  const raw = (baseUrl ?? "").trim().replace(/\/+$/, "");
+  if (!raw) return "http://127.0.0.1:3425/mcp/search";
+  const origin = raw.endsWith("/v1") ? raw.slice(0, -3).replace(/\/+$/, "") : raw;
+  return `${origin || "http://127.0.0.1:3425"}/mcp/search`;
+}
+
 /** A path in the home folder, with the separator the folder is written with. */
 const inHome = (home: string, name: string) => `${home.replace(/[\\/]+$/, "")}${home.includes("\\") ? "\\" : "/"}${name}`;
 
@@ -71,6 +79,15 @@ export const BUILTINS: Builtin[] = [
     runs: "remote",
     site: "https://exa.ai",
     entry: () => ({ url: "https://mcp.exa.ai/mcp" }),
+  },
+  {
+    id: "magpie-search",
+    name: "Magpie Search",
+    seal: "鹊",
+    summary: "接入已启用 Magpie 宗门的联网搜索与网页抓取（web_search / web_fetch），默认地址与 Magpie 宗门保持一致。",
+    runs: "remote",
+    site: "https://github.com/yetone/magpie",
+    entry: (_, url) => ({ url: magpieSearchUrl(url) }),
   },
   {
     id: "github",

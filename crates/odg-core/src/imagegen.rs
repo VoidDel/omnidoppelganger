@@ -60,6 +60,9 @@ pub const PAINTERS: &[Painter] = &[
     },
 ];
 
+/// Sentinel `settings.painter` value that switches image generation off completely.
+pub const PAINTER_OFF: &str = "off";
+
 pub fn painter(id: &str) -> Option<&'static Painter> {
     PAINTERS.iter().find(|painter| painter.id == id)
 }

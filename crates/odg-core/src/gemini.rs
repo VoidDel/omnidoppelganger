@@ -57,20 +57,26 @@ fn gemini_tools(tools: &[Value]) -> Option<Value> {
     if tools.is_empty() {
         return None;
     }
-    let declarations: Vec<Value> = tools
-        .iter()
-        .map(|tool| {
-            let mut decl = json!({
-                "name": tool["name"],
-                "description": tool["description"],
-            });
-            if tool["input_schema"].is_object() {
-                decl["parameters"] = sanitize_schema(&tool["input_schema"]);
-            }
-            decl
-        })
-        .collect();
-    Some(json!([{ "functionDeclarations": declarations }]))
+    let mut out = Vec::new();
+    let mut declarations = Vec::new();
+    for tool in tools {
+        if tool["google_search"].is_object() {
+            out.push(json!({ "google_search": tool["google_search"] }));
+            continue;
+        }
+        let mut decl = json!({
+            "name": tool["name"],
+            "description": tool["description"],
+        });
+        if tool["input_schema"].is_object() {
+            decl["parameters"] = sanitize_schema(&tool["input_schema"]);
+        }
+        declarations.push(decl);
+    }
+    if !declarations.is_empty() {
+        out.push(json!({ "functionDeclarations": declarations }));
+    }
+    (!out.is_empty()).then_some(Value::Array(out))
 }
 
 fn supports_thinking(model: &str) -> bool {
@@ -294,6 +300,7 @@ pub struct GeminiAccumulator {
     finish_reason: Option<String>,
     model: String,
     usage: Value,
+    grounding_chunks: Vec<(String, String)>,
 }
 
 impl GeminiAccumulator {
@@ -336,6 +343,15 @@ impl GeminiAccumulator {
         {
             if let Some(reason) = first["finishReason"].as_str() {
                 self.finish_reason = Some(reason.to_string());
+            }
+            if let Some(chunks) = first["groundingMetadata"]["groundingChunks"].as_array() {
+                for item in chunks {
+                    let uri = item["web"]["uri"].as_str().unwrap_or_default().trim();
+                    if !uri.is_empty() && !self.grounding_chunks.iter().any(|(existing, _)| existing == uri) {
+                        let title = item["web"]["title"].as_str().unwrap_or_default().trim().to_string();
+                        self.grounding_chunks.push((uri.to_string(), title));
+                    }
+                }
             }
             if let Some(parts) = first["content"]["parts"].as_array() {
                 for part in parts {
@@ -455,7 +471,23 @@ impl GeminiAccumulator {
             if let Some(sig) = self.text_sig {
                 block["thought_signature"] = json!(sig);
             }
+            if !self.grounding_chunks.is_empty() {
+                let citations: Vec<Value> = self
+                    .grounding_chunks
+                    .iter()
+                    .map(|(url, title)| json!({ "url": url, "title": title }))
+                    .collect();
+                block["citations"] = Value::Array(citations);
+            }
             turn.content.push(block);
+        } else if !self.grounding_chunks.is_empty() {
+            let found: Vec<Value> = self
+                .grounding_chunks
+                .iter()
+                .map(|(url, title)| json!({ "url": url, "title": title }))
+                .collect();
+            turn.content
+                .push(json!({ "type": "web_search_tool_result", "content": found }));
         }
         for call in self.calls {
             let mut block = json!({

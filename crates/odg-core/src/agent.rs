@@ -1218,9 +1218,19 @@ impl<L: Llm> Inner<L> {
         })
     }
 
-    /// Where a web search would go right now; `None` when searching is not set up.
+    /// The effective search mode right now.
+    fn search_mode(&self) -> crate::web::SearchMode {
+        self.search
+            .as_ref()
+            .map_or(crate::web::SearchMode::ProviderFallback, |source| source())
+    }
+
+    /// Where a web search would go right now; `None` when Zhipu search is not active.
     fn search_config(&self) -> Option<crate::web::SearchConfig> {
-        self.search.as_ref().and_then(|source| source())
+        match self.search_mode() {
+            crate::web::SearchMode::Zhipu(config) => Some(config),
+            crate::web::SearchMode::ProviderFallback | crate::web::SearchMode::Disabled => None,
+        }
     }
 
     /// Built-in tools withheld from a subagent: setup/configuration, user-facing delivery,
@@ -1314,9 +1324,14 @@ impl<L: Llm> Inner<L> {
             specs.push(tools::ask_user_spec());
             specs.push(tools::present_plan_spec());
         }
-        // Through Zhipu with a GLM key, or else through the session's own provider where it can search.
-        if self.search_config().is_some() || crate::provider_search::can_search(&self.provider()) {
-            specs.push(tools::search_spec());
+        // Through Zhipu with a GLM key, or else through the session's own provider where it can search —
+        // unless the user explicitly switched 天机阁 off.
+        match self.search_mode() {
+            crate::web::SearchMode::Zhipu(_) => specs.push(tools::search_spec()),
+            crate::web::SearchMode::ProviderFallback if crate::provider_search::can_search(&self.provider()) => {
+                specs.push(tools::search_spec());
+            }
+            crate::web::SearchMode::ProviderFallback | crate::web::SearchMode::Disabled => {}
         }
         if !self.read_only
             && let Some(config) = self.painter_config()
@@ -1965,13 +1980,21 @@ impl<L: Llm> Inner<L> {
                             )
                         }
                     }
-                    // Without Zhipu's search, the session's own provider searches, in a request of its own.
-                    "web_search" if self.search_config().is_none() => {
-                        match self.search_with_provider(&input, cancel).await {
-                            Some(output) => output,
-                            None => return Ok("cancelled"),
+                    // Without Zhipu's search, the session's own provider searches, unless web search is disabled.
+                    "web_search" => match self.search_mode() {
+                        crate::web::SearchMode::Disabled => {
+                            ToolOutput::error("Web search (天机阁) is disabled in settings.")
                         }
-                    }
+                        crate::web::SearchMode::ProviderFallback => {
+                            match self.search_with_provider(&input, cancel).await {
+                                Some(output) => output,
+                                None => return Ok("cancelled"),
+                            }
+                        }
+                        crate::web::SearchMode::Zhipu(_) => {
+                            tools::execute(&name, &input, &self.tool_context(cancel)).await
+                        }
+                    },
                     _ => tools::execute(&name, &input, &self.tool_context(cancel)).await,
                 };
                 self.tool_output(&id, &name, output)?;

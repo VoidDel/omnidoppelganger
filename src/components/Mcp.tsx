@@ -17,7 +17,8 @@ import {
   type ServerEntry,
   type ServerForm,
 } from "../lib/mcp";
-import type { McpServer } from "../lib/types";
+import { enabledProviders } from "../lib/providers";
+import type { McpServer, SettingsView } from "../lib/types";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { FormDialog, Pairs, Row, Segmented } from "./FormDialog";
 import { Info } from "./Hint";
@@ -68,6 +69,10 @@ interface CardProps {
   home: string;
   on: boolean;
   server: McpServer | undefined;
+  /** Optional resolved entry preview (e.g. dynamic URL derived from an enabled provider). */
+  preview?: ServerEntry;
+  /** Reason enabling this builtin is currently unavailable; turning it off remains allowed. */
+  blockedReason?: string | null;
   /** Switching is held while something else is being saved, or while the list below has edits not saved. */
   held: boolean;
   onSwitch: (on: boolean, key?: string) => Promise<string | null>;
@@ -144,12 +149,14 @@ function KeyDialog({ builtin, secret, held, onSwitch, onClose }: KeyDialogProps)
 }
 
 /** One 法器 that comes with the app: what it does, how it runs, and the switch that puts it in the list. */
-function Card({ builtin, home, on, server, held, onSwitch }: CardProps) {
+function Card({ builtin, home, on, server, preview, blockedReason, held, onSwitch }: CardProps) {
   const [asking, setAsking] = useState(false);
   const [wrong, setWrong] = useState<string | null>(null);
-  const shown: ServerEntry = builtin.entry(home, "…");
+  const shown: ServerEntry = preview ?? builtin.entry(home, "…");
   const lit = on && server?.state === "ready";
+  const blocked = !on && !!blockedReason;
   const flip = (next: boolean) => {
+    if (next && blockedReason) return;
     // One that needs a key asks for it before it is put in the list.
     if (next && builtin.key) return setAsking(true);
     onSwitch(next).then(setWrong);
@@ -174,6 +181,7 @@ function Card({ builtin, home, on, server, held, onSwitch }: CardProps) {
         <p className="mcp-launch mono" title={launchLine(shown)}>
           {launchLine(shown)}
         </p>
+        {blockedReason && <p className="hint missing">{blockedReason}</p>}
         {on && <Status server={server} />}
         {wrong && (
           <p className="hint failed" role="alert">
@@ -185,8 +193,19 @@ function Card({ builtin, home, on, server, held, onSwitch }: CardProps) {
       {/* At the card's right: how it stands, then the switch that changes it. */}
       <div className="mcp-side">
         <Lamp on={on} server={server} builtin={builtin} />
-        <label className="mcp-switch" title={held ? "下面的清单还有没保存的改动，先保存或撤销" : on ? `停用 ${builtin.name}` : `启用 ${builtin.name}`}>
-          <input type="checkbox" role="switch" checked={on || asking} disabled={held} onChange={(event) => (asking ? setAsking(false) : flip(event.target.checked))} />
+        <label
+          className="mcp-switch"
+          title={
+            held
+              ? "下面的清单还有没保存的改动，先保存或撤销"
+              : blocked
+                ? blockedReason!
+                : on
+                  ? `停用 ${builtin.name}`
+                  : `启用 ${builtin.name}`
+          }
+        >
+          <input type="checkbox" role="switch" checked={on || asking} disabled={held || blocked} onChange={(event) => (asking ? setAsking(false) : flip(event.target.checked))} />
           <span className="track" aria-hidden="true" />
           <span className="sr-only">{on ? "停用" : "启用"} {builtin.name}</span>
         </label>
@@ -428,6 +447,8 @@ interface Props {
   servers: McpServer[];
   /** The app's home folder, where a 法器 that keeps something keeps it. */
   home: string;
+  /** Current settings view, used to check dependent providers (e.g. Magpie) and mirror their URLs. */
+  settingsView?: SettingsView;
   /** Resolves with what is wrong with the text, or null once it is saved and the servers are connecting. */
   onSave: (config: string) => Promise<string | null>;
   onRefresh: () => void;
@@ -435,7 +456,7 @@ interface Props {
 }
 
 /** The 法器 page: MCP servers that come with the app, each off until switched on, and the list as text for any other. */
-export function McpPage({ config, servers, home, onSave, onRefresh, embedded = false }: Props) {
+export function McpPage({ config, servers, home, settingsView, onSave, onRefresh, embedded = false }: Props) {
   const [draft, setDraft] = useState(config);
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -465,8 +486,16 @@ export function McpPage({ config, servers, home, onSave, onRefresh, embedded = f
       return error;
     });
   };
+  const magpies = settingsView ? enabledProviders(settingsView).filter((p) => p.kind === "magpie") : [];
+  const activeMagpie = magpies.find((p) => p.id === settingsView?.settings.provider) ?? magpies[0] ?? null;
+  const magpieBaseUrl = activeMagpie ? settingsView?.settings.base_urls[activeMagpie.id] || activeMagpie.base_url : null;
+  const entryFor = (builtin: Builtin, key = ""): ServerEntry =>
+    builtin.id === "magpie-search" ? builtin.entry(home, magpieBaseUrl ?? "") : builtin.entry(home, key);
   const switchTo = (builtin: Builtin, on: boolean, key = "") => {
-    const next = withServer(config, builtin.id, on ? builtin.entry(home, key) : null);
+    if (on && builtin.id === "magpie-search" && !activeMagpie) {
+      return Promise.resolve("请先在「心法」中添加并启用 Magpie 宗门后再启用 Magpie Search。");
+    }
+    const next = withServer(config, builtin.id, on ? entryFor(builtin, key) : null);
     if (typeof next !== "string") return Promise.resolve(`下面的清单读不懂，先把它改好：${next.error}`);
     return save(next);
   };
@@ -477,17 +506,25 @@ export function McpPage({ config, servers, home, onSave, onRefresh, embedded = f
     if (typeof next !== "string") return;
     void save(next);
   };
-  const card = (builtin: Builtin) => (
-    <Card
-      key={builtin.id}
-      builtin={builtin}
-      home={home}
-      on={working(builtin.id)}
-      server={servers.find((server) => server.name === builtin.id)}
-      held={saving || dirty || !!unreadable}
-      onSwitch={(on, key) => switchTo(builtin, on, key)}
-    />
-  );
+  const card = (builtin: Builtin) => {
+    const isMagpie = builtin.id === "magpie-search";
+    const blockedReason = isMagpie && !activeMagpie ? "需先在「心法」中添加并启用 Magpie 宗门后方可启用。" : null;
+    const isOn = working(builtin.id);
+    const preview = isMagpie ? (isOn && entries[builtin.id] ? entries[builtin.id] : entryFor(builtin)) : undefined;
+    return (
+      <Card
+        key={builtin.id}
+        builtin={builtin}
+        home={home}
+        on={isOn}
+        server={servers.find((server) => server.name === builtin.id)}
+        preview={preview}
+        blockedReason={blockedReason}
+        held={saving || dirty || !!unreadable}
+        onSwitch={(on, key) => switchTo(builtin, on, key)}
+      />
+    );
+  };
   const body = (
     <>
         <section>

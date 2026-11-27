@@ -74,7 +74,11 @@ fn default_guardian() -> bool {
 }
 
 fn default_search_engine() -> String {
-    SEARCH_ENGINES[0].0.to_string()
+    crate::web::SEARCH_OFF.to_string()
+}
+
+fn default_painter() -> String {
+    crate::imagegen::PAINTER_OFF.to_string()
 }
 
 fn default_locale() -> String {
@@ -106,12 +110,12 @@ pub struct Settings {
     /// keep what they say.
     #[serde(default = "default_context_auto")]
     pub context_auto: bool,
-    /// Which of Zhipu's search engines `web_search` asks; see [`SEARCH_ENGINES`].
+    /// Which of Zhipu's search engines `web_search` asks; see [`SEARCH_ENGINES`], or `"off"` to disable web search.
     #[serde(default = "default_search_engine")]
     pub search_engine: String,
-    /// The image model `generate_image` asks, one of [`crate::imagegen::PAINTERS`]; empty for the first whose
-    /// provider has a key. See [`SettingsStore::painter`].
-    #[serde(default)]
+    /// The image model `generate_image` asks, one of [`crate::imagegen::PAINTERS`]; `""` for the first whose
+    /// provider has a key, or `"off"` to disable painting. See [`SettingsStore::painter`].
+    #[serde(default = "default_painter")]
     pub painter: String,
     /// `system`, `light`, or `dark`.
     pub theme: String,
@@ -173,7 +177,7 @@ impl Default for Settings {
             context_limit: DEFAULT_CONTEXT_LIMIT,
             context_auto: true,
             search_engine: default_search_engine(),
-            painter: String::new(),
+            painter: default_painter(),
             theme: "system".to_string(),
             base_urls: BTreeMap::new(),
             provider_names: BTreeMap::new(),
@@ -266,10 +270,16 @@ impl Settings {
         for tokens in self.context_windows.values_mut() {
             *tokens = (*tokens).max(MIN_CONTEXT_WINDOW);
         }
-        if !SEARCH_ENGINES.iter().any(|(id, _)| *id == self.search_engine) {
+        if self.search_engine != crate::web::SEARCH_OFF
+            && self.search_engine != crate::web::SEARCH_PROVIDER
+            && !SEARCH_ENGINES.iter().any(|(id, _)| *id == self.search_engine)
+        {
             self.search_engine = default.search_engine;
         }
-        if crate::imagegen::painter(&self.painter).is_none() {
+        if !self.painter.is_empty()
+            && self.painter != crate::imagegen::PAINTER_OFF
+            && crate::imagegen::painter(&self.painter).is_none()
+        {
             self.painter = default.painter;
         }
         self.base_urls = std::mem::take(&mut self.base_urls)
@@ -857,16 +867,20 @@ impl SettingsStore {
     }
 
     /// Where `web_search` searches: Zhipu's Web Search API, at the address
-    /// and with the key its models use. `None` while no GLM key is saved,
-    /// which is how searching is switched on. With the address set to
+    /// and with the key its models use. `None` while searching is switched off
+    /// (`search_engine == "off"`) or no GLM key is saved. With the address set to
     /// Zhipu's international site, that site's one engine is asked.
     pub fn search(&self) -> Option<SearchConfig> {
+        let chosen = self.load().search_engine;
+        if chosen == crate::web::SEARCH_OFF || chosen == crate::web::SEARCH_PROVIDER {
+            return None;
+        }
         let Endpoint { base_url, key } = self.endpoint("zhipu");
         let key = key?;
         let engine = if base_url.contains("z.ai") {
             INTERNATIONAL_ENGINE.to_string()
         } else {
-            self.load().search_engine
+            chosen
         };
         Some(SearchConfig {
             url: format!("{}/web_search", base_url.trim_end_matches('/')),
@@ -875,11 +889,30 @@ impl SettingsStore {
         })
     }
 
+    /// The effective search mode for agent sessions: Zhipu search, provider-native search,
+    /// or explicitly disabled (`search_engine == "off"`).
+    pub fn search_mode(&self) -> crate::web::SearchMode {
+        let chosen = self.load().search_engine;
+        if chosen == crate::web::SEARCH_OFF {
+            return crate::web::SearchMode::Disabled;
+        }
+        if chosen == crate::web::SEARCH_PROVIDER {
+            return crate::web::SearchMode::ProviderFallback;
+        }
+        match self.search() {
+            Some(config) => crate::web::SearchMode::Zhipu(config),
+            None => crate::web::SearchMode::ProviderFallback,
+        }
+    }
+
     /// Where `generate_image` paints: the painter the user chose, while its provider has a key; else the first of
-    /// [`crate::imagegen::PAINTERS`] whose provider has one. `None` while neither OpenAI nor GLM has a key, which is
-    /// how painting is switched on. It goes to the provider's address, so a gateway set there serves it too.
+    /// [`crate::imagegen::PAINTERS`] whose provider has one. `None` when switched off (`painter == "off"`) or while
+    /// neither OpenAI nor GLM has a key. It goes to the provider's address, so a gateway set there serves it too.
     pub fn painter(&self) -> Option<crate::imagegen::ImageConfig> {
         let chosen = self.load().painter;
+        if chosen == crate::imagegen::PAINTER_OFF {
+            return None;
+        }
         let reachable = |painter: &'static crate::imagegen::Painter| {
             let Endpoint { base_url, key } = self.endpoint(painter.provider);
             let key = key?;
@@ -1379,6 +1412,14 @@ mod tests {
         assert_eq!(vault.secrets.lock().unwrap().len(), 1);
         assert!(vault.secrets.lock().unwrap().contains_key(BUNDLE_KEY));
 
+        // Enable search and painting explicitly so both cached lookups exercise the vault cache.
+        store
+            .save(Settings {
+                search_engine: "search_std".into(),
+                painter: String::new(),
+                ..Settings::default()
+            })
+            .unwrap();
         // After migration, repeated reads hit only the in-memory cache (0 additional vault reads).
         let gets_after_migrate = vault.get_count();
         let statuses = store.key_statuses();
@@ -1558,9 +1599,18 @@ mod tests {
         if std::env::var_os("OPENAI_API_KEY").is_some() || std::env::var_os("ZHIPUAI_API_KEY").is_some() {
             return;
         }
+        assert_eq!(store.load().painter, crate::imagegen::PAINTER_OFF);
         assert_eq!(store.painter(), None);
         store.save_api_key("zhipu", "glm-key-0000000000000000").unwrap();
-        // Nothing chosen: the first painter whose provider has a key.
+        // Still off by default even after saving a key.
+        assert_eq!(store.painter(), None);
+        // Auto mode (`""`): the first painter whose provider has a key.
+        store
+            .save(Settings {
+                painter: String::new(),
+                ..Settings::default()
+            })
+            .unwrap();
         let config = store.painter().unwrap();
         assert_eq!(
             (config.painter.id, config.url.as_str(), config.key.as_str()),
@@ -1584,7 +1634,19 @@ mod tests {
             (config.painter.id, config.url.as_str()),
             ("gpt-image-2", "https://api.openai.com/v1/images/generations")
         );
-        // One this build does not know is forgotten.
+        // Explicitly switching painting off keeps `off` and yields no painter even when keys exist.
+        assert_eq!(
+            store
+                .save(Settings {
+                    painter: crate::imagegen::PAINTER_OFF.into(),
+                    ..Settings::default()
+                })
+                .unwrap()
+                .painter,
+            crate::imagegen::PAINTER_OFF
+        );
+        assert_eq!(store.painter(), None);
+        // One this build does not know falls back to the default (`off`).
         assert_eq!(
             store
                 .save(Settings {
@@ -1593,7 +1655,7 @@ mod tests {
                 })
                 .unwrap()
                 .painter,
-            ""
+            crate::imagegen::PAINTER_OFF
         );
     }
 
@@ -1601,11 +1663,21 @@ mod tests {
     fn searching_uses_the_glm_key_and_address_and_is_off_without_a_key() {
         let directory = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(directory.path());
-        // The GLM key may also come from the environment, which this test does not control.
-        if std::env::var_os("ZHIPUAI_API_KEY").is_none() {
-            assert_eq!(store.search(), None);
-        }
+        // Off by default.
+        assert_eq!(store.load().search_engine, crate::web::SEARCH_OFF);
+        assert_eq!(store.search(), None);
+        assert_eq!(store.search_mode(), crate::web::SearchMode::Disabled);
         store.save_api_key("zhipu", "glm-key-0000000000000000").unwrap();
+        assert_eq!(store.search(), None);
+        assert_eq!(store.search_mode(), crate::web::SearchMode::Disabled);
+
+        // Once enabled, the chosen engine is used.
+        store
+            .save(Settings {
+                search_engine: "search_std".into(),
+                ..Settings::default()
+            })
+            .unwrap();
         let search = store.search().unwrap();
         assert_eq!(
             (search.url.as_str(), search.engine.as_str()),
@@ -1613,7 +1685,6 @@ mod tests {
         );
         assert_eq!(search.key, "glm-key-0000000000000000");
 
-        // The chosen engine is used; one this build does not know falls back to the cheapest.
         store
             .save(Settings {
                 search_engine: "search_pro".into(),
@@ -1621,6 +1692,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(store.search().unwrap().engine, "search_pro");
+        // One this build does not know falls back to the default (`off`).
         assert_eq!(
             store
                 .save(Settings {
@@ -1629,10 +1701,11 @@ mod tests {
                 })
                 .unwrap()
                 .search_engine,
-            "search_std"
+            crate::web::SEARCH_OFF
         );
-        // The international site has one engine of its own.
+        // The international site has one engine of its own when enabled.
         let abroad = Settings {
+            search_engine: "search_std".into(),
             base_urls: [("zhipu".to_string(), "https://api.z.ai/api/paas/v4/".to_string())].into(),
             ..Settings::default()
         };
@@ -1642,6 +1715,26 @@ mod tests {
             (search.url.as_str(), search.engine.as_str()),
             ("https://api.z.ai/api/paas/v4/web_search", "search-prime")
         );
+        // Explicitly switching search off disables both Zhipu search (even on z.ai) and provider fallback.
+        let disabled = Settings {
+            search_engine: crate::web::SEARCH_OFF.into(),
+            base_urls: [("zhipu".to_string(), "https://api.z.ai/api/paas/v4/".to_string())].into(),
+            ..Settings::default()
+        };
+        assert_eq!(store.save(disabled).unwrap().search_engine, crate::web::SEARCH_OFF);
+        assert_eq!(store.search(), None);
+        assert_eq!(store.search_mode(), crate::web::SearchMode::Disabled);
+        // Provider-only mode skips Zhipu even when a GLM key is saved.
+        let provider_only = Settings {
+            search_engine: crate::web::SEARCH_PROVIDER.into(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            store.save(provider_only).unwrap().search_engine,
+            crate::web::SEARCH_PROVIDER
+        );
+        assert_eq!(store.search(), None);
+        assert_eq!(store.search_mode(), crate::web::SearchMode::ProviderFallback);
     }
 
     #[test]

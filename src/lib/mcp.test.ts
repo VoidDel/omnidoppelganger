@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUILTINS, EMPTY_FORM, entryProblem, fromForm, joinLine, launchLine, parseServers, readPasted, splitLine, toForm, withServer } from "./mcp";
+import { BUILTINS, EMPTY_FORM, entryProblem, fromForm, joinLine, launchLine, magpieSearchUrl, parseServers, readPasted, splitLine, toForm, withServer } from "./mcp";
 
 describe("a 法器 added by hand", () => {
   it("takes its command line apart as a terminal would, keeping Windows paths and quoted words whole", () => {
@@ -72,5 +72,13 @@ describe("the 法器 that come with the app", () => {
   it("show how each is started or reached", () => {
     expect(launchLine({ command: "uvx", args: ["mcp-server-fetch"] })).toBe("uvx mcp-server-fetch");
     expect(launchLine({ url: "https://mcp.deepwiki.com/mcp", headers: { Authorization: "secret" } })).toBe("https://mcp.deepwiki.com/mcp");
+  });
+
+  it("derives the Magpie Search MCP URL from a Magpie provider base URL", () => {
+    expect(magpieSearchUrl("")).toBe("http://127.0.0.1:3425/mcp/search");
+    expect(magpieSearchUrl("http://127.0.0.1:3425/v1")).toBe("http://127.0.0.1:3425/mcp/search");
+    expect(magpieSearchUrl("http://192.168.1.50:3425/v1/")).toBe("http://192.168.1.50:3425/mcp/search");
+    expect(magpieSearchUrl("https://magpie.example.com/v1")).toBe("https://magpie.example.com/mcp/search");
+    expect(magpieSearchUrl("http://10.0.0.8:3425")).toBe("http://10.0.0.8:3425/mcp/search");
   });
 });

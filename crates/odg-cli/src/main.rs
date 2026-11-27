@@ -684,7 +684,7 @@ async fn run(options: Options) -> Result<ExitOutcome, RunError> {
         grants: grants.clone(),
         mcp: Some(mcp.clone()),
         skills: Some(home.join("skills")),
-        search: Some(Arc::new(move || searching.search())),
+        search: Some(Arc::new(move || searching.search_mode())),
         sandbox: Some(Arc::new(move || confining.sandbox())),
         chat: Some(home.join("闲谈")),
         runtime: Some(home.join("runtime")),

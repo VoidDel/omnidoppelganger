@@ -376,7 +376,7 @@ impl<L: Llm + 'static> AppCore<L> {
             grants: self.grants.clone(),
             mcp: Some(self.mcp.clone()),
             skills: Some(self.skills_dir()),
-            search: Some(Arc::new(move || searching.search())),
+            search: Some(Arc::new(move || searching.search_mode())),
             sandbox: Some(Arc::new(move || confining.sandbox())),
             chat: Some(self.chat_folder()),
             runtime: Some(self.runtime_dir()),

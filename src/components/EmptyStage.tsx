@@ -94,6 +94,7 @@ export function SecondaryPageStage({
             config={settings.mcp_config}
             servers={settings.mcp_servers}
             home={settings.home}
+            settingsView={settings}
             onRefresh={refreshSettings}
             onSave={(cfg) => api.saveMcpConfig(cfg).then((s) => (onSettingsLoaded(s), null), (e) => String(e))}
           />
