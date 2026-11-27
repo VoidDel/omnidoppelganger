@@ -254,9 +254,12 @@ impl ChatAccumulator {
                 _ => {}
             }
         }
-        for source in [delta["annotations"].as_array(), choice["message"]["annotations"].as_array()]
-            .into_iter()
-            .flatten()
+        for source in [
+            delta["annotations"].as_array(),
+            choice["message"]["annotations"].as_array(),
+        ]
+        .into_iter()
+        .flatten()
         {
             for ann in source {
                 let inner = if ann["url_citation"].is_object() {

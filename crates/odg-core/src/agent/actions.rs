@@ -289,9 +289,7 @@ impl<L: Llm> Inner<L> {
                     request
                         .messages
                         .push(json!({ "role": "assistant", "content": turn.content }));
-                    request
-                        .messages
-                        .push(json!({ "role": "user", "content": web_calls }));
+                    request.messages.push(json!({ "role": "user", "content": web_calls }));
                     continue;
                 }
             }
