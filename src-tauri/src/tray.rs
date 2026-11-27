@@ -43,11 +43,14 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, MENU_QUIT, "完全退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &schedules, &sep, &quit])?;
 
+    #[cfg(target_os = "macos")]
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png"))?;
+    #[cfg(not(target_os = "macos"))]
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .icon_as_template(false)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("OmniDoppelganger — 后台驻留（功课守护中）")
         .menu(&menu)
         .show_menu_on_left_click(false)
