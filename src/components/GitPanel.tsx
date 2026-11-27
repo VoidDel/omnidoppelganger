@@ -932,7 +932,7 @@ export function GitPanel({
         )}
 
         {commits.length > 0 && (
-          <div className="git-group git-history">
+          <div className={`git-group git-history ${folded.history ? "folded" : ""}`}>
             <div className="git-group-head">
               <button type="button" className="git-group-title" onClick={() => toggleSection("history")}>
                 <span>提交图谱 ({commits.length})</span>

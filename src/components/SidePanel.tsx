@@ -1,5 +1,5 @@
 import "../styles/panel.css";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { type ChangedFile, type Product, type ProductVersion, type ToolItem, fileSize } from "../lib/fold";
 import { useMenuFocus } from "../lib/menuFocus";
 import type { RestoredArtifact, Todo } from "../lib/types";
@@ -584,6 +584,36 @@ export function SidePanel({
   const visibleTabs = openTabs.filter(isTabAvailable).map((id) => TAB_DEFS[id]);
   const addableTabs = ADDABLE_ORDER.filter((id) => isTabAvailable(id) && !openTabs.includes(id)).map((id) => TAB_DEFS[id]);
 
+  const tabsScrollRef = useRef<HTMLDivElement>(null);
+  const [tabScroll, setTabScroll] = useState({ left: false, right: false });
+  const syncTabScroll = useCallback(() => {
+    const el = tabsScrollRef.current;
+    if (!el) return;
+    const left = el.scrollLeft > 2;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+    setTabScroll((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+  }, []);
+
+  useEffect(() => {
+    if (narrow) return;
+    syncTabScroll();
+    const el = tabsScrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(syncTabScroll);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [narrow, width, visibleTabs.length, gitCount, done, todos.length, products.length, syncTabScroll]);
+
+  useEffect(() => {
+    if (narrow) return;
+    const activeEl = tabsScrollRef.current?.querySelector<HTMLElement>(".tab-item.active");
+    activeEl?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }, [narrow, tab]);
+
+  const scrollTabsBy = (delta: number) => {
+    tabsScrollRef.current?.scrollBy({ left: delta, behavior: "smooth" });
+  };
+
   const badgeFor = (id: PanelTab): string | null => {
     if (id === "plan" && todos.length > 0) return `${done}/${todos.length}`;
     if (id === "products" && products.length > 0) return `${products.length}`;
@@ -661,39 +691,76 @@ export function SidePanel({
         }}
       />
       <div className="tabs" data-tauri-drag-region>
-        {visibleTabs.map((each) => {
-          const badge = badgeFor(each.id);
-          const activeTab = tab === each.id;
-          const closable = each.id !== "products";
-          return (
-            <div key={each.id} className={`tab-item ${activeTab ? "active" : ""}`}>
-              <button type="button" className="tab" aria-pressed={activeTab} title={each.title} onClick={() => setTab(each.id)}>
-                {each.icon}
-                <span className="tab-word">{each.name}</span>
-                {badge && (
-                  <>
-                    <span className="sr-only"> </span>
-                    <span className="count">{badge}</span>
-                  </>
-                )}
-              </button>
-              {closable && (
-                <button
-                  type="button"
-                  className="tab-close"
-                  title={`关闭「${each.name}」标签`}
-                  aria-label={`关闭 ${each.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closeTab(each.id);
-                  }}
-                >
-                  ×
+        {tabScroll.left && (
+          <button
+            type="button"
+            className="tabs-scroll-btn"
+            title="向左滚动标签"
+            aria-label="向左滚动标签"
+            onClick={() => scrollTabsBy(-140)}
+          >
+            <Icon name="chevron-left" size={14} />
+          </button>
+        )}
+        <div
+          ref={tabsScrollRef}
+          className="tabs-scroll"
+          data-tauri-drag-region
+          onScroll={syncTabScroll}
+          onWheel={(event) => {
+            const el = tabsScrollRef.current;
+            if (!el || el.scrollWidth <= el.clientWidth) return;
+            if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+              el.scrollLeft += event.deltaY;
+              syncTabScroll();
+            }
+          }}
+        >
+          {visibleTabs.map((each) => {
+            const badge = badgeFor(each.id);
+            const activeTab = tab === each.id;
+            const closable = each.id !== "products";
+            return (
+              <div key={each.id} className={`tab-item ${activeTab ? "active" : ""}`}>
+                <button type="button" className="tab" aria-pressed={activeTab} title={each.title} onClick={() => setTab(each.id)}>
+                  {each.icon}
+                  <span className="tab-word">{each.name}</span>
+                  {badge && (
+                    <>
+                      <span className="sr-only"> </span>
+                      <span className="count">{badge}</span>
+                    </>
+                  )}
                 </button>
-              )}
-            </div>
-          );
-        })}
+                {closable && (
+                  <button
+                    type="button"
+                    className="tab-close"
+                    title={`关闭「${each.name}」标签`}
+                    aria-label={`关闭 ${each.name}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeTab(each.id);
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {tabScroll.right && (
+          <button
+            type="button"
+            className="tabs-scroll-btn"
+            title="向右滚动标签"
+            aria-label="向右滚动标签"
+            onClick={() => scrollTabsBy(140)}
+          >
+            <Icon name="chevron-right" size={14} />
+          </button>
+        )}
         {addableTabs.length > 0 && (
           <div className="panel-add-wrap">
             <button
@@ -711,12 +778,9 @@ export function SidePanel({
           </div>
         )}
         {onCloseDrawer && (
-          <>
-            <span className="spacer" />
-            <button type="button" className="icon-button small" title="收起右侧抽屉 (Esc)" aria-label="收起右侧抽屉" onClick={onCloseDrawer}>
-              <Icon name="x-lg" size={13} />
-            </button>
-          </>
+          <button type="button" className="icon-button small" title="收起右侧抽屉 (Esc)" aria-label="收起右侧抽屉" onClick={onCloseDrawer}>
+            <Icon name="x-lg" size={13} />
+          </button>
         )}
       </div>
       {addMenuOpen && addableTabs.length > 0 && (

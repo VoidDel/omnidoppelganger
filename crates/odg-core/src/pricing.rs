@@ -294,9 +294,10 @@ fn bare_slug(model: &str) -> String {
 
 /// Strip trailing date stamps like `-20250514` or `-2025-04-14` for fuzzy catalog lookup.
 fn strip_date_suffix(slug: &str) -> &str {
-    if let Some(prefix) = slug.rsplit_once('-').and_then(|(head, tail)| {
-        (tail.len() == 8 && tail.chars().all(|c| c.is_ascii_digit())).then_some(head)
-    }) {
+    if let Some(prefix) = slug
+        .rsplit_once('-')
+        .and_then(|(head, tail)| (tail.len() == 8 && tail.chars().all(|c| c.is_ascii_digit())).then_some(head))
+    {
         return prefix;
     }
     if slug.len() > 11 {

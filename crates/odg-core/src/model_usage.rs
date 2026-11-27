@@ -621,18 +621,16 @@ impl ModelUsageStore {
             if let Some(ref sid) = item.session_id
                 && !sid.is_empty()
             {
-                let s_entry = by_session
-                    .entry(sid.clone())
-                    .or_insert_with(|| UsageSessionSummary {
-                        session_id: sid.clone(),
-                        requests: 0,
-                        input_tokens: 0,
-                        cached_tokens: 0,
-                        output_tokens: 0,
-                        api_cost_usd: 0.0,
-                        subscription_equiv_usd: 0.0,
-                        last_ts: item.ts.clone(),
-                    });
+                let s_entry = by_session.entry(sid.clone()).or_insert_with(|| UsageSessionSummary {
+                    session_id: sid.clone(),
+                    requests: 0,
+                    input_tokens: 0,
+                    cached_tokens: 0,
+                    output_tokens: 0,
+                    api_cost_usd: 0.0,
+                    subscription_equiv_usd: 0.0,
+                    last_ts: item.ts.clone(),
+                });
                 s_entry.requests = s_entry.requests.saturating_add(1);
                 s_entry.input_tokens = s_entry.input_tokens.saturating_add(item.tokens.input);
                 s_entry.cached_tokens = s_entry.cached_tokens.saturating_add(item.tokens.cached);

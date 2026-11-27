@@ -165,11 +165,47 @@
   position: relative;
   flex-shrink: 0;
   height: var(--bar);
-  padding: 0 10px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.tabs-scroll {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.tabs-scroll-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.tabs-scroll-btn:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--wash);
 }
 
 .tab-item {
@@ -916,7 +952,10 @@
   line-height: 1.15;
 }
 
-@container (max-width: 350px) {
+@container (max-width: 359px) {
+  .tabs .tab:not([aria-pressed="true"]) {
+    padding: 0 7px;
+  }
   .tabs .tab:not([aria-pressed="true"]) .tab-word {
     position: absolute;
     width: 1px;

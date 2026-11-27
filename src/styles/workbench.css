@@ -964,8 +964,8 @@
 /* ---------- independent read-only side conversation (旁聊) in right SidePanel ---------- */
 
 .panel .tabs {
-  gap: 6px;
-  overflow-x: auto;
+  gap: 4px;
+  overflow: hidden;
 }
 
 .panel .tab .tab-word {
@@ -1325,6 +1325,15 @@
 .git-history {
   padding-top: 6px;
   border-top: 1px solid var(--line);
+}
+
+.git-history.folded {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  background: var(--panel);
+  padding: 6px 0 2px;
+  z-index: 2;
 }
 
 .git-history-scope {

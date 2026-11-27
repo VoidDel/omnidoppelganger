@@ -256,10 +256,7 @@ pub fn reset_model_usage(app: State<'_, App>) -> Vec<odg_core::model_usage::Mode
 }
 
 #[tauri::command]
-pub fn get_usage_ledger_summary(
-    app: State<'_, App>,
-    days: Option<u32>,
-) -> odg_core::model_usage::UsageLedgerSummary {
+pub fn get_usage_ledger_summary(app: State<'_, App>, days: Option<u32>) -> odg_core::model_usage::UsageLedgerSummary {
     app.model_usage.summarize_ledger(days)
 }
 

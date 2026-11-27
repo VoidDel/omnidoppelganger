@@ -645,8 +645,7 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
             let cached = count(&usage["cache_read_tokens"])
                 .max(count(&usage["cache_read_input_tokens"]))
                 .max(count(&usage["cached_input_tokens"]));
-            let cache_write = count(&usage["cache_creation_input_tokens"])
-                .max(count(&usage["cache_write_tokens"]));
+            let cache_write = count(&usage["cache_creation_input_tokens"]).max(count(&usage["cache_write_tokens"]));
             Tokens {
                 input: count(&usage["input_tokens"])
                     + count(&usage["cache_read_tokens"])

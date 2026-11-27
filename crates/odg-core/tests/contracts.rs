@@ -246,7 +246,7 @@ fn replays_anthropic_golden_fixture_across_1_to_7_byte_utf8_boundaries() {
         Some(Tokens {
             input: 2220,
             cached: 1800,
-            cache_write: 0,
+            cache_write: 300,
             output: 95
         })
     );
