@@ -486,9 +486,17 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
         outcome: waiting || (meta?.command ? state : "没有这个后台命令"),
       };
     }
-    case "web_search":
+    case "web_search": {
       // Who searched, when it was not Zhipu: the provider the 分身 works with.
-      return { verb: "问天机阁", target: text("query"), outcome: waiting || (result!.isError ? "没问到" : `${meta?.engine ? `${meta.engine} 代搜，` : ""}${meta?.results ?? 0} 条`) };
+      const prefix = meta?.engine ? `${meta.engine} 代搜，` : "";
+      const summary =
+        typeof meta?.results === "number"
+          ? `${prefix}${meta.results} 条`
+          : result?.content?.trim()
+            ? `${prefix}已得摘要`
+            : `${prefix}已查`;
+      return { verb: "问天机阁", target: text("query"), outcome: waiting || (result!.isError ? "没问到" : summary) };
+    }
     case "fetch_url":
       return { verb: "抓取网页", target: text("url"), outcome: waiting || (result!.isError ? "没取到" : `${shortCount(meta?.characters ?? 0)} 字`) };
     case "load_skill":

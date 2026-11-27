@@ -389,20 +389,21 @@ pub fn parse_ndjson_line(line: &str) -> Option<AgyEvent> {
                             info["error"].as_str(),
                             info["error_message"].as_str(),
                             info["errorMessage"].as_str(),
+                            info["message"].as_str(),
+                            info["content"].as_str(),
+                            info["status_detail"].as_str(),
                             update["error"].as_str(),
                             update["error_message"].as_str(),
                             update["errorMessage"].as_str(),
+                            update["message"].as_str(),
+                            update["content"].as_str(),
                             update["status_detail"].as_str(),
                         ]
                         .into_iter()
                         .flatten()
                         .find(|s| !s.trim().is_empty())
                         .unwrap_or("");
-                        let output = if raw_output.is_empty() && is_error {
-                            "外部 CLI 执行此步骤未通过权限确认或返回错误（若需自动放行命令，可将禁制切换为「放手施为」）。".to_string()
-                        } else {
-                            raw_output.to_string()
-                        };
+                        let output = raw_output.to_string();
                         Some(AgyEvent::ToolDone {
                             conversation_id: conv,
                             step_index,
@@ -446,6 +447,89 @@ pub fn parse_ndjson_line(line: &str) -> Option<AgyEvent> {
         }
         _ => None,
     }
+}
+
+/// Look up the real error message for an Antigravity `step_index` from its local `transcript.jsonl`
+/// when `agy --output-format stream-json` reports `state: "ERROR"` with an empty `tool_info.output`.
+pub fn lookup_step_error(conversation_id: &str, step_index: u64) -> Option<String> {
+    lookup_step_output(conversation_id, step_index, true)
+}
+
+/// Look up the tool output text for an Antigravity `step_index` from its local `transcript.jsonl`
+/// when `agy --output-format stream-json` reports `state: "DONE"` with an empty `tool_info.output`
+/// (e.g. `search_web` summaries).
+pub fn lookup_step_content(conversation_id: &str, step_index: u64) -> Option<String> {
+    lookup_step_output(conversation_id, step_index, false)
+}
+
+fn lookup_step_output(conversation_id: &str, step_index: u64, prefer_error: bool) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let roots = [
+        home.join(".gemini").join("antigravity-cli").join("brain"),
+        home.join(".gemini").join("antigravity").join("brain"),
+    ];
+    lookup_step_output_in_roots(&roots, conversation_id, step_index, prefer_error)
+}
+
+fn lookup_step_output_in_roots(
+    roots: &[PathBuf],
+    conversation_id: &str,
+    step_index: u64,
+    prefer_error: bool,
+) -> Option<String> {
+    if conversation_id.is_empty()
+        || !conversation_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    for root in roots {
+        let transcript = root
+            .join(conversation_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+        let Ok(raw) = std::fs::read_to_string(&transcript) else {
+            continue;
+        };
+        for line in raw.lines().rev() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('{') {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+                continue;
+            };
+            if v["step_index"].as_u64() != Some(step_index) {
+                continue;
+            }
+            if prefer_error && let Some(err) = v["error"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                return Some(err.to_string());
+            }
+            if let Some(content) = v["content"].as_str() {
+                let cleaned = content
+                    .lines()
+                    .map(str::trim_end)
+                    .filter(|l| {
+                        let t = l.trim();
+                        !t.starts_with("Created At:") && !t.starts_with("Completed At:")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim()
+                    .to_string();
+                if !cleaned.is_empty() {
+                    return Some(cleaned);
+                }
+            }
+            if !prefer_error && let Some(err) = v["error"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                return Some(err.to_string());
+            }
+            return None;
+        }
+    }
+    None
 }
 
 /// Build the CLI argument list for one headless `agy` turn.
@@ -871,5 +955,61 @@ mod tests {
         assert_eq!(quota.groups[0].buckets[1].window, "5h");
         assert_eq!(quota.groups[1].buckets[0].remaining_percent, 49);
         assert_eq!(quota.groups[1].buckets[1].remaining_percent, 100);
+    }
+
+    #[test]
+    fn extracts_step_error_from_transcript_and_does_not_fabricate_permission_error_in_parser() {
+        let err_line = r#"{"event":"step_update","step_update":{"conversation_id":"conv-1","step_index":118,"state":"ERROR","step_type":"tool","tool_name":"edit_file","tool_info":{"name":"edit_file","parameters":{"Path":"/tmp/a.ts"}}}}"#;
+        assert_eq!(
+            parse_ndjson_line(err_line),
+            Some(AgyEvent::ToolDone {
+                conversation_id: Some("conv-1".into()),
+                step_index: 118,
+                name: "edit_file".into(),
+                input: json!({ "Path": "/tmp/a.ts", "path": "/tmp/a.ts" }),
+                output: String::new(),
+                is_error: true,
+            })
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("conv-1").join(".system_generated").join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(
+            logs.join("transcript.jsonl"),
+            concat!(
+                "{\"step_index\":117,\"status\":\"DONE\",\"content\":\"ok\"}\n",
+                "{\"step_index\":118,\"status\":\"ERROR\",\"error\":\"target content not found in the file\"}\n",
+                "{\"step_index\":119,\"status\":\"ERROR\",\"content\":\"Created At: x\\nCompleted At: y\\nEncountered error: boom\"}\n"
+            ),
+        )
+        .unwrap();
+
+        let roots = [dir.path().to_path_buf()];
+        assert_eq!(
+            lookup_step_output_in_roots(&roots, "conv-1", 118, true).as_deref(),
+            Some("target content not found in the file")
+        );
+        assert_eq!(
+            lookup_step_output_in_roots(&roots, "conv-1", 119, true).as_deref(),
+            Some("Encountered error: boom")
+        );
+        assert_eq!(
+            lookup_step_output_in_roots(&roots, "conv-1", 117, false).as_deref(),
+            Some("ok")
+        );
+        assert_eq!(lookup_step_output_in_roots(&roots, "../conv-1", 118, true), None);
+
+        let search_out =
+            "Summary text.\n\nSources:\n[1] [a.com](https://a.com)\n[2] [b.com](https://b.com)\n\nNote: redirects";
+        let (_, meta) = crate::cli_agents::clean_tool_result("web_search", &json!({"query":"q"}), search_out, false);
+        assert_eq!(meta, json!({ "results": 2 }));
+        let (_, meta_summary_only) = crate::cli_agents::clean_tool_result(
+            "web_search",
+            &json!({"query":"q"}),
+            "Plain summary without URLs",
+            false,
+        );
+        assert_eq!(meta_summary_only, Value::Null);
     }
 }

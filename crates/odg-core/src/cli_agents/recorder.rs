@@ -9,11 +9,33 @@ use serde_json::{Value, json};
 
 use crate::events::Event;
 use crate::llm::{StreamDelta, Tokens};
+use crate::policy::Mode;
 
 use super::parser::{
     clean_tool_result, estimate_edit_lines, parse_plus_minus_lines, parse_unified_diff, strip_agy_timestamp_envelope,
 };
 use super::{CliEvent, CliKind, Sink, TurnParams};
+
+fn empty_tool_error_fallback(tool_name: &str, mode: Mode) -> String {
+    match tool_name {
+        "edit_file" | "write_file" | "delete_file" | "move_file" => {
+            if matches!(mode, Mode::Plan | Mode::Manual) {
+                "外部 CLI 修改文件未通过权限确认或被拦截（当前禁制下不允许自动改写文件）。".to_string()
+            } else {
+                "外部 CLI 修改文件失败（未返回具体错误详情，常见原因为目标文本未匹配或文件已变化）。".to_string()
+            }
+        }
+        "run_command" => {
+            if matches!(mode, Mode::Auto | Mode::Bypass) {
+                "外部 CLI 执行命令失败（未返回具体错误输出）。".to_string()
+            } else {
+                "外部 CLI 执行命令未通过权限确认或返回错误（若需自动放行命令，可将禁制切换为「放手施为」）。"
+                    .to_string()
+            }
+        }
+        _ => "外部 CLI 执行此步骤失败（未返回具体错误详情）。".to_string(),
+    }
+}
 
 struct StartedTool {
     id: String,
@@ -367,7 +389,33 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                 {
                     self.known_files.insert(path.clone(), bytes);
                 }
-                let (mut clean_output, mut meta) = clean_tool_result(&started.name, &started.input, &output, is_error);
+                let effective_output = if output.trim().is_empty() {
+                    if is_error {
+                        let from_transcript = if self.params.kind == CliKind::Antigravity {
+                            self.logged_conv
+                                .as_deref()
+                                .zip(call_key.parse::<u64>().ok())
+                                .and_then(|(conv, step)| crate::antigravity::lookup_step_error(conv, step))
+                        } else {
+                            None
+                        };
+                        from_transcript.unwrap_or_else(|| empty_tool_error_fallback(&started.name, self.params.mode))
+                    } else if self.params.kind == CliKind::Antigravity
+                        && matches!(started.name.as_str(), "web_search" | "fetch_url")
+                    {
+                        self.logged_conv
+                            .as_deref()
+                            .zip(call_key.parse::<u64>().ok())
+                            .and_then(|(conv, step)| crate::antigravity::lookup_step_content(conv, step))
+                            .unwrap_or(output)
+                    } else {
+                        output
+                    }
+                } else {
+                    output
+                };
+                let (mut clean_output, mut meta) =
+                    clean_tool_result(&started.name, &started.input, &effective_output, is_error);
                 if started.name == "read_file"
                     && !is_error
                     && let Some((ref path, _)) = started.target

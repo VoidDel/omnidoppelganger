@@ -1143,8 +1143,57 @@ pub fn clean_tool_result(tool_name: &str, input: &Value, raw_output: &str, is_er
             let matches = cleaned.lines().filter(|l| !l.trim().is_empty()).count();
             (cleaned, json!({ "matches": matches }))
         }
+        "web_search" => {
+            if let Some(results) = count_web_search_results(&cleaned) {
+                (cleaned, json!({ "results": results }))
+            } else {
+                (cleaned, Value::Null)
+            }
+        }
         _ => (cleaned, Value::Null),
     }
+}
+
+/// Estimate how many cited sources/results a CLI web search output contains.
+/// Returns `None` when the output is a free-form summary without countable citations so the UI
+/// shows a neutral status instead of a misleading `0 条`.
+fn count_web_search_results(text: &str) -> Option<usize> {
+    let mut cited_lines = 0usize;
+    let mut in_sources = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.eq_ignore_ascii_case("sources:") || t == "来源：" || t == "参考来源：" {
+            in_sources = true;
+            continue;
+        }
+        if in_sources {
+            if t.is_empty() {
+                continue;
+            }
+            if t.starts_with('[') && t.contains("](") {
+                cited_lines += 1;
+                continue;
+            }
+            if (t.starts_with("- ") || t.starts_with("* ")) && (t.contains("http://") || t.contains("https://")) {
+                cited_lines += 1;
+                continue;
+            }
+            if t.starts_with("Note:") {
+                break;
+            }
+        }
+    }
+    if cited_lines > 0 {
+        return Some(cited_lines);
+    }
+    let url_lines = text
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            t.contains("https://") || t.contains("http://")
+        })
+        .count();
+    (url_lines > 0).then_some(url_lines)
 }
 
 fn parse_leading_line_count(text: &str) -> Option<usize> {
