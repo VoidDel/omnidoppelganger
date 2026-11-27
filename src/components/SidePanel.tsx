@@ -13,7 +13,7 @@ const TODO_SEALS: Record<Todo["status"], string> = { pending: "", in_progress: "
 /** The panel's width while there is nothing in it: a strip that holds its tabs. */
 export const PANEL_STRIP = 56;
 
-export type PanelTab = "products" | "jobs" | "terminal" | "files" | "plan" | "chat";
+export type PanelTab = "products" | "workspace_files" | "git" | "jobs" | "terminal" | "files" | "plan" | "chat";
 
 interface TabDef {
   id: PanelTab;
@@ -30,6 +30,20 @@ const TAB_DEFS: Record<PanelTab, TabDef> = {
     desc: "分身做出来的文档、图片等文件",
     title: "交付物：分身做出来的文档、图片等文件，交付的和这一轮留在洞府里的",
     icon: <Icon name="box-seam" size={15} />,
+  },
+  workspace_files: {
+    id: "workspace_files",
+    name: "文件",
+    desc: "浏览与打开工作区文件树",
+    title: "文件：浏览工作区目录树、查看代码或引用文件到对话",
+    icon: <Icon name="folder2" size={15} />,
+  },
+  git: {
+    id: "git",
+    name: "Git",
+    desc: "查看变更、Diff、暂存与提交",
+    title: "Git：查看仓库未提交变更、对比 Diff、切换分支与提交",
+    icon: <Icon name="git" size={15} />,
   },
   jobs: {
     id: "jobs",
@@ -49,7 +63,7 @@ const TAB_DEFS: Record<PanelTab, TabDef> = {
     id: "files",
     name: "改动",
     desc: "本会话累计修改过的文件",
-    title: "改动：当前分身在本会话中累计修改过的文件（仓库未提交变更见左栏 Git）",
+    title: "改动：当前分身在本会话中累计修改过的文件（仓库未提交变更见「Git」）",
     icon: <Icon name="file-earmark-diff" size={15} />,
   },
   plan: {
@@ -68,7 +82,7 @@ const TAB_DEFS: Record<PanelTab, TabDef> = {
   },
 };
 
-const ADDABLE_ORDER: PanelTab[] = ["jobs", "terminal", "files", "plan", "chat"];
+const ADDABLE_ORDER: PanelTab[] = ["workspace_files", "git", "jobs", "terminal", "files", "plan", "chat"];
 
 const VERSION_HOW: Record<ProductVersion["how"], string> = {
   painted: "作画",
@@ -365,6 +379,12 @@ export interface SidePanelProps {
   working: boolean;
   /** The page is in replay mode: mutating actions (restore/copy) are disabled. */
   frozen?: boolean;
+  /** Optional workspace file tree pane (`workspace_files` tab). */
+  workspaceFilesPane?: ReactNode;
+  /** Optional Git repository panel (`git` tab). */
+  gitPane?: ReactNode;
+  /** Number of uncommitted Git changes for badge display on the `git` tab. */
+  gitCount?: number;
   /** Independent read-only side conversation (旁聊) bound to the main session; `visible` tells it when the tab is open. */
   renderAside?: (visible: boolean) => ReactNode;
   /** Dedicated pane for live background jobs and historical agent commands (`jobs` tab). */
@@ -398,6 +418,9 @@ export function SidePanel({
   onWiden,
   working,
   frozen,
+  workspaceFilesPane,
+  gitPane,
+  gitCount = 0,
   renderAside,
   jobsPane,
   terminalPane,
@@ -409,13 +432,44 @@ export function SidePanel({
   onCloseDrawer,
 }: SidePanelProps) {
   const hasAside = !!renderAside;
-  const [openTabs, setOpenTabs] = useState<PanelTab[]>(() => (todos.length > 0 ? ["products", "plan"] : ["products"]));
+  const hasWorkspaceFiles = !!workspaceFilesPane;
+  const hasGit = !!gitPane;
+  const [openTabs, setOpenTabs] = useState<PanelTab[]>(() => {
+    const initial: PanelTab[] = ["products"];
+    if (hasWorkspaceFiles) initial.push("workspace_files");
+    if (hasGit) initial.push("git");
+    if (todos.length > 0) initial.push("plan");
+    return initial;
+  });
   const [tab, setTab] = useState<PanelTab>("products");
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   useMenuFocus(addMenuOpen, addMenuRef, () => setAddMenuOpen(false), addBtnRef);
   const prevTodosLen = useRef(todos.length);
+  const prevHasWorkspace = useRef(hasWorkspaceFiles);
+
+  // When switching from a plain chat session into a project session, auto-show 文件 & Git tabs;
+  // when leaving a project session, drop unavailable workspace tabs cleanly.
+  useEffect(() => {
+    const wasProject = prevHasWorkspace.current;
+    prevHasWorkspace.current = hasWorkspaceFiles;
+    if (!wasProject && hasWorkspaceFiles) {
+      setOpenTabs((prev) => {
+        const next = [...prev];
+        if (!next.includes("workspace_files")) next.push("workspace_files");
+        if (hasGit && !next.includes("git")) next.push("git");
+        return next;
+      });
+    } else if (!hasWorkspaceFiles || !hasGit) {
+      setOpenTabs((prev) =>
+        prev.filter((item) => (item !== "workspace_files" || hasWorkspaceFiles) && (item !== "git" || hasGit)),
+      );
+      if ((tab === "workspace_files" && !hasWorkspaceFiles) || (tab === "git" && !hasGit)) {
+        setTab("products");
+      }
+    }
+  }, [hasWorkspaceFiles, hasGit, tab]);
 
   // When the model creates a plan (todos transitions from empty to non-empty), auto-add the "plan" tab.
   useEffect(() => {
@@ -427,8 +481,11 @@ export function SidePanel({
     }
   }, [todos.length, products.length]);
 
+  const isTabAvailable = (id: PanelTab) =>
+    (id !== "chat" || hasAside) && (id !== "workspace_files" || hasWorkspaceFiles) && (id !== "git" || hasGit);
+
   const openAndSelect = (id: PanelTab) => {
-    if (id === "chat" && !hasAside) return;
+    if (!isTabAvailable(id)) return;
     setOpenTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setTab(id);
     setAddMenuOpen(false);
@@ -476,15 +533,23 @@ export function SidePanel({
   useEffect(() => {
     if (!summonTab || lastSummon.current === summonTab.id) return;
     lastSummon.current = summonTab.id;
-    if (summonTab.tab === "chat" && !hasAside) return;
+    if (
+      (summonTab.tab === "chat" && !hasAside) ||
+      (summonTab.tab === "workspace_files" && !hasWorkspaceFiles) ||
+      (summonTab.tab === "git" && !hasGit)
+    ) {
+      return;
+    }
     setOpenTabs((prev) => (prev.includes(summonTab.tab) ? prev : [...prev, summonTab.tab]));
     setTab(summonTab.tab);
     setAddMenuOpen(false);
     if (narrow) onWiden();
-  }, [summonTab, hasAside, narrow, onWiden]);
+  }, [summonTab, hasAside, hasWorkspaceFiles, hasGit, narrow, onWiden]);
 
   const counts: Record<PanelTab, number> = {
     products: products.length,
+    workspace_files: 0,
+    git: gitCount,
     jobs: runs.length,
     terminal: 0,
     files: files.length,
@@ -516,12 +581,13 @@ export function SidePanel({
     setDragging(down);
   };
   const done = todos.filter((todo) => todo.status === "done").length;
-  const visibleTabs = openTabs.filter((id) => id !== "chat" || hasAside).map((id) => TAB_DEFS[id]);
-  const addableTabs = ADDABLE_ORDER.filter((id) => (id !== "chat" || hasAside) && !openTabs.includes(id)).map((id) => TAB_DEFS[id]);
+  const visibleTabs = openTabs.filter(isTabAvailable).map((id) => TAB_DEFS[id]);
+  const addableTabs = ADDABLE_ORDER.filter((id) => isTabAvailable(id) && !openTabs.includes(id)).map((id) => TAB_DEFS[id]);
 
   const badgeFor = (id: PanelTab): string | null => {
     if (id === "plan" && todos.length > 0) return `${done}/${todos.length}`;
     if (id === "products" && products.length > 0) return `${products.length}`;
+    if (id === "git" && gitCount > 0) return `${gitCount}`;
     if (id === "files" && files.length > 0) return `${files.length}`;
     if (id === "jobs" && runs.length > 0) return `${runs.length}`;
     return null;
@@ -678,6 +744,16 @@ export function SidePanel({
           })}
         </div>
       )}
+      {hasWorkspaceFiles && openTabs.includes("workspace_files") && (
+        <div className="side-explorer-pane" style={{ display: tab === "workspace_files" ? "flex" : "none" }}>
+          {workspaceFilesPane}
+        </div>
+      )}
+      {hasGit && openTabs.includes("git") && (
+        <div className="side-explorer-pane" style={{ display: tab === "git" ? "flex" : "none" }}>
+          {gitPane}
+        </div>
+      )}
       {hasAside && openTabs.includes("chat") && (
         <div className="side-chat-pane" style={{ display: tab === "chat" ? "flex" : "none" }}>
           {renderAside(tab === "chat")}
@@ -688,7 +764,10 @@ export function SidePanel({
           {terminalPane}
         </div>
       )}
-      {(tab === "chat" && hasAside) || (tab === "terminal" && terminalPane) ? null : tab === "plan" ? (
+      {(tab === "workspace_files" && hasWorkspaceFiles) ||
+      (tab === "git" && hasGit) ||
+      (tab === "chat" && hasAside) ||
+      (tab === "terminal" && terminalPane) ? null : tab === "plan" ? (
         <div className="panel-body">
           <div className="panel-head">
             <h2>分身的计划</h2>
@@ -754,9 +833,9 @@ export function SidePanel({
             )}
           </div>
           {files.length === 0 ? (
-            <p className="muted">这个分身还没有改过文件。此处统计本会话各轮累计编辑；查看与提交 Git 工作区变更请切到左栏「Git」。</p>
+            <p className="muted">这个分身还没有改过文件。此处统计本会话各轮累计编辑；查看与提交 Git 工作区变更请切到「Git」标签页。</p>
           ) : (
-            <p className="panel-sub muted">本会话累计编辑记录（Git 暂存与提交见左栏「Git」）</p>
+            <p className="panel-sub muted">本会话累计编辑记录（Git 暂存与提交见「Git」标签页）</p>
           )}
           <div className="file-list">
             {files.map((file) => (

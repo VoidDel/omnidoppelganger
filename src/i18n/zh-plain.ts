@@ -170,7 +170,7 @@ export const zhPlain: Messages = {
   "slash.trust.grantHint": "信任该工作区，允许读取其中的 AGENTS.md、.odg/skills 与项目模板",
   "slash.trust.trustedNote": "已信任此工作区，项目规则与技能将在下一轮生效。",
   "slash.trust.revokedNote": "已取消工作区信任，下一轮起停止加载项目本地配置。",
-  "slash.files.hint": "在左侧栏打开工作区文件树",
+  "slash.files.hint": "在右侧栏打开工作区文件树",
   "slash.terminal.hint": "打开右侧交互式终端 (Ctrl/Cmd+J)",
   "slash.usage.hint": "查看上下文占用、模型累计消耗、冷却状态与订阅额度",
   "slash.rename.label": "重命名",

@@ -186,7 +186,6 @@ export interface AppLeftSidebarProps {
 }
 
 export function AppLeftSidebar(props: AppLeftSidebarProps) {
-  const { active, isProjectSession, canAside } = props;
   const { t } = useI18n();
   return (
     <Guard
@@ -199,53 +198,11 @@ export function AppLeftSidebar(props: AppLeftSidebarProps) {
         sessions={props.sessions}
         activeId={props.activeId}
         page={props.page}
-        tab={props.tab}
+        tab="sessions"
         onTab={props.onTab}
         width={props.width}
         onResize={props.onResize}
-        gitCount={props.gitChangeCount}
-        filesPane={
-          isProjectSession && active ? (
-            <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
-              <FileTree
-                sessionId={active.id}
-                workspace={active.workspace}
-                activePath={props.activeWbFile}
-                refreshTick={props.fsRefreshTick}
-                gitBadges={props.gitBadges}
-                onOpenFile={(relPath, pin) => props.onOpenFile(relPath, pin)}
-                onAttachFile={props.onAttachMain}
-                onAttachToAside={canAside ? props.onAttachAside : undefined}
-                onDeletedPath={(rel) => (props.onDeletedPath(rel), props.onBumpRefresh())}
-                onRenamedPath={(fromRel, toRel) => (props.onRenamedPath(fromRel, toRel), props.onBumpRefresh())}
-                onError={props.onError}
-              />
-            </Suspense>
-          ) : undefined
-        }
-        gitPane={
-          isProjectSession && active ? (
-            <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
-              <GitPanel
-                sessionId={active.id}
-                workspace={active.workspace}
-                isWorktree={!!active.worktree}
-                status={props.gitState}
-                onSelectRepo={props.onSelectGitRepo}
-                refreshTick={props.gitRefreshTick}
-                working={props.status !== "idle"}
-                onStatusChanged={(next) => (next ? props.onSetGitState(next) : props.onBumpRefresh())}
-                onFilesChanged={props.onBumpRefresh}
-                onBranchSwitched={props.onSessionUpdated}
-                onOpenDiff={props.onOpenDiff}
-                onOpenFile={(relPath, pin) => props.onOpenFile(relPath, pin)}
-                onAskReview={props.onAskReview}
-                onNote={props.onNote}
-                onError={props.onError}
-              />
-            </Suspense>
-          ) : undefined
-        }
+        gitCount={0}
         onHome={props.onHome}
         onMcp={props.onMcp}
         onSkills={props.onSkills}
@@ -264,5 +221,103 @@ export function AppLeftSidebar(props: AppLeftSidebarProps) {
         onRevealWorkspace={(id) => void api.openWorkspaceEntry(id, "", true).catch(props.onError)}
       />
     </Guard>
+  );
+}
+
+export function WorkspaceFilesPane({
+  active,
+  activeWbFile,
+  fsRefreshTick,
+  gitBadges,
+  canAside,
+  onOpenFile,
+  onAttachMain,
+  onAttachAside,
+  onDeletedPath,
+  onRenamedPath,
+  onBumpRefresh,
+  onError,
+}: {
+  active: SessionItem;
+  activeWbFile: string | null;
+  fsRefreshTick: number;
+  gitBadges: Record<string, GitBadge>;
+  canAside: boolean;
+  onOpenFile: (relPath: string, pin?: boolean) => void;
+  onAttachMain: (absPath: string) => void;
+  onAttachAside: (absPath: string) => void;
+  onDeletedPath: (rel: string) => void;
+  onRenamedPath: (fromRel: string, toRel: string) => void;
+  onBumpRefresh: () => void;
+  onError: (err: unknown) => void;
+}) {
+  return (
+    <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
+      <FileTree
+        sessionId={active.id}
+        workspace={active.workspace}
+        activePath={activeWbFile}
+        refreshTick={fsRefreshTick}
+        gitBadges={gitBadges}
+        onOpenFile={(relPath, pin) => onOpenFile(relPath, pin)}
+        onAttachFile={onAttachMain}
+        onAttachToAside={canAside ? onAttachAside : undefined}
+        onDeletedPath={(rel) => (onDeletedPath(rel), onBumpRefresh())}
+        onRenamedPath={(fromRel, toRel) => (onRenamedPath(fromRel, toRel), onBumpRefresh())}
+        onError={onError}
+      />
+    </Suspense>
+  );
+}
+
+export function WorkspaceGitPane({
+  active,
+  status,
+  gitState,
+  gitRefreshTick,
+  onSelectGitRepo,
+  onSetGitState,
+  onBumpRefresh,
+  onSessionUpdated,
+  onOpenDiff,
+  onOpenFile,
+  onAskReview,
+  onNote,
+  onError,
+}: {
+  active: SessionItem;
+  status: Status;
+  gitState: GitStatus | null;
+  gitRefreshTick: number;
+  onSelectGitRepo: (repo: string | null) => void;
+  onSetGitState: (next: GitStatus) => void;
+  onBumpRefresh: () => void;
+  onSessionUpdated: (item: SessionItem) => void;
+  onOpenDiff: (relPath: string, stage: DiffStage, pin?: boolean, commit?: string) => void;
+  onOpenFile: (relPath: string, pin?: boolean) => void;
+  onAskReview: () => void;
+  onNote: (note: string) => void;
+  onError: (err: unknown) => void;
+}) {
+  return (
+    <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
+      <GitPanel
+        sessionId={active.id}
+        workspace={active.workspace}
+        isWorktree={!!active.worktree}
+        status={gitState}
+        onSelectRepo={onSelectGitRepo}
+        refreshTick={gitRefreshTick}
+        working={status !== "idle"}
+        onStatusChanged={(next) => (next ? onSetGitState(next) : onBumpRefresh())}
+        onFilesChanged={onBumpRefresh}
+        onBranchSwitched={onSessionUpdated}
+        onOpenDiff={onOpenDiff}
+        onOpenFile={(relPath, pin) => onOpenFile(relPath, pin)}
+        onAskReview={onAskReview}
+        onNote={onNote}
+        onError={onError}
+      />
+    </Suspense>
   );
 }

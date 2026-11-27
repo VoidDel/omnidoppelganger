@@ -1,5 +1,5 @@
 import { type CSSProperties, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { AppLeftSidebar, PANEL_STRIP_WIDTH, normalizeQuote } from "./components/AppPanes";
+import { AppLeftSidebar, PANEL_STRIP_WIDTH, WorkspaceFilesPane, WorkspaceGitPane, normalizeQuote } from "./components/AppPanes";
 import type { QuotePayload } from "./components/Composer";
 import { HomeEmptyStage, SecondaryPageStage, buildJumpActs } from "./components/EmptyStage";
 import { Guard, lazyWithRetry } from "./components/Guard";
@@ -184,8 +184,20 @@ export default function App() {
   const toMcp = useCallback(() => (setSettingsTab("mcp"), refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
   const toSkills = useCallback(() => (setSettingsTab("skills"), refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
   const showSidebarTab = useCallback(
-    (tab: SidebarTab) => (dispatch({ type: "page", page: "chat" }), setSidebar((cur) => ({ ...cur, hidden: false })), setLeftTab(tab)),
-    [dispatch, setSidebar],
+    (tab: SidebarTab) => {
+      if (tab === "files") {
+        summonPanel("workspace_files");
+        return;
+      }
+      if (tab === "git") {
+        summonPanel("git");
+        return;
+      }
+      dispatch({ type: "page", page: "chat" });
+      setSidebar((cur) => ({ ...cur, hidden: false }));
+      setLeftTab(tab);
+    },
+    [dispatch, setSidebar, summonPanel],
   );
 
   const slashCommands = useSlashCommands({
@@ -427,6 +439,44 @@ export default function App() {
               runs={ctl.runs}
               plan={ctl.plan}
               made={ctl.made}
+              workspaceFilesPane={
+                isProjectSession && active ? (
+                  <WorkspaceFilesPane
+                    active={active}
+                    activeWbFile={wb.activeWbFile}
+                    fsRefreshTick={git.fsRefreshTick}
+                    gitBadges={git.gitBadges}
+                    canAside={canAside}
+                    onOpenFile={wb.openWorkbenchFile}
+                    onAttachMain={attachIntoMain}
+                    onAttachAside={attachIntoAside}
+                    onDeletedPath={wb.handleDeletedWorkspacePath}
+                    onRenamedPath={wb.handleRenamedWorkspacePath}
+                    onBumpRefresh={git.bumpRefresh}
+                    onError={fail}
+                  />
+                ) : undefined
+              }
+              gitPane={
+                isProjectSession && active ? (
+                  <WorkspaceGitPane
+                    active={active}
+                    status={state.status}
+                    gitState={git.gitState}
+                    gitRefreshTick={git.gitRefreshTick}
+                    onSelectGitRepo={git.setSelectedGitRepo}
+                    onSetGitState={git.setGitState}
+                    onBumpRefresh={git.bumpRefresh}
+                    onSessionUpdated={(item) => dispatch({ type: "session", item })}
+                    onOpenDiff={wb.openWorkbenchDiff}
+                    onOpenFile={wb.openWorkbenchFile}
+                    onAskReview={() => (ctl.send(reviewTaskPrompt(locale)), wb.showWorkbench && wb.setInWorkbench(false))}
+                    onNote={(note) => dispatch({ type: "note", note })}
+                    onError={fail}
+                  />
+                ) : undefined
+              }
+              gitCount={git.gitChangeCount}
               summonTab={summonPanelTab}
               drafts={ctl.draftsRef.current}
               providers={providers}

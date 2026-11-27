@@ -298,6 +298,9 @@ export interface AppRightPanelProps {
   runs: ComponentProps<typeof SidePanel>["runs"];
   plan: ComponentProps<typeof SidePanel>["todos"];
   made: ComponentProps<typeof SidePanel>["products"];
+  workspaceFilesPane?: ComponentProps<typeof SidePanel>["workspaceFilesPane"];
+  gitPane?: ComponentProps<typeof SidePanel>["gitPane"];
+  gitCount?: number;
   summonTab: { id: number; tab: PanelTab } | null;
   drafts: ComponentProps<typeof Composer>["drafts"];
   providers: Provider[];
@@ -384,6 +387,9 @@ export function AppRightPanel(props: AppRightPanelProps) {
             onWiden={props.onWiden}
             working={props.status === "running"}
             frozen={replaying}
+            workspaceFilesPane={props.workspaceFilesPane}
+            gitPane={props.gitPane}
+            gitCount={props.gitCount}
             renderAside={
               canAside && active
                 ? (visible) => (

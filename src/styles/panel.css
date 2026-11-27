@@ -163,6 +163,7 @@
 
 .tabs {
   position: relative;
+  flex-shrink: 0;
   height: var(--bar);
   padding: 0 10px;
   border-bottom: 1px solid var(--line);
@@ -173,6 +174,7 @@
 
 .tab-item {
   position: relative;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   border-radius: var(--r-control);
@@ -1061,4 +1063,13 @@
 
 .muted {
   color: var(--ink-2);
+}
+
+.side-explorer-pane {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }

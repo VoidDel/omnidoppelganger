@@ -4,6 +4,7 @@ import { formatMoney, formatUsd, hydratePriceCatalog } from "../lib/pricing";
 import { shortCount } from "../lib/fold";
 import type { BillingMode, Currency, PriceCatalogEntry, PriceCatalogView, PriceSource, UsageLedgerSummary } from "../lib/types";
 import { Info } from "./Hint";
+import { UsageCharts } from "./UsageCharts";
 
 type WindowOption = { label: string; days: number | null };
 const WINDOWS: WindowOption[] = [
@@ -231,14 +232,6 @@ export function UsagePricingSection() {
     summary?.subscription_equiv_cny ?? 0,
     summary?.subscription_total_usd_equiv ?? 0,
   );
-  const maxDayCost = useMemo(() => {
-    if (!summary || summary.by_day.length === 0) return 0;
-    return Math.max(...summary.by_day.map((d) => d.api_cost_usd + d.subscription_equiv_usd));
-  }, [summary]);
-  const maxDayTokens = useMemo(() => {
-    if (!summary || summary.by_day.length === 0) return 0;
-    return Math.max(...summary.by_day.map((d) => d.total_tokens));
-  }, [summary]);
 
   return (
     <section className="usage-ledger-section">
@@ -297,31 +290,7 @@ export function UsagePricingSection() {
         </div>
       </div>
 
-      {summary && summary.by_day.length > 1 && (
-        <div className="ledger-chart" aria-label="每日用量趋势">
-          {summary.by_day.slice(-14).map((day) => {
-            const totalCost = day.api_cost_usd + day.subscription_equiv_usd;
-            const pct =
-              maxDayCost > 0
-                ? Math.max(8, Math.round((totalCost / maxDayCost) * 100))
-                : maxDayTokens > 0
-                  ? Math.max(8, Math.round((day.total_tokens / maxDayTokens) * 100))
-                  : 8;
-            return (
-              <div
-                className="ledger-bar-col"
-                key={day.day}
-                title={`${day.day}：${day.requests} 次，${shortCount(day.total_tokens)} tok，API ${formatUsd(day.api_cost_usd)}，订阅等效 ${formatUsd(day.subscription_equiv_usd)}`}
-              >
-                <div className="ledger-bar-track">
-                  <span className="ledger-bar-fill" style={{ height: `${pct}%` }} />
-                </div>
-                <span className="ledger-bar-label mono">{day.day.slice(5)}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {summary && <UsageCharts summary={summary} windowDays={days} />}
 
       <div className="ledger-subtabs" role="tablist" aria-label="用量分组">
         <button type="button" role="tab" className="ledger-pill" aria-selected={groupTab === "model"} onClick={() => setGroupTab("model")}>
