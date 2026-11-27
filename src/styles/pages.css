@@ -39,6 +39,7 @@
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding-bottom: 56px;
 }
 
@@ -50,8 +51,6 @@
 }
 
 .settings-content.no-scroll .settings-inner {
-  box-sizing: border-box;
-  width: 100%;
   flex: 1 1 0;
   min-height: 0;
   padding: 20px 24px 20px;
@@ -118,8 +117,9 @@
 }
 
 .settings-inner {
-  box-sizing: content-box;
-  max-width: 760px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 808px;
   margin: 0 auto;
   padding: 28px 24px 0;
   display: flex;
@@ -682,7 +682,51 @@
 
 /* Four choices, two to a row: each has room for its line of explanation. */
 .papers.pairs {
+  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* Compact theme palette cards on the Appearance page. */
+.papers.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 236px));
+  gap: 10px;
+}
+
+.papers.theme-grid legend {
+  padding: 0 0 6px;
+  font-size: var(--t-small);
+}
+
+.papers.theme-grid .paper {
+  padding: 9px 11px;
+  gap: 6px;
+}
+
+.papers.theme-grid .paper:has(input:checked) {
+  padding: 8px 10px;
+}
+
+.papers.theme-grid .paper .name {
+  font-size: var(--t-small);
+  gap: 6px;
+}
+
+.papers.theme-grid .paper input {
+  width: 15px;
+  height: 15px;
+}
+
+.papers.theme-grid .swatches {
+  gap: 5px;
+}
+
+.papers.theme-grid .swatches span {
+  height: 18px;
+}
+
+.papers.theme-grid .muted {
+  font-size: var(--t-micro);
 }
 
 .input {

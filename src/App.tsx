@@ -32,7 +32,11 @@ export default function App() {
   const [jumping, setJumping] = useState<"all" | "files" | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("model");
   const locale = resolveLocale(state.settings?.settings.locale);
-  useTheme(state.settings?.settings.theme);
+  useTheme(
+    state.settings?.settings.theme,
+    state.settings?.settings.light_theme,
+    state.settings?.settings.dark_theme,
+  );
 
   useEffect(() => {
     api.getPriceCatalog().then(hydratePriceCatalog).catch(() => undefined);

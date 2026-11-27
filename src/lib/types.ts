@@ -557,6 +557,8 @@ export interface Settings {
   /** The image model `generate_image` asks; empty for the first whose provider has a key. */
   painter: string;
   theme: "system" | "light" | "dark";
+  light_theme?: "light" | "pure-white";
+  dark_theme?: "dark" | "one-dark-pro";
   /** Addresses that replace a provider's default, by provider id. */
   base_urls: Record<string, string>;
   /** The names the user gave providers, by provider id; every provider added beside the first of its kind is here. */

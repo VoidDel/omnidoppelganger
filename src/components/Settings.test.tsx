@@ -130,8 +130,12 @@ describe("SettingsPage component (P1-15 & P2-14)", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "外观" }));
-    fireEvent.click(screen.getByLabelText(/玄夜/));
+    fireEvent.click(screen.getByRole("radio", { name: "暗色" }));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ theme: "dark" }));
+    fireEvent.click(screen.getByLabelText(/墨韵/));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ dark_theme: "one-dark-pro" }));
+    fireEvent.click(screen.getByLabelText(/素雪/));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ light_theme: "pure-white" }));
 
     fireEvent.click(screen.getByRole("button", { name: "禁制" }));
     fireEvent.click(screen.getByRole("radio", { name: /放手施为/ }));

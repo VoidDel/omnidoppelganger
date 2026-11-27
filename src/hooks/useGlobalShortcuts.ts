@@ -73,12 +73,18 @@ if (typeof window !== "undefined") {
   }
 }
 
-function setTheme(next: "light" | "dark", spread: boolean) {
+function setTheme(next: "light" | "dark", palette: string | null, spread: boolean) {
   const root = document.documentElement;
-  if (root.dataset.theme === next) return;
+  const currentPalette = root.dataset.palette ?? null;
+  if (root.dataset.theme === next && currentPalette === palette) return;
   const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const swap = () => {
     root.dataset.theme = next;
+    if (palette) {
+      root.dataset.palette = palette;
+    } else {
+      delete root.dataset.palette;
+    }
   };
   if (!spread || still || !("startViewTransition" in document)) return swap();
   const x = pressed.x || window.innerWidth - 40;
@@ -90,18 +96,29 @@ function setTheme(next: "light" | "dark", spread: boolean) {
   (document as Document & { startViewTransition: (update: () => void) => unknown }).startViewTransition(swap);
 }
 
-export function useTheme(theme: Settings["theme"] | undefined) {
+export function useTheme(
+  theme: Settings["theme"] | undefined,
+  lightTheme?: Settings["light_theme"],
+  darkTheme?: Settings["dark_theme"],
+) {
   const read = useRef(false);
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const system = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = (spread: boolean) => setTheme(theme === "dark" || (theme !== "light" && system.matches) ? "dark" : "light", spread);
+    const apply = (spread: boolean) => {
+      const isDark = theme === "dark" || (theme !== "light" && system.matches);
+      if (isDark) {
+        setTheme("dark", darkTheme === "one-dark-pro" ? "one-dark-pro" : null, spread);
+      } else {
+        setTheme("light", lightTheme === "pure-white" ? "pure-white" : null, spread);
+      }
+    };
     apply(read.current);
     if (theme !== undefined) read.current = true;
     const follow = () => apply(true);
     system.addEventListener("change", follow);
     return () => system.removeEventListener("change", follow);
-  }, [theme]);
+  }, [theme, lightTheme, darkTheme]);
 }
 
 export interface UseGlobalShortcutsOptions {

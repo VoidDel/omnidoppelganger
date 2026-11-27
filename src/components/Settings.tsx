@@ -1193,11 +1193,16 @@ export function SettingsPage({
     { id: "look", name: t("settings.tabLook"), hint: t("settings.tabLookHint"), icon: "circle-half" },
     { id: "about", name: t("settings.tabAbout"), hint: t("settings.tabAboutHint"), icon: "info-circle" },
   ];
-  const papers: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
+  const lightPapers: { value: NonNullable<Settings["light_theme"]>; name: string; hint: string; swatches: [string, string][] }[] = [
     { value: "light", name: t("settings.themeLight"), hint: t("settings.themeLightHint"), swatches: [["#FBFCFA", "#1B2A2B"], ["#F6E7A8", "#D9BC55"], ["#B8322A", "#B8322A"]] },
-    { value: "dark", name: t("settings.themeDark"), hint: t("settings.themeDarkHint"), swatches: [["#1A2A2C", "#E6EEEA"], ["#ECD88C", "#B8962E"], ["#E0584E", "#E0584E"]] },
-    { value: "system", name: t("settings.themeSystem"), hint: t("settings.themeSystemHint"), swatches: [["#FBFCFA", "#1B2A2B"], ["#1A2A2C", "#E6EEEA"]] },
+    { value: "pure-white", name: t("settings.themePureWhite"), hint: t("settings.themePureWhiteHint"), swatches: [["#FFFFFF", "#111827"], ["#2563EB", "#93C5FD"], ["#DC2626", "#DC2626"]] },
   ];
+  const darkPapers: { value: NonNullable<Settings["dark_theme"]>; name: string; hint: string; swatches: [string, string][] }[] = [
+    { value: "dark", name: t("settings.themeDark"), hint: t("settings.themeDarkHint"), swatches: [["#1A2A2C", "#E6EEEA"], ["#ECD88C", "#B8962E"], ["#E0584E", "#E0584E"]] },
+    { value: "one-dark-pro", name: t("settings.themeOneDarkPro"), hint: t("settings.themeOneDarkProHint"), swatches: [["#282C34", "#ABB2BF"], ["#61AFEF", "#3E6B94"], ["#E06C75", "#E06C75"]] },
+  ];
+  const activeLightTheme = settings.light_theme ?? "light";
+  const activeDarkTheme = settings.dark_theme ?? "dark";
   const modeOptions = modesFor(locale);
   const currentLocale = resolveLocale(settings.locale ?? locale);
   const localeCards = LOCALE_OPTIONS.map((opt) => ({
@@ -1625,13 +1630,66 @@ export function SettingsPage({
         {tab === "look" && (
           <>
         <section>
-          <h2>{t("settings.appearance")}</h2>
-          <fieldset className="papers">
-            <legend>{t("settings.themeLegend")}</legend>
-            {papers.map((paper) => (
+          <h2>
+            {t("settings.appearance")}
+            <Info>{t("settings.themeSystemHint")}</Info>
+          </h2>
+          <div className="field">
+            <span className="label-line">{t("settings.themeLegend")}</span>
+            <div className="segmented" role="radiogroup" aria-label={t("settings.themeLegend")}>
+              {(
+                [
+                  ["light", t("settings.themeModeLight")],
+                  ["dark", t("settings.themeModeDark")],
+                  ["system", t("settings.themeSystem")],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={settings.theme === mode}
+                  aria-pressed={settings.theme === mode}
+                  onClick={() => savePatch({ theme: mode })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <fieldset className="papers theme-grid">
+            <legend>{t("settings.themeLightGroup")}</legend>
+            {lightPapers.map((paper) => (
               <label className="paper" key={paper.value}>
                 <span className="name">
-                  <input type="radio" name="paper" checked={settings.theme === paper.value} onChange={() => savePatch({ theme: paper.value })} />
+                  <input
+                    type="radio"
+                    name="light-paper"
+                    checked={activeLightTheme === paper.value}
+                    onChange={() => savePatch({ light_theme: paper.value })}
+                  />
+                  {paper.name}
+                </span>
+                <span className="swatches" aria-hidden="true">
+                  {paper.swatches.map(([fill, border], index) => (
+                    <span key={index} style={{ background: fill, borderColor: border }} />
+                  ))}
+                </span>
+                <span className="muted">{paper.hint}</span>
+              </label>
+            ))}
+          </fieldset>
+          <fieldset className="papers theme-grid">
+            <legend>{t("settings.themeDarkGroup")}</legend>
+            {darkPapers.map((paper) => (
+              <label className="paper" key={paper.value}>
+                <span className="name">
+                  <input
+                    type="radio"
+                    name="dark-paper"
+                    checked={activeDarkTheme === paper.value}
+                    onChange={() => savePatch({ dark_theme: paper.value })}
+                  />
                   {paper.name}
                 </span>
                 <span className="swatches" aria-hidden="true">

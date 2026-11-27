@@ -101,6 +101,46 @@
   color-scheme: light;
 }
 
+/* 素雪 (Pure White): crisp pure-white minimalist daytime palette with clean slate-blue accents. */
+:root[data-theme="light"][data-palette="pure-white"] {
+  --bg: #ffffff;
+  --bg-side: #f7f8fa;
+  --panel: #fafbfc;
+  --sheet: #ffffff;
+  --well: #f4f6f8;
+  --wash: rgba(15, 23, 42, 0.04);
+  --ink: #111827;
+  --ink-2: #5b6472;
+  --line: #e5e7eb;
+  --line-strong: #cbd2dc;
+  --control: #f3f4f6;
+  --jade: #2563eb;
+  --jade-ink: #ffffff;
+  --jade-tint: #eff6ff;
+  --jade-tint-ink: #1d4ed8;
+  --jade-soft: #f0f6ff;
+  --jade-line: #93c5fd;
+  --talisman: #fef3c7;
+  --talisman-line: #f59e0b;
+  --talisman-under: #fcd34d;
+  --amber-ink: #92400e;
+  --added: #ecfdf5;
+  --added-ink: #047857;
+  --cinnabar: #dc2626;
+  --cinnabar-on: #ffffff;
+  --cinnabar-ink: #b91c1c;
+  --cinnabar-tint: #fef2f2;
+  --cinnabar-soft: #fca5a5;
+  --gold: #d97706;
+  --gold-soft: #fde68a;
+  --removed: #f3f4f6;
+  --seal-gold: #fde68a;
+  --mist-far: #f3f4f6;
+  --mist-mid: #e5e7eb;
+  --mist-near: #d1d5db;
+  color-scheme: light;
+}
+
 :root[data-theme="dark"] {
   --bg: #101b1d;
   --bg-side: #0b1416;
@@ -139,6 +179,46 @@
   --mist-far: #15262a;
   --mist-mid: #1a2f33;
   --mist-near: #20393d;
+  color-scheme: dark;
+}
+
+/* 墨韵 (One Dark Pro): classic charcoal editor palette with signature blue, warm gold, and coral accents. */
+:root[data-theme="dark"][data-palette="one-dark-pro"] {
+  --bg: #282c34;
+  --bg-side: #21252b;
+  --panel: #21252b;
+  --sheet: #2c313c;
+  --well: #23272e;
+  --wash: rgba(171, 178, 191, 0.08);
+  --ink: #d7dae0;
+  --ink-2: #8c95a6;
+  --line: #343a46;
+  --line-strong: #4b5263;
+  --control: #21252b;
+  --jade: #61afef;
+  --jade-ink: #1e222a;
+  --jade-tint: #26384d;
+  --jade-tint-ink: #b9dcfa;
+  --jade-soft: #223042;
+  --jade-line: #3e6b94;
+  --talisman: #e5c07b;
+  --talisman-line: #b58d46;
+  --talisman-under: #c9a156;
+  --amber-ink: #f0d399;
+  --added: #233328;
+  --added-ink: #98c379;
+  --cinnabar: #e06c75;
+  --cinnabar-on: #1e222a;
+  --cinnabar-ink: #f2a2a8;
+  --cinnabar-tint: #3e2529;
+  --cinnabar-soft: #7b4248;
+  --gold: #e5c07b;
+  --gold-soft: #3d3424;
+  --removed: #252931;
+  --seal-gold: #f4dca6;
+  --mist-far: #242830;
+  --mist-mid: #2a2f39;
+  --mist-near: #313743;
   color-scheme: dark;
 }
 

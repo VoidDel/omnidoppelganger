@@ -26,6 +26,8 @@ use crate::web::{INTERNATIONAL_ENGINE, SEARCH_ENGINES, SearchConfig};
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const THEMES: &[&str] = &["system", "light", "dark"];
+pub const LIGHT_THEMES: &[&str] = &["light", "pure-white"];
+pub const DARK_THEMES: &[&str] = &["dark", "one-dark-pro"];
 pub const LOCALES: &[&str] = &["zh-CN", "zh-plain", "en"];
 pub const DEFAULT_LOCALE: &str = "zh-CN";
 /// Most models here hold a million tokens, but every request sends the whole
@@ -81,6 +83,14 @@ fn default_painter() -> String {
     crate::imagegen::PAINTER_OFF.to_string()
 }
 
+fn default_light_theme() -> String {
+    "light".to_string()
+}
+
+fn default_dark_theme() -> String {
+    "dark".to_string()
+}
+
 fn default_locale() -> String {
     DEFAULT_LOCALE.to_string()
 }
@@ -127,6 +137,12 @@ pub struct Settings {
     pub painter: String,
     /// `system`, `light`, or `dark`.
     pub theme: String,
+    /// Selected light palette: `light` (白昼) or `pure-white` (素雪).
+    #[serde(default = "default_light_theme")]
+    pub light_theme: String,
+    /// Selected dark palette: `dark` (玄夜) or `one-dark-pro` (墨韵).
+    #[serde(default = "default_dark_theme")]
+    pub dark_theme: String,
     /// Addresses that replace a provider's default, by provider id; for an
     /// international site, a gateway, or the custom provider. Anthropic's
     /// address comes from `ANTHROPIC_BASE_URL` instead.
@@ -194,6 +210,8 @@ impl Default for Settings {
             search_engine: default_search_engine(),
             painter: default_painter(),
             theme: "system".to_string(),
+            light_theme: default_light_theme(),
+            dark_theme: default_dark_theme(),
             base_urls: BTreeMap::new(),
             provider_names: BTreeMap::new(),
             disabled_providers: Vec::new(),
@@ -243,8 +261,22 @@ impl Settings {
         if !EFFORTS.contains(&self.effort.as_str()) {
             self.effort = default.effort;
         }
+        // Migrate flat palette values saved in earlier builds into mode + palette fields.
+        if self.theme == "pure-white" {
+            self.theme = "light".to_string();
+            self.light_theme = "pure-white".to_string();
+        } else if self.theme == "one-dark-pro" {
+            self.theme = "dark".to_string();
+            self.dark_theme = "one-dark-pro".to_string();
+        }
         if !THEMES.contains(&self.theme.as_str()) {
             self.theme = default.theme;
+        }
+        if !LIGHT_THEMES.contains(&self.light_theme.as_str()) {
+            self.light_theme = default.light_theme;
+        }
+        if !DARK_THEMES.contains(&self.dark_theme.as_str()) {
+            self.dark_theme = default.dark_theme;
         }
         let trimmed_locale = self.locale.trim();
         if LOCALES.contains(&trimmed_locale) {

@@ -1,6 +1,6 @@
 # Maintainer: OmniDoppelganger Contributors
 pkgname=omnidoppelganger
-pkgver=0.8.3
+pkgver=0.8.4
 pkgrel=1
 pkgdesc="OmniDoppelganger desktop app and CLI — local AI coding agent workbench"
 arch=('x86_64' 'aarch64')

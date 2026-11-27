@@ -406,7 +406,7 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
         inst.term.options.minimumContrastRatio = contrast;
       }
     });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-palette"] });
     return () => observer.disconnect();
   }, []);
 
