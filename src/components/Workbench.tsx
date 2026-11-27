@@ -161,7 +161,7 @@ export function WorkbenchTabsBar({
                 aria-selected={selected}
                 tabIndex={selected ? 0 : -1}
                 className="wb-tab-label"
-                title={tab.path}
+                title={badge ? `${tab.path}（${badge}）` : tab.path}
                 onClick={() => onSelectTab(tab.id)}
               >
                 <span className="wb-tab-name">{tab.name}</span>

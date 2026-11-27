@@ -100,7 +100,7 @@ describe("Accessibility & Unique DOM IDs (P2-13)", () => {
   it("renders sibling <button role='tab'> and close buttons in WorkbenchTabsBar with ArrowLeft/Right/Home/End navigation", () => {
     const tabs: WorkbenchTab[] = [
       { id: "file:a.ts", kind: "file", path: "src/a.ts", name: "a.ts" },
-      { id: "file:b.ts", kind: "file", path: "src/b.ts", name: "b.ts" },
+      { id: "diff:b.yaml", kind: "diff", path: "pnpm-workspace.yaml", name: "pnpm-workspace.yaml", stage: "unstaged" },
     ];
     const onSelectChat = vi.fn();
     const onSelectTab = vi.fn();
@@ -134,10 +134,13 @@ describe("Accessibility & Unique DOM IDs (P2-13)", () => {
     expect(tabButtons[1].tabIndex).toBe(0);
     expect(tabButtons[2].tabIndex).toBe(-1);
 
+    expect(tabButtons[2].getAttribute("title")).toBe("pnpm-workspace.yaml（改动对比）");
+    expect(container.querySelector(".wb-tab-tag")?.textContent).toBe("改动对比");
+
     tabButtons[1].focus();
     const tablist = screen.getByRole("tablist");
     fireEvent.keyDown(tablist, { key: "ArrowRight" });
-    expect(onSelectTab).toHaveBeenCalledWith("file:b.ts");
+    expect(onSelectTab).toHaveBeenCalledWith("diff:b.yaml");
 
     tabButtons[2].focus();
     fireEvent.keyDown(tablist, { key: "Home" });
@@ -145,7 +148,7 @@ describe("Accessibility & Unique DOM IDs (P2-13)", () => {
 
     tabButtons[0].focus();
     fireEvent.keyDown(tablist, { key: "End" });
-    expect(onSelectTab).toHaveBeenLastCalledWith("file:b.ts");
+    expect(onSelectTab).toHaveBeenLastCalledWith("diff:b.yaml");
   });
 
   it("binds aria-activedescendant on Combo role='combobox' during keyboard navigation", () => {

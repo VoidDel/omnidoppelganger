@@ -234,7 +234,17 @@ export const api = {
   /** Open an http(s) or mailto link in the system's default app, never in the app window. */
   openExternal: (url: string) => openUrl(url),
   /** Best-effort native OS desktop notification when the app is in the background. */
-  notifyDesktop: (title: string, body: string) => invoke<void>("notify_desktop", { title, body }),
+  notifyDesktop: (title: string, body: string, sessionId?: string | null, page?: string | null) =>
+    invoke<void>("notify_desktop", {
+      title,
+      body,
+      sessionId: sessionId ?? null,
+      page: page ?? null,
+    }),
+  onNotificationActivated: (handler: (payload: { session_id?: string | null; page?: string | null }) => void) =>
+    listen<{ session_id?: string | null; page?: string | null }>("notification-activated", (event) =>
+      handler(event.payload),
+    ),
   checkAppUpdate: () => invoke<UpdateStatus>("check_app_update"),
   installAppUpdate: () => invoke<boolean>("install_app_update"),
   installCliLink: () => invoke<string>("install_cli_link"),

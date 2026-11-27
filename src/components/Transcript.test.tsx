@@ -288,4 +288,92 @@ describe("Transcript component (P1-15 & P1-13)", () => {
     fireEvent.click(screen.getByTitle("重置为 100%（0）"));
     expect(screen.getByText("100%")).toBeTruthy();
   });
+
+  it("drives rail vein pulse in explicit pixels, preserves Y continuity on resize, and sweeps up on completion", () => {
+    const calls: Array<{ keyframes: Keyframe[]; options: KeyframeAnimationOptions; anim: { currentTime: number; cancel: ReturnType<typeof vi.fn> } }> = [];
+    const origAnimate = Element.prototype.animate;
+    Element.prototype.animate = vi.fn().mockImplementation((keyframes: Keyframe[], options: KeyframeAnimationOptions) => {
+      const anim = { currentTime: 0, cancel: vi.fn() };
+      calls.push({ keyframes, options, anim });
+      return anim as unknown as Animation;
+    });
+
+    let trackHeight = 60;
+    const origClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return (this as HTMLElement).classList?.contains("vein") ? trackHeight : 0;
+      },
+    });
+
+    try {
+      const row = makeRow({
+        items: [{ kind: "thinking", text: "Checking rail alignment" }],
+      });
+      const { container, rerender } = render(
+        <Transcript
+          sessionId="sess-vein"
+          rows={[row]}
+          queued={[]}
+          status="running"
+          mode="edit"
+          origin="user"
+          sessions={[]}
+          copied={0}
+          frozen={false}
+          onOpen={vi.fn()}
+          onDecide={vi.fn()}
+          onAnswer={vi.fn()}
+          onUndo={vi.fn()}
+        />,
+      );
+
+      expect(container.querySelector(".vein-pulse")).toBeTruthy();
+      expect(container.querySelector(".vein-tip")).toBeTruthy();
+      expect(calls).toHaveLength(1);
+      expect(calls[0].keyframes).toEqual([
+        { transform: "translate3d(0, -140px, 0)" },
+        { transform: "translate3d(0, 60px, 0)" },
+      ]);
+
+      // Advance halfway through the initial 200px travel (-140px -> +60px => currentY = -40px)
+      const firstDuration = Number(calls[0].options.duration);
+      calls[0].anim.currentTime = firstDuration * 0.5;
+
+      // Simulate `.turn-did` growing as subagent/tool cards appear and transition to `idle` (`closing`)
+      trackHeight = 260;
+      act(() => {
+        rerender(
+          <Transcript
+            sessionId="sess-vein"
+            rows={[row]}
+            queued={[]}
+            status="idle"
+            mode="edit"
+            origin="user"
+            sessions={[]}
+            copied={0}
+            frozen={false}
+            onOpen={vi.fn()}
+            onDecide={vi.fn()}
+            onAnswer={vi.fn()}
+            onUndo={vi.fn()}
+          />,
+        );
+      });
+
+      expect(calls[0].anim.cancel).toHaveBeenCalled();
+      const closingCall = calls[calls.length - 1];
+      expect(closingCall.options.duration).toBe(900);
+      expect(closingCall.keyframes[1]).toEqual({ transform: "translate3d(0, -140px, 0)" });
+    } finally {
+      Element.prototype.animate = origAnimate;
+      if (origClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", origClientHeight);
+      } else {
+        delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+      }
+    }
+  });
 });

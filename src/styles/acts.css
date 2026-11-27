@@ -17,6 +17,8 @@
   inset: -1px;
   border-radius: var(--r-paper);
   --light-rest: color-mix(in srgb, var(--jade) 45%, var(--seal-ground, var(--bg)));
+  /* Keep WebKit's rounded-corner clip and pixel snapping aligned around the accelerated rotating layer. */
+  transform: translateZ(0);
 }
 
 .aura::before,
@@ -588,7 +590,17 @@
 .folded-acts {
   display: flex;
   flex-direction: column;
-  animation: unfold var(--d-move) var(--ease-out);
+  animation: unfold-acts var(--d-move) var(--ease-out);
+}
+
+@keyframes unfold-acts {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% calc(-1 * var(--gutter)));
+  }
+  to {
+    clip-path: inset(0 0 0 calc(-1 * var(--gutter)));
+  }
 }
 
 /* The 子分身 a call set off, one to a line, each a way into its own page. */

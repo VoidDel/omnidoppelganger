@@ -229,6 +229,7 @@
   /* An odd width, so that the thread under it runs from its very middle. */
   width: 25px;
   height: 25px;
+  padding: 0;
   line-height: 25px;
   /* Level with the first line of the words. */
   margin-top: 1px;
@@ -636,7 +637,7 @@
   left: calc(var(--rail-edge) - var(--gutter));
   top: 6px;
   /* Over the thread and the light that runs down it. */
-  z-index: 1;
+  z-index: 2;
   width: var(--rail-box);
   height: var(--rail-box);
   /* A ring seven pixels across, painted in the middle of the thread's own box. */
@@ -758,6 +759,7 @@
   /* From under the order's own seal, behind the band that holds it. */
   top: -14px;
   bottom: 0;
+  z-index: 0;
   pointer-events: none;
   background: linear-gradient(to right, transparent calc(50% - 0.5px), var(--line) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
 }
@@ -775,36 +777,43 @@
   bottom: 7px;
 }
 
-/* While the 分身 works, light runs down the thread from the order to where the next act will land. It is drawn
-   in the middle of a box as tall as the thread, and the box is moved by half its height each way inside one that
-   hides what goes past its ends: only moving is done at each step, no painting. */
+/* While the 分身 works, light runs down the thread from the order to where the next act will land. A fixed-size
+   pulse layer (`13px × 140px`) is translated in pixels inside `.vein` by Web Animations API + ResizeObserver
+   (see `Vein` in Transcript.tsx), avoiding WebKit CoreAnimation's stale percentage offset when `.turn-did` grows
+   and avoiding offscreen `drop-shadow` buffer reallocation during streaming. */
 .vein {
   position: absolute;
   left: var(--rail-edge);
   width: var(--rail-box);
   top: -14px;
   bottom: 7px;
+  z-index: 0;
   overflow: hidden;
   pointer-events: none;
 }
 
-.vein::after {
-  content: "";
+.vein-pulse {
   position: absolute;
-  inset: 0;
-  /* Moved on a layer of its own, so neither its going down nor its coming back has anything painted again. */
+  left: 0;
+  top: 0;
+  width: var(--rail-box);
+  height: 140px;
+  transform: translate3d(0, -140px, 0);
   will-change: transform;
-  /* Three pixels of light, in the middle of the thread's box. */
-  background: linear-gradient(to bottom, transparent, var(--jade) 40%, #fffdf2 50%, var(--jade) 60%, transparent) 50% 50% / 3px 140px no-repeat;
-  filter: drop-shadow(0 0 4px var(--jade));
-  animation: vein 2.2s linear infinite;
+  background:
+    radial-gradient(1.5px 52px at 50% 50%, #fffdf2 0%, var(--jade) 58%, transparent 100%),
+    radial-gradient(6px 66px at 50% 50%, color-mix(in srgb, var(--jade) 52%, transparent) 0%, transparent 100%);
 }
 
 /* Its work done, the light goes back up the thread once, in gold, to the order it answered. */
-.turn.closing .vein::after {
-  background-image: linear-gradient(to bottom, transparent, var(--gold) 40%, #fffdf2 50%, var(--gold) 60%, transparent);
-  filter: drop-shadow(0 0 5px var(--gold));
-  animation: vein-home 900ms var(--ease-out) both;
+.turn.closing .vein {
+  bottom: 0;
+}
+
+.turn.closing .vein-pulse {
+  background:
+    radial-gradient(1.5px 52px at 50% 50%, #fffdf2 0%, var(--gold) 58%, transparent 100%),
+    radial-gradient(6px 66px at 50% 50%, color-mix(in srgb, var(--gold) 56%, transparent) 0%, transparent 100%);
 }
 
 /* As the light reaches it, the order glows gold a moment. The glow is drawn once, round a layer of its own, and only
@@ -825,29 +834,6 @@
   animation: homecoming 1400ms ease-out 600ms;
 }
 
-/* Down the thread from under the order to past where it ends, the whole of the light each way: the light is 140px
-   long, so it starts half that above the top and ends half that below the bottom, and no half of it pops in at the
-   top or is left standing at the bottom as it goes round again. */
-@keyframes vein {
-  from {
-    transform: translateY(calc(-50% - 80px));
-  }
-  to {
-    transform: translateY(calc(50% + 80px));
-  }
-}
-
-/* Back up the thread and past its top, under the order: the light is 140px long, so it must go half that beyond
-   where its middle meets the top, or its lower half is left standing there until the turn is put by. */
-@keyframes vein-home {
-  from {
-    transform: translateY(50%);
-  }
-  to {
-    transform: translateY(calc(-50% - 80px));
-  }
-}
-
 @keyframes homecoming {
   20% {
     opacity: 1;
@@ -860,7 +846,7 @@
   left: var(--rail-edge);
   bottom: 0;
   /* Over the thread and the light that runs down it. */
-  z-index: 1;
+  z-index: 2;
   width: var(--rail-box);
   height: var(--rail-box);
   border-radius: 50%;
@@ -898,6 +884,7 @@
 .did-head {
   width: 100%;
   min-height: 30px;
+  margin: 0;
   padding: 2px var(--s-2) 2px 0;
   border: 0;
   border-radius: var(--r-control);
@@ -923,9 +910,10 @@ button.did-head:not(:disabled):hover {
   left: calc(var(--rail) - var(--gutter) - 10px);
   top: 4px;
   /* Over the thread and the light that runs down it. */
-  z-index: 1;
+  z-index: 2;
   width: 21px;
   height: 21px;
+  padding: 0;
   border: 1px solid var(--line-strong);
   background: var(--bg);
   color: var(--ink-2);
@@ -959,6 +947,11 @@ button.did-head:not(:disabled):hover {
   border-color: transparent;
   background: transparent;
   color: var(--jade);
+}
+
+/* Match odd `21px` seal parity (`21/2 - 65/2 = -22px` integer offset) so the rotating square never snaps half a pixel off. */
+.did.live .seal > .edge {
+  --light-side: 65px;
 }
 
 /* KaTeX math formula display & horizontal scroll for wide equations */

@@ -277,12 +277,13 @@
 }
 
 .workbench-tabs-bar {
+  height: 38px;
   min-height: 38px;
   padding: 0 12px 0 8px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
 }
 
@@ -290,18 +291,23 @@
   flex: 1;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   display: flex;
   align-items: stretch;
   gap: 2px;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+}
+
+.workbench-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .wb-tab,
 .wb-tab-item {
   flex: none;
-  max-width: 240px;
+  max-width: 280px;
   min-height: 36px;
-  padding: 0 4px 0 10px;
+  padding: 0 6px 0 10px;
   border-top: 2px solid transparent;
   border-right: 1px solid var(--line);
   background: transparent;
@@ -364,8 +370,10 @@
 }
 
 .wb-tab-label {
+  flex: 1 1 auto;
   min-width: 0;
-  padding: 4px 2px;
+  height: 100%;
+  padding: 0 2px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -377,22 +385,32 @@
 }
 
 .wb-tab-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.35;
 }
 
 .wb-tab-tag {
-  padding: 0 5px;
-  border-radius: 3px;
+  flex: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
   background: var(--jade-tint);
   color: var(--jade-tint-ink);
   font-size: 11px;
+  line-height: 1;
   font-style: normal;
   font-weight: 600;
 }
 
 .wb-tab-close {
+  flex: none;
   width: 20px;
   height: 20px;
   padding: 0;
@@ -418,9 +436,12 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  white-space: nowrap;
 }
 
 .wb-await-pill {
+  flex: none;
+  white-space: nowrap;
   min-height: 28px;
   padding: 2px 10px 2px 6px;
   border: 1px solid var(--cinnabar);
@@ -1037,8 +1058,21 @@
 
 .aside-pane .transcript {
   --rail: 15px;
+  --rail-edge: calc(var(--rail) - 6px);
   --gutter: 32px;
   padding: 0 14px 16px;
+}
+
+.aside-pane .original {
+  padding-left: 4px;
+}
+
+.aside-pane .original .seal {
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  line-height: 21px;
+  font-size: 14px;
 }
 
 .aside-pane .composer {

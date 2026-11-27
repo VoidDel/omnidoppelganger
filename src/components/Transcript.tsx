@@ -463,6 +463,104 @@ function Queued({ text, onDeliverNow }: { text: string; onDeliverNow?: () => voi
   );
 }
 
+const VEIN_LEN = 140;
+
+/**
+ * Light running down the turn's rail while the 分身 works, and sweeping back up in gold when it finishes.
+ * Driven in explicit pixels via Web Animations API + ResizeObserver instead of CSS percentage `translateY(±50%)`,
+ * because WebKit CoreAnimation caches the initial pixel value of percentage transforms on accelerated layers and
+ * leaves the light stranded mid-rail as `.turn-did` grows during streaming.
+ */
+function Vein({ closing }: { closing: boolean }) {
+  const trackRef = useRef<HTMLSpanElement>(null);
+  const pulseRef = useRef<HTMLSpanElement>(null);
+  const lastYRef = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const track = trackRef.current;
+    const pulse = pulseRef.current;
+    if (!track || !pulse || typeof pulse.animate !== "function") return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
+    let anim: Animation | null = null;
+    let span = 0;
+    let duration = 2200;
+
+    const startAnim = (keyframes: Keyframe[], options: KeyframeAnimationOptions): Animation => {
+      const next = pulse.animate(keyframes, options);
+      next.finished?.catch?.(() => undefined);
+      return next;
+    };
+
+    const readCurrentY = (): number | null => {
+      if (!anim || span <= 0 || duration <= 0 || typeof anim.currentTime !== "number") return null;
+      const progress = (((anim.currentTime % duration) + duration) % duration) / duration;
+      return -VEIN_LEN + progress * (span + VEIN_LEN);
+    };
+
+    if (closing) {
+      span = Math.max(track.clientHeight, 24);
+      const prevY = lastYRef.current;
+      const startY = prevY !== null && prevY > 24 ? Math.min(prevY, span) : span;
+      anim = startAnim(
+        [
+          { transform: `translate3d(0, ${Math.round(startY)}px, 0)` },
+          { transform: `translate3d(0, ${-VEIN_LEN}px, 0)` },
+        ],
+        {
+          duration: 900,
+          easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+          fill: "forwards",
+        },
+      );
+      return () => {
+        lastYRef.current = null;
+        anim?.cancel();
+      };
+    }
+
+    const sync = () => {
+      const nextSpan = Math.max(track.clientHeight, 24);
+      if (anim && Math.abs(nextSpan - span) < 1) return;
+      const prevY = readCurrentY() ?? lastYRef.current;
+      anim?.cancel();
+
+      span = nextSpan;
+      const total = span + VEIN_LEN;
+      duration = Math.min(3600, Math.max(1500, Math.round((total / 220) * 1000)));
+      anim = startAnim(
+        [
+          { transform: `translate3d(0, ${-VEIN_LEN}px, 0)` },
+          { transform: `translate3d(0, ${span}px, 0)` },
+        ],
+        {
+          duration,
+          iterations: Infinity,
+          easing: "linear",
+        },
+      );
+      if (prevY !== null && prevY > -VEIN_LEN && prevY < span) {
+        anim.currentTime = ((prevY + VEIN_LEN) / total) * duration;
+      }
+      lastYRef.current = null;
+    };
+
+    sync();
+    const unobserve = observeSharedResize(track, sync);
+    return () => {
+      lastYRef.current = readCurrentY();
+      unobserve();
+      anim?.cancel();
+    };
+  }, [closing]);
+
+  return (
+    <span ref={trackRef} className="vein" aria-hidden="true">
+      <span ref={pulseRef} className="vein-pulse" />
+    </span>
+  );
+}
+
 const SEAM = <div className="seam">以上是分叉时带过来的前情，以下是这个分叉自己的</div>;
 
 interface TurnRowProps {
@@ -720,7 +818,7 @@ const TurnRow = memo(function TurnRow({
         )}
         {last && <Streaming sessionId={sessionId} blocks={stream} frozen={frozen} />}
         {last && copied > 0 && row.turn <= copied && SEAM}
-        {last && (status === "running" || closing) && <span className="vein" aria-hidden="true" />}
+        {last && (status === "running" || (closing && row.items.length > 0)) && <Vein closing={closing} />}
         {last && status === "running" && <span className="vein-tip" aria-hidden="true" />}
       </div>
     </section>

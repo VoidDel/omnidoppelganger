@@ -65,6 +65,7 @@ pub fn run() {
             }
 
             odg_core::daemon::write_desktop_pid(&home);
+            notify::init(app.handle());
             if let Err(err) = tray::setup_tray(app.handle()) {
                 eprintln!("system tray unavailable: {err}");
             }
@@ -133,18 +134,24 @@ pub fn run() {
                 loop {
                     tick.tick().await;
                     let core = tick_handle.state::<App>().0.clone();
-                    let fired_names = tokio::task::spawn_blocking(move || {
+                    let fired = tokio::task::spawn_blocking(move || {
                         let due = core.schedules.take_due(&schedule::now()).unwrap_or_default();
-                        let mut names = Vec::with_capacity(due.len());
+                        let mut out = Vec::with_capacity(due.len());
                         for item in &due {
-                            let _ = core.schedules.record(&item.id, core.fire(item));
-                            names.push(item.name.clone());
+                            let run = core.fire(item);
+                            let spawned_session = if run.error.is_none() {
+                                run.session.clone()
+                            } else {
+                                None
+                            };
+                            let _ = core.schedules.record(&item.id, run);
+                            out.push((item.name.clone(), spawned_session));
                         }
-                        names
+                        out
                     })
                     .await
                     .unwrap_or_default();
-                    if !fired_names.is_empty() {
+                    if !fired.is_empty() {
                         let _ = tick_handle.emit(SCHEDULES_EVENT, ());
                         let hidden = tick_handle
                             .get_webview_window("main")
@@ -152,9 +159,23 @@ pub fn run() {
                             .map(|visible| !visible)
                             .unwrap_or(true);
                         if hidden {
-                            let summary = fired_names.join("、");
-                            notify::notify_desktop("功课已唤醒".to_string(), format!("分身正在后台执行：{summary}"))
-                                .await;
+                            let single_session = if fired.len() == 1 {
+                                fired[0].1.clone()
+                            } else {
+                                None
+                            };
+                            let summary = fired
+                                .iter()
+                                .map(|(name, _)| name.as_str())
+                                .collect::<Vec<_>>()
+                                .join("、");
+                            let _ = notify::dispatch_notification(
+                                "功课已唤醒".to_string(),
+                                format!("分身正在后台执行：{summary}"),
+                                single_session,
+                                Some("schedules".to_string()),
+                            )
+                            .await;
                         }
                     }
                 }

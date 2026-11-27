@@ -29,6 +29,7 @@ export function useSessionController() {
 
   const stateRef = useRef(state);
   stateRef.current = state;
+  const openRef = useRef<(id: string) => void>(() => undefined);
   const navSeqRef = useRef(0);
   const nextNavSeq = useCallback(() => ++navSeqRef.current, []);
   const lastStatusRef = useRef<Map<string, string>>(new Map());
@@ -55,9 +56,15 @@ export function useSessionController() {
         lastStatusRef.current.set(event.session_id, event.status);
         const title = stateRef.current.sessions.find((s) => s.id === event.session_id)?.title || "分身";
         if (event.status === "waiting_approval" && prev !== "waiting_approval") {
-          notifyBackground(`分身候旨 · ${title}`, "有操作或提问等待本尊定夺。");
+          notifyBackground(`分身候旨 · ${title}`, "有操作或提问等待本尊定夺。", {
+            sessionId: event.session_id,
+            onActivate: () => openRef.current(event.session_id),
+          });
         } else if (event.status === "idle" && prev === "running") {
-          notifyBackground(`分身收功 · ${title}`, "本轮任务已完成。");
+          notifyBackground(`分身收功 · ${title}`, "本轮任务已完成。", {
+            sessionId: event.session_id,
+            onActivate: () => openRef.current(event.session_id),
+          });
         }
         api.getSessionItem(event.session_id).then(
           (item) => dispatch({ type: "session", item }),
@@ -200,6 +207,21 @@ export function useSessionController() {
     },
     [nextNavSeq, fail],
   );
+  openRef.current = open;
+
+  useEffect(() => {
+    const stopActivated = api.onNotificationActivated?.((payload) => {
+      if (payload.session_id) {
+        open(payload.session_id);
+      } else if (payload.page === "schedules") {
+        api.listSchedules().then((schedules) => dispatch({ type: "schedules", schedules }), fail);
+        dispatch({ type: "page", page: "schedules" });
+      }
+    });
+    return () => {
+      stopActivated?.then((unlisten) => unlisten());
+    };
+  }, [open, fail]);
 
   const forkFrom = useCallback(
     (turn?: number, text?: string) => {
