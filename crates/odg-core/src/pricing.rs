@@ -129,6 +129,10 @@ pub struct PriceCatalogEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub rate: ModelRate,
+    /// When `rate.source == PriceSource::Custom` and this key overrides an
+    /// existing `models.dev` or `builtin` entry, records the underlying source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<PriceSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
 }
@@ -614,6 +618,25 @@ impl PriceCatalogStore {
         Ok(self.view())
     }
 
+    /// Remove all custom entries that override a built-in or synced `models.dev` entry,
+    /// preserving purely custom models that do not exist in the default catalog.
+    pub fn reset_overrides(&self) -> Result<PriceCatalogView, String> {
+        {
+            let mut guard = self.state.lock_unpoisoned();
+            let builtin_keys: std::collections::HashSet<String> = BUILTIN_SPECS
+                .iter()
+                .map(|s| format!("{}/{}", s.provider, s.model))
+                .collect();
+            let synced_keys: std::collections::HashSet<String> = guard.synced.models.keys().cloned().collect();
+            guard
+                .custom
+                .rates
+                .retain(|k, _| !builtin_keys.contains(k) && !synced_keys.contains(k));
+            save_json(&self.custom_path, &guard.custom)?;
+        }
+        Ok(self.view())
+    }
+
     /// Replace the synced `models.dev` cache from parsed entries (used by sync and tests).
     pub fn replace_synced(
         &self,
@@ -671,6 +694,7 @@ impl PriceCatalogStore {
                     model: spec.model.to_string(),
                     name: Some(spec.name.to_string()),
                     rate: spec.rate,
+                    overrides: None,
                     context_window: Some(spec.context_window),
                 },
             );
@@ -688,6 +712,7 @@ impl PriceCatalogStore {
                     model: item.model.clone(),
                     name: item.name.clone(),
                     rate,
+                    overrides: None,
                     context_window: item.context_window,
                 },
             );
@@ -709,6 +734,7 @@ impl PriceCatalogStore {
                 model,
                 name: existing_meta.and_then(|e| e.name.clone()),
                 rate,
+                overrides: existing_meta.map(|e| e.rate.source),
                 context_window: existing_meta.and_then(|e| e.context_window),
             };
             custom.push(entry.clone());

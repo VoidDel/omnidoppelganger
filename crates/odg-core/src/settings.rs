@@ -89,6 +89,10 @@ fn default_close_to_tray() -> bool {
     true
 }
 
+fn default_memory_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     /// Provider of sessions created from now on. Settings saved before there
@@ -172,6 +176,9 @@ pub struct Settings {
     /// continue waking up in the background.
     #[serde(default = "default_close_to_tray")]
     pub close_to_tray: bool,
+    /// Enable cross-session layered Markdown memory (`识海`) under `~/.odg/memory/`.
+    #[serde(default = "default_memory_enabled")]
+    pub memory_enabled: bool,
 }
 
 impl Default for Settings {
@@ -199,6 +206,7 @@ impl Default for Settings {
             locale: default_locale(),
             auto_update_runtime: false,
             close_to_tray: true,
+            memory_enabled: true,
         }
     }
 }

@@ -106,9 +106,16 @@ pub fn build_windows_notify_command(title: &str, body: &str, icon: Option<&std::
     let title = sanitize_notify_text(title);
     let body = sanitize_notify_text(body);
     let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", WIN_TOAST_SCRIPT])
-        .env("ODG_NOTIFY_TITLE", &title)
-        .env("ODG_NOTIFY_BODY", &body);
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        WIN_TOAST_SCRIPT,
+    ])
+    .env("ODG_NOTIFY_TITLE", &title)
+    .env("ODG_NOTIFY_BODY", &body);
     if let Some(icon_path) = icon {
         let icon_str = icon_path.display().to_string();
         let icon_uri = format!("file:///{}", icon_str.replace('\\', "/").trim_start_matches('/'));
@@ -179,7 +186,14 @@ mod tests {
         let win_args: Vec<&str> = win_cmd.get_args().map(|a| a.to_str().expect("utf-8 arg")).collect();
         assert_eq!(
             win_args,
-            vec!["-NoProfile", "-NonInteractive", "-Command", WIN_TOAST_SCRIPT]
+            vec![
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                WIN_TOAST_SCRIPT,
+            ]
         );
         assert!(WIN_TOAST_SCRIPT.contains("CreateTextNode"));
         assert!(WIN_TOAST_SCRIPT.contains("SetAttribute"));

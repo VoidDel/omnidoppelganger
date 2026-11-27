@@ -344,10 +344,12 @@ export function SkillsPage({ onChanged, embedded = false }: { onChanged: () => v
   const body = (
     <>
         <section>
-          <h1>秘籍</h1>
-          <p className="lead">
-            秘籍是专项的做事说明。收入的秘籍，分身只记得它的名字和一句说明，不占心神；遇到对得上的事才翻出来研读，照着做。也可以在输入框打 /秘籍名，叫分身照某一部办事。
-          </p>
+          <h1>
+            秘籍
+            <Info>
+              秘籍是专项的做事说明。收入的秘籍，分身只记得它的名字和一句说明，不占心神；遇到对得上的事才翻出来研读，照着做。也可以在输入框打 /秘籍名，叫分身照某一部办事。
+            </Info>
+          </h1>
           {wrong && (
             <p className="hint failed" role="alert">
               {wrong}

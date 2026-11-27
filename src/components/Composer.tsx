@@ -402,6 +402,29 @@ export function Composer(props: ComposerProps) {
       run: (arg) => onCompact(arg.trim() || undefined),
     },
     {
+      name: "remember",
+      label: "记住",
+      aliases: ["记住", "记忆", "识海", "元神殿", "铭碑"],
+      arg: "[全局:]要记住的内容",
+      hint: "把偏好或项目约定刻入洞府铭碑（加「全局:」或「global:」记入元神殿）",
+      run: (arg) => {
+        const raw = arg.trim();
+        if (!raw) return "写下要记住的内容，例如：/remember 提交前先跑 cargo fmt";
+        let scope: "global" | "project" = workspace ? "project" : "global";
+        let entry = raw;
+        const prefix = raw.match(/^(全局|global|元神殿)\s*[:：]\s*(.+)$/i);
+        if (prefix) {
+          scope = "global";
+          entry = prefix[2].trim();
+        }
+        if (!entry) return "记忆内容不能为空。";
+        void api.appendMemoryEntry(scope, workspace ?? null, entry).then(
+          () => setRefused(scope === "global" ? `已刻入元神殿：${entry}` : `已刻入当前洞府铭碑：${entry}`),
+          (err) => setRefused(`刻入识海失败：${String(err)}`),
+        );
+      },
+    },
+    {
       name: "model",
       label: t("slash.model.label"),
       aliases: ["心法", "功法", "模型"],

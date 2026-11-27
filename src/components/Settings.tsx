@@ -7,13 +7,14 @@ import { mcpTool, shortCount } from "../lib/fold";
 import { modesFor } from "../lib/modes";
 import { formatResetIn, quotaWindowLabel, useAntigravityQuota, useKimiQuota } from "../lib/modelUsage";
 import { CLI_INFO, cliOf, enabledProviders, setUp } from "../lib/providers";
-import type { DaemonStatus, KeyStatus, KimiOAuthStart, KimiRegion, Provider, RawListedModel, Settings, SettingsView, UpdateStatus } from "../lib/types";
+import type { DaemonStatus, KeyStatus, KimiOAuthStart, KimiRegion, MemorySnapshot, Provider, RawListedModel, Settings, SettingsView, UpdateStatus } from "../lib/types";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { lazyWithRetry } from "./Guard";
 import { Info } from "./Hint";
 import { Icon } from "./Icon";
 import { LanguageServersSection } from "./LanguageServers";
+import { MemoryViewer } from "./MemoryEditor";
 import { normalizeListedModel } from "./Pickers";
 import { RuntimeSection } from "./Runtime";
 import { UsagePricingSection } from "./UsagePricingSection";
@@ -609,7 +610,7 @@ const WINDOW_SOURCES: Record<SettingsView["context_window"]["source"], string> =
 };
 
 /** The pages the settings are sorted into: what a 分身 runs on, what it may do, what it can reach, and how the app looks. */
-export type SettingsTab = "model" | "ledger" | "skills" | "mcp" | "rules" | "tools" | "look" | "about";
+export type SettingsTab = "model" | "ledger" | "memory" | "skills" | "mcp" | "rules" | "tools" | "general" | "look" | "about";
 
 /**
  * Which image model the 分身 paints with: the one chosen, while its provider has a key; else the first that has one.
@@ -638,17 +639,153 @@ function PainterSection({ view, onSavePatch }: { view: SettingsView; onSavePatch
         <div className="inline model-row">
           <Combo id="painter" value={settings.painter} options={options} editable={false} onSave={(painter) => onSavePatch({ painter })} />
         </div>
-        {settings.painter === "off" ? (
-          <p className="hint">已关闭丹青：分身不会调用图像模型作画，仅在需要时用代码画图。</p>
-        ) : view.painter_ready === null ? (
-          <p className="hint missing">还没有 OpenAI 或 GLM（智谱）的密钥，分身现在只能用代码画图。到「心法」那一页给其中一家添上密钥，就能请画师作画。</p>
-        ) : settings.painter && settings.painter !== view.painter_ready ? (
-          <p className="hint">{name(settings.painter)}还没有密钥，眼下请 {name(view.painter_ready)} 作画。</p>
-        ) : (
-          <p className="hint">眼下请 {name(view.painter_ready)} 作画。</p>
-        )}
+        {settings.painter !== "off" &&
+          (view.painter_ready === null ? (
+            <p className="hint missing">还没有 OpenAI 或 GLM（智谱）的密钥，请在「心法」中添加。</p>
+          ) : settings.painter && settings.painter !== view.painter_ready ? (
+            <p className="hint">{name(settings.painter)} 还没有密钥，眼下请 {name(view.painter_ready)} 作画。</p>
+          ) : null)}
       </div>
     </section>
+  );
+}
+
+function MemorySection() {
+  const [snap, setSnap] = useState<MemorySnapshot | null>(null);
+  const [selectedWs, setSelectedWs] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback((ws?: string | null) => {
+    api.getMemory?.(ws ?? null).then(
+      (res) => setSnap(res),
+      (err) => setError(String(err)),
+    );
+  }, []);
+
+  useEffect(() => {
+    load(selectedWs);
+  }, [load, selectedWs]);
+
+  // Auto-refresh when returning from an external editor.
+  useEffect(() => {
+    const onFocus = () => load(selectedWs);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [load, selectedWs]);
+
+  const openExternal = (scope: "global" | "project", ws?: string | null, hash?: string | null) => {
+    setError(null);
+    setNotice(null);
+    void api.openMemoryFile(scope, ws ?? null, hash ?? null).catch((err) => setError(String(err)));
+  };
+
+  const removeProject = (hash: string, ws: string) => {
+    setBusy(true);
+    setError(null);
+    api
+      .deleteProjectMemory(hash, selectedWs === ws ? null : selectedWs)
+      .then(
+        (res) => {
+          setSnap(res);
+          if (selectedWs === ws) setSelectedWs(null);
+          setNotice("已清除该洞府的铭碑。");
+        },
+        (err) => setError(String(err)),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <>
+      <section>
+        <div className="usage-head">
+          <h2>
+            元神殿（global.md）
+            <Info>
+              跨洞府通用的本尊偏好、回复风格、常用工具与环境习惯。新会话会自动携带精简记忆（不破坏 Prompt Cache），分身也可主动刻入，或用 /remember 全局: 内容 快速记录。
+              {snap?.memory_dir ? ` 目录：${snap.memory_dir}` : ""}
+            </Info>
+          </h2>
+          <div className="usage-actions">
+            <button type="button" className="button outline small" onClick={() => openExternal("global")}>
+              <Icon name="box-arrow-up-right" size={12} />
+              打开
+            </button>
+            <button type="button" className="button outline small" onClick={() => load(selectedWs)}>
+              <Icon name="arrow-repeat" size={12} />
+              刷新
+            </button>
+          </div>
+        </div>
+        <MemoryViewer value={snap?.global ?? ""} emptyText="暂无内容。" />
+      </section>
+
+      <section>
+        <h2>
+          洞府铭碑（按洞府隔离）
+          <Info>
+            按工作区隔离的项目规范、构建命令与架构约定。在任意洞府的对话里输入 /remember 内容，或让分身记住项目约定时会自动沉淀到这里。
+          </Info>
+        </h2>
+        {!snap || snap.projects.length === 0 ? (
+          <p className="muted">还没有。</p>
+        ) : (
+          <div className="mcp-list">
+            {snap.projects.map((proj) => {
+              const active = selectedWs === proj.workspace;
+              return (
+                <div className={`provider-card ${active ? "on" : ""}`} key={proj.hash}>
+                  <div className="who">
+                    <strong className="mono">{proj.workspace}</strong>
+                    <span className="chip">{proj.lines} 条 · {proj.chars} 字</span>
+                  </div>
+                  <div className="usage-actions" style={{ marginTop: 6 }}>
+                    <button
+                      type="button"
+                      className="button outline small"
+                      onClick={() => {
+                        setNotice(null);
+                        setSelectedWs(active ? null : proj.workspace);
+                      }}
+                    >
+                      {active ? "收起" : "查看"}
+                    </button>
+                    <button
+                      type="button"
+                      className="button outline small"
+                      onClick={() => openExternal("project", proj.workspace, proj.hash)}
+                    >
+                      打开
+                    </button>
+                    <button
+                      type="button"
+                      className="button text small danger-text"
+                      disabled={busy}
+                      onClick={() => removeProject(proj.hash, proj.workspace)}
+                    >
+                      删除
+                    </button>
+                  </div>
+                  {active && (
+                    <div className="field" style={{ marginTop: 10 }}>
+                      <MemoryViewer value={snap.project} emptyText="暂无内容。" />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {notice && <p className="hint">{notice}</p>}
+        {error && (
+          <p className="hint missing" role="alert">
+            {error}
+          </p>
+        )}
+      </section>
+    </>
   );
 }
 
@@ -662,6 +799,10 @@ function BackgroundDaemonSection({
   const [daemon, setDaemon] = useState<DaemonStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [linkingCli, setLinkingCli] = useState(false);
+  const [cliLinked, setCliLinked] = useState<string | null>(null);
+  const [cliError, setCliError] = useState<string | null>(null);
+  const isWindowsClient = typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
 
   useEffect(() => {
     api.daemonStatus?.().then(
@@ -669,6 +810,19 @@ function BackgroundDaemonSection({
       () => setDaemon(null),
     );
   }, []);
+
+  const linkCli = () => {
+    setLinkingCli(true);
+    setCliError(null);
+    setCliLinked(null);
+    api
+      .installCliLink()
+      .then(
+        (linkedPath) => setCliLinked(linkedPath),
+        (err) => setCliError(String(err)),
+      )
+      .finally(() => setLinkingCli(false));
+  };
 
   const toggleDaemon = () => {
     if (!daemon || busy) return;
@@ -693,52 +847,78 @@ function BackgroundDaemonSection({
           : "系统后台守护";
 
   return (
-    <section>
-      <h2>后台驻留与守护进程</h2>
-      <div className="field">
-        <div className="label-line">
-          <label className="check">
-            <input
-              id="close-to-tray"
-              type="checkbox"
-              checked={closeToTray}
-              onChange={(event) => onToggleCloseToTray(event.target.checked)}
-            />
-            <span>关闭窗口时最小化到系统托盘，不自动退出</span>
-          </label>
+    <>
+      <section>
+        <h2>后台驻留与守护进程</h2>
+        <div className="field">
+          <div className="label-line">
+            <label className="check">
+              <input
+                id="close-to-tray"
+                type="checkbox"
+                checked={closeToTray}
+                onChange={(event) => onToggleCloseToTray(event.target.checked)}
+              />
+              <span>关闭窗口时最小化到系统托盘，不自动退出</span>
+            </label>
+            <Info>
+              开启后，点关闭按钮仅隐藏窗口并驻留在菜单栏 / 系统托盘，定时「功课」会在后台按时唤醒执行并发送系统通知；需要真正退出时，右键托盘图标选「完全退出」。
+            </Info>
+          </div>
         </div>
-        <p className="hint">
-          开启后，点关闭按钮仅隐藏窗口并驻留在菜单栏 / 系统托盘，定时「功课」会在后台按时唤醒执行并发送系统通知；需要真正退出时，右键托盘图标选「完全退出」。
-        </p>
-      </div>
-      <div className="provider-card">
-        <div className="who">
-          <strong>功课后台守护进程（{platformLabel}）</strong>
-          <span className={`chip ${daemon?.installed ? "ready" : ""}`}>
-            {daemon ? (daemon.installed ? (daemon.running ? "已安装 · 运行中" : "已安装") : "未安装") : "检测中…"}
-          </span>
+        <div className="field">
+          <div className="label-line">
+            <span>功课后台守护进程（{platformLabel}）</span>
+            <Info>
+              安装后，开机登录或意外退出时会自动以静默托盘模式唤醒，确保「功课」定时任务在窗口关闭或重启后仍能按时运行；命令行也可使用 odg daemon install 独立运行无头守护进程。
+              {daemon?.service_path ? ` 配置文件：${daemon.service_path}` : ""}
+            </Info>
+            <span className={`chip ${daemon?.installed ? "ready" : ""}`}>
+              {daemon ? (daemon.installed ? (daemon.running ? "已安装 · 运行中" : "已安装") : "未安装") : "检测中…"}
+            </span>
+          </div>
+          {error && (
+            <p className="hint missing" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="usage-actions">
+            <button
+              type="button"
+              className={`button ${daemon?.installed ? "outline" : "primary"} small`}
+              disabled={!daemon || busy}
+              onClick={toggleDaemon}
+            >
+              {busy ? "处理中…" : daemon?.installed ? "卸载后台守护" : "安装开机后台守护"}
+            </button>
+          </div>
         </div>
-        <p className="hint">
-          安装后，开机登录或意外退出时会自动以静默托盘模式唤醒，确保「功课」定时任务在窗口关闭或重启后仍能按时运行；命令行也可使用 <code>odg daemon install</code> 独立运行无头守护进程。
-        </p>
-        {daemon?.service_path && <p className="hint mono">{daemon.service_path}</p>}
-        {error && (
-          <p className="hint missing" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="usage-actions" style={{ marginTop: 8 }}>
-          <button
-            type="button"
-            className={`button ${daemon?.installed ? "outline" : "primary"} small`}
-            disabled={!daemon || busy}
-            onClick={toggleDaemon}
-          >
-            {busy ? "处理中…" : daemon?.installed ? "卸载后台守护" : "安装开机后台守护"}
-          </button>
-        </div>
-      </div>
-    </section>
+      </section>
+      {!isWindowsClient && (
+        <section>
+          <h2>命令行工具</h2>
+          <div className="field">
+            <div className="label-line">
+              <span>安装命令行工具 odg</span>
+              <Info>
+                将 App 内置的 odg 可执行文件软链接到 ~/.local/bin/odg，之后可在终端直接运行 odg 命令，与桌面端共享配置、密钥与识海记忆。
+              </Info>
+            </div>
+            <div className="usage-actions">
+              <button type="button" className="button outline small" disabled={linkingCli} onClick={linkCli}>
+                {linkingCli ? "安装中…" : "安装命令行工具 odg"}
+              </button>
+            </div>
+            {cliLinked && <p className="hint">已软链至 {cliLinked}</p>}
+            {cliError && (
+              <p className="hint missing" role="alert">
+                {cliError}
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+    </>
   );
 }
 
@@ -746,12 +926,9 @@ function UpdateSection({ version }: { version?: string }) {
   const { locale, t } = useI18n();
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
-  const [linkingCli, setLinkingCli] = useState(false);
-  const [cliLinked, setCliLinked] = useState<string | null>(null);
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const shownVersion = status?.current_version ?? version ?? __APP_VERSION__;
-  const isWindowsClient = typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
 
   const checkNow = () => {
     setChecking(true);
@@ -781,29 +958,14 @@ function UpdateSection({ version }: { version?: string }) {
       .finally(() => setInstalling(false));
   };
 
-  const linkCli = () => {
-    setLinkingCli(true);
-    setError(null);
-    setCliLinked(null);
-    api
-      .installCliLink()
-      .then(
-        (linkedPath) => setCliLinked(linkedPath),
-        (err) => setError(String(err)),
-      )
-      .finally(() => setLinkingCli(false));
-  };
-
   return (
     <section>
       <div className="usage-head">
-        <h2>{t("settings.updateHeading")}</h2>
+        <h2>
+          {t("settings.updateHeading")}
+          <Info>{t("settings.updateCheckHint").replace(/^\s*·\s*/, "")}</Info>
+        </h2>
         <div className="usage-actions">
-          {!isWindowsClient && (
-            <button type="button" className="button outline small" disabled={linkingCli} onClick={linkCli}>
-              {t("settings.cliLinkBtn")}
-            </button>
-          )}
           <button type="button" className="button outline small" disabled={checking || installing} onClick={checkNow}>
             {checking ? t("settings.updateChecking") : t("settings.updateCheckBtn")}
           </button>
@@ -813,10 +975,8 @@ function UpdateSection({ version }: { version?: string }) {
         <div className="who">
           <span>
             {t("settings.updateCurrent")} <strong className="mono">v{shownVersion}</strong>
-            {!status && <span className="muted">{t("settings.updateCheckHint")}</span>}
           </span>
           {error && <span className="hint failed">{error}</span>}
-          {cliLinked && <span className="hint">{t("settings.cliLinkedNote", { path: cliLinked })}</span>}
           {status && !status.has_update && (
             <span className="muted">{t("settings.updateUpToDate", { version: status.latest_version })}</span>
           )}
@@ -865,12 +1025,12 @@ function HelpSection() {
   ];
   return (
     <section>
-      <h2>{t("settings.helpHeading")}</h2>
+      <h2>
+        {t("settings.helpHeading")}
+        <Info>{t("settings.helpLead")}</Info>
+      </h2>
       <div className="provider-card">
-        <div className="who">
-          <span className="muted">{t("settings.helpLead")}</span>
-        </div>
-        <div className="actions" style={{ marginTop: "6px", flexWrap: "wrap" }}>
+        <div className="actions" style={{ flexWrap: "wrap" }}>
           {links.map((item) => (
             <button
               key={item.url}
@@ -918,6 +1078,7 @@ export function SettingsPage({
 }: Props) {
   const { locale, setLocale, t } = useI18n();
   const [tab, setTabState] = useState<SettingsTab>(initialTab ?? "model");
+  const [ledgerTab, setLedgerTab] = useState<"usage" | "pricing" | "subscription">("usage");
   useEffect(() => {
     if (initialTab) setTabState(initialTab);
   }, [initialTab]);
@@ -1023,10 +1184,12 @@ export function SettingsPage({
   const tabs: { id: SettingsTab; name: string; hint: string; icon: string }[] = [
     { id: "model", name: t("settings.tabModel"), hint: t("settings.tabModelHint"), icon: "journal-text" },
     { id: "ledger", name: t("settings.tabLedger"), hint: t("settings.tabLedgerHint"), icon: "bar-chart-fill" },
+    { id: "memory", name: "识海", hint: "跨会话长期记忆：全局偏好与各洞府约定", icon: "brain" },
     { id: "skills", name: t("nav.skills"), hint: t("nav.skillsTitle"), icon: "book" },
     { id: "mcp", name: t("nav.mcp"), hint: t("nav.mcpTitle"), icon: "bell" },
     { id: "rules", name: t("settings.tabRules"), hint: t("settings.tabRulesHint"), icon: "shield-check" },
     { id: "tools", name: t("settings.tabTools"), hint: t("settings.tabToolsHint"), icon: "plug" },
+    { id: "general", name: "通用", hint: "后台驻留、系统托盘与功课守护进程", icon: "gear" },
     { id: "look", name: t("settings.tabLook"), hint: t("settings.tabLookHint"), icon: "circle-half" },
     { id: "about", name: t("settings.tabAbout"), hint: t("settings.tabAboutHint"), icon: "info-circle" },
   ];
@@ -1065,7 +1228,7 @@ export function SettingsPage({
           ))}
         </div>
       </aside>
-      <div className="settings-content">
+      <div className={tab === "ledger" ? "settings-content no-scroll" : "settings-content"}>
       <div className="settings-inner">
         {tab === "model" && (
           <>
@@ -1235,9 +1398,20 @@ export function SettingsPage({
         )}
         {tab === "ledger" && (
           <>
-            <UsagePricingSection />
-            {(view.keys.antigravity?.source === "cli" ||
-              view.providers.some((p) => p.kind === "moonshot" && (view.keys[p.id]?.source ?? "none") !== "none")) && (
+            <div className="segmented ledger-tabs" role="tablist" aria-label="账房分类">
+              <button type="button" role="tab" aria-pressed={ledgerTab === "usage"} onClick={() => setLedgerTab("usage")}>
+                用量
+              </button>
+              <button type="button" role="tab" aria-pressed={ledgerTab === "pricing"} onClick={() => setLedgerTab("pricing")}>
+                价格
+              </button>
+              <button type="button" role="tab" aria-pressed={ledgerTab === "subscription"} onClick={() => setLedgerTab("subscription")}>
+                订阅
+              </button>
+            </div>
+            {ledgerTab === "usage" && <UsagePricingSection section="usage" chatFolder={view.chat_folder} />}
+            {ledgerTab === "pricing" && <UsagePricingSection section="pricing" />}
+            {ledgerTab === "subscription" && (
               <ModelUsageSection
                 hasAgy={view.keys.antigravity?.source === "cli"}
                 kimiProviderId={
@@ -1247,6 +1421,7 @@ export function SettingsPage({
             )}
           </>
         )}
+        {tab === "memory" && <MemorySection />}
         {tab === "skills" && (
           <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
             <SkillsPage embedded onChanged={onRefresh} />
@@ -1418,13 +1593,9 @@ export function SettingsPage({
               />
             </div>
             {/* Searching does not work yet: said in the open, with what puts it right. */}
-            {settings.search_engine === "off" ? (
-              <p className="hint">已关闭天机阁：分身不会使用联网搜索（包括模型自带搜索）。</p>
-            ) : settings.search_engine === "provider" ? (
-              <p className="hint">仅用模型自带搜索：使用 Anthropic、OpenAI、Google Gemini、Kimi 或 OpenRouter 心法时可直接联网搜索；其他心法可到侧栏「法器」里启用 Exa（免密钥）或 Magpie Search。</p>
-            ) : !view.search_ready ? (
-              <p className="hint missing">还没有 GLM 的密钥：用 Anthropic、OpenAI、Gemini、Kimi 或 OpenRouter 心法的分身会改由各自自带搜索来搜，别家心法搜不了。到「心法」那一页给 GLM 添上密钥，或者到侧栏「法器」里启用 Exa（免密钥）或 Magpie Search。</p>
-            ) : null}
+            {settings.search_engine !== "off" && settings.search_engine !== "provider" && !view.search_ready && (
+              <p className="hint missing">还没有 GLM 的密钥，请先在「心法」中添加，或改选「仅用模型自带搜索」。</p>
+            )}
           </div>
         </section>
         <PainterSection view={view} onSavePatch={savePatch} />
@@ -1445,12 +1616,14 @@ export function SettingsPage({
         <LanguageServersSection />
           </>
         )}
+        {tab === "general" && (
+          <BackgroundDaemonSection
+            closeToTray={settings.close_to_tray !== false}
+            onToggleCloseToTray={(close_to_tray) => savePatch({ close_to_tray })}
+          />
+        )}
         {tab === "look" && (
           <>
-        <BackgroundDaemonSection
-          closeToTray={settings.close_to_tray !== false}
-          onToggleCloseToTray={(close_to_tray) => savePatch({ close_to_tray })}
-        />
         <section>
           <h2>{t("settings.appearance")}</h2>
           <fieldset className="papers">
@@ -1513,7 +1686,23 @@ function ModelUsageSection({ hasAgy, kimiProviderId }: { hasAgy: boolean; kimiPr
   const agyQuota = useAntigravityQuota(hasAgy);
   const kimiQuota = useKimiQuota(kimiProviderId);
 
-  if (!hasAgy && !kimiProviderId) return null;
+  if (!hasAgy && !kimiProviderId) {
+    return (
+      <section className="ledger-pane">
+        <div className="usage-head">
+          <h2>
+            订阅额度
+            <Info>自动查询 Antigravity（agy）与 Kimi Code 订阅（/coding/v1/usages）的 5 小时与周限额。</Info>
+          </h2>
+        </div>
+        <div className="ledger-scroll-body">
+          <div className="quota-panel">
+            <p className="muted ledger-empty">尚未启用支持订阅额度查询的宗门（如 Antigravity、Kimi Code）。</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   const loading = agyQuota.loading || kimiQuota.loading;
   const refreshAll = () => {
@@ -1522,18 +1711,20 @@ function ModelUsageSection({ hasAgy, kimiProviderId }: { hasAgy: boolean; kimiPr
   };
 
   return (
-    <section>
+    <section className="ledger-pane">
       <div className="usage-head">
         <h2>
           订阅额度
           <Info>自动查询 Antigravity（agy）与 Kimi Code 订阅（/coding/v1/usages）的 5 小时与周限额。</Info>
         </h2>
         <div className="usage-actions">
-          <button type="button" className="button text small" disabled={loading} onClick={refreshAll}>
-            {loading ? "查询额度中…" : "刷新"}
+          <button type="button" className="button outline small" disabled={loading} onClick={refreshAll}>
+            <Icon name="arrow-repeat" size={12} />
+            {loading ? "查询中…" : "刷新"}
           </button>
         </div>
       </div>
+      <div className="ledger-scroll-body">
       {hasAgy && (
         <div className="quota-panel">
           <div className="quota-panel-head">
@@ -1555,13 +1746,15 @@ function ModelUsageSection({ hasAgy, kimiProviderId }: { hasAgy: boolean; kimiPr
                       return (
                         <div className="quota-bucket" key={bucket.id || bucket.window}>
                           <div className="quota-bucket-row">
-                            <span className="quota-bucket-name">{quotaWindowLabel(bucket.window, bucket.name)}</span>
+                            <span className="quota-bucket-name">
+                              {quotaWindowLabel(bucket.window, bucket.name)}
+                              <span className="quota-bucket-meta"> · {resetIn ? `${resetIn}后刷新` : "即将刷新"}</span>
+                            </span>
                             <span className={`quota-bucket-pct ${tone}`}>{bucket.remaining_percent}%</span>
                           </div>
                           <div className="quota-bar" aria-hidden="true">
                             <span className={`quota-fill ${tone}`} style={{ width: `${bucket.remaining_percent}%` }} />
                           </div>
-                          <div className="quota-bucket-meta">{resetIn ? `${resetIn} 后刷新` : "即将刷新"}</div>
                         </div>
                       );
                     })}
@@ -1593,13 +1786,15 @@ function ModelUsageSection({ hasAgy, kimiProviderId }: { hasAgy: boolean; kimiPr
                       return (
                         <div className="quota-bucket" key={bucket.id || bucket.window}>
                           <div className="quota-bucket-row">
-                            <span className="quota-bucket-name">{quotaWindowLabel(bucket.window, bucket.name)}</span>
+                            <span className="quota-bucket-name">
+                              {quotaWindowLabel(bucket.window, bucket.name)}
+                              <span className="quota-bucket-meta"> · {resetIn ? `${resetIn}后刷新` : "即将刷新"}</span>
+                            </span>
                             <span className={`quota-bucket-pct ${tone}`}>{bucket.remaining_percent}%</span>
                           </div>
                           <div className="quota-bar" aria-hidden="true">
                             <span className={`quota-fill ${tone}`} style={{ width: `${bucket.remaining_percent}%` }} />
                           </div>
-                          <div className="quota-bucket-meta">{resetIn ? `${resetIn} 后刷新` : "即将刷新"}</div>
                         </div>
                       );
                     })}
@@ -1610,6 +1805,7 @@ function ModelUsageSection({ hasAgy, kimiProviderId }: { hasAgy: boolean; kimiPr
           )}
         </div>
       )}
+      </div>
     </section>
   );
 }

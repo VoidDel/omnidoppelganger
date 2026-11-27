@@ -322,6 +322,7 @@ export interface PriceCatalogEntry {
   model: string;
   name?: string | null;
   rate: PriceRate;
+  overrides?: PriceSource | null;
   context_window?: number | null;
 }
 
@@ -582,6 +583,26 @@ export interface Settings {
   auto_update_runtime?: boolean;
   /** Hide the main window to the system tray instead of quitting when closed. */
   close_to_tray?: boolean;
+  /** Enable cross-session layered Markdown memory (`识海`). */
+  memory_enabled?: boolean;
+}
+
+export type MemoryScope = "global" | "project";
+
+export interface MemoryProjectSummary {
+  hash: string;
+  workspace: string;
+  chars: number;
+  lines: number;
+}
+
+export interface MemorySnapshot {
+  enabled: boolean;
+  global: string;
+  project: string;
+  project_workspace: string | null;
+  projects: MemoryProjectSummary[];
+  memory_dir: string;
 }
 
 export interface DaemonStatus {

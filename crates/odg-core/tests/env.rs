@@ -91,6 +91,7 @@ fn shell_command_strips_provider_api_keys_from_child_env() {
         painter: None,
         vision: None,
         lsp: None,
+        memory_root: None,
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()

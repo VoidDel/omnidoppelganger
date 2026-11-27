@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use serde_json::{Value, json};
-use tokio::process::Command;
 
 use super::CliKind;
 use super::prompt::{TempPromptGuard, insert_before_prompt_tail};
@@ -229,7 +228,7 @@ pub(super) async fn sync_antigravity_mcp_in(
         let Some(add_args) = build_agy_mcp_add_args(name, srv) else {
             continue;
         };
-        let mut cmd = Command::new(bin);
+        let mut cmd = super::cli_command(bin);
         cmd.args(&add_args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -238,8 +237,6 @@ pub(super) async fn sync_antigravity_mcp_in(
         for key in super::scrubbed_env_keys(CliKind::Antigravity, "") {
             cmd.env_remove(key);
         }
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000);
         let ran = tokio::time::timeout(std::time::Duration::from_secs(8), cmd.status()).await;
         if !matches!(ran, Ok(Ok(status)) if status.success()) {
             all_ok = false;

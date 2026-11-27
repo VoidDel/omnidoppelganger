@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::process::Command;
 
 use crate::llm::Tokens;
 use crate::policy::Mode;
@@ -188,7 +187,7 @@ pub fn parse_models_output(raw: &str) -> (Vec<Listed>, HashMap<String, Vec<Strin
 /// Ask the local `agy` CLI which models the signed-in account can use.
 pub async fn list_models() -> Result<Vec<Listed>, String> {
     let bin = find_binary().ok_or_else(|| "未找到本机 agy CLI，请先安装并登录 Google Antigravity CLI。".to_string())?;
-    let mut cmd = Command::new(&bin);
+    let mut cmd = crate::cli_agents::cli_command(&bin);
     cmd.arg("models")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -197,8 +196,6 @@ pub async fn list_models() -> Result<Vec<Listed>, String> {
     for key in crate::cli_agents::scrubbed_env_keys(crate::cli_agents::CliKind::Antigravity, "") {
         cmd.env_remove(key);
     }
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: prevent flashing a console window on Windows.
     let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
         .await
         .map_err(|_| "查询 agy models 超时（30 秒）。".to_string())?
@@ -648,7 +645,7 @@ pub async fn fetch_quota(force: bool) -> Result<AntigravityQuota, String> {
     }
 
     let bin = find_binary().ok_or_else(|| "未检测到本机 agy CLI，请先安装并登录。".to_string())?;
-    let mut cmd = Command::new(&bin);
+    let mut cmd = crate::cli_agents::cli_command(&bin);
     cmd.args(["-p", "/usage", "--output-format", "json"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -657,8 +654,6 @@ pub async fn fetch_quota(force: bool) -> Result<AntigravityQuota, String> {
     for key in crate::cli_agents::scrubbed_env_keys(crate::cli_agents::CliKind::Antigravity, "") {
         cmd.env_remove(key);
     }
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
 
     let output = tokio::time::timeout(QUOTA_TIMEOUT, cmd.output())
         .await

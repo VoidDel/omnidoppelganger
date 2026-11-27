@@ -68,7 +68,7 @@ pub fn system_prompt(
     origin: Origin,
     chat: bool,
 ) -> String {
-    build_system_prompt(workspace, instructions, skills, origin, chat, false)
+    build_system_prompt(workspace, instructions, skills, origin, chat, false, None)
 }
 
 pub(super) fn build_system_prompt(
@@ -78,6 +78,7 @@ pub(super) fn build_system_prompt(
     origin: Origin,
     chat: bool,
     read_only: bool,
+    memory: Option<&str>,
 ) -> String {
     let subagent = origin == Origin::Agent;
     let aside = origin == Origin::Aside;
@@ -100,7 +101,7 @@ pub(super) fn build_system_prompt(
          - To read, search, or list files, use `read_file`, `search`, and `find_files`, not shell commands: they never wait for the user's approval, and the user sees what you looked at.{code_nav}\n\
          - The user sees every tool call, and may have to approve one before it runs. Before a call that changes something, say in a sentence what you are about to do and why.\n\
          - For work of several steps, keep a to-do list with `update_todos` and mark items as you go, closing out every finished item as `done` before your final reply; the user follows it beside the conversation.{delegating}\n\
-         - After changing code, verify it when the project gives you a way to: build it, run its tests.{deliver}\n\
+         - After changing code, verify it when the project gives you a way to: build it, run its tests.{deliver}{memory_guide}\n\
          - When something fails, or you could not verify a change, say so plainly.\n\
          - Reply in the language the user writes in.",
         workspace.display(),
@@ -119,6 +120,11 @@ pub(super) fn build_system_prompt(
             ""
         } else {
             "\n- When you make a file for the user other than with `write_file` or `edit_file` (a document or a picture a script wrote, an export), hand it over with `deliver_files` once it is finished, so they can open it from the conversation."
+        },
+        memory_guide = if subagent || aside || read_only {
+            ""
+        } else {
+            "\n- When the user expresses a lasting preference (reply language, code style, workflow, or tool choice), corrects your habit, or establishes a durable project convention or environment quirk, proactively call `save_memory` (`global` for cross-project preferences, `project` for workspace rules) without waiting to be asked. Never save one-off task details or volatile line numbers; remove outdated memories with `delete_memory`."
         },
     );
     let offered = if skills.is_empty() {
@@ -142,7 +148,11 @@ pub(super) fn build_system_prompt(
     let extending = if subagent || aside { "" } else { EXTENDING };
     // A side conversation's own words say it is read-only; the subagent's line would speak of a task it lacks.
     let readonly = if read_only && !aside { SUBAGENT_READ_ONLY } else { "" };
-    general + if chat { CHAT } else { "" } + extending + told + readonly + &project + &offered
+    let remembered = match memory.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(text) => format!("\n\n<user-memory>\n{text}\n</user-memory>"),
+        None => String::new(),
+    };
+    general + if chat { CHAT } else { "" } + extending + told + readonly + &project + &remembered + &offered
 }
 
 /// Whether two paths name one folder, however each is written.

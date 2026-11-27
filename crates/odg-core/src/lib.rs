@@ -26,6 +26,7 @@ pub mod lsp;
 pub mod made;
 pub mod magpie;
 pub mod mcp;
+pub mod memory;
 pub mod model_usage;
 mod office;
 pub mod openai_chat;

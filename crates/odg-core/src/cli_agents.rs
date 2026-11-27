@@ -206,55 +206,50 @@ pub fn find_named_binary(env_var: &str, bin_name: &str, extra_home_rel: &[&str])
     } else {
         bin_name.to_string()
     };
+    let mut search_dirs: Vec<PathBuf> = Vec::new();
     if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let candidate = dir.join(&exe);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            #[cfg(windows)]
-            for ext in ["cmd", "bat"] {
-                let script = dir.join(format!("{bin_name}.{ext}"));
-                if script.is_file() {
-                    return Some(script);
-                }
-            }
-        }
+        search_dirs.extend(std::env::split_paths(&paths));
     }
-    let mut fallback_dirs = Vec::new();
     if let Some(home) = dirs::home_dir() {
         for rel in extra_home_rel {
-            fallback_dirs.push(home.join(rel));
+            search_dirs.push(home.join(rel));
         }
-        fallback_dirs.push(home.join(".local").join("bin"));
-        fallback_dirs.push(home.join(".npm-global").join("bin"));
-        fallback_dirs.push(home.join(".bun").join("bin"));
-        fallback_dirs.push(home.join(".cargo").join("bin"));
-        fallback_dirs.push(home.join("Library").join("pnpm"));
+        search_dirs.push(home.join(".local").join("bin"));
+        search_dirs.push(home.join(".npm-global").join("bin"));
+        search_dirs.push(home.join(".bun").join("bin"));
+        search_dirs.push(home.join(".cargo").join("bin"));
+        search_dirs.push(home.join("Library").join("pnpm"));
     }
     #[cfg(windows)]
     {
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            fallback_dirs.push(PathBuf::from(appdata).join("npm"));
+            search_dirs.push(PathBuf::from(appdata).join("npm"));
         }
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
             let local = PathBuf::from(local);
-            fallback_dirs.push(local.join("pnpm"));
-            fallback_dirs.push(local.join("cursor-agent"));
-            fallback_dirs.push(local.join("Programs").join("cursor-agent"));
+            search_dirs.push(local.join("pnpm"));
+            search_dirs.push(local.join("cursor-agent"));
+            search_dirs.push(local.join("Programs").join("cursor-agent"));
+            search_dirs.push(local.join("Programs").join("Antigravity").join("bin"));
         }
     }
     #[cfg(not(windows))]
     {
-        fallback_dirs.push(PathBuf::from("/opt/homebrew/bin"));
-        fallback_dirs.push(PathBuf::from("/usr/local/bin"));
+        search_dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        search_dirs.push(PathBuf::from("/usr/local/bin"));
     }
-    for dir in fallback_dirs {
+
+    // Pass 1: always prefer native `.exe` across all PATH and fallback directories
+    // so a `.cmd`/`.bat` wrapper earlier in PATH never shadows a native binary.
+    for dir in &search_dirs {
         let candidate = dir.join(&exe);
         if candidate.is_file() {
             return Some(candidate);
         }
-        #[cfg(windows)]
+    }
+    // Pass 2 (Windows): fall back to `.cmd` / `.bat` shims only when no `.exe` exists.
+    #[cfg(windows)]
+    for dir in &search_dirs {
         for ext in ["cmd", "bat"] {
             let script = dir.join(format!("{bin_name}.{ext}"));
             if script.is_file() {
@@ -263,6 +258,99 @@ pub fn find_named_binary(env_var: &str, bin_name: &str, extra_home_rel: &[&str])
         }
     }
     None
+}
+
+/// Parse a small Windows `.cmd`/`.bat` shim (npm, pnpm, Scoop, VS Code / Antigravity)
+/// and return `(program, leading_args)` so we can invoke the real `.exe` or `node.exe`
+/// directly without spawning `cmd.exe` (which can flash a black console window on Windows).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn unwrap_windows_cmd_shim_with<F>(bin: &Path, find_node: F) -> Option<(PathBuf, Vec<std::ffi::OsString>)>
+where
+    F: FnOnce() -> Option<PathBuf>,
+{
+    let ext = bin.extension()?.to_str()?;
+    if !ext.eq_ignore_ascii_case("cmd") && !ext.eq_ignore_ascii_case("bat") {
+        return None;
+    }
+    let meta = std::fs::metadata(bin).ok()?;
+    if meta.len() > 16 * 1024 {
+        return None;
+    }
+    let content = std::fs::read_to_string(bin).ok()?;
+    let base_dir = bin.parent()?;
+
+    // Look for quoted tokens containing `%dp0%` or `%~dp0` (standard npm/pnpm/IDE shims).
+    let mut exe_target: Option<PathBuf> = None;
+    let mut js_target: Option<PathBuf> = None;
+    for segment in content.split('"') {
+        let trimmed = segment.trim();
+        let rel = trimmed
+            .strip_prefix("%dp0%\\")
+            .or_else(|| trimmed.strip_prefix("%dp0%/"))
+            .or_else(|| trimmed.strip_prefix("%~dp0\\"))
+            .or_else(|| trimmed.strip_prefix("%~dp0/"))
+            .or_else(|| trimmed.strip_prefix("%~dp0"));
+        let Some(rel) = rel else { continue };
+        let rel_clean = rel.trim_start_matches(['\\', '/']);
+        if rel_clean.is_empty() || rel_clean.contains('%') {
+            continue;
+        }
+        let mut resolved = base_dir.to_path_buf();
+        for part in rel_clean.split(['\\', '/']) {
+            if part.is_empty() || part == "." {
+                continue;
+            }
+            resolved.push(part);
+        }
+        if !resolved.is_file() {
+            continue;
+        }
+        let lower = rel_clean.to_ascii_lowercase();
+        if lower.ends_with(".js") || lower.ends_with(".cjs") || lower.ends_with(".mjs") {
+            js_target = Some(resolved);
+        } else if lower.ends_with(".exe")
+            && !lower.ends_with("\\node.exe")
+            && lower != "node.exe"
+            && !lower.ends_with("\\cmd.exe")
+            && lower != "cmd.exe"
+        {
+            exe_target = Some(resolved);
+        }
+    }
+
+    if let Some(script) = js_target {
+        let sibling_node = base_dir.join("node.exe");
+        let node = if sibling_node.is_file() {
+            Some(sibling_node)
+        } else {
+            find_node()
+        }?;
+        return Some((node, vec![script.into_os_string()]));
+    }
+    if let Some(exe) = exe_target {
+        return Some((exe, Vec::new()));
+    }
+    None
+}
+
+/// Construct a `tokio::process::Command` for a CLI binary, unwrapping Windows `.cmd`/`.bat`
+/// shims when possible and always applying `CREATE_NO_WINDOW` (`0x0800_0000`) on Windows.
+pub fn cli_command(bin: &Path) -> Command {
+    #[cfg(windows)]
+    let mut cmd = if let Some((prog, lead_args)) =
+        unwrap_windows_cmd_shim_with(bin, || find_named_binary("ODG_NODE_BIN", "node", &[]))
+    {
+        let mut c = Command::new(prog);
+        c.args(lead_args);
+        c
+    } else {
+        Command::new(bin)
+    };
+    #[cfg(not(windows))]
+    let cmd = Command::new(bin);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: prevent flashing a console window on Windows.
+    cmd
 }
 
 /// Normalized event emitted by any CLI driver's NDJSON parser.
@@ -562,7 +650,7 @@ pub(crate) async fn run_turn_with_limits<S: Sink>(
     } else {
         None
     };
-    let mut cmd = Command::new(&bin);
+    let mut cmd = cli_command(&bin);
     cmd.args(&args)
         .current_dir(params.workspace)
         .env("PWD", params.workspace)
@@ -577,8 +665,6 @@ pub(crate) async fn run_turn_with_limits<S: Sink>(
     for key in scrubbed_env_keys(params.kind, &params.model) {
         cmd.env_remove(key);
     }
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd

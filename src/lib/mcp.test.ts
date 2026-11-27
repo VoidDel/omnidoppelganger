@@ -60,9 +60,7 @@ describe("the 法器 that come with the app", () => {
   it("are each named as a server may be, and keep what they keep in the home folder", () => {
     expect(BUILTINS.every((builtin) => /^[A-Za-z0-9_-]+$/.test(builtin.id))).toBe(true);
     expect(new Set(BUILTINS.map((builtin) => builtin.id)).size).toBe(BUILTINS.length);
-    const memory = BUILTINS.find((builtin) => builtin.id === "memory")!;
-    expect(memory.entry("C:\\Users\\me\\.odg", "").env?.MEMORY_FILE_PATH).toBe("C:\\Users\\me\\.odg\\mcp-memory.jsonl");
-    expect(memory.entry("/home/me/.odg/", "").env?.MEMORY_FILE_PATH).toBe("/home/me/.odg/mcp-memory.jsonl");
+    expect(BUILTINS.some((builtin) => builtin.id === "memory")).toBe(false);
     const github = BUILTINS.find((builtin) => builtin.id === "github")!;
     expect(github.entry("", "ghp_x").headers).toEqual({ Authorization: "Bearer ghp_x" });
     // Each is either a program to start or an address to reach, as the core requires.

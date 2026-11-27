@@ -5,7 +5,6 @@ use std::path::Path;
 use std::process::Stdio;
 
 use serde_json::Value;
-use tokio::process::Command;
 
 use crate::providers::Listed;
 use crate::sync_ext::MutexExt;
@@ -124,7 +123,7 @@ pub fn resolve_cursor_model_for_effort(model: &str, effort: &str) -> String {
 }
 
 pub(super) async fn list_cursor_models(bin: &Path) -> Result<Vec<Listed>, String> {
-    let mut cmd = Command::new(bin);
+    let mut cmd = super::cli_command(bin);
     cmd.arg("--list-models")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -133,8 +132,6 @@ pub(super) async fn list_cursor_models(bin: &Path) -> Result<Vec<Listed>, String
     for key in super::scrubbed_env_keys(CliKind::Cursor, "") {
         cmd.env_remove(key);
     }
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
     let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
         .await
         .map_err(|_| "查询 cursor-agent --list-models 超时（12s）。".to_string())?
@@ -157,7 +154,7 @@ pub(super) async fn list_cursor_models(bin: &Path) -> Result<Vec<Listed>, String
 }
 
 pub(super) async fn list_grok_models(bin: &Path) -> Result<Vec<Listed>, String> {
-    let mut cmd = Command::new(bin);
+    let mut cmd = super::cli_command(bin);
     cmd.arg("models")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -166,8 +163,6 @@ pub(super) async fn list_grok_models(bin: &Path) -> Result<Vec<Listed>, String> 
     for key in super::scrubbed_env_keys(CliKind::Grok, "") {
         cmd.env_remove(key);
     }
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
     let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
         .await
         .map_err(|_| "查询 grok models 超时（12s）。".to_string())?
@@ -285,7 +280,7 @@ pub(super) fn parse_cursor_models_output(raw: &str) -> (Vec<Listed>, CursorVaria
 }
 
 async fn run_opencode_subcommand(bin: &Path, args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new(bin);
+    let mut cmd = super::cli_command(bin);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -294,8 +289,6 @@ async fn run_opencode_subcommand(bin: &Path, args: &[&str]) -> Result<String, St
     for key in super::scrubbed_env_keys(CliKind::OpenCode, "") {
         cmd.env_remove(key);
     }
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
     let out = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
         .await
         .map_err(|_| format!("查询 opencode {} 超时（12s）。", args.join(" ")))?

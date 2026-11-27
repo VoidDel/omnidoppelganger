@@ -1184,6 +1184,7 @@ mod size_gate_tests {
             painter: None,
             vision: Some(true),
             lsp: None,
+            memory_root: None,
         };
         let t0 = std::time::Instant::now();
         let err = read_file(&json!({ "path": "dataset.zip" }), &ctx).await.unwrap_err();

@@ -109,6 +109,7 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
         settings_ext::sync_price_catalog,
         settings_ext::set_custom_price,
         settings_ext::delete_custom_price,
+        settings_ext::reset_price_overrides,
         settings_ext::get_antigravity_quota,
         settings_ext::get_magpie_quota,
         settings_ext::get_kimi_quota,
@@ -130,6 +131,11 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
         settings_ext::daemon_status,
         settings_ext::install_daemon,
         settings_ext::uninstall_daemon,
+        settings_ext::get_memory,
+        settings_ext::save_memory_file,
+        settings_ext::append_memory_entry,
+        settings_ext::delete_project_memory,
+        settings_ext::open_memory_file,
         crate::notify::notify_desktop,
     ]
 }

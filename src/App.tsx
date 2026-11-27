@@ -181,6 +181,7 @@ export default function App() {
     dispatch({ type: "page", page: "schedules" });
   }, [dispatch, fail]);
   const toSettings = useCallback(() => (refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
+  const toMemory = useCallback(() => (setSettingsTab("memory"), refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
   const toMcp = useCallback(() => (setSettingsTab("mcp"), refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
   const toSkills = useCallback(() => (setSettingsTab("skills"), refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
   const showSidebarTab = useCallback(
@@ -219,6 +220,7 @@ export default function App() {
     startReplay: () => setReplay({ at: 0, playing: true, speed: 1 }),
     toMcp,
     toSkills,
+    toMemory,
     toSchedules,
     toSettings,
     onSessionUpdated: (item) => dispatch({ type: "session", item }),

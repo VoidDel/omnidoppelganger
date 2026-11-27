@@ -26,6 +26,8 @@ import type {
   KimiOAuthStart,
   KimiRegion,
   LanguageServerView,
+  MemoryScope,
+  MemorySnapshot,
   Mode,
   ModelUsageEntry,
   Picked,
@@ -239,6 +241,15 @@ export const api = {
   daemonStatus: () => invoke<DaemonStatus>("daemon_status"),
   installDaemon: () => invoke<DaemonStatus>("install_daemon"),
   uninstallDaemon: () => invoke<DaemonStatus>("uninstall_daemon"),
+  getMemory: (workspace?: string | null) => invoke<MemorySnapshot>("get_memory", { workspace: workspace ?? null }),
+  saveMemoryFile: (scope: MemoryScope, workspace: string | null, content: string) =>
+    invoke<MemorySnapshot>("save_memory_file", { scope, workspace, content }),
+  appendMemoryEntry: (scope: MemoryScope, workspace: string | null, entry: string) =>
+    invoke<MemorySnapshot>("append_memory_entry", { scope, workspace, entry }),
+  deleteProjectMemory: (hash: string, workspace?: string | null) =>
+    invoke<MemorySnapshot>("delete_project_memory", { hash, workspace: workspace ?? null }),
+  openMemoryFile: (scope: MemoryScope, workspace?: string | null, hash?: string | null) =>
+    invoke<void>("open_memory_file", { scope, workspace: workspace ?? null, hash: hash ?? null }),
   /** Per-model token usage statistics and active cooldown timers. */
   getModelUsage: () => invoke<ModelUsageEntry[]>("get_model_usage"),
   listPromptTemplates: (id?: string | null) => invoke<PromptTemplateInfo[]>("list_prompt_templates", { id: id ?? null }),
@@ -252,6 +263,7 @@ export const api = {
   syncPriceCatalog: () => invoke<PriceCatalogView>("sync_price_catalog"),
   setCustomPrice: (key: string, rate: PriceRate) => invoke<PriceCatalogView>("set_custom_price", { key, rate }),
   deleteCustomPrice: (key: string) => invoke<PriceCatalogView>("delete_custom_price", { key }),
+  resetPriceOverrides: () => invoke<PriceCatalogView>("reset_price_overrides"),
   getAntigravityQuota: (force = false) => invoke<AntigravityQuota>("get_antigravity_quota", { force }),
   getMagpieQuota: (provider: string, force = false) => invoke<AntigravityQuota>("get_magpie_quota", { provider, force }),
   getKimiQuota: (provider: string, force = false) => invoke<AntigravityQuota>("get_kimi_quota", { provider, force }),

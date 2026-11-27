@@ -19,6 +19,7 @@ fn context() -> (tempfile::TempDir, ToolContext) {
         painter: None,
         vision: Some(true),
         lsp: None,
+        memory_root: None,
     };
     (directory, context)
 }

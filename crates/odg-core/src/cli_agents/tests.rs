@@ -2179,3 +2179,41 @@ fn external_artifacts_only_admits_verified_images_under_allowed_temp_roots() {
         assert!(!is_allowed_external_artifact_with_roots(&link_png, &roots));
     }
 }
+
+#[test]
+fn unwraps_windows_npm_and_exe_cmd_shims_without_cmd_exe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    // 1. Standard npm `.cmd` shim wrapping a JS entrypoint.
+    let js_path = root.join("node_modules/@anthropic-ai/claude-code/cli.js");
+    std::fs::create_dir_all(js_path.parent().unwrap()).unwrap();
+    std::fs::write(&js_path, "console.log('ok');").unwrap();
+    let npm_shim = root.join("claude.cmd");
+    std::fs::write(
+        &npm_shim,
+        "@ECHO off\r\n\"%_prog%\"  \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*\r\n",
+    )
+    .unwrap();
+    let fake_node = root.join("node.exe");
+    std::fs::write(&fake_node, b"MZ").unwrap();
+
+    let (prog, args) = super::unwrap_windows_cmd_shim_with(&npm_shim, || None).expect("unwrap npm shim");
+    assert_eq!(prog, fake_node);
+    assert_eq!(args, vec![js_path.into_os_string()]);
+
+    // 2. Direct `.exe` wrapper `.cmd` shim (e.g. Antigravity / IDE / Scoop launcher).
+    let bin_dir = root.join("app/bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let real_exe = bin_dir.join("agy.exe");
+    std::fs::write(&real_exe, b"MZ").unwrap();
+    let ide_shim = bin_dir.join("agy.cmd");
+    std::fs::write(&ide_shim, "@echo off\r\n\"%~dp0\\agy.exe\" %*\r\n").unwrap();
+
+    let (prog2, args2) = super::unwrap_windows_cmd_shim_with(&ide_shim, || None).expect("unwrap exe shim");
+    assert_eq!(prog2, real_exe);
+    assert!(args2.is_empty());
+
+    // 3. Native `.exe` is returned as None (no unwrapping needed).
+    assert!(super::unwrap_windows_cmd_shim_with(&real_exe, || None).is_none());
+}

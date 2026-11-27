@@ -493,6 +493,18 @@ function describe(tool: ToolItem): { verb: string; target: string; outcome: stri
       return { verb: "抓取网页", target: text("url"), outcome: waiting || (result!.isError ? "没取到" : `${shortCount(meta?.characters ?? 0)} 字`) };
     case "load_skill":
       return { verb: "研读秘籍", target: text("name"), outcome: waiting || (result!.isError ? "没有这部秘籍" : "已读") };
+    case "save_memory":
+      return {
+        verb: "刻入识海",
+        target: text("content"),
+        outcome: waiting || (result!.isError ? "没记下" : tool.input.scope === "global" ? "已存全局" : "已存洞府"),
+      };
+    case "delete_memory":
+      return {
+        verb: "抹去识海",
+        target: text("query"),
+        outcome: waiting || (result!.isError ? "没删成" : `已删 ${meta?.removed ?? 0} 条`),
+      };
     case "install_skill":
       return {
         verb: "习得秘籍",

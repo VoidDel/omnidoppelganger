@@ -450,7 +450,8 @@ impl Server {
             return Self::open(Wire::Http(wire), CONNECT_TIMEOUT).await;
         }
         let program = config.command.as_deref().unwrap_or_default();
-        let mut command = tokio::process::Command::new(find_program(program));
+        let resolved = find_program(program);
+        let mut command = crate::cli_agents::cli_command(&resolved);
         command
             .args(&config.args)
             .envs(&config.env)
@@ -458,8 +459,6 @@ impl Server {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes over the app.
         let mut child = command
             .spawn()
             .map_err(|error| format!("cannot start `{program}`: {error}"))?;

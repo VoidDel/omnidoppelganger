@@ -360,6 +360,36 @@ pub fn image_spec(painter: &crate::imagegen::Painter) -> Value {
     })
 }
 
+/// The definitions of `save_memory` and `delete_memory`, offered while cross-session memory (`识海`) is enabled.
+pub fn memory_specs() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "save_memory",
+            "description": "Save a concise, durable memory note for future sessions (user preferences, communication style, environment/build quirks, or stable architectural decisions). Use `scope: \"global\"` for preferences across all projects and `scope: \"project\"` for facts specific to the current workspace. Do not store volatile file line numbers or temporary task state.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "scope": { "type": "string", "enum": ["global", "project"], "description": "Whether this memory applies to all sessions (`global`) or only this workspace (`project`)." },
+                    "content": { "type": "string", "description": "One concise sentence or bullet capturing the fact or preference to remember." }
+                },
+                "required": ["scope", "content"]
+            }
+        }),
+        json!({
+            "name": "delete_memory",
+            "description": "Remove outdated or incorrect memory lines matching `query` from global or current-project memory.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "scope": { "type": "string", "enum": ["global", "project"], "description": "Which memory file to remove matching lines from." },
+                    "query": { "type": "string", "description": "Case-insensitive keyword or phrase matching the memory line(s) to forget." }
+                },
+                "required": ["scope", "query"]
+            }
+        }),
+    ]
+}
+
 /// The definition of `delegate`. The agent loop runs it, since it starts
 /// sessions; a subagent is not offered it, so subagents do not multiply.
 pub fn delegate_spec() -> Value {

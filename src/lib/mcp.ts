@@ -40,9 +40,6 @@ export function magpieSearchUrl(baseUrl?: string | null): string {
   return `${origin || "http://127.0.0.1:3425"}/mcp/search`;
 }
 
-/** A path in the home folder, with the separator the folder is written with. */
-const inHome = (home: string, name: string) => `${home.replace(/[\\/]+$/, "")}${home.includes("\\") ? "\\" : "/"}${name}`;
-
 export const BUILTINS: Builtin[] = [
   {
     id: "context7",
@@ -133,16 +130,6 @@ export const BUILTINS: Builtin[] = [
     needs: "node",
     site: "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
     entry: () => ({ command: "npx", args: ["-y", "@modelcontextprotocol/server-sequential-thinking"] }),
-  },
-  {
-    id: "memory",
-    name: "Memory",
-    seal: "忆",
-    summary: "给分身一份跨会话的记忆：人、事、项目和它们之间的关系，存在 odg 的家目录里，换了分身也记得。",
-    runs: "local",
-    needs: "node",
-    site: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
-    entry: (home) => ({ command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"], env: { MEMORY_FILE_PATH: inHome(home, "mcp-memory.jsonl") } }),
   },
   {
     id: "fetch",

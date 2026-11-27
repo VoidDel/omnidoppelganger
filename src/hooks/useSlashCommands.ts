@@ -39,6 +39,7 @@ export interface UseSlashCommandsOptions {
   startReplay: () => void;
   toMcp: () => void;
   toSkills: () => void;
+  toMemory?: () => void;
   toSchedules: () => void;
   toSettings: () => void;
   onSessionUpdated: (item: SessionItem) => void;
@@ -66,6 +67,7 @@ export function useSlashCommands({
   startReplay,
   toMcp,
   toSkills,
+  toMemory,
   toSchedules,
   toSettings,
   onSessionUpdated,
@@ -109,6 +111,7 @@ export function useSlashCommands({
     startReplay,
     toMcp,
     toSkills,
+    toMemory,
     toSchedules,
     toSettings,
     onSessionUpdated,
@@ -127,6 +130,7 @@ export function useSlashCommands({
     startReplay,
     toMcp,
     toSkills,
+    toMemory,
     toSchedules,
     toSettings,
     onSessionUpdated,
@@ -264,6 +268,7 @@ export function useSlashCommands({
         unavailable: working,
         run: () => actionsRef.current.send(reviewTaskPrompt(locale)),
       },
+      { name: "memory", label: "识海", aliases: ["识海", "记忆", "元神殿", "洞府铭碑"], hint: "打开识海页：查看与编辑元神殿与洞府铭碑", run: () => (actionsRef.current.toMemory ? actionsRef.current.toMemory() : actionsRef.current.toSettings()) },
       { name: "mcp", label: tr("slash.mcp.label"), aliases: ["法器"], hint: tr("slash.mcp.hint"), run: () => actionsRef.current.toMcp() },
       { name: "skills", label: tr("slash.skills.label"), aliases: ["秘籍", "技能"], hint: tr("slash.skills.hint"), run: () => actionsRef.current.toSkills() },
       { name: "schedule", label: tr("slash.schedule.label"), aliases: ["功课", "定时任务"], hint: tr("slash.schedule.hint"), run: () => actionsRef.current.toSchedules() },
@@ -273,6 +278,7 @@ export function useSlashCommands({
     const taken = new Set([
       ...builtIn.map((command) => command.name.toLowerCase()),
       "compact",
+      "remember",
       "model",
       "effort",
       "mode",

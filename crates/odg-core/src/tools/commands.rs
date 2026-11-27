@@ -57,13 +57,27 @@ pub fn shell() -> (&'static str, &'static [&'static str], &'static str) {
         if has_pwsh {
             (
                 "pwsh.exe",
-                &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+                &[
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                ],
                 "PowerShell 7",
             )
         } else {
             (
                 "powershell.exe",
-                &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+                &[
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                ],
                 "Windows PowerShell 5.1 (chain commands with `;`, not `&&`)",
             )
         }

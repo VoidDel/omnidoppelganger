@@ -702,6 +702,8 @@ async fn run(options: Options) -> Result<ExitOutcome, RunError> {
         tokio::runtime::Handle::current(),
     )
     .map_err(|error| error.to_string())?;
+    let mem_home = home.clone();
+    session.set_memory_source(Arc::new(move || Some(odg_core::memory::memory_dir(&mem_home))));
     if let Some(prev) = &existing_summary
         && (prev.provider != provider_id || prev.model != model)
     {

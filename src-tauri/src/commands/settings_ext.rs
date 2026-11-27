@@ -284,6 +284,11 @@ pub fn delete_custom_price(key: String) -> Result<odg_core::pricing::PriceCatalo
 }
 
 #[tauri::command]
+pub fn reset_price_overrides() -> Result<odg_core::pricing::PriceCatalogView, String> {
+    odg_core::pricing::PriceCatalogStore::global().reset_overrides()
+}
+
+#[tauri::command]
 pub async fn get_antigravity_quota(force: Option<bool>) -> Result<odg_core::antigravity::AntigravityQuota, String> {
     odg_core::antigravity::fetch_quota(force.unwrap_or(false)).await
 }
@@ -535,6 +540,96 @@ pub async fn uninstall_daemon() -> Result<odg_core::daemon::DaemonStatus, String
     tokio::task::spawn_blocking(|| {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         odg_core::daemon::uninstall(&exe)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_memory(
+    app: State<'_, App>,
+    workspace: Option<String>,
+) -> Result<odg_core::memory::MemorySnapshot, String> {
+    let core = app.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let enabled = core.settings.load().memory_enabled;
+        let ws = workspace.as_deref().map(std::path::Path::new);
+        Ok(odg_core::memory::snapshot(&core.home, enabled, ws))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn save_memory_file(
+    app: State<'_, App>,
+    scope: odg_core::memory::MemoryScope,
+    workspace: Option<String>,
+    content: String,
+) -> Result<odg_core::memory::MemorySnapshot, String> {
+    let core = app.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let root = odg_core::memory::memory_dir(&core.home);
+        let ws = workspace.as_deref().map(std::path::Path::new);
+        odg_core::memory::write_scope(&root, scope, ws, &content)?;
+        let enabled = core.settings.load().memory_enabled;
+        Ok(odg_core::memory::snapshot(&core.home, enabled, ws))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn append_memory_entry(
+    app: State<'_, App>,
+    scope: odg_core::memory::MemoryScope,
+    workspace: Option<String>,
+    entry: String,
+) -> Result<odg_core::memory::MemorySnapshot, String> {
+    let core = app.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let root = odg_core::memory::memory_dir(&core.home);
+        let ws = workspace.as_deref().map(std::path::Path::new);
+        odg_core::memory::append_entry(&root, scope, ws, &entry)?;
+        let enabled = core.settings.load().memory_enabled;
+        Ok(odg_core::memory::snapshot(&core.home, enabled, ws))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn delete_project_memory(
+    app: State<'_, App>,
+    hash: String,
+    workspace: Option<String>,
+) -> Result<odg_core::memory::MemorySnapshot, String> {
+    let core = app.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let root = odg_core::memory::memory_dir(&core.home);
+        odg_core::memory::delete_project(&root, &hash)?;
+        let enabled = core.settings.load().memory_enabled;
+        let ws = workspace.as_deref().map(std::path::Path::new);
+        Ok(odg_core::memory::snapshot(&core.home, enabled, ws))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn open_memory_file(
+    app: State<'_, App>,
+    scope: odg_core::memory::MemoryScope,
+    workspace: Option<String>,
+    hash: Option<String>,
+) -> Result<(), String> {
+    let home = app.0.home.clone();
+    tokio::task::spawn_blocking(move || {
+        let root = odg_core::memory::memory_dir(&home);
+        let ws = workspace.as_deref().map(std::path::Path::new);
+        let path = odg_core::memory::ensure_file(&root, scope, ws, hash.as_deref())?;
+        tauri_plugin_opener::open_path(path.to_string_lossy().as_ref(), None::<&str>)
+            .map_err(|e| format!("没能用默认编辑器打开：{e}"))
     })
     .await
     .map_err(|e| e.to_string())?

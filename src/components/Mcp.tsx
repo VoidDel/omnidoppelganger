@@ -22,6 +22,7 @@ import type { McpServer, SettingsView } from "../lib/types";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { FormDialog, Pairs, Row, Segmented } from "./FormDialog";
 import { Info } from "./Hint";
+import { Icon } from "./Icon";
 
 const STATES: Record<McpServer["state"], string> = { connecting: "正在连接", ready: "已连上", failed: "没连上" };
 
@@ -462,6 +463,8 @@ export function McpPage({ config, servers, home, settingsView, onSave, onRefresh
   const [saving, setSaving] = useState(false);
   /** The add or change window, open on the server being changed, or on none to add one. */
   const [dialog, setDialog] = useState<{ editing: string | null } | null>(null);
+  /** Custom MCP server currently awaiting delete confirmation. */
+  const [removingOwn, setRemovingOwn] = useState<string | null>(null);
   useEffect(() => setDraft(config), [config]);
   // Servers connect in the background: look again until none is still connecting.
   const connecting = servers.some((server) => server.state === "connecting");
@@ -506,6 +509,12 @@ export function McpPage({ config, servers, home, settingsView, onSave, onRefresh
     if (typeof next !== "string") return;
     void save(next);
   };
+  const removeOwn = (name: string) => {
+    const next = withServer(config, name, null);
+    setRemovingOwn(null);
+    if (typeof next !== "string") return;
+    void save(next);
+  };
   const card = (builtin: Builtin) => {
     const isMagpie = builtin.id === "magpie-search";
     const blockedReason = isMagpie && !activeMagpie ? "需先在「心法」中添加并启用 Magpie 宗门后方可启用。" : null;
@@ -528,10 +537,12 @@ export function McpPage({ config, servers, home, settingsView, onSave, onRefresh
   const body = (
     <>
         <section>
-          <h1>法器</h1>
-          <p className="lead">
-            法器是 MCP 服务：给分身添上内置工具之外的本事，查文档、搜网页、操控浏览器。启用后，它带来的工具交给每个分身；分身每次动用前都要请示，可以选之后都准。
-          </p>
+          <h1>
+            法器
+            <Info>
+              法器是 MCP 服务：给分身添上内置工具之外的本事，查文档、搜网页、操控浏览器。启用后，它带来的工具交给每个分身；分身每次动用前都要请示，可以选之后都准。
+            </Info>
+          </h1>
         </section>
 
         <section>
@@ -596,6 +607,29 @@ export function McpPage({ config, servers, home, settingsView, onSave, onRefresh
                           {on ? "停用" : "启用"} {name}
                         </span>
                       </label>
+                      <span className="bubble-anchor">
+                        <button
+                          type="button"
+                          className="icon-button danger-text"
+                          disabled={saving || dirty}
+                          title={`删掉「${name}」`}
+                          aria-label={`删掉 ${name}`}
+                          aria-expanded={removingOwn === name}
+                          onClick={() => setRemovingOwn(removingOwn === name ? null : name)}
+                        >
+                          <Icon name="trash3" size={14} />
+                        </button>
+                        {removingOwn === name && (
+                          <ConfirmBubble
+                            label={`删掉「${name}」`}
+                            confirm="确认删除"
+                            onConfirm={() => removeOwn(name)}
+                            onCancel={() => setRemovingOwn(null)}
+                          >
+                            <p>从清单里删掉「{name}」，分身就不再用它带来的工具。</p>
+                          </ConfirmBubble>
+                        )}
+                      </span>
                     </div>
                   </div>
                 );

@@ -172,6 +172,11 @@ struct Inner<L: Llm> {
     painter: Option<crate::imagegen::ImageSource>,
     /// The language servers `code_nav` asks; shared by every session.
     lsp: Option<Arc<crate::lsp::LspHub>>,
+    /// Source returning `~/.odg/memory` while cross-session memory is enabled.
+    memory: Mutex<Option<crate::memory::MemorySource>>,
+    /// Cached `<user-memory>` prompt text, refreshed on session setup and after `save_memory` / `delete_memory`
+    /// so the system prompt prefix remains stable for prompt caching across turns.
+    cached_memory_prompt: Mutex<Option<String>>,
     /// Minimal Git subdirectories (`worktrees/<name>`, `objects`, `refs`, `logs`) and common `.git`
     /// directory for this workspace, found when a command is first confined.
     git_sandbox_dirs: std::sync::OnceLock<(Vec<PathBuf>, Option<PathBuf>)>,
@@ -360,6 +365,8 @@ impl<L: Llm> Session<L> {
                 documents,
                 painter,
                 lsp,
+                memory: Mutex::new(None),
+                cached_memory_prompt: Mutex::new(None),
                 git_sandbox_dirs: std::sync::OnceLock::new(),
                 chatting,
                 read_only,
@@ -400,6 +407,12 @@ impl<L: Llm> Session<L> {
     /// Id of the session this one is a side conversation beside, when it is one.
     pub fn aside(&self) -> Option<&str> {
         self.inner.aside.as_deref()
+    }
+
+    /// Attach a cross-session memory source (`~/.odg/memory` when enabled) and load the initial prompt snapshot.
+    pub fn set_memory_source(&self, source: crate::memory::MemorySource) {
+        *self.inner.memory.lock_unpoisoned() = Some(source);
+        self.inner.refresh_memory_prompt();
     }
 
     /// Whether this session's workspace is trusted to load project-local instructions (`AGENTS.md` / `CLAUDE.md`)
@@ -1087,6 +1100,7 @@ impl<L: Llm> Inner<L> {
             (None, true) => Origin::Schedule,
             (None, false) => Origin::User,
         };
+        let memory_prompt = self.cached_memory_prompt.lock_unpoisoned().clone();
         prompts::build_system_prompt(
             &self.workspace,
             instructions(log.events()),
@@ -1094,6 +1108,7 @@ impl<L: Llm> Inner<L> {
             origin,
             self.chatting,
             self.read_only,
+            memory_prompt.as_deref(),
         )
     }
 
@@ -1183,7 +1198,22 @@ impl<L: Llm> Inner<L> {
             painter: self.painter_config(),
             vision: providers::vision(&self.provider(), &self.model()),
             lsp: self.lsp.clone(),
+            memory_root: self.memory_root(),
         }
+    }
+
+    /// The memory root directory while memory is enabled, or `None` when disabled.
+    fn memory_root(&self) -> Option<PathBuf> {
+        let source = self.memory.lock_unpoisoned().clone()?;
+        source()
+    }
+
+    /// Reload the cached `<user-memory>` prompt snippet from disk.
+    fn refresh_memory_prompt(&self) {
+        let next = self
+            .memory_root()
+            .and_then(|root| crate::memory::format_for_prompt(&root, &self.workspace));
+        *self.cached_memory_prompt.lock_unpoisoned() = next;
     }
 
     /// Where a picture would be painted right now; `None` when painting is not set up.
@@ -1337,6 +1367,9 @@ impl<L: Llm> Inner<L> {
             && let Some(config) = self.painter_config()
         {
             specs.push(tools::image_spec(config.painter));
+        }
+        if !self.read_only && self.parent.is_none() && self.aside.is_none() && self.memory_root().is_some() {
+            specs.extend(tools::memory_specs());
         }
         if let Some(hub) = &self.mcp {
             if !self.read_only {
@@ -1995,7 +2028,13 @@ impl<L: Llm> Inner<L> {
                             tools::execute(&name, &input, &self.tool_context(cancel)).await
                         }
                     },
-                    _ => tools::execute(&name, &input, &self.tool_context(cancel)).await,
+                    _ => {
+                        let out = tools::execute(&name, &input, &self.tool_context(cancel)).await;
+                        if matches!(name.as_str(), "save_memory" | "delete_memory") && !out.is_error {
+                            self.refresh_memory_prompt();
+                        }
+                        out
+                    }
                 };
                 self.tool_output(&id, &name, output)?;
             }

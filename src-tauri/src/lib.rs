@@ -8,6 +8,7 @@ mod pty;
 mod state;
 mod tray;
 mod watcher;
+mod window_state;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,6 +44,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            let home = settings::home();
+            let win_state = Arc::new(window_state::WindowStateManager::new(&home));
+            app.manage(win_state.clone());
+
             let start_background = std::env::args().any(|arg| arg == "--background");
             if let Some(window) = app.get_webview_window("main") {
                 #[cfg(target_os = "macos")]
@@ -50,12 +55,15 @@ pub fn run() {
                     let _ = window.set_title_bar_style(tauri::TitleBarStyle::Overlay);
                     let _ = window.set_title("");
                 }
+                win_state.restore(&window);
                 if start_background {
                     let _ = window.hide();
+                } else {
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
             }
 
-            let home = settings::home();
             odg_core::daemon::write_desktop_pid(&home);
             if let Err(err) = tray::setup_tray(app.handle()) {
                 eprintln!("system tray unavailable: {err}");
@@ -154,13 +162,35 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "main"
-                && let tauri::WindowEvent::CloseRequested { api, .. } = event
-                && !tray::is_quitting()
-                && window.app_handle().state::<App>().0.settings.load().close_to_tray
-            {
-                api.prevent_close();
-                let _ = window.hide();
+            if window.label() != "main" {
+                return;
+            }
+            let handle = window.app_handle();
+            match event {
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    if let Some(web_win) = handle.get_webview_window("main")
+                        && let Some(ws) = handle.try_state::<Arc<window_state::WindowStateManager>>()
+                    {
+                        ws.capture(&web_win, false);
+                    }
+                }
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if let Some(web_win) = handle.get_webview_window("main")
+                        && let Some(ws) = handle.try_state::<Arc<window_state::WindowStateManager>>()
+                    {
+                        ws.capture(&web_win, true);
+                    }
+                    if !tray::is_quitting() && handle.state::<App>().0.settings.load().close_to_tray {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+                tauri::WindowEvent::Destroyed => {
+                    if let Some(ws) = handle.try_state::<Arc<window_state::WindowStateManager>>() {
+                        ws.flush();
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(commands::invoke_handler())
@@ -181,6 +211,13 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::Exit => {
+                if let Some(ws) = handle.try_state::<Arc<window_state::WindowStateManager>>() {
+                    if let Some(web_win) = handle.get_webview_window("main") {
+                        ws.capture(&web_win, true);
+                    } else {
+                        ws.flush();
+                    }
+                }
                 let app = handle.state::<App>();
                 odg_core::daemon::clear_desktop_pid(&app.home);
                 app.kill_all_jobs();

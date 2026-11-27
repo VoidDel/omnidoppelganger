@@ -162,19 +162,53 @@ export type QuotaSource =
   | { kind: "kimi"; providerId: string }
   | null;
 
+const QUOTA_STORAGE_KEY = "odg.quota.cache.v1";
+const quotaMemoryCache = new Map<string, AntigravityQuota>();
+
+function readCachedQuota(cacheKey: string | null): AntigravityQuota | null {
+  if (!cacheKey) return null;
+  const mem = quotaMemoryCache.get(cacheKey);
+  if (mem) return mem;
+  try {
+    const raw = window.localStorage.getItem(QUOTA_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, AntigravityQuota>;
+    if (parsed && typeof parsed === "object" && parsed[cacheKey]) {
+      quotaMemoryCache.set(cacheKey, parsed[cacheKey]);
+      return parsed[cacheKey];
+    }
+  } catch {
+    // Ignore storage read failures (e.g. private mode or SSR/tests).
+  }
+  return null;
+}
+
+function writeCachedQuota(cacheKey: string, value: AntigravityQuota): void {
+  quotaMemoryCache.set(cacheKey, value);
+  try {
+    const raw = window.localStorage.getItem(QUOTA_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, AntigravityQuota>) : {};
+    const next = parsed && typeof parsed === "object" ? { ...parsed, [cacheKey]: value } : { [cacheKey]: value };
+    window.localStorage.setItem(QUOTA_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore storage write failures.
+  }
+}
+
 /** Subscribe to live subscription quota from local `agy -p /usage`, a Magpie gateway, or Kimi Code (`/coding/v1/usages`). */
 export function useProviderQuota(source: QuotaSource) {
-  const [quota, setQuota] = useState<AntigravityQuota | null>(null);
+  const kind = source?.kind ?? null;
+  const providerId = source && "providerId" in source ? source.providerId : "";
+  const cacheKey = kind ? `${kind}:${providerId}` : null;
+
+  const [quota, setQuota] = useState<AntigravityQuota | null>(() => readCachedQuota(cacheKey));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const kind = source?.kind ?? null;
-  const providerId = source && "providerId" in source ? source.providerId : "";
-
   const refresh = useCallback(
     (force = false) => {
-      if (!kind) return;
+      if (!kind || !cacheKey) return;
       setLoading(true);
       setError(null);
       const req =
@@ -185,26 +219,29 @@ export function useProviderQuota(source: QuotaSource) {
             : api.getAntigravityQuota(force);
       req
         .then((res) => {
+          writeCachedQuota(cacheKey, res);
           setQuota(res);
           setNowMs(Date.now());
         })
         .catch((err) => {
-          setQuota(null);
+          // Keep any previously cached quota visible while surfacing the refresh error.
           setError(String(err));
         })
         .finally(() => setLoading(false));
     },
-    [kind, providerId],
+    [kind, providerId, cacheKey],
   );
 
   useEffect(() => {
-    if (!kind) {
+    if (!kind || !cacheKey) {
       setQuota(null);
       setError(null);
       return;
     }
+    const cached = readCachedQuota(cacheKey);
+    if (cached) setQuota(cached);
     refresh(false);
-  }, [kind, providerId, refresh]);
+  }, [kind, providerId, cacheKey, refresh]);
 
   useEffect(() => {
     if (!quota) return;

@@ -28,7 +28,9 @@ pub use files::edits_files;
 #[cfg(test)]
 use files::picture;
 pub(crate) use files::{LineDiff, line_diff};
-pub use specs::{ask_user_spec, delegate_spec, image_spec, mcp_resource_specs, present_plan_spec, search_spec, specs};
+pub use specs::{
+    ask_user_spec, delegate_spec, image_spec, mcp_resource_specs, memory_specs, present_plan_spec, search_spec, specs,
+};
 
 pub(crate) const READ_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const LINE_CHARS: usize = 2000;
@@ -61,6 +63,8 @@ pub struct ToolContext {
     pub vision: Option<bool>,
     /// The language servers `code_nav` asks. `None` means code is not navigated.
     pub lsp: Option<Arc<crate::lsp::LspHub>>,
+    /// Root directory for cross-session layered Markdown memory (`~/.odg/memory`). `None` when memory is off.
+    pub memory_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -279,6 +283,7 @@ fn blocking_context(context: &ToolContext) -> ToolContext {
         painter: None,
         vision: context.vision,
         lsp: None,
+        memory_root: context.memory_root.clone(),
     }
 }
 
@@ -363,6 +368,59 @@ pub async fn execute(name: &str, input: &Value, context: &ToolContext) -> ToolOu
             Ok(instructions) => Ok(ToolOutput::ok(instructions, json!({ "skill": name }))),
             Err(error) => Err(ToolOutput::error(error)),
         }),
+        "save_memory" => {
+            let Some(root) = &context.memory_root else {
+                return ToolOutput::error("Memory (识海) is disabled in settings.");
+            };
+            let scope = match input["scope"].as_str() {
+                Some("global") => crate::memory::MemoryScope::Global,
+                Some("project") => crate::memory::MemoryScope::Project,
+                _ => return ToolOutput::error("`scope` must be `global` or `project`."),
+            };
+            let content = match string_arg(input, "content") {
+                Ok(c) => c,
+                Err(err) => return err,
+            };
+            match crate::memory::append_entry(root, scope, Some(&context.workspace), content) {
+                Ok(_) => Ok(ToolOutput::ok(
+                    format!(
+                        "Saved to {} memory.",
+                        if scope == crate::memory::MemoryScope::Global {
+                            "global"
+                        } else {
+                            "project"
+                        }
+                    ),
+                    json!({ "scope": input["scope"], "content": content.trim() }),
+                )),
+                Err(error) => Err(ToolOutput::error(error)),
+            }
+        }
+        "delete_memory" => {
+            let Some(root) = &context.memory_root else {
+                return ToolOutput::error("Memory (识海) is disabled in settings.");
+            };
+            let scope = match input["scope"].as_str() {
+                Some("global") => crate::memory::MemoryScope::Global,
+                Some("project") => crate::memory::MemoryScope::Project,
+                _ => return ToolOutput::error("`scope` must be `global` or `project`."),
+            };
+            let query = match string_arg(input, "query") {
+                Ok(q) => q,
+                Err(err) => return err,
+            };
+            match crate::memory::remove_matching(root, scope, Some(&context.workspace), query) {
+                Ok((removed, _)) => Ok(ToolOutput::ok(
+                    if removed == 0 {
+                        format!("No memory lines matched `{query}`.")
+                    } else {
+                        format!("Removed {removed} matching memory line(s).")
+                    },
+                    json!({ "scope": input["scope"], "query": query.trim(), "removed": removed }),
+                )),
+                Err(error) => Err(ToolOutput::error(error)),
+            }
+        }
         // A tool of an MCP server: what it does and returns is the server's.
         other if crate::mcp::split_name(other).is_some() => match &context.mcp {
             Some(hub) => {

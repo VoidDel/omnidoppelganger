@@ -393,6 +393,9 @@ impl<L: Llm + 'static> AppCore<L> {
         )
         .map_err(|error| error.to_string())?;
 
+        let mem_home = self.home.clone();
+        session.set_memory_source(Arc::new(move || Some(odg_core::memory::memory_dir(&mem_home))));
+
         if let Some(main) = session.aside().map(str::to_string) {
             let (sessions, store) = (self.sessions.clone(), self.store.clone());
             session.set_brief_source(Arc::new(move || {
