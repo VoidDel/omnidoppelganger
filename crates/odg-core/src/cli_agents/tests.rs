@@ -2186,7 +2186,11 @@ fn unwraps_windows_npm_and_exe_cmd_shims_without_cmd_exe() {
     let root = tmp.path();
 
     // 1. Standard npm `.cmd` shim wrapping a JS entrypoint.
-    let js_path = root.join("node_modules/@anthropic-ai/claude-code/cli.js");
+    let js_path = root
+        .join("node_modules")
+        .join("@anthropic-ai")
+        .join("claude-code")
+        .join("cli.js");
     std::fs::create_dir_all(js_path.parent().unwrap()).unwrap();
     std::fs::write(&js_path, "console.log('ok');").unwrap();
     let npm_shim = root.join("claude.cmd");
