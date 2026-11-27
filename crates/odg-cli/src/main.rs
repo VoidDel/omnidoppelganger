@@ -32,6 +32,7 @@ Usage:
   odg [options] <task>
   odg --export <session-id>
   odg --land <session-id>
+  odg daemon <run|install|uninstall|status>
 
 Options:
   -C, --workspace <dir>   The folder to work in. Default: the current folder.
@@ -1157,9 +1158,117 @@ fn main() -> ExitCode {
     runtime_main()
 }
 
+/// Run the headless schedule daemon (`odg daemon <run|install|uninstall|status>`).
+async fn run_daemon(subcommand: &str) -> ExitCode {
+    let home = settings::home();
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => {
+            eprintln!("odg daemon: failed to resolve current executable: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match subcommand {
+        "status" => {
+            let st = odg_core::daemon::status(&exe);
+            println!(
+                "platform: {}\ninstalled: {}\nrunning: {}\nservice: {}\nexecutable: {}",
+                st.platform, st.installed, st.running, st.service_path, st.executable
+            );
+            ExitCode::SUCCESS
+        }
+        "install" => match odg_core::daemon::install(&exe, &["daemon", "run"], &home) {
+            Ok(st) => {
+                println!("Daemon installed ({}) -> {}", st.platform, st.service_path);
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("odg daemon install: {err}");
+                ExitCode::FAILURE
+            }
+        },
+        "uninstall" => match odg_core::daemon::uninstall(&exe) {
+            Ok(st) => {
+                println!("Daemon uninstalled ({})", st.service_path);
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("odg daemon uninstall: {err}");
+                ExitCode::FAILURE
+            }
+        },
+        "run" => {
+            eprintln!("odg daemon: watching schedules in {}", home.display());
+            let schedules = odg_core::schedule::ScheduleStore::new(home.join("schedules.json"));
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        eprintln!("odg daemon: shutting down.");
+                        break;
+                    }
+                    _ = tick.tick() => {
+                        // Yield to the desktop app when it is running so schedules are never fired twice.
+                        if odg_core::daemon::is_desktop_running(&home) {
+                            continue;
+                        }
+                        let due = schedules.take_due(&odg_core::schedule::now()).unwrap_or_default();
+                        for item in due {
+                            eprintln!("odg daemon: waking schedule `{}` ({})", item.name, item.id);
+                            let at = odg_core::schedule::stamp(&odg_core::schedule::now().to_utc());
+                            let opts = Options {
+                                task: item.prompt.clone(),
+                                workspace: PathBuf::from(&item.workspace),
+                                worktree: item.isolated,
+                                mode: Some(item.mode),
+                                answer: Some(Answer::No),
+                                ..Options::default()
+                            };
+                            let outcome = run(opts).await;
+                            let run_rec = match outcome {
+                                Ok(ExitOutcome::Completed) => odg_core::schedule::Run {
+                                    at,
+                                    session: None,
+                                    error: None,
+                                },
+                                Ok(ExitOutcome::Failed) => odg_core::schedule::Run {
+                                    at,
+                                    session: None,
+                                    error: Some("scheduled run failed".to_string()),
+                                },
+                                Ok(ExitOutcome::Interrupted) => odg_core::schedule::Run {
+                                    at,
+                                    session: None,
+                                    error: Some("scheduled run interrupted".to_string()),
+                                },
+                                Err(RunError::Usage(e) | RunError::Runtime(e)) => odg_core::schedule::Run {
+                                    at,
+                                    session: None,
+                                    error: Some(e),
+                                },
+                            };
+                            let _ = schedules.record(&item.id, run_rec);
+                        }
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        other => {
+            eprintln!("odg daemon: unknown subcommand `{other}` (expected run, install, uninstall, or status)");
+            ExitCode::from(2)
+        }
+    }
+}
+
 #[tokio::main]
 async fn runtime_main() -> ExitCode {
-    let options = match parse(std::env::args().skip(1)) {
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if raw_args.first().map(String::as_str) == Some("daemon") {
+        let sub = raw_args.get(1).map(String::as_str).unwrap_or("status");
+        return run_daemon(sub).await;
+    }
+    let options = match parse(raw_args) {
         Ok(options) => options,
         Err(message) if message == USAGE || message == VERSION => {
             println!("{message}");

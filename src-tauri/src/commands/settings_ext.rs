@@ -508,3 +508,34 @@ pub async fn expand_prompt_template(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub async fn daemon_status() -> Result<odg_core::daemon::DaemonStatus, String> {
+    tokio::task::spawn_blocking(|| {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        Ok(odg_core::daemon::status(&exe))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn install_daemon(app: State<'_, App>) -> Result<odg_core::daemon::DaemonStatus, String> {
+    let home = app.0.home.clone();
+    tokio::task::spawn_blocking(move || {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        odg_core::daemon::install(&exe, &["--background"], &home)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn uninstall_daemon() -> Result<odg_core::daemon::DaemonStatus, String> {
+    tokio::task::spawn_blocking(|| {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        odg_core::daemon::uninstall(&exe)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

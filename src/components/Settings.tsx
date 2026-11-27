@@ -7,7 +7,7 @@ import { mcpTool, shortCount } from "../lib/fold";
 import { modesFor } from "../lib/modes";
 import { formatResetIn, quotaWindowLabel, useAntigravityQuota, useKimiQuota } from "../lib/modelUsage";
 import { CLI_INFO, cliOf, enabledProviders, setUp } from "../lib/providers";
-import type { KeyStatus, KimiOAuthStart, KimiRegion, Provider, RawListedModel, Settings, SettingsView, UpdateStatus } from "../lib/types";
+import type { DaemonStatus, KeyStatus, KimiOAuthStart, KimiRegion, Provider, RawListedModel, Settings, SettingsView, UpdateStatus } from "../lib/types";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
 import { lazyWithRetry } from "./Guard";
@@ -647,6 +647,96 @@ function PainterSection({ view, onSavePatch }: { view: SettingsView; onSavePatch
         ) : (
           <p className="hint">眼下请 {name(view.painter_ready)} 作画。</p>
         )}
+      </div>
+    </section>
+  );
+}
+
+function BackgroundDaemonSection({
+  closeToTray,
+  onToggleCloseToTray,
+}: {
+  closeToTray: boolean;
+  onToggleCloseToTray: (next: boolean) => void;
+}) {
+  const [daemon, setDaemon] = useState<DaemonStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.daemonStatus?.().then(
+      (st) => setDaemon(st),
+      () => setDaemon(null),
+    );
+  }, []);
+
+  const toggleDaemon = () => {
+    if (!daemon || busy) return;
+    setBusy(true);
+    setError(null);
+    const req = daemon.installed ? api.uninstallDaemon() : api.installDaemon();
+    req
+      .then(
+        (st) => setDaemon(st),
+        (err) => setError(String(err)),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  const platformLabel =
+    daemon?.platform === "macos"
+      ? "macOS LaunchAgent"
+      : daemon?.platform === "windows"
+        ? "Windows 开机启动项"
+        : daemon?.platform === "linux"
+          ? "systemd --user 守护服务"
+          : "系统后台守护";
+
+  return (
+    <section>
+      <h2>后台驻留与守护进程</h2>
+      <div className="field">
+        <div className="label-line">
+          <label className="check">
+            <input
+              id="close-to-tray"
+              type="checkbox"
+              checked={closeToTray}
+              onChange={(event) => onToggleCloseToTray(event.target.checked)}
+            />
+            <span>关闭窗口时最小化到系统托盘，不自动退出</span>
+          </label>
+        </div>
+        <p className="hint">
+          开启后，点关闭按钮仅隐藏窗口并驻留在菜单栏 / 系统托盘，定时「功课」会在后台按时唤醒执行并发送系统通知；需要真正退出时，右键托盘图标选「完全退出」。
+        </p>
+      </div>
+      <div className="provider-card">
+        <div className="who">
+          <strong>功课后台守护进程（{platformLabel}）</strong>
+          <span className={`chip ${daemon?.installed ? "ready" : ""}`}>
+            {daemon ? (daemon.installed ? (daemon.running ? "已安装 · 运行中" : "已安装") : "未安装") : "检测中…"}
+          </span>
+        </div>
+        <p className="hint">
+          安装后，开机登录或意外退出时会自动以静默托盘模式唤醒，确保「功课」定时任务在窗口关闭或重启后仍能按时运行；命令行也可使用 <code>odg daemon install</code> 独立运行无头守护进程。
+        </p>
+        {daemon?.service_path && <p className="hint mono">{daemon.service_path}</p>}
+        {error && (
+          <p className="hint missing" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="usage-actions" style={{ marginTop: 8 }}>
+          <button
+            type="button"
+            className={`button ${daemon?.installed ? "outline" : "primary"} small`}
+            disabled={!daemon || busy}
+            onClick={toggleDaemon}
+          >
+            {busy ? "处理中…" : daemon?.installed ? "卸载后台守护" : "安装开机后台守护"}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -1357,6 +1447,10 @@ export function SettingsPage({
         )}
         {tab === "look" && (
           <>
+        <BackgroundDaemonSection
+          closeToTray={settings.close_to_tray !== false}
+          onToggleCloseToTray={(close_to_tray) => savePatch({ close_to_tray })}
+        />
         <section>
           <h2>{t("settings.appearance")}</h2>
           <fieldset className="papers">

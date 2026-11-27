@@ -6,6 +6,7 @@ pub mod error;
 mod notify;
 mod pty;
 mod state;
+mod tray;
 mod watcher;
 
 use std::sync::Arc;
@@ -42,13 +43,23 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            #[cfg(target_os = "macos")]
+            let start_background = std::env::args().any(|arg| arg == "--background");
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title_bar_style(tauri::TitleBarStyle::Overlay);
-                let _ = window.set_title("");
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = window.set_title_bar_style(tauri::TitleBarStyle::Overlay);
+                    let _ = window.set_title("");
+                }
+                if start_background {
+                    let _ = window.hide();
+                }
             }
 
             let home = settings::home();
+            odg_core::daemon::write_desktop_pid(&home);
+            if let Err(err) = tray::setup_tray(app.handle()) {
+                eprintln!("system tray unavailable: {err}");
+            }
             let pastes_for_prune = home.join("pastes");
             std::thread::spawn(move || {
                 odg_core::fsutil::prune_stale_temp_files(Duration::from_secs(86_400));
@@ -114,28 +125,64 @@ pub fn run() {
                 loop {
                     tick.tick().await;
                     let core = tick_handle.state::<App>().0.clone();
-                    let fired = tokio::task::spawn_blocking(move || {
+                    let fired_names = tokio::task::spawn_blocking(move || {
                         let due = core.schedules.take_due(&schedule::now()).unwrap_or_default();
+                        let mut names = Vec::with_capacity(due.len());
                         for item in &due {
                             let _ = core.schedules.record(&item.id, core.fire(item));
+                            names.push(item.name.clone());
                         }
-                        !due.is_empty()
+                        names
                     })
                     .await
-                    .unwrap_or(false);
-                    if fired {
+                    .unwrap_or_default();
+                    if !fired_names.is_empty() {
                         let _ = tick_handle.emit(SCHEDULES_EVENT, ());
+                        let hidden = tick_handle
+                            .get_webview_window("main")
+                            .and_then(|w| w.is_visible().ok())
+                            .map(|visible| !visible)
+                            .unwrap_or(true);
+                        if hidden {
+                            let summary = fired_names.join("、");
+                            notify::notify_desktop("功课已唤醒".to_string(), format!("分身正在后台执行：{summary}"))
+                                .await;
+                        }
                     }
                 }
             });
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && !tray::is_quitting()
+                && window.app_handle().state::<App>().0.settings.load().close_to_tray
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(commands::invoke_handler())
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|handle, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if !tray::is_quitting() && handle.state::<App>().0.settings.load().close_to_tray {
+                    api.prevent_exit();
+                }
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows, ..
+            } => {
+                if !has_visible_windows {
+                    tray::show_main_window(handle);
+                }
+            }
+            tauri::RunEvent::Exit => {
                 let app = handle.state::<App>();
+                odg_core::daemon::clear_desktop_pid(&app.home);
                 app.kill_all_jobs();
                 app.model_usage.flush_sync();
                 app.mcp.shutdown();
@@ -143,5 +190,6 @@ pub fn run() {
                 app.pty.shutdown();
                 app.watcher.stop();
             }
+            _ => {}
         });
 }

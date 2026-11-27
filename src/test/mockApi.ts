@@ -99,6 +99,7 @@ export function makeMockSettings(overrides: Partial<Types.Settings> = {}): Types
     context_limit: 160_000,
     search_engine: "off",
     painter: "off",
+    close_to_tray: true,
     theme: "light",
     base_urls: {},
     provider_names: {},

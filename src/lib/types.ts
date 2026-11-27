@@ -580,6 +580,16 @@ export interface Settings {
   locale?: string;
   /** Whether to automatically update/install missing Python document runtime libraries on startup. */
   auto_update_runtime?: boolean;
+  /** Hide the main window to the system tray instead of quitting when closed. */
+  close_to_tray?: boolean;
+}
+
+export interface DaemonStatus {
+  installed: boolean;
+  running: boolean;
+  platform: string;
+  service_path: string;
+  executable: string;
 }
 
 export interface ListedModel {

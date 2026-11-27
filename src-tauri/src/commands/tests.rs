@@ -432,9 +432,12 @@ fn invoke_handler_registers_all_102_frontend_api_commands() {
 
     assert_eq!(
         frontend_cmds.len(),
-        112,
-        "expected 112 invoke commands in api.ts, got: {frontend_cmds:?}"
+        115,
+        "expected 115 invoke commands in api.ts, got: {frontend_cmds:?}"
     );
+    assert!(frontend_cmds.contains("daemon_status"));
+    assert!(frontend_cmds.contains("install_daemon"));
+    assert!(frontend_cmds.contains("uninstall_daemon"));
     assert!(frontend_cmds.contains("get_usage_ledger_summary"));
     assert!(frontend_cmds.contains("get_price_catalog"));
     assert!(frontend_cmds.contains("sync_price_catalog"));

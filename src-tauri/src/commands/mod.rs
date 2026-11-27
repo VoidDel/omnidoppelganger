@@ -127,6 +127,9 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
         settings_ext::run_schedule,
         settings_ext::list_prompt_templates,
         settings_ext::expand_prompt_template,
+        settings_ext::daemon_status,
+        settings_ext::install_daemon,
+        settings_ext::uninstall_daemon,
         crate::notify::notify_desktop,
     ]
 }

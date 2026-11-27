@@ -71,9 +71,14 @@ export function useSessionController() {
       readSchedules();
       refresh();
     });
+    const stopOpenSchedules = api.onOpenSchedules?.(() => {
+      readSchedules();
+      dispatch({ type: "page", page: "schedules" });
+    });
     return () => {
       stop.then((unlisten) => unlisten());
       stopSchedules.then((unlisten) => unlisten());
+      stopOpenSchedules?.then((unlisten) => unlisten());
     };
   }, [refresh, fail]);
 

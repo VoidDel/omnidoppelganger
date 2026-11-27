@@ -85,6 +85,10 @@ fn default_locale() -> String {
     DEFAULT_LOCALE.to_string()
 }
 
+fn default_close_to_tray() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     /// Provider of sessions created from now on. Settings saved before there
@@ -164,6 +168,10 @@ pub struct Settings {
     /// Defaults to `false` so no unprompted background network request occurs without user consent.
     #[serde(default)]
     pub auto_update_runtime: bool,
+    /// Hide the main window to the system tray instead of quitting when closed, so scheduled tasks (`功课`)
+    /// continue waking up in the background.
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -190,6 +198,7 @@ impl Default for Settings {
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
             locale: default_locale(),
             auto_update_runtime: false,
+            close_to_tray: true,
         }
     }
 }

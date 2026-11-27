@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AntigravityQuota,
+  DaemonStatus,
   Decision,
   DiffStage,
   FileView,
@@ -82,6 +83,7 @@ export const api = {
   runSchedule: (id: string) => invoke<Schedule[]>("run_schedule", { id }),
   /** Called when a schedule came due and the list changed by itself. */
   onSchedulesChanged: (handler: () => void) => listen("schedules-changed", handler),
+  onOpenSchedules: (handler: () => void) => listen("open-schedules", handler),
   openSession: (id: string) => invoke<SessionView>("open_session", { id }),
   renameSession: (id: string, title: string) => invoke<SessionItem>("rename_session", { id, title }),
   /** Remove the session and its file snapshots for good. Rejects while its agent is working. */
@@ -234,6 +236,9 @@ export const api = {
   checkAppUpdate: () => invoke<UpdateStatus>("check_app_update"),
   installAppUpdate: () => invoke<boolean>("install_app_update"),
   installCliLink: () => invoke<string>("install_cli_link"),
+  daemonStatus: () => invoke<DaemonStatus>("daemon_status"),
+  installDaemon: () => invoke<DaemonStatus>("install_daemon"),
+  uninstallDaemon: () => invoke<DaemonStatus>("uninstall_daemon"),
   /** Per-model token usage statistics and active cooldown timers. */
   getModelUsage: () => invoke<ModelUsageEntry[]>("get_model_usage"),
   listPromptTemplates: (id?: string | null) => invoke<PromptTemplateInfo[]>("list_prompt_templates", { id: id ?? null }),
