@@ -291,6 +291,48 @@ impl PtyHub {
         let reader_exited = exited.clone();
         let reader_handle = handle.clone();
 
+        // On Windows ConPTY, the output pipe does not signal EOF when the child exits until
+        // the pseudo-console (`master`) is closed. Poll `child.try_wait()` on a tiny watcher
+        // thread and close `master`/`writer` once the shell exits so the reader thread drains
+        // remaining output and fires `on_exit`.
+        #[cfg(windows)]
+        {
+            let waiter_handle = handle.clone();
+            let waiter_exited = exited.clone();
+            let _ = std::thread::Builder::new()
+                .name(format!("odg-pty-wait-{seq}"))
+                .spawn(move || {
+                    loop {
+                        let done = {
+                            let mut child_guard = waiter_handle.child.lock_unpoisoned();
+                            match child_guard.as_mut() {
+                                Some(child) => match child.try_wait() {
+                                    Ok(Some(status)) => {
+                                        let code = status.exit_code();
+                                        *child_guard = None;
+                                        Some(Some(code))
+                                    }
+                                    Ok(None) => None,
+                                    Err(_) => {
+                                        *child_guard = None;
+                                        Some(None)
+                                    }
+                                },
+                                None => Some(None),
+                            }
+                        };
+                        if let Some(code) = done {
+                            if let Some(c) = code {
+                                *waiter_exited.lock_unpoisoned() = Some(c);
+                            }
+                            waiter_handle.release_os_handles();
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                });
+        }
+
         std::thread::Builder::new()
             .name(format!("odg-pty-{seq}"))
             .spawn(move || {
@@ -326,7 +368,7 @@ impl PtyHub {
                         .and_then(|c| c.wait().ok())
                         .map(|status| status.exit_code());
                     *child_guard = None;
-                    exit
+                    exit.or_else(|| *reader_exited.lock_unpoisoned())
                 };
                 reader_handle.release_os_handles();
                 *reader_exited.lock_unpoisoned() = Some(code.unwrap_or(0));
