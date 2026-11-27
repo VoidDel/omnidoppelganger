@@ -9,6 +9,19 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 #[test]
 fn adds_the_folders_programs_are_installed_in_before_the_ones_it_was_given_and_only_once() {
     let _guard = ENV_LOCK.lock().unwrap();
+    struct RestorePath(Option<std::ffi::OsString>);
+    impl Drop for RestorePath {
+        fn drop(&mut self) {
+            // SAFETY: guarded by `ENV_LOCK` in this dedicated integration test binary.
+            unsafe {
+                match self.0.as_ref() {
+                    Some(prev) => std::env::set_var("PATH", prev),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+    }
+    let _restore_path = RestorePath(std::env::var_os("PATH"));
     // As macOS starts an app from the Dock or Finder.
     let given = "/usr/bin:/bin:/usr/sbin:/sbin";
     // SAFETY: this is a test binary of its own, and nothing in it reads the environment while the test runs.
