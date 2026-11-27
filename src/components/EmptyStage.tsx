@@ -13,6 +13,7 @@ import { FormDialog } from "./FormDialog";
 import { Guard, lazyWithRetry } from "./Guard";
 import { Info } from "./Hint";
 import type { SidebarTab } from "./Sidebar";
+import type { SettingsTab } from "./Settings";
 import { CHAT_ICON } from "./Sidebar";
 import { sameDiffView, sameFileView } from "../lib/refresh";
 
@@ -25,6 +26,8 @@ const SchedulesPage = lazyWithRetry(() => import("./Schedules").then((m) => ({ d
 
 export interface SecondaryPageStageProps {
   page: State["page"];
+  settingsTab?: SettingsTab;
+  onSettingsTabChange?: (tab: SettingsTab) => void;
   settings: SettingsView | null;
   schedules: Schedule[];
   sessions: SessionItem[];
@@ -41,6 +44,8 @@ export interface SecondaryPageStageProps {
 
 export function SecondaryPageStage({
   page,
+  settingsTab,
+  onSettingsTabChange,
   settings,
   schedules,
   sessions,
@@ -71,6 +76,9 @@ export function SecondaryPageStage({
             }
             onRemoveProvider={(provider) => saved(api.removeProvider(provider))}
             onRevoke={(workspace, grant) => saved(api.revokeGrant(workspace, grant))}
+            onSaveMcp={(cfg) => api.saveMcpConfig(cfg).then((s) => (onSettingsLoaded(s), null), (e) => String(e))}
+            initialTab={settingsTab}
+            onTabChange={onSettingsTabChange}
             onRefresh={refreshSettings}
             listModels={api.listModels}
           />

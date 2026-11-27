@@ -325,6 +325,7 @@ mod tests {
                     tokens: Some(Tokens {
                         input: 120,
                         cached: 0,
+                        cache_write: 0,
                         output: 30,
                     }),
                 },
@@ -361,6 +362,7 @@ mod tests {
                     tokens: Some(Tokens {
                         input: 200,
                         cached: 100,
+                        cache_write: 0,
                         output: 50,
                     }),
                 },

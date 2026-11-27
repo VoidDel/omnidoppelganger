@@ -13,12 +13,14 @@ interface ComboProps {
   mono?: boolean;
   placeholder?: string;
   onSave: (value: string) => void;
+  /** Optional live sync as the user types in an editable combo (e.g. inside a form dialog). */
+  onDraftChange?: (value: string) => void;
 }
 
 /**
  * A field with a list under it, one look for every such choice on the page.
  */
-export function Combo({ id, value, options, editable, mono, placeholder, onSave }: ComboProps) {
+export function Combo({ id, value, options, editable, mono, placeholder, onSave, onDraftChange }: ComboProps) {
   const shownFor = (kept: string) => (editable ? kept : (options.find((option) => option.value === kept)?.text ?? kept));
   const [draft, setDraft] = useState(shownFor(value));
   useEffect(() => setDraft(shownFor(value)), [value, options.length]);
@@ -59,10 +61,12 @@ export function Combo({ id, value, options, editable, mono, placeholder, onSave 
         onFocus={() => setOpen(true)}
         onClick={() => setOpen(true)}
         onChange={(event) => {
-          setDraft(event.target.value);
+          const next = event.target.value;
+          setDraft(next);
           setTyped(true);
           setOpen(true);
           setAt(-1);
+          onDraftChange?.(next);
         }}
         onBlur={() => (editable ? commit(draft) : close())}
         onKeyDown={(event) => {
@@ -72,8 +76,12 @@ export function Combo({ id, value, options, editable, mono, placeholder, onSave 
             if (shown.length > 0) setAt((now) => (now + (event.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length);
           }
           if (event.key === "Enter") {
-            if (open && at >= 0 && shown[at]) commit(shown[at].value);
-            else if (editable) commit(draft);
+            if (open && at >= 0 && shown[at]) {
+              event.preventDefault();
+              commit(shown[at].value);
+            } else if (editable) {
+              commit(draft);
+            }
           }
           if (event.key === "Escape" && open) {
             event.preventDefault();

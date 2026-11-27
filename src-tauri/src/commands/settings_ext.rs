@@ -133,6 +133,9 @@ pub async fn remove_provider(app: State<'_, App>, id: String) -> Result<Settings
 
 #[tauri::command]
 pub async fn list_models(app: State<'_, App>, provider: String) -> Result<Vec<odg_core::providers::Listed>, String> {
+    if odg_core::providers::kind_id(&provider) == "moonshot" {
+        let _ = odg_core::kimi::ensure_fresh_access_token(&app.home, &provider).await;
+    }
     let endpoint = app.settings.endpoint(&provider);
     let base_url = if provider == "anthropic" {
         anthropic_base_url()
@@ -253,6 +256,37 @@ pub fn reset_model_usage(app: State<'_, App>) -> Vec<odg_core::model_usage::Mode
 }
 
 #[tauri::command]
+pub fn get_usage_ledger_summary(
+    app: State<'_, App>,
+    days: Option<u32>,
+) -> odg_core::model_usage::UsageLedgerSummary {
+    app.model_usage.summarize_ledger(days)
+}
+
+#[tauri::command]
+pub fn get_price_catalog() -> odg_core::pricing::PriceCatalogView {
+    odg_core::pricing::PriceCatalogStore::global().view()
+}
+
+#[tauri::command]
+pub async fn sync_price_catalog() -> Result<odg_core::pricing::PriceCatalogView, String> {
+    odg_core::pricing::PriceCatalogStore::global().sync_models_dev().await
+}
+
+#[tauri::command]
+pub fn set_custom_price(
+    key: String,
+    rate: odg_core::pricing::ModelRate,
+) -> Result<odg_core::pricing::PriceCatalogView, String> {
+    odg_core::pricing::PriceCatalogStore::global().set_custom(&key, rate)
+}
+
+#[tauri::command]
+pub fn delete_custom_price(key: String) -> Result<odg_core::pricing::PriceCatalogView, String> {
+    odg_core::pricing::PriceCatalogStore::global().delete_custom(&key)
+}
+
+#[tauri::command]
 pub async fn get_antigravity_quota(force: Option<bool>) -> Result<odg_core::antigravity::AntigravityQuota, String> {
     odg_core::antigravity::fetch_quota(force.unwrap_or(false)).await
 }
@@ -265,6 +299,60 @@ pub async fn get_magpie_quota(
 ) -> Result<odg_core::antigravity::AntigravityQuota, String> {
     let endpoint = app.settings.endpoint(&provider);
     odg_core::magpie::fetch_quota(&endpoint.base_url, endpoint.key.as_deref(), force.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn get_kimi_quota(
+    app: State<'_, App>,
+    provider: String,
+    force: Option<bool>,
+) -> Result<odg_core::antigravity::AntigravityQuota, String> {
+    let endpoint = app.settings.endpoint(&provider);
+    odg_core::kimi::fetch_quota_for_provider(
+        &app.home,
+        &provider,
+        &endpoint.base_url,
+        endpoint.key.as_deref(),
+        force.unwrap_or(false),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn kimi_oauth_start(
+    app: State<'_, App>,
+    region: String,
+    provider: Option<String>,
+    name: Option<String>,
+) -> Result<odg_core::kimi::KimiOAuthStart, String> {
+    let region = odg_core::kimi::KimiRegion::from_str_lossy(&region);
+    odg_core::kimi::start_oauth_login(&app.home, region, provider, name).await
+}
+
+#[tauri::command]
+pub async fn kimi_oauth_poll(app: State<'_, App>, flow_id: String) -> Result<odg_core::kimi::KimiOAuthPoll, String> {
+    let res = odg_core::kimi::poll_oauth_login(&app.home, &flow_id, &app.settings).await?;
+    if res.authenticated {
+        app.reconcile_live_models();
+    }
+    Ok(res)
+}
+
+#[tauri::command]
+pub async fn kimi_oauth_cancel(flow_id: Option<String>) {
+    odg_core::kimi::cancel_oauth_login(flow_id.as_deref()).await;
+}
+
+#[tauri::command]
+pub async fn kimi_oauth_logout(app: State<'_, App>, provider: String) -> Result<SettingsView, String> {
+    let core = app.0.clone();
+    tokio::task::spawn_blocking(move || {
+        odg_core::kimi::logout_oauth(&core.home, &provider)?;
+        core.reconcile_live_models();
+        Ok(core.settings_view())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

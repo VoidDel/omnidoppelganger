@@ -398,7 +398,12 @@ impl ChatClient {
             .ok_or((LlmError::MissingKey, None))?;
         let url = format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/'));
         let mut body = request_body(flavor, request);
-        let send = self.http.post(&url).bearer_auth(key.trim()).json(&body).send();
+        let mut req = self.http.post(&url).bearer_auth(key.trim()).json(&body);
+        if flavor == Flavor::Kimi && url.to_ascii_lowercase().contains("/coding") {
+            let dev_id = crate::kimi::device_id(&crate::settings::home());
+            req = crate::kimi::apply_kimi_headers(req, &dev_id);
+        }
+        let send = req.send();
         let mut response = tokio::select! {
             response = send => response.map_err(|error| (LlmError::Network(error.to_string()), None))?,
             () = cancel.cancelled() => return Err((LlmError::Cancelled, None)),

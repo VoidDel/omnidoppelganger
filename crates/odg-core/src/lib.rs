@@ -19,6 +19,7 @@ pub mod git;
 pub mod grants;
 pub mod imagegen;
 pub mod jobs;
+pub mod kimi;
 pub mod llm;
 pub mod lsp;
 pub mod made;

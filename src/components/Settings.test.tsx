@@ -37,7 +37,7 @@ describe("SettingsPage component (P1-15 & P2-14)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "外观" }));
+    fireEvent.click(screen.getByRole("button", { name: "关于" }));
     expect(screen.getByText("v0.9.0")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
@@ -166,7 +166,7 @@ describe("SettingsPage component (P1-15 & P2-14)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "外观" }));
+    fireEvent.click(screen.getByRole("button", { name: "关于" }));
     fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
 
     const dlBtn = await screen.findByRole("button", { name: "前往 GitHub 下载 v0.9.0" });

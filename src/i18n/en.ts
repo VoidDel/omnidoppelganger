@@ -180,7 +180,8 @@ export const en: Messages = {
   "picker.free": "Free",
   "picker.freeCount": "Free {count}",
   "picker.allCount": "All {count}",
-  "picker.autoRoute": "Smart Router · Picks fast or deep model by effort",
+  "picker.experimental": "Experimental",
+  "picker.autoRoute": "Smart Router (Experimental) · Picks fast or deep model by effort",
 
   // Slash Commands & Prompts
   "slash.working": "Unavailable while the agent is running; wait for idle or stop the turn first",
@@ -301,12 +302,16 @@ export const en: Messages = {
   // Settings
   "settings.tabModel": "Models",
   "settings.tabModelHint": "Providers and API keys, default model, reasoning effort, and context compaction",
+  "settings.tabLedger": "Ledger",
+  "settings.tabLedgerHint": "Usage ledger, API spend vs subscription value, quotas, models.dev sync, and custom pricing",
   "settings.tabRules": "Permissions",
   "settings.tabRulesHint": "Default permission mode, OS sandbox, guardian reviewer, and saved grants",
   "settings.tabTools": "Capabilities",
   "settings.tabToolsHint": "Web search, image generation, Python document runtime, and language servers",
   "settings.tabLook": "Appearance",
-  "settings.tabLookHint": "Light or dark theme, interface language, and app updates",
+  "settings.tabLookHint": "Light or dark theme and interface language",
+  "settings.tabAbout": "About",
+  "settings.tabAboutHint": "App version, updates, odg CLI link, documentation, and feedback",
   "settings.appearance": "Appearance",
   "settings.themeLegend": "Theme",
   "settings.themeLight": "Light",

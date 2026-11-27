@@ -2009,6 +2009,7 @@ mod tests {
             tokens: Some(Tokens {
                 input,
                 cached: 0,
+                cache_write: 0,
                 output,
             }),
         };
@@ -3094,6 +3095,7 @@ Read a; it holds x."
             tokens: Some(Tokens {
                 input: 100,
                 cached: 20,
+                cache_write: 0,
                 output: 15,
             }),
         })
@@ -3587,6 +3589,7 @@ Read a; it holds x."
                     tokens: Some(Tokens {
                         input: 20_000 + turn * 100,
                         cached: 10_000,
+                        cache_write: 0,
                         output: 150,
                     }),
                 },
@@ -3612,6 +3615,7 @@ Read a; it holds x."
                     tokens: Some(Tokens {
                         input: 25_000 + turn * 100,
                         cached: 12_000,
+                        cache_write: 0,
                         output: 80,
                     }),
                 },
@@ -3650,6 +3654,7 @@ Read a; it holds x."
                 tokens: Some(Tokens {
                     input: 45_000,
                     cached: 20_000,
+                    cache_write: 0,
                     output: 60,
                 }),
             },

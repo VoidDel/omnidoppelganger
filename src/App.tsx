@@ -6,6 +6,7 @@ import { Guard, lazyWithRetry } from "./components/Guard";
 import { Jump } from "./components/Jump";
 import type { PanelTab } from "./components/SidePanel";
 import type { SidebarTab } from "./components/Sidebar";
+import type { SettingsTab } from "./components/Settings";
 import { StatusBanners } from "./components/StatusBanners";
 import { useCompactLayout, useGlobalShortcuts, usePanel, useSidebar, useTheme } from "./hooks/useGlobalShortcuts";
 import { useSessionController } from "./hooks/useSessionController";
@@ -15,6 +16,7 @@ import { useWorkspaceGitSync } from "./hooks/useWorkspaceGitSync";
 import { formatMessage, I18nProvider, resolveLocale } from "./i18n";
 import { api } from "./lib/api";
 import { forwarded } from "./lib/aside";
+import { hydratePriceCatalog } from "./lib/pricing";
 import { isProviderEnabled, isProviderKeyed } from "./lib/providers";
 
 const ActiveSessionStage = lazyWithRetry(() =>
@@ -28,8 +30,13 @@ export default function App() {
   const ctl = useSessionController();
   const { state, dispatch, fail, refresh, refreshSettings, saved, scheduled, active, activeId, replay, setReplay } = ctl;
   const [jumping, setJumping] = useState<"all" | "files" | null>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("model");
   const locale = resolveLocale(state.settings?.settings.locale);
   useTheme(state.settings?.settings.theme);
+
+  useEffect(() => {
+    api.getPriceCatalog().then(hydratePriceCatalog).catch(() => undefined);
+  }, []);
 
   const providers = state.settings?.providers ?? [];
   const defaultProvider = providers.find((provider) => provider.id === state.settings?.settings.provider);
@@ -174,8 +181,8 @@ export default function App() {
     dispatch({ type: "page", page: "schedules" });
   }, [dispatch, fail]);
   const toSettings = useCallback(() => (refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
-  const toMcp = useCallback(() => (refreshSettings(), dispatch({ type: "page", page: "mcp" })), [refreshSettings, dispatch]);
-  const toSkills = useCallback(() => dispatch({ type: "page", page: "skills" }), [dispatch]);
+  const toMcp = useCallback(() => (setSettingsTab("mcp"), refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
+  const toSkills = useCallback(() => (setSettingsTab("skills"), refreshSettings(), dispatch({ type: "page", page: "settings" })), [refreshSettings, dispatch]);
   const showSidebarTab = useCallback(
     (tab: SidebarTab) => (dispatch({ type: "page", page: "chat" }), setSidebar((cur) => ({ ...cur, hidden: false })), setLeftTab(tab)),
     [dispatch, setSidebar],
@@ -295,6 +302,8 @@ export default function App() {
           {!inChat ? (
             <SecondaryPageStage
               page={state.page}
+              settingsTab={settingsTab}
+              onSettingsTabChange={setSettingsTab}
               settings={state.settings}
               schedules={state.schedules}
               sessions={state.sessions}

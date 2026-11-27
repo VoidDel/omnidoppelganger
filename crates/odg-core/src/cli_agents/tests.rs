@@ -525,6 +525,7 @@ fn parses_opencode_v2_stream_events_and_models() {
             tokens: Some(Tokens {
                 input: 18044,
                 cached: 17256,
+                cache_write: 0,
                 output: 11
             }),
             ..
@@ -726,6 +727,7 @@ fn parses_codex_ndjson_stream_with_incremental_agent_message() {
             tokens: Some(Tokens {
                 input: 200,
                 cached: 50,
+                cache_write: 0,
                 output: 12
             }),
         }
@@ -752,6 +754,7 @@ fn parses_claude_cursor_and_grok_ndjson_events() {
             tokens: Some(Tokens {
                 input: 10,
                 cached: 0,
+                cache_write: 0,
                 output: 4
             }),
         }
@@ -784,6 +787,7 @@ fn parses_claude_cursor_and_grok_ndjson_events() {
             tokens: Some(Tokens {
                 input: 14453,
                 cached: 13568,
+                cache_write: 0,
                 output: 61
             }),
             ..
@@ -1917,6 +1921,7 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
         Tokens {
             input: 200,
             cached: 50,
+            cache_write: 0,
             output: 12
         }
     );
@@ -1944,6 +1949,7 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
         Tokens {
             input: 14453,
             cached: 13568,
+            cache_write: 0,
             output: 61
         }
     );
@@ -1973,6 +1979,7 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
         Tokens {
             input: 1130,
             cached: 850,
+            cache_write: 0,
             output: 40
         }
     );
@@ -1987,6 +1994,7 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
         Some(Tokens {
             input: 1000,
             cached: 800,
+            cache_write: 0,
             output: 45
         })
     );
@@ -2001,6 +2009,7 @@ fn codex_cursor_and_claude_turns_preserve_end_of_turn_token_usage_after_flushed_
             tokens: Some(Tokens {
                 input: 1000,
                 cached: 800,
+                cache_write: 0,
                 output: 45
             }),
             ..

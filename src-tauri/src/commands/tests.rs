@@ -430,13 +430,23 @@ fn invoke_handler_registers_all_102_frontend_api_commands() {
 
     assert_eq!(
         frontend_cmds.len(),
-        102,
-        "expected 102 invoke commands in api.ts, got: {frontend_cmds:?}"
+        112,
+        "expected 112 invoke commands in api.ts, got: {frontend_cmds:?}"
     );
+    assert!(frontend_cmds.contains("get_usage_ledger_summary"));
+    assert!(frontend_cmds.contains("get_price_catalog"));
+    assert!(frontend_cmds.contains("sync_price_catalog"));
+    assert!(frontend_cmds.contains("set_custom_price"));
+    assert!(frontend_cmds.contains("delete_custom_price"));
     assert!(frontend_cmds.contains("get_session_item"));
     assert!(frontend_cmds.contains("remove_pasted_file"));
     assert!(frontend_cmds.contains("install_app_update"));
     assert!(frontend_cmds.contains("install_cli_link"));
+    assert!(frontend_cmds.contains("get_kimi_quota"));
+    assert!(frontend_cmds.contains("kimi_oauth_start"));
+    assert!(frontend_cmds.contains("kimi_oauth_poll"));
+    assert!(frontend_cmds.contains("kimi_oauth_cancel"));
+    assert!(frontend_cmds.contains("kimi_oauth_logout"));
 
     let mut backend_cmds = HashSet::new();
     for line in mod_rs.lines() {
@@ -1187,6 +1197,7 @@ async fn model_usage_store_flushes_pending_debounced_writes_on_sync_flush() {
         &Tokens {
             input: 1000,
             cached: 400,
+            cache_write: 0,
             output: 250,
         },
     );

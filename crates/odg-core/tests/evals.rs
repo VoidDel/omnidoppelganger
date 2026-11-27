@@ -444,6 +444,7 @@ fn eval_05_fork_abandoned_brief_and_pricing_export() {
         tokens: Some(Tokens {
             input: 1000,
             cached: 500,
+            cache_write: 0,
             output: 200,
         }),
     })
@@ -508,6 +509,7 @@ fn eval_05_fork_abandoned_brief_and_pricing_export() {
         Tokens {
             input: 1_000_000,
             cached: 500_000,
+            cache_write: 0,
             output: 100_000,
         },
     )
@@ -1121,6 +1123,7 @@ fn append_records_auxiliary_token_usage_clears_auto_cooldown_and_undo_guards_wor
             tokens: Some(Tokens {
                 input: 100,
                 cached: 20,
+                cache_write: 0,
                 output: 30,
             }),
         },
@@ -1146,6 +1149,7 @@ fn append_records_auxiliary_token_usage_clears_auto_cooldown_and_undo_guards_wor
             tokens: Some(Tokens {
                 input: 200,
                 cached: 50,
+                cache_write: 0,
                 output: 40,
             }),
         },
@@ -1164,6 +1168,7 @@ fn append_records_auxiliary_token_usage_clears_auto_cooldown_and_undo_guards_wor
             tokens: Some(Tokens {
                 input: 80,
                 cached: 0,
+                cache_write: 0,
                 output: 10,
             }),
         },

@@ -314,7 +314,7 @@ function SkillDialog({ onDone, onClose }: { onDone: (view: SkillsView) => void; 
  * The 秘籍 page: the skills that come with the app, each kept out of the 分身's sight until switched on, and the
  * user's own, in the user's skills directory.
  */
-export function SkillsPage({ onChanged }: { onChanged: () => void }) {
+export function SkillsPage({ onChanged, embedded = false }: { onChanged: () => void; embedded?: boolean }) {
   const [view, setView] = useState<SkillsView | null>(null);
   const [wrong, setWrong] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -341,9 +341,8 @@ export function SkillsPage({ onChanged }: { onChanged: () => void }) {
   };
   const builtIn = view?.skills.filter((skill) => skill.builtin) ?? [];
   const own = view?.skills.filter((skill) => !skill.builtin) ?? [];
-  return (
-    <div className="settings">
-      <div className="settings-inner">
+  const body = (
+    <>
         <section>
           <h1>秘籍</h1>
           <p className="lead">
@@ -389,18 +388,30 @@ export function SkillsPage({ onChanged }: { onChanged: () => void }) {
             ))}
           </div>
         </section>
-
-      </div>
-      {adding && (
-        <SkillDialog
-          onDone={(next) => {
-            setView(next);
-            onChanged();
-          }}
-          // Its close comes a moment after it shuts: it lets go only of the window it opened, not one opened since.
-          onClose={() => setAdding((now) => (now === adding ? null : now))}
-        />
-      )}
+    </>
+  );
+  const modal = adding && (
+    <SkillDialog
+      onDone={(next) => {
+        setView(next);
+        onChanged();
+      }}
+      // Its close comes a moment after it shuts: it lets go only of the window it opened, not one opened since.
+      onClose={() => setAdding((now) => (now === adding ? null : now))}
+    />
+  );
+  if (embedded) {
+    return (
+      <>
+        {body}
+        {modal}
+      </>
+    );
+  }
+  return (
+    <div className="settings">
+      <div className="settings-inner">{body}</div>
+      {modal}
     </div>
   );
 }

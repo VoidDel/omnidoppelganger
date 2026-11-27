@@ -403,6 +403,7 @@ export function ModelList({
       <div className="menu-scroll">
         {shown.map((entry) => {
           const { id, name: display } = entry;
+          const isAuto = id === "auto";
           const free = entry.free === true;
           const stat = findModelUsage(modelUsage, showing, id);
           const coolMs = cooldownRemainingMs(stat, nowMs);
@@ -412,8 +413,9 @@ export function ModelList({
               <span className="mode-text">
                 <span className="name mono">{id}</span>
                 {display !== id && <span className="hint">{display}</span>}
-                {(free || coolMs > 0 || todayTok > 0) && (
+                {(isAuto || free || coolMs > 0 || todayTok > 0) && (
                   <span className="model-meta-badges">
+                    {isAuto && <span className="model-usage-badge">{t("picker.experimental")}</span>}
                     {free && <span className="model-usage-badge">{t("picker.free")}</span>}
                     {coolMs > 0 && (
                       <span className="model-cooldown-pill" title={stat?.cooldown_reason ?? "冷却中"}>

@@ -238,20 +238,29 @@ export function Composer(props: ComposerProps) {
   const { entries: modelUsage, nowMs, refresh: refreshModelUsage, clearCooldown } = useModelUsage(`${status}:${usage.spent.input}:${usage.spent.output}:${providerId}:${model}`);
   const activeModelStat = findModelUsage(modelUsage, providerId, model);
   const activeCooldownMs = cooldownRemainingMs(activeModelStat, nowMs);
+  const provider = providers.find((known) => known.id === providerId);
   const isMagpieProvider =
     providerId === "magpie" || providerId.startsWith("magpie:") || providerId.startsWith("magpie-") || providerId.startsWith("magpie_");
+  const isKimiProvider =
+    keyed(providerId) &&
+    (provider?.kind === "moonshot" ||
+      providerId === "moonshot" ||
+      providerId.startsWith("moonshot:") ||
+      providerId.startsWith("moonshot-") ||
+      providerId.startsWith("moonshot_"));
   const isAgyProvider = providerId === "antigravity";
   const quotaSource = props.aside
     ? null
     : isMagpieProvider
       ? ({ kind: "magpie", providerId } as const)
-      : isAgyProvider
-        ? ({ kind: "antigravity" } as const)
-        : null;
+      : isKimiProvider
+        ? ({ kind: "kimi", providerId } as const)
+        : isAgyProvider
+          ? ({ kind: "antigravity" } as const)
+          : null;
   const agyQuota = useProviderQuota(quotaSource);
   const activeQuotaGroup = quotaSource ? quotaGroupForModel(agyQuota.quota, model) : undefined;
   const { onLimit, onCompact, onModel, onEffort, listModels, onMode, onCarryOut, onSend, onStop, seed, onSeedConsumed, trustable, sessionKey, workspace, drafts, commands: given, placeholder, acceptDrops = true, aside = false } = props;
-  const provider = providers.find((known) => known.id === providerId);
   const cli = cliOf(provider);
   const providerName = provider?.name ?? providerId;
   const limits = [...LIMITS.filter((limit) => limit < contextCeiling), contextCeiling];
@@ -1157,12 +1166,16 @@ export function Composer(props: ComposerProps) {
               name="心法"
               summon={modelSummon}
               disabled={busy}
-              title={busy ? `心法：${providerName} · ${model}。分身运功时不能换，等它收功` : `心法：${providerName} · ${model}。点开换一门`}
+              title={
+                busy
+                  ? `心法：${providerName} · ${model === "auto" ? `auto (${t("picker.experimental")})` : model}。分身运功时不能换，等它收功`
+                  : `心法：${providerName} · ${model === "auto" ? `auto (${t("picker.experimental")})` : model}。点开换一门`
+              }
               label={
                 <>
                   <Icon name="journal-text" size={15} />
                   <span className="label sr-only">心法</span>
-                  <span className="value">{model}</span>
+                  <span className="value">{model === "auto" ? `auto (${t("picker.experimental")})` : model}</span>
                   {activeCooldownMs > 0 && (
                     <span className="model-cooldown-pill" title={activeModelStat?.cooldown_reason ?? "冷却中"}>
                       冷却 {formatCooldown(activeCooldownMs)}

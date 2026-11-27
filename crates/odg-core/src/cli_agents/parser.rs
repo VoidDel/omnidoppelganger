@@ -341,7 +341,7 @@ impl StreamParser {
                 let cached = usage["cached_input_tokens"].as_u64().unwrap_or(0);
                 let input = usage["input_tokens"].as_u64().unwrap_or(0);
                 let output = usage["output_tokens"].as_u64().unwrap_or(0);
-                let tokens = (input > 0 || output > 0).then_some(Tokens { input, cached, output });
+                let tokens = (input > 0 || output > 0).then_some(Tokens { input, cached, cache_write: 0, output });
                 vec![CliEvent::Result {
                     conversation_id: None,
                     success: true,
@@ -1018,6 +1018,7 @@ pub(super) fn openai_like_tokens(usage: &Value) -> Option<Tokens> {
     (input > 0 || output > 0).then_some(Tokens {
         input,
         cached: cached.min(input),
+        cache_write: 0,
         output,
     })
 }
@@ -1046,6 +1047,7 @@ fn anthropic_like_tokens(usage: &Value) -> Option<Tokens> {
     (input > 0 || output > 0).then_some(Tokens {
         input,
         cached: cache_read,
+        cache_write: 0,
         output,
     })
 }

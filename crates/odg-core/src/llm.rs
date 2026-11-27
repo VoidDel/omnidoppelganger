@@ -54,6 +54,10 @@ pub enum StreamDelta {
     Reset,
 }
 
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
 /// What one request cost, in one shape whatever the provider's `usage` looks
 /// like. See [`crate::providers::tokens`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, serde::Deserialize)]
@@ -62,6 +66,9 @@ pub struct Tokens {
     pub input: u64,
     /// The part of the prompt read from the provider's cache.
     pub cached: u64,
+    /// The part of the prompt written to the provider's cache (when billed separately).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cache_write: u64,
     pub output: u64,
 }
 

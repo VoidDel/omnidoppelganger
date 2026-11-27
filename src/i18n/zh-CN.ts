@@ -179,7 +179,8 @@ export const zhCN = {
   "picker.free": "免费",
   "picker.freeCount": "免费 {count}",
   "picker.allCount": "全部 {count}",
-  "picker.autoRoute": "智能路由 · 按境界自动选快/强心法",
+  "picker.experimental": "实验性",
+  "picker.autoRoute": "智能路由（实验性）· 按境界自动选快/强心法",
 
   // Slash Commands & Prompts
   "slash.working": "分身运功时用不了，等它收功，或先收回它",
@@ -300,12 +301,16 @@ export const zhCN = {
   // Settings
   "settings.tabModel": "心法",
   "settings.tabModelHint": "各个宗门和它们的密钥，默认分身修哪门心法、推演多深，前情留多长",
+  "settings.tabLedger": "账房",
+  "settings.tabLedgerHint": "查看 API 预估花费、订阅等效价值与订阅额度，管理 models.dev 同步与自定义模型价格",
   "settings.tabRules": "禁制",
   "settings.tabRulesHint": "分身不问就能做什么，结界（沙箱），护法（模型审核），发出去的通行符（长期许可）",
   "settings.tabTools": "神通",
-  "settings.tabToolsHint": "天机阁（联网搜索）、丹青（生成图片）、文房（文档运行环境）、语言服务（代码导航）。秘籍和身外法器（MCP 服务）在侧栏的「秘籍」「法器」里",
+  "settings.tabToolsHint": "天机阁（联网搜索）、丹青（生成图片）、文房（文档运行环境）、语言服务（代码导航）",
   "settings.tabLook": "外观",
   "settings.tabLookHint": "白昼还是玄夜，以及界面语言",
+  "settings.tabAbout": "关于",
+  "settings.tabAboutHint": "版本与更新、odg 命令行软链、使用手册与问题反馈",
   "settings.appearance": "外观",
   "settings.themeLegend": "天色",
   "settings.themeLight": "白昼",

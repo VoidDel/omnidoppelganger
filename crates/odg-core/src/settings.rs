@@ -711,10 +711,16 @@ impl SettingsStore {
         })
     }
 
-    /// The key a provider's requests use: the saved one, else, for the first of its kind, the kind's environment variable.
+    /// The key a provider's requests use: the saved one, else a Kimi OAuth access token,
+    /// else, for the first of its kind, the kind's environment variable.
     pub fn api_key(&self, provider_id: &str) -> Option<String> {
         self.saved_key(provider_id)
             .map(|(key, _)| key)
+            .or_else(|| {
+                (crate::providers::kind_id(provider_id) == "moonshot")
+                    .then(|| crate::kimi::load_oauth_access_token(&self.directory, provider_id))
+                    .flatten()
+            })
             .or_else(|| Self::env_key(provider_id))
     }
 
@@ -735,17 +741,33 @@ impl SettingsStore {
                 },
             };
         }
-        let (key, source, plaintext) = match self.saved_key(provider) {
-            Some((key, plaintext)) => (Some(key), "saved", plaintext),
-            None => match Self::env_key(provider) {
-                Some(key) => (Some(key), "env", false),
-                None => (None, "none", false),
+        if let Some((key, plaintext)) = self.saved_key(provider) {
+            return KeyStatus {
+                source: "saved".to_string(),
+                preview: Some(mask(&key)),
+                plaintext,
+            };
+        }
+        if crate::providers::kind_id(provider) == "moonshot"
+            && let Some(preview) = crate::kimi::oauth_preview(&self.directory, provider)
+        {
+            return KeyStatus {
+                source: "oauth".to_string(),
+                preview: Some(preview),
+                plaintext: false,
+            };
+        }
+        match Self::env_key(provider) {
+            Some(key) => KeyStatus {
+                source: "env".to_string(),
+                preview: Some(mask(&key)),
+                plaintext: false,
             },
-        };
-        KeyStatus {
-            source: source.to_string(),
-            preview: key.as_deref().map(mask),
-            plaintext,
+            None => KeyStatus {
+                source: "none".to_string(),
+                preview: None,
+                plaintext: false,
+            },
         }
     }
 
@@ -800,6 +822,9 @@ impl SettingsStore {
     pub fn remove_provider(&self, id: &str) -> std::io::Result<Settings> {
         known(id)?;
         self.delete_api_key(id)?;
+        if crate::providers::kind_id(id) == "moonshot" {
+            let _ = crate::kimi::logout_oauth(&self.directory, id);
+        }
         let mut settings = self.load();
         settings.base_urls.remove(id);
         settings.provider_names.remove(id);

@@ -150,7 +150,8 @@ export const zhPlain: Messages = {
   "picker.effort": "推理强度",
   "picker.mode": "权限模式",
   "picker.stones": "上下文用量",
-  "picker.autoRoute": "智能路由 · 按推理强度自动选择快/强模型",
+  "picker.experimental": "实验性",
+  "picker.autoRoute": "智能路由（实验性）· 按推理强度自动选择快/强模型",
 
   // Slash Commands & Prompts
   "slash.working": "会话运行中暂不可用，请等待完成或先停止当前轮次",
@@ -222,12 +223,16 @@ export const zhPlain: Messages = {
   // Settings
   "settings.tabModel": "模型",
   "settings.tabModelHint": "管理模型供应商与 API 密钥、默认模型、推理强度与上下文压缩阈值",
+  "settings.tabLedger": "用量与账单",
+  "settings.tabLedgerHint": "查看模型调用流水、API 花费、订阅等效价值与额度，管理价格目录与自定义单价",
   "settings.tabRules": "权限与安全",
   "settings.tabRulesHint": "配置默认权限模式、系统沙箱、辅助安全审核模型与已保存授权",
   "settings.tabTools": "扩展能力",
   "settings.tabToolsHint": "配置联网搜索、图像生成、Python 文档环境与代码导航语言服务",
   "settings.tabLook": "外观与语言",
-  "settings.tabLookHint": "切换明暗主题、界面语言与检查版本更新",
+  "settings.tabLookHint": "切换明暗主题与界面语言",
+  "settings.tabAbout": "关于",
+  "settings.tabAboutHint": "检查版本更新、配置 odg 命令行与查阅帮助文档",
   "settings.themeLegend": "主题配色",
   "settings.themeLight": "浅色",
   "settings.themeLightHint": "明亮纸面配色，适合日间使用",

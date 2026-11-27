@@ -924,6 +924,18 @@ pub fn record_event_model_usage(
     configured_model: &str,
     event: &Event,
 ) {
+    record_session_event_model_usage(store, None, configured_provider, configured_model, event);
+}
+
+/// Account model token spend (including ledger attribution with `session_id` and requested vs served model)
+/// and rate-limit cooldown state for one durable session `event`.
+pub fn record_session_event_model_usage(
+    store: &crate::model_usage::ModelUsageStore,
+    session_id: Option<&str>,
+    configured_provider: &str,
+    configured_model: &str,
+    event: &Event,
+) {
     match event {
         Event::AssistantMessage {
             model,
@@ -935,7 +947,13 @@ pub fn record_event_model_usage(
             } else {
                 model.clone()
             };
-            store.record_usage(configured_provider, &effective_model, tokens);
+            store.record_turn_usage(
+                session_id,
+                configured_provider,
+                configured_model,
+                &effective_model,
+                tokens,
+            );
             if configured_model == providers::AUTO_MODEL && effective_model != providers::AUTO_MODEL {
                 store.clear_cooldown(configured_provider, providers::AUTO_MODEL);
             }
@@ -943,7 +961,13 @@ pub fn record_event_model_usage(
         Event::ContextCompacted {
             tokens: Some(tokens), ..
         } => {
-            store.record_usage(configured_provider, configured_model, tokens);
+            store.record_turn_usage(
+                session_id,
+                configured_provider,
+                configured_model,
+                configured_model,
+                tokens,
+            );
         }
         Event::GuardianReviewed {
             model,
@@ -955,13 +979,25 @@ pub fn record_event_model_usage(
             } else {
                 model.as_str()
             };
-            store.record_usage(configured_provider, effective_model, tokens);
+            store.record_turn_usage(
+                session_id,
+                configured_provider,
+                configured_model,
+                effective_model,
+                tokens,
+            );
         }
         Event::ToolResult { meta, .. } => {
             if let Some(raw) = meta.get("tokens")
                 && let Ok(tokens) = serde_json::from_value::<crate::llm::Tokens>(raw.clone())
             {
-                store.record_usage(configured_provider, configured_model, &tokens);
+                store.record_turn_usage(
+                    session_id,
+                    configured_provider,
+                    configured_model,
+                    configured_model,
+                    &tokens,
+                );
             }
         }
         Event::TurnEnd { error: Some(err), .. } => {
@@ -993,8 +1029,9 @@ impl<L: Llm> Inner<L> {
     /// Append to the log and tell the client. A log that cannot be written ends the turn.
     fn append(&self, event: Event) -> Result<(), String> {
         #[cfg(not(test))]
-        record_event_model_usage(
+        record_session_event_model_usage(
             crate::model_usage::ModelUsageStore::global(),
+            Some(&self.id),
             &self.provider(),
             &self.model(),
             &event,

@@ -161,6 +161,7 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                 let combined = Tokens {
                     input: pt.input.saturating_add(t.input),
                     cached: pt.cached.saturating_add(t.cached),
+                    cache_write: pt.cache_write.saturating_add(t.cache_write),
                     output: pt.output.saturating_add(t.output),
                 };
                 (if usage.is_null() { pu } else { usage }, Some(combined))
@@ -425,6 +426,7 @@ impl<'a, S: Sink> TurnRecorder<'a, S> {
                         let rem = Tokens {
                             input: total.input.saturating_sub(self.accounted_tokens.input),
                             cached: total.cached.saturating_sub(self.accounted_tokens.cached),
+                            cache_write: total.cache_write.saturating_sub(self.accounted_tokens.cache_write),
                             output: total.output.saturating_sub(self.accounted_tokens.output),
                         };
                         let non_zero = rem.input > 0 || rem.cached > 0 || rem.output > 0;

@@ -100,8 +100,8 @@ export function Sidebar({
   onResize,
   inert,
   onHome,
-  onMcp,
-  onSkills,
+  onMcp: _onMcp,
+  onSkills: _onSkills,
   onSchedules,
   onChat,
   onOpen,
@@ -439,14 +439,6 @@ export function Sidebar({
         </>
       )}
       <div className="sidebar-foot">
-        <button type="button" className="row-button" aria-current={page === "skills" ? "page" : undefined} title={t("nav.skillsTitle")} onClick={onSkills}>
-          <Icon name="book" size={15} />
-          {t("nav.skills")}
-        </button>
-        <button type="button" className="row-button" aria-current={page === "mcp" ? "page" : undefined} title={t("nav.mcpTitle")} onClick={onMcp}>
-          <Icon name="bell" size={15} />
-          {t("nav.mcp")}
-        </button>
         <button type="button" className="row-button" aria-current={page === "schedules" ? "page" : undefined} title={t("nav.schedulesTitle")} onClick={onSchedules}>
           <Icon name="clock" size={15} />
           {t("nav.schedules")}

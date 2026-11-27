@@ -1,20 +1,25 @@
 import "../styles/pages.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { LOCALE_OPTIONS, resolveLocale, useI18n } from "../i18n";
 import { api } from "../lib/api";
 import { effortName, effortNote } from "../lib/efforts";
 import { mcpTool, shortCount } from "../lib/fold";
 import { modesFor } from "../lib/modes";
-import { formatResetIn, quotaWindowLabel, useAntigravityQuota } from "../lib/modelUsage";
+import { formatResetIn, quotaWindowLabel, useAntigravityQuota, useKimiQuota } from "../lib/modelUsage";
 import { CLI_INFO, cliOf, enabledProviders, setUp } from "../lib/providers";
-import type { KeyStatus, Provider, RawListedModel, Settings, SettingsView, UpdateStatus } from "../lib/types";
+import type { KeyStatus, KimiOAuthStart, KimiRegion, Provider, RawListedModel, Settings, SettingsView, UpdateStatus } from "../lib/types";
 import { Combo } from "./Combo";
 import { ConfirmBubble } from "./ConfirmBubble";
+import { lazyWithRetry } from "./Guard";
 import { Info } from "./Hint";
 import { Icon } from "./Icon";
 import { LanguageServersSection } from "./LanguageServers";
 import { normalizeListedModel } from "./Pickers";
 import { RuntimeSection } from "./Runtime";
+import { UsagePricingSection } from "./UsagePricingSection";
+
+const SkillsPage = lazyWithRetry(() => import("./Skills").then((m) => ({ default: m.SkillsPage })));
+const McpPage = lazyWithRetry(() => import("./Mcp").then((m) => ({ default: m.McpPage })));
 
 /**
  * A text field that tracks whether the user has edited it (`dirty`), ignores unrelated concurrent external
@@ -64,6 +69,7 @@ function KeyLine({ provider, status }: { provider: { key_env: string | null; pro
       {status.source === "saved" && <span className="muted">{status.plaintext ? "密钥存在本机的明文文件里，只显示开头和结尾" : "密钥已存进系统凭据管理器，只显示开头和结尾"}</span>}
       {status.source === "env" && <span className="muted">正在用环境变量 {provider.key_env} 里的密钥</span>}
       {status.source === "cli" && <span className="muted">复用本机 {cliBin ?? "CLI"} 登录凭据（无需 API 密钥）</span>}
+      {status.source === "oauth" && <span className="muted">已通过 Kimi OAuth 账号登录（自动刷新令牌）</span>}
       {status.source === "none" && (
         <span className="muted">
           {cliBin
@@ -88,6 +94,7 @@ interface KeyDialogProps {
   onSavePatch: (patch: Partial<Settings>, baseOverride?: Settings) => unknown;
   onSaveKey: (provider: string, key: string) => unknown;
   onAdd: (kind: string, name: string) => Promise<Added>;
+  onRefresh: () => void;
   onClose: () => void;
 }
 
@@ -104,7 +111,7 @@ function firstFree(view: SettingsView, kind: string): boolean {
  * The window that takes a provider's name, key and address: to add one, of any kind, as many of a kind as wanted,
  * or to change one in the list.
  */
-function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onClose }: KeyDialogProps) {
+function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onRefresh, onClose }: KeyDialogProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   // Shown as a modal, which keeps the keyboard inside it and closes on Escape.
   useEffect(() => {
@@ -120,6 +127,67 @@ function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onClose }: K
   const [address, setAddress] = useState(provider ? (settings.base_urls[provider.id] ?? "") : "");
   const [wrong, setWrong] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [kimiRegion, setKimiRegion] = useState<KimiRegion>(() =>
+    (provider ? (settings.base_urls[provider.id] ?? "") : "").includes(".ai") ? "global" : "mainland-cn",
+  );
+  const [oauthFlow, setOauthFlow] = useState<KimiOAuthStart | null>(null);
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [oauthMsg, setOauthMsg] = useState<string | null>(null);
+  const activeFlowRef = useRef<string | null>(null);
+  activeFlowRef.current = oauthFlow?.flow_id ?? null;
+
+  useEffect(() => {
+    return () => {
+      if (activeFlowRef.current) {
+        void api.kimiOAuthCancel(activeFlowRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!oauthFlow) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = (delaySec: number) => {
+      timer = window.setTimeout(async () => {
+        if (cancelled) return;
+        try {
+          const res = await api.kimiOAuthPoll(oauthFlow.flow_id);
+          if (cancelled) return;
+          if (res.authenticated) {
+            setOauthFlow(null);
+            setOauthMsg(res.nickname ? `已登录 Kimi 账号：${res.nickname}` : "Kimi OAuth 登录成功");
+            onRefresh();
+            onClose();
+            return;
+          }
+          if (res.ended) {
+            setOauthFlow(null);
+            setWrong(
+              res.ended === "expired"
+                ? "授权码已过期，请重新点击登录。"
+                : res.ended === "denied"
+                  ? "已在浏览器中取消 Kimi 授权。"
+                  : null,
+            );
+            return;
+          }
+          schedule(Math.max(res.interval || oauthFlow.interval || 5, 2));
+        } catch (err) {
+          if (!cancelled) {
+            setOauthFlow(null);
+            setWrong(String(err));
+          }
+        }
+      }, delaySec * 1000);
+    };
+    schedule(Math.max(oauthFlow.interval || 5, 2));
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [oauthFlow, onRefresh, onClose]);
+
   if (!kind) return null;
   // The provider this window sets: the one changed, or the one adding will make, the first of its kind while that is free.
   const target = provider?.id ?? (firstFree(view, kind.id) ? kind.id : null);
@@ -127,8 +195,48 @@ function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onClose }: K
   // Local CLI backends (`agy`, `codex`, `claude`, `cursor-agent`, `grok`) reuse their own CLI login and need neither an API key nor an HTTP base URL.
   const cli = cliOf(kind);
   const isCli = cli !== null;
+  const isKimi = kind.id === "moonshot";
   const isLocalGateway = kind.id === "magpie" || kind.id === "ollama";
   const takesAddress = target !== "anthropic" && !isCli;
+
+  const startKimiOAuth = async () => {
+    setWrong(null);
+    setOauthMsg(null);
+    setOauthBusy(true);
+    try {
+      const started = await api.kimiOAuthStart(kimiRegion, provider?.id ?? null, name.trim() || null);
+      setOauthFlow(started);
+      void api.openExternal(started.verification_uri).catch(() => {
+        window.open(started.verification_uri, "_blank", "noopener,noreferrer");
+      });
+    } catch (err) {
+      setWrong(String(err));
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
+  const cancelKimiOAuth = async () => {
+    const id = oauthFlow?.flow_id ?? null;
+    setOauthFlow(null);
+    if (id) {
+      await api.kimiOAuthCancel(id).catch(() => {});
+    }
+  };
+
+  const logoutKimiOAuth = async () => {
+    if (!target) return;
+    setOauthBusy(true);
+    setWrong(null);
+    try {
+      await api.kimiOAuthLogout(target);
+      onRefresh();
+    } catch (err) {
+      setWrong(String(err));
+    } finally {
+      setOauthBusy(false);
+    }
+  };
   const save = async () => {
     const url = takesAddress ? address.trim() : "";
     if (!isCli && !isLocalGateway && !key.trim() && status.source === "none") return setWrong("先把密钥粘贴进来。");
@@ -179,6 +287,7 @@ function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onClose }: K
               editable={false}
               onSave={(id) => {
                 setPicked(id);
+                setAddress("");
                 setWrong(null);
               }}
             />
@@ -191,11 +300,75 @@ function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onClose }: K
           </div>
           <input id="key-name" className="input" placeholder={kind.name} value={name} onChange={(event) => setName(event.target.value)} />
         </div>
+        {isKimi && (
+          <div className="field">
+            <div className="label-line">
+              <label htmlFor="kimi-oauth-region">Kimi 账号 OAuth 登录（免填 API 密钥，支持自动刷新与订阅额度）</label>
+            </div>
+            <div className="inline">
+              <Combo
+                id="kimi-oauth-region"
+                value={kimiRegion}
+                options={[
+                  { value: "mainland-cn", text: "中国大陆站", note: "kimi.com" },
+                  { value: "global", text: "国际站", note: "kimi.ai" },
+                ]}
+                editable={false}
+                onSave={(v) => setKimiRegion(v === "global" ? "global" : "mainland-cn")}
+              />
+              {!oauthFlow ? (
+                <button
+                  type="button"
+                  className="button primary compact"
+                  disabled={oauthBusy || busy}
+                  onClick={() => void startKimiOAuth()}
+                >
+                  {oauthBusy ? "请求授权中…" : status.source === "oauth" ? "重新 OAuth 登录" : "OAuth 账号登录"}
+                </button>
+              ) : (
+                <button type="button" className="button text compact" onClick={() => void cancelKimiOAuth()}>
+                  取消授权
+                </button>
+              )}
+              {status.source === "oauth" && !oauthFlow && (
+                <button type="button" className="button text compact" disabled={oauthBusy} onClick={() => void logoutKimiOAuth()}>
+                  退出登录
+                </button>
+              )}
+            </div>
+            {oauthFlow && (
+              <div className="hint" role="status">
+                <span>
+                  设备验证码：<strong className="mono">{oauthFlow.user_code}</strong>{" "}
+                </span>
+                <button
+                  type="button"
+                  className="inline-link"
+                  onClick={() =>
+                    void api.openExternal(oauthFlow.verification_uri).catch(() => {
+                      window.open(oauthFlow.verification_uri, "_blank", "noopener,noreferrer");
+                    })
+                  }
+                >
+                  打开浏览器授权
+                </button>
+                <span className="muted">（等待浏览器确认授权…）</span>
+              </div>
+            )}
+            {oauthMsg && <p className="hint">{oauthMsg}</p>}
+          </div>
+        )}
         <div className="field">
           {!isCli && (
             <>
               <label htmlFor="key-value">
-                {status.source === "saved" ? "换一个密钥（不换就留空）" : isLocalGateway ? "API 密钥（可选，本机服务默认免密）" : "API 密钥"}
+                {status.source === "saved"
+                  ? "换一个密钥（不换就留空）"
+                  : isKimi
+                    ? "或使用 API 密钥（可选）"
+                    : isLocalGateway
+                      ? "API 密钥（可选，本机服务默认免密）"
+                      : "API 密钥"}
               </label>
               <input
                 id="key-value"
@@ -216,23 +389,30 @@ function KeyDialog({ provider, view, onSavePatch, onSaveKey, onAdd, onClose }: K
         {takesAddress && (
           <div className="field">
             <label htmlFor="key-address">{kind.base_url ? "接口地址（留空用默认）" : "接口地址（必填）"}</label>
-            <input
-              id="key-address"
-              className="input mono"
-              placeholder={kind.base_url || (kind.protocol === "anthropic" ? "https://example.com/anthropic" : "https://example.com/v1")}
-              value={address}
-              onChange={(event) => setAddress(event.target.value)}
-            />
-            {kind.protocol === "anthropic" && !kind.base_url && <p className="hint">填到 /v1 之前为止，请求会发到「地址/v1/messages」，和 ANTHROPIC_BASE_URL 的写法一样。</p>}
-            {kind.other_urls.length > 0 && (
-              <p className="hint">
-                {kind.other_urls.map(([url, what]) => (
-                  <span key={url}>
-                    {what}：<span className="mono">{url}</span>{" "}
-                  </span>
-                ))}
-              </p>
+            {kind.other_urls.length > 0 ? (
+              <Combo
+                id="key-address"
+                value={address}
+                options={[
+                  ...(kind.base_url ? [{ value: kind.base_url, text: kind.base_url, note: "默认" }] : []),
+                  ...kind.other_urls.map(([url, what]) => ({ value: url, text: url, note: what })),
+                ]}
+                editable={true}
+                mono
+                placeholder={kind.base_url || (kind.protocol === "anthropic" ? "https://example.com/anthropic" : "https://example.com/v1")}
+                onSave={(v) => setAddress(v)}
+                onDraftChange={(v) => setAddress(v)}
+              />
+            ) : (
+              <input
+                id="key-address"
+                className="input mono"
+                placeholder={kind.base_url || (kind.protocol === "anthropic" ? "https://example.com/anthropic" : "https://example.com/v1")}
+                value={address}
+                onChange={(event) => setAddress(event.target.value)}
+              />
             )}
+            {kind.protocol === "anthropic" && !kind.base_url && <p className="hint">填到 /v1 之前为止，请求会发到「地址/v1/messages」，和 ANTHROPIC_BASE_URL 的写法一样。</p>}
           </div>
         )}
         {wrong && (
@@ -259,13 +439,14 @@ interface KeyListProps {
   onSaveKey: (provider: string, key: string) => unknown;
   onAdd: (kind: string, name: string) => Promise<Added>;
   onRemove: (provider: string) => unknown;
+  onRefresh: () => void;
 }
 
 /**
  * The providers that are set up, one to a line: which has a key, and where its requests go. One is added, or
  * changed, in a window of its own. The provider new 分身 use is always listed, so a missing key shows.
  */
-function KeyList({ view, onSavePatch, onSaveKey, onAdd, onRemove }: KeyListProps) {
+function KeyList({ view, onSavePatch, onSaveKey, onAdd, onRemove, onRefresh }: KeyListProps) {
   const { settings } = view;
   /** The window that is open: for the provider with this id, or `new` to add one. */
   const [editing, setEditing] = useState<string | null>(null);
@@ -304,9 +485,17 @@ function KeyList({ view, onSavePatch, onSaveKey, onAdd, onRemove }: KeyListProps
           const isDefault = provider.id === settings.provider;
           const enabled = isDefault || !(settings.disabled_providers ?? []).includes(provider.id);
           const address = settings.base_urls[provider.id];
-          const removable = status.source === "saved" || !!address || provider.id !== provider.kind || !!settings.provider_names[provider.id];
+          const removable = status.source === "saved" || status.source === "oauth" || !!address || provider.id !== provider.kind || !!settings.provider_names[provider.id];
           // Where its requests go, when that can be set: the first Anthropic provider's address comes from the environment, and local CLIs have no HTTP URL.
-          const shown = provider.id === "anthropic" || cli ? "" : address || (provider.base_url ? "默认地址" : "未填地址");
+          const presetLabel = address
+            ? address === provider.base_url
+              ? "默认地址"
+              : (provider.other_urls.find(([u]) => u === address)?.[1] ?? address)
+            : provider.base_url
+              ? "默认地址"
+              : "未填地址";
+          const shown = provider.id === "anthropic" || cli ? "" : presetLabel;
+          const shownIsUrl = shown.startsWith("http://") || shown.startsWith("https://");
           return (
             <li key={provider.id} className={enabled ? "" : "off"}>
               <div className="key-who">
@@ -329,10 +518,15 @@ function KeyList({ view, onSavePatch, onSaveKey, onAdd, onRemove }: KeyListProps
                     本机 CLI <span className="mono">{status.preview}</span>
                   </>
                 )}
+                {status.source === "oauth" && (
+                  <>
+                    OAuth{status.preview ? <> · <span className="mono">{status.preview}</span></> : ""}
+                  </>
+                )}
                 {status.source === "none" && (cli ? `未装 ${CLI_INFO[cli].bin}` : "未填密钥")}
               </div>
               {shown && (
-                <div className="key-where mono" title={address || provider.base_url || undefined}>
+                <div className={`key-where ${shownIsUrl ? "mono" : ""}`} title={address || provider.base_url || undefined}>
                   {shown}
                 </div>
               )}
@@ -387,6 +581,7 @@ function KeyList({ view, onSavePatch, onSaveKey, onAdd, onRemove }: KeyListProps
           onSavePatch={onSavePatch}
           onSaveKey={onSaveKey}
           onAdd={onAdd}
+          onRefresh={onRefresh}
           onClose={() => setEditing(null)}
         />
       )}
@@ -414,7 +609,7 @@ const WINDOW_SOURCES: Record<SettingsView["context_window"]["source"], string> =
 };
 
 /** The pages the settings are sorted into: what a 分身 runs on, what it may do, what it can reach, and how the app looks. */
-export type SettingsTab = "model" | "rules" | "tools" | "look";
+export type SettingsTab = "model" | "ledger" | "skills" | "mcp" | "rules" | "tools" | "look" | "about";
 
 /**
  * Which image model the 分身 paints with: the one chosen, while its provider has a key; else the first that has one.
@@ -610,11 +805,33 @@ interface Props {
   onSaveKey: (provider: string, key: string) => unknown;
   onAddProvider: (kind: string, name: string) => Promise<Added>;
   onRemoveProvider: (provider: string) => unknown;
+  onSaveMcp?: (config: string) => Promise<string | null>;
+  initialTab?: SettingsTab;
+  onTabChange?: (tab: SettingsTab) => void;
 }
 
-export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveProvider, onRevoke, onRefresh, listModels }: Props) {
+export function SettingsPage({
+  view,
+  onSave,
+  onSaveKey,
+  onAddProvider,
+  onRemoveProvider,
+  onRevoke,
+  onRefresh,
+  listModels,
+  onSaveMcp,
+  initialTab,
+  onTabChange,
+}: Props) {
   const { locale, setLocale, t } = useI18n();
-  const [tab, setTab] = useState<SettingsTab>("model");
+  const [tab, setTabState] = useState<SettingsTab>(initialTab ?? "model");
+  useEffect(() => {
+    if (initialTab) setTabState(initialTab);
+  }, [initialTab]);
+  const setTab = (next: SettingsTab) => {
+    setTabState(next);
+    onTabChange?.(next);
+  };
   const grants = Object.entries(view.grants);
   const { settings } = view;
 
@@ -712,9 +929,13 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
 
   const tabs: { id: SettingsTab; name: string; hint: string; icon: string }[] = [
     { id: "model", name: t("settings.tabModel"), hint: t("settings.tabModelHint"), icon: "journal-text" },
+    { id: "ledger", name: t("settings.tabLedger"), hint: t("settings.tabLedgerHint"), icon: "bar-chart-fill" },
+    { id: "skills", name: t("nav.skills"), hint: t("nav.skillsTitle"), icon: "book" },
+    { id: "mcp", name: t("nav.mcp"), hint: t("nav.mcpTitle"), icon: "bell" },
     { id: "rules", name: t("settings.tabRules"), hint: t("settings.tabRulesHint"), icon: "shield-check" },
     { id: "tools", name: t("settings.tabTools"), hint: t("settings.tabToolsHint"), icon: "plug" },
     { id: "look", name: t("settings.tabLook"), hint: t("settings.tabLookHint"), icon: "circle-half" },
+    { id: "about", name: t("settings.tabAbout"), hint: t("settings.tabAboutHint"), icon: "info-circle" },
   ];
   const papers: { value: Settings["theme"]; name: string; hint: string; swatches: [string, string][] }[] = [
     { value: "light", name: t("settings.themeLight"), hint: t("settings.themeLightHint"), swatches: [["#FBFCFA", "#1B2A2B"], ["#F6E7A8", "#D9BC55"], ["#B8322A", "#B8322A"]] },
@@ -740,22 +961,22 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
   }));
 
   return (
-    <div className="settings">
-      {/* Inside what scrolls, and kept at its top: the strip then lines up with the column under it, whatever the scrollbar takes. */}
-      <header className="settings-tabs" data-tauri-drag-region>
-        <div className="settings-tabs-inner" data-tauri-drag-region>
-        {tabs.map((item) => (
-          <button type="button" className="tab" key={item.id} aria-pressed={tab === item.id} title={item.hint} onClick={() => setTab(item.id)}>
-            <Icon name={item.icon} size={15} />
-            {item.name}
-          </button>
-        ))}
+    <div className="settings settings-shell">
+      <aside className="settings-nav" aria-label={t("nav.settings")} data-tauri-drag-region>
+        <div className="settings-nav-list">
+          {tabs.map((item) => (
+            <button type="button" className="tab" key={item.id} aria-pressed={tab === item.id} title={item.hint} onClick={() => setTab(item.id)}>
+              <Icon name={item.icon} size={15} />
+              <span>{item.name}</span>
+            </button>
+          ))}
         </div>
-      </header>
+      </aside>
+      <div className="settings-content">
       <div className="settings-inner">
         {tab === "model" && (
           <>
-        <KeyList view={view} onSavePatch={savePatch} onSaveKey={onSaveKey} onAdd={onAddProvider} onRemove={onRemoveProvider} />
+        <KeyList view={view} onSavePatch={savePatch} onSaveKey={onSaveKey} onAdd={onAddProvider} onRemove={onRemoveProvider} onRefresh={onRefresh} />
         <section>
           <h2>
             默认分身
@@ -917,8 +1138,38 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
           )}
         </section>
 
-        {view.keys.antigravity?.source === "cli" && <ModelUsageSection hasAgy />}
           </>
+        )}
+        {tab === "ledger" && (
+          <>
+            <UsagePricingSection />
+            {(view.keys.antigravity?.source === "cli" ||
+              view.providers.some((p) => p.kind === "moonshot" && (view.keys[p.id]?.source ?? "none") !== "none")) && (
+              <ModelUsageSection
+                hasAgy={view.keys.antigravity?.source === "cli"}
+                kimiProviderId={
+                  view.providers.find((p) => p.kind === "moonshot" && (view.keys[p.id]?.source ?? "none") !== "none")?.id ?? null
+                }
+              />
+            )}
+          </>
+        )}
+        {tab === "skills" && (
+          <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
+            <SkillsPage embedded onChanged={onRefresh} />
+          </Suspense>
+        )}
+        {tab === "mcp" && (
+          <Suspense fallback={<div className="viewer-placeholder muted">…</div>}>
+            <McpPage
+              embedded
+              config={view.mcp_config}
+              servers={view.mcp_servers}
+              home={view.home}
+              onRefresh={onRefresh}
+              onSave={onSaveMcp ?? ((cfg) => api.saveMcpConfig(cfg).then(() => (onRefresh(), null), (e) => String(e)))}
+            />
+          </Suspense>
         )}
         {tab === "rules" && (
           <>
@@ -1137,75 +1388,122 @@ export function SettingsPage({ view, onSave, onSaveKey, onAddProvider, onRemoveP
             ))}
           </fieldset>
         </section>
+          </>
+        )}
+        {tab === "about" && (
+          <>
         <UpdateSection version={view.version} />
         <HelpSection />
           </>
         )}
       </div>
+      </div>
     </div>
   );
 }
 
-/** Antigravity subscription quota overview in Settings. */
-function ModelUsageSection({ hasAgy }: { hasAgy: boolean }) {
+/** Subscription quota overview in Settings (Antigravity & Kimi Code Coding Plan). */
+function ModelUsageSection({ hasAgy, kimiProviderId }: { hasAgy: boolean; kimiProviderId: string | null }) {
   const agyQuota = useAntigravityQuota(hasAgy);
+  const kimiQuota = useKimiQuota(kimiProviderId);
 
-  if (!hasAgy) return null;
+  if (!hasAgy && !kimiProviderId) return null;
+
+  const loading = agyQuota.loading || kimiQuota.loading;
+  const refreshAll = () => {
+    if (hasAgy) agyQuota.refresh(true);
+    if (kimiProviderId) kimiQuota.refresh(true);
+  };
 
   return (
     <section>
       <div className="usage-head">
         <h2>
           订阅额度
-          <Info>本机装有 agy 时自动查询 Antigravity 5 小时与周限额。</Info>
+          <Info>自动查询 Antigravity（agy）与 Kimi Code 订阅（/coding/v1/usages）的 5 小时与周限额。</Info>
         </h2>
         <div className="usage-actions">
-          <button
-            type="button"
-            className="button text small"
-            disabled={agyQuota.loading}
-            onClick={() => agyQuota.refresh(true)}
-          >
-            {agyQuota.loading ? "查询额度中…" : "刷新"}
+          <button type="button" className="button text small" disabled={loading} onClick={refreshAll}>
+            {loading ? "查询额度中…" : "刷新"}
           </button>
         </div>
       </div>
-      <div className="quota-panel">
-        <div className="quota-panel-head">
-          <span className="field-label">Antigravity 订阅额度</span>
-          {agyQuota.error && <span className="file-note failed">{agyQuota.error}</span>}
-          {!agyQuota.quota && agyQuota.loading && <span className="muted">正在通过 agy /usage 查询…</span>}
-        </div>
-        {agyQuota.quota && (
-          <div className="quota-groups">
-            {agyQuota.quota.groups.map((group) => (
-              <div className="quota-group" key={group.name}>
-                <div className="quota-group-title" title={group.description ?? undefined}>
-                  {group.name}
-                </div>
-                <div className="quota-buckets">
-                  {group.buckets.map((bucket) => {
-                    const resetIn = formatResetIn(bucket.reset_time, agyQuota.nowMs);
-                    const tone = bucket.remaining_percent < 20 ? "low" : bucket.remaining_percent < 50 ? "mid" : "high";
-                    return (
-                      <div className="quota-bucket" key={bucket.id || bucket.window}>
-                        <div className="quota-bucket-row">
-                          <span className="quota-bucket-name">{quotaWindowLabel(bucket.window, bucket.name)}</span>
-                          <span className={`quota-bucket-pct ${tone}`}>{bucket.remaining_percent}%</span>
-                        </div>
-                        <div className="quota-bar" aria-hidden="true">
-                          <span className={`quota-fill ${tone}`} style={{ width: `${bucket.remaining_percent}%` }} />
-                        </div>
-                        <div className="quota-bucket-meta">{resetIn ? `${resetIn} 后刷新` : "即将刷新"}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+      {hasAgy && (
+        <div className="quota-panel">
+          <div className="quota-panel-head">
+            <span className="field-label">Antigravity 订阅额度</span>
+            {agyQuota.error && <span className="file-note failed">{agyQuota.error}</span>}
+            {!agyQuota.quota && agyQuota.loading && <span className="muted">正在通过 agy /usage 查询…</span>}
           </div>
-        )}
-      </div>
+          {agyQuota.quota && (
+            <div className="quota-groups">
+              {agyQuota.quota.groups.map((group) => (
+                <div className="quota-group" key={group.name}>
+                  <div className="quota-group-title" title={group.description ?? undefined}>
+                    {group.name}
+                  </div>
+                  <div className="quota-buckets">
+                    {group.buckets.map((bucket) => {
+                      const resetIn = formatResetIn(bucket.reset_time, agyQuota.nowMs);
+                      const tone = bucket.remaining_percent < 20 ? "low" : bucket.remaining_percent < 50 ? "mid" : "high";
+                      return (
+                        <div className="quota-bucket" key={bucket.id || bucket.window}>
+                          <div className="quota-bucket-row">
+                            <span className="quota-bucket-name">{quotaWindowLabel(bucket.window, bucket.name)}</span>
+                            <span className={`quota-bucket-pct ${tone}`}>{bucket.remaining_percent}%</span>
+                          </div>
+                          <div className="quota-bar" aria-hidden="true">
+                            <span className={`quota-fill ${tone}`} style={{ width: `${bucket.remaining_percent}%` }} />
+                          </div>
+                          <div className="quota-bucket-meta">{resetIn ? `${resetIn} 后刷新` : "即将刷新"}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {kimiProviderId && (
+        <div className="quota-panel">
+          <div className="quota-panel-head">
+            <span className="field-label">Kimi Code 订阅额度</span>
+            {kimiQuota.error && <span className="file-note failed">{kimiQuota.error}</span>}
+            {!kimiQuota.quota && kimiQuota.loading && <span className="muted">正在查询 Kimi 订阅额度…</span>}
+          </div>
+          {kimiQuota.quota && (
+            <div className="quota-groups">
+              {kimiQuota.quota.groups.map((group) => (
+                <div className="quota-group" key={group.name}>
+                  <div className="quota-group-title" title={group.description ?? undefined}>
+                    {group.name}
+                  </div>
+                  <div className="quota-buckets">
+                    {group.buckets.map((bucket) => {
+                      const resetIn = formatResetIn(bucket.reset_time, kimiQuota.nowMs);
+                      const tone = bucket.remaining_percent < 20 ? "low" : bucket.remaining_percent < 50 ? "mid" : "high";
+                      return (
+                        <div className="quota-bucket" key={bucket.id || bucket.window}>
+                          <div className="quota-bucket-row">
+                            <span className="quota-bucket-name">{quotaWindowLabel(bucket.window, bucket.name)}</span>
+                            <span className={`quota-bucket-pct ${tone}`}>{bucket.remaining_percent}%</span>
+                          </div>
+                          <div className="quota-bar" aria-hidden="true">
+                            <span className={`quota-fill ${tone}`} style={{ width: `${bucket.remaining_percent}%` }} />
+                          </div>
+                          <div className="quota-bucket-meta">{resetIn ? `${resetIn} 后刷新` : "即将刷新"}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }

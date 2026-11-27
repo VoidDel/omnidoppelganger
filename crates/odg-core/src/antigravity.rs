@@ -231,7 +231,7 @@ pub fn parse_tokens(usage: &Value) -> Option<Tokens> {
     let cache_write = count("cache_creation_input_tokens").max(count("cache_write_tokens"));
     let input = count("input_tokens") + cached + cache_write;
     let output = count("output_tokens");
-    (input > 0 || output > 0).then_some(Tokens { input, cached, output })
+    (input > 0 || output > 0).then_some(Tokens { input, cached, cache_write: 0, output })
 }
 
 /// Normalized NDJSON event parsed from one line of `agy --output-format stream-json`.
@@ -803,6 +803,7 @@ mod tests {
                 tokens: Some(Tokens {
                     input: 150,
                     cached: 50,
+                    cache_write: 0,
                     output: 5
                 }),
             })

@@ -15,6 +15,7 @@ export interface Image {
 export interface Tokens {
   input: number;
   cached: number;
+  cache_write?: number;
   output: number;
 }
 
@@ -301,6 +302,38 @@ export interface Todo {
   status: "pending" | "in_progress" | "done";
 }
 
+export type Currency = "USD" | "CNY";
+export type PriceSource = "custom" | "models_dev" | "builtin";
+export type BillingMode = "api" | "subscription" | "local";
+
+/** Per-1M-token rate card resolved by Rust `odg_core::pricing`. */
+export interface PriceRate {
+  currency: Currency;
+  input_per_m: number;
+  cached_per_m: number;
+  cache_write_per_m: number;
+  output_per_m: number;
+  source: PriceSource;
+}
+
+export interface PriceCatalogEntry {
+  key: string;
+  provider?: string | null;
+  model: string;
+  name?: string | null;
+  rate: PriceRate;
+  context_window?: number | null;
+}
+
+export interface PriceCatalogView {
+  synced_at?: string | null;
+  models_dev_count: number;
+  custom_count: number;
+  usd_to_cny: number;
+  custom: PriceCatalogEntry[];
+  effective: PriceCatalogEntry[];
+}
+
 /** Per-model accumulated token usage and active rate-limit / quota cooldown. */
 export interface ModelUsageEntry {
   provider: string;
@@ -308,15 +341,101 @@ export interface ModelUsageEntry {
   requests: number;
   input_tokens: number;
   cached_tokens: number;
+  cache_write_tokens?: number;
   output_tokens: number;
+  total_cost_usd?: number;
   today_key: string;
   today_requests: number;
   today_input_tokens: number;
   today_cached_tokens: number;
+  today_cache_write_tokens?: number;
   today_output_tokens: number;
+  today_cost_usd?: number;
   last_used_at?: string | null;
   cooldown_until?: string | null;
   cooldown_reason?: string | null;
+}
+
+export interface UsageLedgerEntry {
+  ts: string;
+  session_id?: string | null;
+  provider: string;
+  requested_model: string;
+  served_model: string;
+  billing_mode: BillingMode;
+  tokens: Tokens;
+  cost?: number | null;
+  currency?: Currency | null;
+  cost_usd?: number | null;
+  price_source?: PriceSource | null;
+}
+
+export interface UsageGroupSummary {
+  provider: string;
+  billing_mode: BillingMode;
+  requests: number;
+  input_tokens: number;
+  cached_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  api_cost_usd: number;
+  api_cost_cny: number;
+  api_total_usd_equiv: number;
+  subscription_equiv_usd: number;
+}
+
+export interface UsageModelSummary {
+  provider: string;
+  model: string;
+  billing_mode: BillingMode;
+  requests: number;
+  input_tokens: number;
+  cached_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  native_cost: number;
+  native_currency?: Currency | null;
+  cost_usd_equiv: number;
+  last_used_at?: string | null;
+}
+
+export interface UsageSessionSummary {
+  session_id: string;
+  requests: number;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  api_cost_usd: number;
+  subscription_equiv_usd: number;
+  last_ts: string;
+}
+
+export interface UsageDaySummary {
+  day: string;
+  requests: number;
+  total_tokens: number;
+  api_cost_usd: number;
+  subscription_equiv_usd: number;
+}
+
+export interface UsageLedgerSummary {
+  window_days?: number | null;
+  total_requests: number;
+  total_input_tokens: number;
+  total_cached_tokens: number;
+  total_cache_write_tokens: number;
+  total_output_tokens: number;
+  api_cost_usd: number;
+  api_cost_cny: number;
+  api_total_usd_equiv: number;
+  subscription_equiv_usd: number;
+  subscription_equiv_cny: number;
+  subscription_total_usd_equiv: number;
+  by_provider: UsageGroupSummary[];
+  by_model: UsageModelSummary[];
+  by_session: UsageSessionSummary[];
+  by_day: UsageDaySummary[];
+  recent: UsageLedgerEntry[];
 }
 
 /** One rolling quota window returned by `agy -p /usage --output-format json`. */
@@ -473,10 +592,29 @@ export interface ListedModel {
 export type RawListedModel = [string, string, boolean?] | ListedModel;
 
 export interface KeyStatus {
-  source: "saved" | "env" | "cli" | "none";
+  source: "saved" | "env" | "cli" | "oauth" | "none";
   preview: string | null;
   /** The saved key is in a plain-text file, not in the system's credential manager. */
   plaintext: boolean;
+}
+
+export type KimiRegion = "mainland-cn" | "global";
+
+export interface KimiOAuthStart {
+  flow_id: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+}
+
+export interface KimiOAuthPoll {
+  authenticated: boolean;
+  interval: number;
+  ended: string | null;
+  provider_id: string | null;
+  nickname: string | null;
+  plan_name: string | null;
 }
 
 export type CliBackend = "antigravity" | "codex" | "claude_code" | "cursor" | "grok" | "opencode";

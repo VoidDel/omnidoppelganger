@@ -5,6 +5,7 @@
 //! API provider, and external CLI engine (`agy`, `codex`, `claude`, `cursor`, `grok`, `opencode`).
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -14,10 +15,11 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::Tokens;
+use crate::pricing::{BillingMode, Currency, PriceSource};
 use crate::sync_ext::MutexExt;
 
 /// Persisted usage and cooldown snapshot for one `(provider, model)` pair.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelUsageEntry {
     pub provider: String,
     pub model: String,
@@ -28,7 +30,11 @@ pub struct ModelUsageEntry {
     #[serde(default)]
     pub cached_tokens: u64,
     #[serde(default)]
+    pub cache_write_tokens: u64,
+    #[serde(default)]
     pub output_tokens: u64,
+    #[serde(default)]
+    pub total_cost_usd: f64,
     #[serde(default)]
     pub today_key: String,
     #[serde(default)]
@@ -38,13 +44,115 @@ pub struct ModelUsageEntry {
     #[serde(default)]
     pub today_cached_tokens: u64,
     #[serde(default)]
+    pub today_cache_write_tokens: u64,
+    #[serde(default)]
     pub today_output_tokens: u64,
+    #[serde(default)]
+    pub today_cost_usd: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cooldown_until: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cooldown_reason: Option<String>,
+}
+
+/// One append-only turn record in `~/.odg/usage-ledger.v1.jsonl`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageLedgerEntry {
+    pub ts: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub provider: String,
+    pub requested_model: String,
+    pub served_model: String,
+    #[serde(default)]
+    pub billing_mode: BillingMode,
+    pub tokens: Tokens,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<Currency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_source: Option<PriceSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageGroupSummary {
+    pub provider: String,
+    pub billing_mode: BillingMode,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub cached_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
+    pub api_cost_usd: f64,
+    pub api_cost_cny: f64,
+    pub api_total_usd_equiv: f64,
+    pub subscription_equiv_usd: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageModelSummary {
+    pub provider: String,
+    pub model: String,
+    pub billing_mode: BillingMode,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub cached_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
+    pub native_cost: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_currency: Option<Currency>,
+    pub cost_usd_equiv: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageSessionSummary {
+    pub session_id: String,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub cached_tokens: u64,
+    pub output_tokens: u64,
+    pub api_cost_usd: f64,
+    pub subscription_equiv_usd: f64,
+    pub last_ts: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageDaySummary {
+    pub day: String,
+    pub requests: u64,
+    pub total_tokens: u64,
+    pub api_cost_usd: f64,
+    pub subscription_equiv_usd: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageLedgerSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_days: Option<u32>,
+    pub total_requests: u64,
+    pub total_input_tokens: u64,
+    pub total_cached_tokens: u64,
+    pub total_cache_write_tokens: u64,
+    pub total_output_tokens: u64,
+    pub api_cost_usd: f64,
+    pub api_cost_cny: f64,
+    pub api_total_usd_equiv: f64,
+    pub subscription_equiv_usd: f64,
+    pub subscription_equiv_cny: f64,
+    pub subscription_total_usd_equiv: f64,
+    pub by_provider: Vec<UsageGroupSummary>,
+    pub by_model: Vec<UsageModelSummary>,
+    pub by_session: Vec<UsageSessionSummary>,
+    pub by_day: Vec<UsageDaySummary>,
+    pub recent: Vec<UsageLedgerEntry>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -67,7 +175,9 @@ fn rollover_today(entry: &mut ModelUsageEntry, today: &str) {
         entry.today_requests = 0;
         entry.today_input_tokens = 0;
         entry.today_cached_tokens = 0;
+        entry.today_cache_write_tokens = 0;
         entry.today_output_tokens = 0;
+        entry.today_cost_usd = 0.0;
     }
 }
 
@@ -87,7 +197,9 @@ const USAGE_FLUSH_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs
 
 struct StoreInner {
     path: PathBuf,
+    ledger_path: PathBuf,
     data: Mutex<UsageFile>,
+    pending_ledger: Mutex<Vec<UsageLedgerEntry>>,
     dirty: AtomicBool,
     flush_scheduled: AtomicBool,
 }
@@ -95,8 +207,16 @@ struct StoreInner {
 impl StoreInner {
     fn flush_sync(&self) {
         let guard = self.data.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = {
+            let mut pl = self.pending_ledger.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *pl)
+        };
         if self.dirty.swap(false, Ordering::AcqRel) {
             save_file(&self.path, &guard);
+        }
+        drop(guard);
+        if !pending.is_empty() {
+            append_ledger_entries(&self.ledger_path, &pending);
         }
     }
 
@@ -118,7 +238,7 @@ impl StoreInner {
     }
 }
 
-/// Thread-safe store of per-model token usage and cooldown timers.
+/// Thread-safe store of per-model token usage, append-only cost ledger, and cooldown timers.
 pub struct ModelUsageStore {
     inner: Arc<StoreInner>,
 }
@@ -130,7 +250,7 @@ impl Drop for ModelUsageStore {
 }
 
 impl ModelUsageStore {
-    /// Process-wide store backed by `~/.odg/model-usage.json`.
+    /// Process-wide store backed by `~/.odg/model-usage.json` and `~/.odg/usage-ledger.v1.jsonl`.
     pub fn global() -> &'static Self {
         static STORE: OnceLock<ModelUsageStore> = OnceLock::new();
         STORE.get_or_init(|| Self::at(crate::settings::home().join("model-usage.json")))
@@ -139,11 +259,18 @@ impl ModelUsageStore {
     /// Open (or create) a store at an explicit path.
     pub fn at(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
+        let ledger_path = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join("usage-ledger.v1.jsonl");
         let file = load_file(&path);
         Self {
             inner: Arc::new(StoreInner {
                 path,
+                ledger_path,
                 data: Mutex::new(file),
+                pending_ledger: Mutex::new(Vec::new()),
                 dirty: AtomicBool::new(false),
                 flush_scheduled: AtomicBool::new(false),
             }),
@@ -186,13 +313,38 @@ impl ModelUsageStore {
 
     /// Record token usage from one completed assistant message / turn.
     pub fn record_usage(&self, provider: &str, model: &str, tokens: &Tokens) {
+        self.record_turn_usage(None, provider, model, model, tokens);
+    }
+
+    /// Record token usage with session attribution and requested vs served model distinction.
+    pub fn record_turn_usage(
+        &self,
+        session_id: Option<&str>,
+        provider: &str,
+        requested_model: &str,
+        served_model: &str,
+        tokens: &Tokens,
+    ) {
         let provider = provider.trim();
-        let model = model.trim();
+        let served_model = served_model.trim();
+        let requested_model = requested_model.trim();
+        let model = if served_model.is_empty() {
+            requested_model
+        } else {
+            served_model
+        };
         if provider.is_empty() || model.is_empty() {
             return;
         }
         let today = today_string();
         let now = Utc::now().to_rfc3339();
+        let billing_mode = crate::pricing::billing_mode_for(provider, self.inner.path.parent());
+        let cost_est = if billing_mode == BillingMode::Local {
+            None
+        } else {
+            crate::pricing::estimate_catalog_cost(provider, model, *tokens)
+        };
+        let cost_usd_delta = cost_est.map_or(0.0, |c| c.usd_equiv);
         {
             let mut guard = self.inner.data.lock_unpoisoned();
             let key = entry_key(provider, model);
@@ -202,12 +354,16 @@ impl ModelUsageStore {
                 requests: 0,
                 input_tokens: 0,
                 cached_tokens: 0,
+                cache_write_tokens: 0,
                 output_tokens: 0,
+                total_cost_usd: 0.0,
                 today_key: today.clone(),
                 today_requests: 0,
                 today_input_tokens: 0,
                 today_cached_tokens: 0,
+                today_cache_write_tokens: 0,
                 today_output_tokens: 0,
+                today_cost_usd: 0.0,
                 last_used_at: None,
                 cooldown_until: None,
                 cooldown_reason: None,
@@ -216,16 +372,40 @@ impl ModelUsageStore {
             entry.requests = entry.requests.saturating_add(1);
             entry.input_tokens = entry.input_tokens.saturating_add(tokens.input);
             entry.cached_tokens = entry.cached_tokens.saturating_add(tokens.cached);
+            entry.cache_write_tokens = entry.cache_write_tokens.saturating_add(tokens.cache_write);
             entry.output_tokens = entry.output_tokens.saturating_add(tokens.output);
+            entry.total_cost_usd += cost_usd_delta;
             entry.today_requests = entry.today_requests.saturating_add(1);
             entry.today_input_tokens = entry.today_input_tokens.saturating_add(tokens.input);
             entry.today_cached_tokens = entry.today_cached_tokens.saturating_add(tokens.cached);
+            entry.today_cache_write_tokens = entry.today_cache_write_tokens.saturating_add(tokens.cache_write);
             entry.today_output_tokens = entry.today_output_tokens.saturating_add(tokens.output);
-            entry.last_used_at = Some(now);
+            entry.today_cost_usd += cost_usd_delta;
+            entry.last_used_at = Some(now.clone());
             // A successful response means the model is no longer cooling down.
             entry.cooldown_until = None;
             entry.cooldown_reason = None;
             self.inner.dirty.store(true, Ordering::Release);
+        }
+        {
+            let mut pl = self.inner.pending_ledger.lock_unpoisoned();
+            pl.push(UsageLedgerEntry {
+                ts: now,
+                session_id: session_id.map(|s| s.to_string()),
+                provider: provider.to_string(),
+                requested_model: if requested_model.is_empty() {
+                    model.to_string()
+                } else {
+                    requested_model.to_string()
+                },
+                served_model: model.to_string(),
+                billing_mode,
+                tokens: *tokens,
+                cost: cost_est.map(|c| c.amount),
+                currency: cost_est.map(|c| c.currency),
+                cost_usd: cost_est.map(|c| c.usd_equiv),
+                price_source: cost_est.map(|c| c.source),
+            });
         }
         self.schedule_debounced_flush();
     }
@@ -246,12 +426,16 @@ impl ModelUsageStore {
             requests: 0,
             input_tokens: 0,
             cached_tokens: 0,
+            cache_write_tokens: 0,
             output_tokens: 0,
+            total_cost_usd: 0.0,
             today_key: today.clone(),
             today_requests: 0,
             today_input_tokens: 0,
             today_cached_tokens: 0,
+            today_cache_write_tokens: 0,
             today_output_tokens: 0,
+            today_cost_usd: 0.0,
             last_used_at: Some(Utc::now().to_rfc3339()),
             cooldown_until: None,
             cooldown_reason: None,
@@ -285,12 +469,244 @@ impl ModelUsageStore {
         }
     }
 
-    /// Clear all usage statistics and cooldowns.
+    /// Clear all usage statistics, ledger history, and cooldowns.
     pub fn reset_all(&self) {
         let mut guard = self.inner.data.lock_unpoisoned();
         guard.entries.clear();
+        self.inner.pending_ledger.lock_unpoisoned().clear();
         self.inner.dirty.store(false, Ordering::Release);
         save_file(&self.inner.path, &guard);
+        let _ = std::fs::remove_file(&self.inner.ledger_path);
+    }
+
+    /// Aggregate ledger entries within `window_days` (`Some(1)` = today local time, `Some(7)` = last 7 days, `None` = all).
+    pub fn summarize_ledger(&self, window_days: Option<u32>) -> UsageLedgerSummary {
+        let mut entries = load_ledger_entries(&self.inner.ledger_path);
+        {
+            let pending = self.inner.pending_ledger.lock_unpoisoned();
+            entries.extend(pending.iter().cloned());
+        }
+
+        let today_local = Local::now().date_naive();
+        let cutoff_date = window_days.and_then(|days| {
+            if days <= 1 {
+                Some(today_local)
+            } else {
+                today_local.checked_sub_days(chrono::Days::new(u64::from(days - 1)))
+            }
+        });
+
+        let mut total_requests = 0u64;
+        let mut total_input_tokens = 0u64;
+        let mut total_cached_tokens = 0u64;
+        let mut total_cache_write_tokens = 0u64;
+        let mut total_output_tokens = 0u64;
+        let mut api_cost_usd = 0.0f64;
+        let mut api_cost_cny = 0.0f64;
+        let mut api_total_usd_equiv = 0.0f64;
+        let mut subscription_equiv_usd = 0.0f64;
+        let mut subscription_equiv_cny = 0.0f64;
+        let mut subscription_total_usd_equiv = 0.0f64;
+
+        let mut by_provider: BTreeMap<String, UsageGroupSummary> = BTreeMap::new();
+        let mut by_model: BTreeMap<String, UsageModelSummary> = BTreeMap::new();
+        let mut by_session: BTreeMap<String, UsageSessionSummary> = BTreeMap::new();
+        let mut by_day: BTreeMap<String, UsageDaySummary> = BTreeMap::new();
+        let mut filtered: Vec<UsageLedgerEntry> = Vec::new();
+
+        for item in entries {
+            let local_date = DateTime::parse_from_rfc3339(&item.ts)
+                .map(|dt| dt.with_timezone(&Local).date_naive())
+                .unwrap_or(today_local);
+            if let Some(min_date) = cutoff_date
+                && local_date < min_date
+            {
+                continue;
+            }
+            let day_key = local_date.format("%Y-%m-%d").to_string();
+            let cost_usd = item.cost_usd.unwrap_or(0.0);
+            let native_cost = item.cost.unwrap_or(0.0);
+
+            total_requests = total_requests.saturating_add(1);
+            total_input_tokens = total_input_tokens.saturating_add(item.tokens.input);
+            total_cached_tokens = total_cached_tokens.saturating_add(item.tokens.cached);
+            total_cache_write_tokens = total_cache_write_tokens.saturating_add(item.tokens.cache_write);
+            total_output_tokens = total_output_tokens.saturating_add(item.tokens.output);
+
+            let (api_usd_delta, sub_usd_delta) = match item.billing_mode {
+                BillingMode::Api => {
+                    match item.currency {
+                        Some(Currency::Cny) => api_cost_cny += native_cost,
+                        Some(Currency::Usd) => api_cost_usd += native_cost,
+                        None => {}
+                    }
+                    api_total_usd_equiv += cost_usd;
+                    (cost_usd, 0.0)
+                }
+                BillingMode::Subscription => {
+                    match item.currency {
+                        Some(Currency::Cny) => subscription_equiv_cny += native_cost,
+                        Some(Currency::Usd) => subscription_equiv_usd += native_cost,
+                        None => {}
+                    }
+                    subscription_total_usd_equiv += cost_usd;
+                    (0.0, cost_usd)
+                }
+                BillingMode::Local => (0.0, 0.0),
+            };
+
+            let p_entry = by_provider
+                .entry(item.provider.clone())
+                .or_insert_with(|| UsageGroupSummary {
+                    provider: item.provider.clone(),
+                    billing_mode: item.billing_mode,
+                    requests: 0,
+                    input_tokens: 0,
+                    cached_tokens: 0,
+                    cache_write_tokens: 0,
+                    output_tokens: 0,
+                    api_cost_usd: 0.0,
+                    api_cost_cny: 0.0,
+                    api_total_usd_equiv: 0.0,
+                    subscription_equiv_usd: 0.0,
+                });
+            p_entry.requests = p_entry.requests.saturating_add(1);
+            p_entry.input_tokens = p_entry.input_tokens.saturating_add(item.tokens.input);
+            p_entry.cached_tokens = p_entry.cached_tokens.saturating_add(item.tokens.cached);
+            p_entry.cache_write_tokens = p_entry.cache_write_tokens.saturating_add(item.tokens.cache_write);
+            p_entry.output_tokens = p_entry.output_tokens.saturating_add(item.tokens.output);
+            if item.billing_mode == BillingMode::Api {
+                match item.currency {
+                    Some(Currency::Cny) => p_entry.api_cost_cny += native_cost,
+                    Some(Currency::Usd) => p_entry.api_cost_usd += native_cost,
+                    None => {}
+                }
+            }
+            p_entry.api_total_usd_equiv += api_usd_delta;
+            p_entry.subscription_equiv_usd += sub_usd_delta;
+
+            let m_key = entry_key(&item.provider, &item.served_model);
+            let m_entry = by_model.entry(m_key).or_insert_with(|| UsageModelSummary {
+                provider: item.provider.clone(),
+                model: item.served_model.clone(),
+                billing_mode: item.billing_mode,
+                requests: 0,
+                input_tokens: 0,
+                cached_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 0,
+                native_cost: 0.0,
+                native_currency: item.currency,
+                cost_usd_equiv: 0.0,
+                last_used_at: None,
+            });
+            m_entry.requests = m_entry.requests.saturating_add(1);
+            m_entry.input_tokens = m_entry.input_tokens.saturating_add(item.tokens.input);
+            m_entry.cached_tokens = m_entry.cached_tokens.saturating_add(item.tokens.cached);
+            m_entry.cache_write_tokens = m_entry.cache_write_tokens.saturating_add(item.tokens.cache_write);
+            m_entry.output_tokens = m_entry.output_tokens.saturating_add(item.tokens.output);
+            if m_entry.native_currency == item.currency {
+                m_entry.native_cost += native_cost;
+            } else if m_entry.native_currency.is_none() {
+                m_entry.native_currency = item.currency;
+                m_entry.native_cost += native_cost;
+            } else {
+                // Mixed currencies for the same model: fall back to USD equivalent display.
+                m_entry.native_currency = Some(Currency::Usd);
+                m_entry.native_cost = m_entry.cost_usd_equiv + cost_usd;
+            }
+            m_entry.cost_usd_equiv += cost_usd;
+            m_entry.last_used_at = Some(item.ts.clone());
+
+            if let Some(ref sid) = item.session_id
+                && !sid.is_empty()
+            {
+                let s_entry = by_session
+                    .entry(sid.clone())
+                    .or_insert_with(|| UsageSessionSummary {
+                        session_id: sid.clone(),
+                        requests: 0,
+                        input_tokens: 0,
+                        cached_tokens: 0,
+                        output_tokens: 0,
+                        api_cost_usd: 0.0,
+                        subscription_equiv_usd: 0.0,
+                        last_ts: item.ts.clone(),
+                    });
+                s_entry.requests = s_entry.requests.saturating_add(1);
+                s_entry.input_tokens = s_entry.input_tokens.saturating_add(item.tokens.input);
+                s_entry.cached_tokens = s_entry.cached_tokens.saturating_add(item.tokens.cached);
+                s_entry.output_tokens = s_entry.output_tokens.saturating_add(item.tokens.output);
+                s_entry.api_cost_usd += api_usd_delta;
+                s_entry.subscription_equiv_usd += sub_usd_delta;
+                if item.ts > s_entry.last_ts {
+                    s_entry.last_ts = item.ts.clone();
+                }
+            }
+
+            let d_entry = by_day.entry(day_key.clone()).or_insert_with(|| UsageDaySummary {
+                day: day_key,
+                requests: 0,
+                total_tokens: 0,
+                api_cost_usd: 0.0,
+                subscription_equiv_usd: 0.0,
+            });
+            d_entry.requests = d_entry.requests.saturating_add(1);
+            d_entry.total_tokens = d_entry
+                .total_tokens
+                .saturating_add(item.tokens.input.saturating_add(item.tokens.output));
+            d_entry.api_cost_usd += api_usd_delta;
+            d_entry.subscription_equiv_usd += sub_usd_delta;
+
+            filtered.push(item);
+        }
+
+        let mut provider_list: Vec<UsageGroupSummary> = by_provider.into_values().collect();
+        provider_list.sort_by(|a, b| {
+            (b.api_total_usd_equiv + b.subscription_equiv_usd)
+                .total_cmp(&(a.api_total_usd_equiv + a.subscription_equiv_usd))
+                .then_with(|| (b.input_tokens + b.output_tokens).cmp(&(a.input_tokens + a.output_tokens)))
+        });
+
+        let mut model_list: Vec<UsageModelSummary> = by_model.into_values().collect();
+        model_list.sort_by(|a, b| {
+            b.cost_usd_equiv
+                .total_cmp(&a.cost_usd_equiv)
+                .then_with(|| (b.input_tokens + b.output_tokens).cmp(&(a.input_tokens + a.output_tokens)))
+        });
+
+        let mut session_list: Vec<UsageSessionSummary> = by_session.into_values().collect();
+        session_list.sort_by(|a, b| {
+            (b.api_cost_usd + b.subscription_equiv_usd)
+                .total_cmp(&(a.api_cost_usd + a.subscription_equiv_usd))
+                .then_with(|| b.last_ts.cmp(&a.last_ts))
+        });
+        session_list.truncate(20);
+
+        let day_list: Vec<UsageDaySummary> = by_day.into_values().collect();
+
+        filtered.reverse();
+        filtered.truncate(50);
+
+        UsageLedgerSummary {
+            window_days,
+            total_requests,
+            total_input_tokens,
+            total_cached_tokens,
+            total_cache_write_tokens,
+            total_output_tokens,
+            api_cost_usd,
+            api_cost_cny,
+            api_total_usd_equiv,
+            subscription_equiv_usd,
+            subscription_equiv_cny,
+            subscription_total_usd_equiv,
+            by_provider: provider_list,
+            by_model: model_list,
+            by_session: session_list,
+            by_day: day_list,
+            recent: filtered,
+        }
     }
 
     /// Return all entries, rolling over stale `today_*` counters and pruning expired cooldowns.
@@ -466,6 +882,33 @@ fn save_file(path: &Path, file: &UsageFile) {
     }
 }
 
+fn append_ledger_entries(path: &Path, entries: &[UsageLedgerEntry]) {
+    if entries.is_empty() {
+        return;
+    }
+    if let Some(parent) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = crate::fsutil::ensure_private_dir(parent);
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    for entry in entries {
+        if let Ok(line) = serde_json::to_string(entry) {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+fn load_ledger_entries(path: &Path) -> Vec<UsageLedgerEntry> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<UsageLedgerEntry>(line).ok())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +936,7 @@ mod tests {
             &Tokens {
                 input: 1000,
                 cached: 400,
+                cache_write: 0,
                 output: 250,
             },
         );
@@ -502,6 +946,7 @@ mod tests {
             &Tokens {
                 input: 500,
                 cached: 100,
+                cache_write: 0,
                 output: 50,
             },
         );
@@ -519,6 +964,51 @@ mod tests {
         assert!(entry.cooldown_until.is_none());
     }
 
+    #[test]
+    fn ledger_tracks_requested_vs_served_and_separates_api_from_subscription() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model-usage.json");
+        let store = ModelUsageStore::at(&path);
+
+        store.record_turn_usage(
+            Some("sess-1"),
+            "moonshot",
+            "auto",
+            "kimi-k3.1-pro",
+            &Tokens {
+                input: 1_000_000,
+                cached: 500_000,
+                cache_write: 100_000,
+                output: 100_000,
+            },
+        );
+        store.record_turn_usage(
+            Some("sess-1"),
+            "claude_code",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-6",
+            &Tokens {
+                input: 100_000,
+                cached: 0,
+                cache_write: 0,
+                output: 10_000,
+            },
+        );
+        store.flush_sync();
+
+        let summary = ModelUsageStore::at(&path).summarize_ledger(Some(7));
+        assert_eq!(summary.total_requests, 2);
+        assert_eq!(summary.total_cache_write_tokens, 100_000);
+        assert!(summary.api_cost_cny > 0.0 || summary.api_cost_usd > 0.0);
+        assert!(summary.api_total_usd_equiv > 0.0);
+        assert!(summary.subscription_total_usd_equiv > 0.0);
+        assert_eq!(summary.by_session.len(), 1);
+        assert_eq!(summary.by_session[0].session_id, "sess-1");
+        assert_eq!(summary.recent.len(), 2);
+        assert_eq!(summary.recent[1].requested_model, "auto");
+        assert_eq!(summary.recent[1].served_model, "kimi-k3.1-pro");
+    }
+
     #[tokio::test]
     async fn debounces_usage_writes_and_flushes_on_demand_or_timer() {
         let dir = tempfile::tempdir().unwrap();
@@ -531,6 +1021,7 @@ mod tests {
             &Tokens {
                 input: 300,
                 cached: 100,
+                cache_write: 0,
                 output: 40,
             },
         );
@@ -553,6 +1044,7 @@ mod tests {
             &Tokens {
                 input: 200,
                 cached: 0,
+                cache_write: 0,
                 output: 10,
             },
         );

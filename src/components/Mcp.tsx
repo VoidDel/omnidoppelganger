@@ -431,10 +431,11 @@ interface Props {
   /** Resolves with what is wrong with the text, or null once it is saved and the servers are connecting. */
   onSave: (config: string) => Promise<string | null>;
   onRefresh: () => void;
+  embedded?: boolean;
 }
 
 /** The 法器 page: MCP servers that come with the app, each off until switched on, and the list as text for any other. */
-export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
+export function McpPage({ config, servers, home, onSave, onRefresh, embedded = false }: Props) {
   const [draft, setDraft] = useState(config);
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -487,9 +488,8 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
       onSwitch={(on, key) => switchTo(builtin, on, key)}
     />
   );
-  return (
-    <div className="settings">
-      <div className="settings-inner">
+  const body = (
+    <>
         <section>
           <h1>法器</h1>
           <p className="lead">
@@ -599,9 +599,23 @@ export function McpPage({ config, servers, home, onSave, onRefresh }: Props) {
             </div>
           </details>
         </section>
-      </div>
-      {/* Its close comes a moment after it shuts: it lets go only of the window it opened, not one opened since. */}
-      {dialog && <ServerDialog key={dialog.editing ?? ""} config={config} editing={dialog.editing} onSave={save} onClose={() => setDialog((now) => (now === dialog ? null : now))} />}
+    </>
+  );
+  const modal = dialog && (
+    <ServerDialog key={dialog.editing ?? ""} config={config} editing={dialog.editing} onSave={save} onClose={() => setDialog((now) => (now === dialog ? null : now))} />
+  );
+  if (embedded) {
+    return (
+      <>
+        {body}
+        {modal}
+      </>
+    );
+  }
+  return (
+    <div className="settings">
+      <div className="settings-inner">{body}</div>
+      {modal}
     </div>
   );
 }

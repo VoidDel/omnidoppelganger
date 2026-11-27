@@ -246,6 +246,7 @@ fn replays_anthropic_golden_fixture_across_1_to_7_byte_utf8_boundaries() {
         Some(Tokens {
             input: 2220,
             cached: 1800,
+            cache_write: 0,
             output: 95
         })
     );
@@ -286,6 +287,7 @@ fn replays_openai_responses_golden_fixture_across_1_to_7_byte_utf8_boundaries() 
         Some(Tokens {
             input: 3400,
             cached: 2048,
+            cache_write: 0,
             output: 140
         })
     );
@@ -317,6 +319,7 @@ fn replays_gemini_golden_fixture_across_1_to_7_byte_utf8_boundaries() {
         Some(Tokens {
             input: 4096,
             cached: 3072,
+            cache_write: 0,
             output: 130
         })
     );
@@ -354,6 +357,7 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
         Some(Tokens {
             input: 2500,
             cached: 1900,
+            cache_write: 0,
             output: 110
         })
     );
@@ -374,6 +378,7 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
         Some(Tokens {
             input: 1800,
             cached: 1200,
+            cache_write: 0,
             output: 75
         })
     );
@@ -463,6 +468,7 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
         Some(Tokens {
             input: 1600,
             cached: 800,
+            cache_write: 0,
             output: 64
         })
     );
@@ -482,6 +488,7 @@ fn replays_deepseek_kimi_glm_and_openrouter_golden_fixtures_across_1_to_7_byte_b
         Some(Tokens {
             input: 3000,
             cached: 1500,
+            cache_write: 0,
             output: 92
         })
     );
@@ -731,6 +738,7 @@ fn replay_cli_ndjson(kind: CliKind, raw: &[u8], plan: ChunkPlan) -> CliReplaySum
                         (Some((_, pt)), Some(t)) => Some(Tokens {
                             input: pt.input + t.input,
                             cached: pt.cached + t.cached,
+                            cache_write: 0,
                             output: pt.output + t.output,
                         }),
                     };
@@ -816,6 +824,7 @@ fn replay_cli_ndjson(kind: CliKind, raw: &[u8], plan: ChunkPlan) -> CliReplaySum
                         let r = Tokens {
                             input: total.input.saturating_sub(accounted.input),
                             cached: total.cached.saturating_sub(accounted.cached),
+                            cache_write: 0,
                             output: total.output.saturating_sub(accounted.output),
                         };
                         (r.input > 0 || r.cached > 0 || r.output > 0).then_some(r)
@@ -907,6 +916,7 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
         Tokens {
             input: 2100,
             cached: 1500,
+            cache_write: 0,
             output: 60
         }
     );
@@ -926,6 +936,7 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
         Tokens {
             input: 2400,
             cached: 1800,
+            cache_write: 0,
             output: 88
         }
     );
@@ -942,6 +953,7 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
         Tokens {
             input: 3150,
             cached: 2600,
+            cache_write: 0,
             output: 60
         }
     );
@@ -958,6 +970,7 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
         Tokens {
             input: 3100,
             cached: 2400,
+            cache_write: 0,
             output: 60
         }
     );
@@ -974,6 +987,7 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
         Tokens {
             input: 1500,
             cached: 900,
+            cache_write: 0,
             output: 48
         }
     );
@@ -989,6 +1003,7 @@ fn replays_all_six_external_cli_golden_ndjson_fixtures_across_1_to_7_byte_utf8_s
         Tokens {
             input: 2600,
             cached: 2000,
+            cache_write: 0,
             output: 44
         }
     );

@@ -135,11 +135,15 @@ pub const PROVIDERS: &[Provider] = &[
         name: "Kimi（月之暗面）",
         protocol: Protocol::Chat(Flavor::Kimi),
         base_url: "https://api.moonshot.cn/v1",
-        other_urls: &[("https://api.moonshot.ai/v1", "国际站")],
+        other_urls: &[
+            ("https://api.moonshot.ai/v1", "国际站"),
+            ("https://api.kimi.com/coding/v1", "Kimi Code 订阅站"),
+            ("https://api.kimi.ai/coding/v1", "Kimi Code 国际站"),
+        ],
         key_env: Some("MOONSHOT_API_KEY"),
         models: &[
             ("kimi-k3.1-pro", "Kimi K3.1 Pro"),
-            ("kimi-k3.1-pro-highspeed", "Kimi K3.1 Pro 高速版"),
+            ("kimi-k3.1-pro-highspeed", "Kimi K3.1 Pro 高速版（2× 用量）"),
             ("kimi-k3", "Kimi K3"),
         ],
     },
@@ -345,11 +349,10 @@ pub fn resolve_auto_model(provider_id: &str, effort: &str) -> Option<String> {
             }
         }
         "moonshot" => {
-            if fast {
-                "kimi-k3.1-pro-highspeed"
-            } else {
-                "kimi-k3.1-pro"
-            }
+            // `kimi-k3.1-pro` is both the strongest and lowest-cost model in the K3 family
+            // (¥13/¥68 per MTok vs `kimi-k3` ¥20/¥100 and `kimi-k3.1-pro-highspeed` ¥26/¥136);
+            // effort tiers vary `reasoning_effort` instead of switching to a pricier model.
+            "kimi-k3.1-pro"
         }
         "zhipu" => {
             if fast {
@@ -529,6 +532,10 @@ pub async fn list_models(provider_id: &str, base_url: &str, key: Option<&str>) -
         Protocol::Gemini => http
             .get(format!("{base}/models?pageSize=1000"))
             .header("x-goog-api-key", key),
+        Protocol::Responses | Protocol::Chat(Flavor::Kimi) if base.to_ascii_lowercase().contains("/coding") => {
+            let dev_id = crate::kimi::device_id(&crate::settings::home());
+            crate::kimi::apply_kimi_headers(http.get(format!("{base}/models")).bearer_auth(key), &dev_id)
+        }
         Protocol::Responses | Protocol::Chat(_) => http.get(format!("{base}/models")).bearer_auth(key),
         Protocol::Cli(_) => unreachable!("handled above"),
     };
@@ -605,20 +612,24 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
     let found = match protocol {
         Protocol::Anthropic => {
             let cached = count(&usage["cache_read_input_tokens"]);
+            let cache_write = count(&usage["cache_creation_input_tokens"]);
             Tokens {
-                input: count(&usage["input_tokens"]) + cached + count(&usage["cache_creation_input_tokens"]),
+                input: count(&usage["input_tokens"]) + cached + cache_write,
                 cached,
+                cache_write,
                 output: count(&usage["output_tokens"]),
             }
         }
         Protocol::Gemini => Tokens {
             input: count(&usage["promptTokenCount"]),
             cached: count(&usage["cachedContentTokenCount"]),
+            cache_write: 0,
             output: count(&usage["candidatesTokenCount"]) + count(&usage["thoughtsTokenCount"]),
         },
         Protocol::Responses => Tokens {
             input: count(&usage["input_tokens"]),
             cached: count(&usage["input_tokens_details"]["cached_tokens"]),
+            cache_write: 0,
             output: count(&usage["output_tokens"]),
         },
         Protocol::Chat(_) => Tokens {
@@ -626,12 +637,16 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
             // DeepSeek reports the cache hit on its own field as well.
             cached: count(&usage["prompt_tokens_details"]["cached_tokens"])
                 .max(count(&usage["prompt_cache_hit_tokens"])),
+            cache_write: count(&usage["prompt_tokens_details"]["cache_write_tokens"])
+                .max(count(&usage["cache_creation_input_tokens"])),
             output: count(&usage["completion_tokens"]),
         },
         Protocol::Cli(_) => {
             let cached = count(&usage["cache_read_tokens"])
                 .max(count(&usage["cache_read_input_tokens"]))
                 .max(count(&usage["cached_input_tokens"]));
+            let cache_write = count(&usage["cache_creation_input_tokens"])
+                .max(count(&usage["cache_write_tokens"]));
             Tokens {
                 input: count(&usage["input_tokens"])
                     + count(&usage["cache_read_tokens"])
@@ -639,6 +654,7 @@ pub fn tokens(provider_id: &str, usage: &Value) -> Option<Tokens> {
                     + count(&usage["cache_creation_input_tokens"])
                     + count(&usage["cache_write_tokens"]),
                 cached,
+                cache_write,
                 output: count(&usage["output_tokens"]),
             }
         }
@@ -721,7 +737,12 @@ impl Llm for Router {
             Protocol::Anthropic => self.anthropic.stream(request, deltas, cancel).await,
             Protocol::Gemini => self.gemini.stream(request, deltas, cancel).await,
             Protocol::Responses => self.responses.stream(request, deltas, cancel).await,
-            Protocol::Chat(flavor) => self.chat.stream(flavor, request, deltas, cancel).await,
+            Protocol::Chat(flavor) => {
+                if flavor == Flavor::Kimi {
+                    let _ = crate::kimi::ensure_fresh_access_token(&crate::settings::home(), &request.provider).await;
+                }
+                self.chat.stream(flavor, request, deltas, cancel).await
+            }
             Protocol::Cli(kind) => Err(LlmError::Protocol(format!(
                 "{} runs through its local CLI backend",
                 kind.display_name()
@@ -798,6 +819,12 @@ mod tests {
             Some("gemini-2.5-flash")
         );
         assert_eq!(resolve_auto_model("gemini", "xhigh").as_deref(), Some("gemini-2.5-pro"));
+        assert_eq!(resolve_auto_model("moonshot", "low").as_deref(), Some("kimi-k3.1-pro"));
+        assert_eq!(
+            resolve_auto_model("moonshot", "medium").as_deref(),
+            Some("kimi-k3.1-pro")
+        );
+        assert_eq!(resolve_auto_model("moonshot", "high").as_deref(), Some("kimi-k3.1-pro"));
         assert_eq!(provider("custom_anthropic").unwrap().protocol, Protocol::Anthropic);
         assert!(provider("nobody").is_none());
     }
@@ -850,6 +877,7 @@ mod tests {
             Some(Tokens {
                 input: 1000,
                 cached: 900,
+                cache_write: 90,
                 output: 40
             })
         );
@@ -859,6 +887,7 @@ mod tests {
             Some(Tokens {
                 input: 1000,
                 cached: 900,
+                cache_write: 0,
                 output: 40
             })
         );
@@ -868,6 +897,7 @@ mod tests {
             Some(Tokens {
                 input: 1000,
                 cached: 900,
+                cache_write: 0,
                 output: 40
             })
         );
@@ -878,6 +908,7 @@ mod tests {
             Some(Tokens {
                 input: 1000,
                 cached: 900,
+                cache_write: 0,
                 output: 40
             })
         );
@@ -887,6 +918,7 @@ mod tests {
             Some(Tokens {
                 input: 1000,
                 cached: 600,
+                cache_write: 0,
                 output: 40
             })
         );
@@ -896,6 +928,7 @@ mod tests {
             Some(Tokens {
                 input: 1000,
                 cached: 800,
+                cache_write: 150,
                 output: 60
             })
         );
@@ -906,6 +939,7 @@ mod tests {
             Some(Tokens {
                 input: 700,
                 cached: 400,
+                cache_write: 200,
                 output: 35
             })
         );
@@ -915,6 +949,7 @@ mod tests {
             Some(Tokens {
                 input: 1000,
                 cached: 750,
+                cache_write: 0,
                 output: 45
             })
         );

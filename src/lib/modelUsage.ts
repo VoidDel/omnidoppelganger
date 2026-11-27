@@ -156,9 +156,13 @@ export function quotaWindowLabel(window: string, fallbackName: string): string {
   return fallbackName || window;
 }
 
-export type QuotaSource = { kind: "antigravity" } | { kind: "magpie"; providerId: string } | null;
+export type QuotaSource =
+  | { kind: "antigravity" }
+  | { kind: "magpie"; providerId: string }
+  | { kind: "kimi"; providerId: string }
+  | null;
 
-/** Subscribe to live subscription quota from either local `agy -p /usage` or a Magpie gateway (`GET /v1/magpie/quotas`). */
+/** Subscribe to live subscription quota from local `agy -p /usage`, a Magpie gateway, or Kimi Code (`/coding/v1/usages`). */
 export function useProviderQuota(source: QuotaSource) {
   const [quota, setQuota] = useState<AntigravityQuota | null>(null);
   const [loading, setLoading] = useState(false);
@@ -166,14 +170,19 @@ export function useProviderQuota(source: QuotaSource) {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const kind = source?.kind ?? null;
-  const providerId = source?.kind === "magpie" ? source.providerId : "";
+  const providerId = source && "providerId" in source ? source.providerId : "";
 
   const refresh = useCallback(
     (force = false) => {
       if (!kind) return;
       setLoading(true);
       setError(null);
-      const req = kind === "magpie" ? api.getMagpieQuota(providerId, force) : api.getAntigravityQuota(force);
+      const req =
+        kind === "magpie"
+          ? api.getMagpieQuota(providerId, force)
+          : kind === "kimi"
+            ? api.getKimiQuota(providerId, force)
+            : api.getAntigravityQuota(force);
       req
         .then((res) => {
           setQuota(res);
@@ -209,4 +218,9 @@ export function useProviderQuota(source: QuotaSource) {
 /** Subscribe to live Antigravity subscription quota via `agy -p /usage`. */
 export function useAntigravityQuota(enabled: boolean) {
   return useProviderQuota(enabled ? { kind: "antigravity" } : null);
+}
+
+/** Subscribe to live Kimi Code Coding Plan quota via `GET /coding/v1/usages`. */
+export function useKimiQuota(providerId: string | null) {
+  return useProviderQuota(providerId ? { kind: "kimi", providerId } : null);
 }
