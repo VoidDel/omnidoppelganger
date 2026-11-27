@@ -13,7 +13,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::git::{git_checkout_core, session_git_workspace};
-use crate::commands::runtime_lsp::{INLINE_COMMAND_TIMEOUT_SECS, run_inline_shell_with_sandbox, strip_inline_ansi};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::commands::runtime_lsp::run_inline_shell_with_sandbox;
+use crate::commands::runtime_lsp::{INLINE_COMMAND_TIMEOUT_SECS, strip_inline_ansi};
 use crate::commands::sessions::{
     ensure_markdown_extension, export_session_markdown_with_title, land_session_core, sanitize_export_filename,
     send_message_core,
