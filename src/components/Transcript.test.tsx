@@ -289,6 +289,28 @@ describe("Transcript component (P1-15 & P1-13)", () => {
     expect(screen.getByText("100%")).toBeTruthy();
   });
 
+  it("renders left-edge turn rail navigator for multi-turn sessions and scrolls to clicked turn", () => {
+    const rows = [
+      makeRow({ key: "t1", turn: 1, prompt: { text: "第一轮需求", ts: "2026-11-28T10:00:00Z", steering: false, images: [], files: [] } }),
+      makeRow({ key: "t2", turn: 2, prompt: { text: "第二轮追问", ts: "2026-11-28T10:02:00Z", steering: false, images: [], files: [] } }),
+    ];
+    const { container } = renderTranscript({ rows });
+    const scroller = container.querySelector(".transcript") as HTMLDivElement;
+    const scrollToSpy = vi.fn();
+    scroller.scrollTo = scrollToSpy;
+
+    const nav = screen.getByRole("navigation", { name: "会话轮次导航" });
+    expect(nav.querySelectorAll(".turn-rail-dot").length).toBe(2);
+
+    const firstDot = screen.getByRole("button", { name: /跳到第 1 轮：第一轮需求/ });
+    fireEvent.mouseEnter(firstDot);
+    expect(screen.getByRole("tooltip").textContent).toContain("第一轮需求");
+
+    fireEvent.click(firstDot);
+    expect(scrollToSpy).toHaveBeenCalledTimes(1);
+    expect(firstDot.getAttribute("aria-current")).toBe("location");
+  });
+
   it("drives rail vein pulse in explicit pixels, preserves Y continuity on resize, and sweeps up on completion", () => {
     const calls: Array<{ keyframes: Keyframe[]; options: KeyframeAnimationOptions; anim: { currentTime: number; cancel: ReturnType<typeof vi.fn> } }> = [];
     const origAnimate = Element.prototype.animate;

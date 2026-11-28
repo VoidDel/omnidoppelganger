@@ -62,6 +62,16 @@
   flex: 1;
 }
 
+.transcript-shell {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .transcript {
   flex: 1;
   min-height: 0;
@@ -72,6 +82,142 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.transcript.has-turn-rail {
+  padding-left: 30px;
+}
+
+/* Left-edge turn quick-jump rail (Antigravity-inspired vertical dot navigator) */
+.turn-rail {
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 6;
+  max-height: calc(100% - 96px);
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition:
+    background var(--d-quick) var(--ease-out),
+    box-shadow var(--d-quick) var(--ease-out);
+}
+
+.turn-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.turn-rail:hover,
+.turn-rail:focus-within {
+  background: color-mix(in srgb, var(--sheet) 82%, transparent);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12), inset 0 0 0 1px var(--line);
+}
+
+.turn-rail-dot {
+  flex: none;
+  width: 16px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.turn-rail.dense .turn-rail-dot {
+  height: 10px;
+}
+
+.turn-rail-pip {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  opacity: 0.62;
+  transition:
+    transform var(--d-quick) var(--ease-out),
+    background var(--d-quick) var(--ease-out),
+    opacity var(--d-quick) var(--ease-out),
+    box-shadow var(--d-quick) var(--ease-out);
+}
+
+.turn-rail.dense .turn-rail-pip {
+  width: 4px;
+  height: 4px;
+}
+
+.turn-rail-dot:hover .turn-rail-pip,
+.turn-rail-dot:focus-visible .turn-rail-pip {
+  opacity: 1;
+  background: var(--ink);
+  transform: scale(1.3);
+}
+
+.turn-rail-dot.active .turn-rail-pip {
+  opacity: 1;
+  background: var(--jade);
+  transform: scale(1.35);
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--jade) 24%, transparent);
+}
+
+.turn-rail-tip {
+  position: fixed;
+  z-index: 40;
+  transform: translateY(-50%);
+  max-width: 280px;
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  color: var(--ink);
+  pointer-events: none;
+}
+
+.turn-rail-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.turn-rail-tip-idx {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--jade);
+}
+
+.turn-rail-tip-when {
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-rail-tip-text {
+  font-size: var(--t-micro);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.aside-pane .turn-rail {
+  display: none;
+}
+
+.aside-pane .transcript.has-turn-rail {
+  padding-left: 14px;
 }
 
 /* A turn: what 本尊 said across the top, what the 分身 did about it below. */

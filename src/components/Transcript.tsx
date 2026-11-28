@@ -630,7 +630,7 @@ const TurnRow = memo(function TurnRow({
     return () => window.clearTimeout(timer);
   }, [copiedKey]);
   return (
-    <section className={`turn ${last ? "latest" : ""} ${last && closing ? "closing" : ""}`}>
+    <section className={`turn ${last ? "latest" : ""} ${last && closing ? "closing" : ""}`} data-turn-key={row.key}>
       {ownFirst && SEAM}
       <div className="turn-said">
         <div className="said-top">
@@ -1116,29 +1116,156 @@ export function Transcript({
     else onQuoteToAside?.(formatted);
   };
 
+  const showTurnRail = rows.length >= 2;
+  const [activeTurnKey, setActiveTurnKey] = useState<string | null>(() => rows[rows.length - 1]?.key ?? null);
+  const [hoveredTurn, setHoveredTurn] = useState<{
+    index: number;
+    label: string;
+    when: string;
+    top: number;
+    left: number;
+  } | null>(null);
+
+  const syncActiveTurn = useCallback(() => {
+    const el = scroller.current;
+    if (!el || rows.length < 2) return;
+    const sections = el.querySelectorAll<HTMLElement>("section.turn[data-turn-key]");
+    if (sections.length === 0) return;
+    const threshold = el.scrollTop + 96;
+    let current = sections[0].dataset.turnKey ?? null;
+    for (const sec of sections) {
+      if (sec.offsetTop <= threshold) {
+        current = sec.dataset.turnKey ?? current;
+      } else {
+        break;
+      }
+    }
+    setActiveTurnKey((prev) => (prev === current ? prev : current));
+  }, [rows.length]);
+
+  useEffect(() => {
+    if (rows.length < 2) {
+      setActiveTurnKey(rows[0]?.key ?? null);
+      setHoveredTurn(null);
+      return;
+    }
+    if (pinned.current) {
+      setActiveTurnKey(rows[rows.length - 1]?.key ?? null);
+    } else {
+      syncActiveTurn();
+    }
+  }, [rows, syncActiveTurn]);
+
+  const jumpToTurn = useCallback((key: string, isLast: boolean) => {
+    const el = scroller.current;
+    if (!el) return;
+    const sections = el.querySelectorAll<HTMLElement>("section.turn[data-turn-key]");
+    let target: HTMLElement | null = null;
+    for (const node of sections) {
+      if (node.dataset.turnKey === key) {
+        target = node;
+        break;
+      }
+    }
+    if (!target) return;
+    pinned.current = isLast;
+    setActiveTurnKey(key);
+    setHoveredTurn(null);
+    el.scrollTo({ top: target.offsetTop, behavior: "smooth" });
+  }, []);
+
+  const turnPreview = (row: Row, index: number) => {
+    const text = row.prompt.text.replace(/\s+/g, " ").trim();
+    if (text) return text.length > 72 ? `${text.slice(0, 72)}…` : text;
+    if (row.prompt.images.length > 0) return `附 ${row.prompt.images.length} 张图片`;
+    if (row.prompt.files.length > 0) return `附 ${row.prompt.files.length} 个文件`;
+    return `第 ${index + 1} 轮`;
+  };
+
   return (
     <FilesContext.Provider value={files}>
       <Live.Provider value={live}>
-        <div
-          className="transcript"
-          ref={scroller}
-          onContextMenu={openTranscriptContextMenu}
-          onMouseUp={(event) => {
-            if (event.button !== 0) return;
-            const target = event.target as Node | null;
-            if (target && (contextMenuRef.current?.contains(target) || quoteBarRef.current?.contains(target))) return;
-            requestAnimationFrame(syncSelectionQuote);
-          }}
-          onKeyUp={() => requestAnimationFrame(syncSelectionQuote)}
-          onScroll={(event) => {
-            const element = event.currentTarget;
-            const scrollingUp = element.scrollTop < lastScrollTop.current;
-            lastScrollTop.current = element.scrollTop;
-            pinned.current = !scrollingUp && element.scrollHeight - element.scrollTop - element.clientHeight < 80;
-            if (selectionQuote) setSelectionQuote(null);
-            if (contextMenu) setContextMenu(null);
-          }}
-        >
+        <div className="transcript-shell">
+          {showTurnRail && (
+            <nav
+              className={`turn-rail ${rows.length > 16 ? "dense" : ""}`}
+              aria-label="会话轮次导航"
+              onMouseLeave={() => setHoveredTurn(null)}
+            >
+              {rows.map((row, index) => {
+                const active = (activeTurnKey ?? rows[rows.length - 1]?.key) === row.key;
+                const label = turnPreview(row, index);
+                const when = time(row.prompt.ts);
+                return (
+                  <button
+                    key={row.key}
+                    type="button"
+                    className={`turn-rail-dot ${active ? "active" : ""}`}
+                    aria-label={`跳到第 ${index + 1} 轮：${label}`}
+                    aria-current={active ? "location" : undefined}
+                    onMouseEnter={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setHoveredTurn({
+                        index: index + 1,
+                        label,
+                        when,
+                        top: rect.top + rect.height / 2,
+                        left: rect.right + 10,
+                      });
+                    }}
+                    onFocus={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setHoveredTurn({
+                        index: index + 1,
+                        label,
+                        when,
+                        top: rect.top + rect.height / 2,
+                        left: rect.right + 10,
+                      });
+                    }}
+                    onBlur={() => setHoveredTurn(null)}
+                    onClick={() => jumpToTurn(row.key, index === rows.length - 1)}
+                  >
+                    <span className="turn-rail-pip" aria-hidden="true" />
+                  </button>
+                );
+              })}
+            </nav>
+          )}
+          {hoveredTurn && (
+            <div
+              className="turn-rail-tip"
+              role="tooltip"
+              style={{ top: `${hoveredTurn.top}px`, left: `${hoveredTurn.left}px` }}
+            >
+              <div className="turn-rail-tip-head">
+                <span className="turn-rail-tip-idx">#{hoveredTurn.index}</span>
+                <span className="turn-rail-tip-when">{hoveredTurn.when}</span>
+              </div>
+              <div className="turn-rail-tip-text">{hoveredTurn.label}</div>
+            </div>
+          )}
+          <div
+            className={`transcript ${showTurnRail ? "has-turn-rail" : ""}`}
+            ref={scroller}
+            onContextMenu={openTranscriptContextMenu}
+            onMouseUp={(event) => {
+              if (event.button !== 0) return;
+              const target = event.target as Node | null;
+              if (target && (contextMenuRef.current?.contains(target) || quoteBarRef.current?.contains(target))) return;
+              requestAnimationFrame(syncSelectionQuote);
+            }}
+            onKeyUp={() => requestAnimationFrame(syncSelectionQuote)}
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              const scrollingUp = element.scrollTop < lastScrollTop.current;
+              lastScrollTop.current = element.scrollTop;
+              pinned.current = !scrollingUp && element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+              if (showTurnRail) syncActiveTurn();
+              if (selectionQuote) setSelectionQuote(null);
+              if (contextMenu) setContextMenu(null);
+            }}
+          >
           {rows.map((row, index) => {
             const last = index === rows.length - 1;
             const task = index === 0 && origin !== "user" ? origin : null;
@@ -1389,6 +1516,7 @@ export function Transcript({
                 </div>
               );
             })()}
+          </div>
         </div>
       </Live.Provider>
     </FilesContext.Provider>
