@@ -43,13 +43,8 @@ fn clip_chars(text: &str, max_chars: usize) -> String {
 
 /// Normalize raw LLM output into a clean single-line session title.
 pub(crate) fn sanitize_auto_title(raw: &str) -> Option<String> {
-    let first_line = raw
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?;
-    let mut s = first_line
-        .trim_start_matches(|c: char| matches!(c, '#' | '-' | '*' | '>' | '•' | ' '))
-        .trim();
+    let first_line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let mut s = first_line.trim_start_matches(['#', '-', '*', '>', '•', ' ']).trim();
     for prefix in [
         "Title:",
         "title:",
@@ -67,10 +62,8 @@ pub(crate) fn sanitize_auto_title(raw: &str) -> Option<String> {
     }
     // Strip trailing punctuation and matching outer quotes/brackets (e.g. `《标题》。` or `"Title!"`).
     fn trim_trailing_punct(text: &str) -> &str {
-        text.trim_end_matches(|c: char| {
-            matches!(c, '.' | '。' | '!' | '！' | '?' | '？' | ';' | '；' | ':' | '：')
-        })
-        .trim()
+        text.trim_end_matches(['.', '。', '!', '！', '?', '？', ';', '；', ':', '：'])
+            .trim()
     }
     s = trim_trailing_punct(s);
     for _ in 0..2 {
