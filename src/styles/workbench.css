@@ -1766,8 +1766,16 @@ button.diff-no.new:hover:not(:disabled) {
   background: var(--term-bg);
 }
 
+:root[data-theme="light"][data-palette="pure-white"] .term-stage {
+  --term-bg: #ffffff;
+}
+
 :root[data-theme="dark"] .term-stage {
   --term-bg: #0f1a1c;
+}
+
+:root[data-theme="dark"][data-palette="one-dark-pro"] .term-stage {
+  --term-bg: #23272e;
 }
 
 /* Laid over the stage rather than in its flow, so a terminal measured on the stage gets all of its height. */

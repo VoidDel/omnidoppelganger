@@ -19,6 +19,22 @@
   src: url("/fonts/lxgw-wenkai-lite-bold.woff2") format("woff2");
 }
 
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMonoNerdFontMono-Bold.ttf") format("truetype");
+}
+
 :root {
   /* Type: six sizes for everything written, and one for code. Seals and tokens are drawn to their boxes, not set on this scale. */
   --t-micro: 12px;
@@ -97,7 +113,7 @@
   --brush: "LXGW WenKai Lite", "STKaiti", "KaiTi", serif;
   --han: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
   --text: var(--han), system-ui, sans-serif;
-  --mono: "JetBrains Mono", var(--han), ui-monospace, Consolas, monospace;
+  --mono: "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font", "JetBrains Mono", var(--han), ui-monospace, Consolas, monospace;
   color-scheme: light;
 }
 

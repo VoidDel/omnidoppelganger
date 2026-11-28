@@ -38,6 +38,30 @@ const LIGHT_THEME: ITheme = {
   brightWhite: "#3f4f53",
 };
 
+const PURE_WHITE_THEME: ITheme = {
+  background: "#ffffff",
+  foreground: "#111827",
+  cursor: "#2563eb",
+  cursorAccent: "#ffffff",
+  selectionBackground: "rgba(37, 99, 235, 0.18)",
+  black: "#111827",
+  red: "#dc2626",
+  green: "#059669",
+  yellow: "#b45309",
+  blue: "#2563eb",
+  magenta: "#7c3aed",
+  cyan: "#0891b2",
+  white: "#4b5563",
+  brightBlack: "#6b7280",
+  brightRed: "#ef4444",
+  brightGreen: "#10b981",
+  brightYellow: "#d97706",
+  brightBlue: "#3b82f6",
+  brightMagenta: "#8b5cf6",
+  brightCyan: "#06b6d4",
+  brightWhite: "#1f2937",
+};
+
 const LIGHT_MIN_CONTRAST = 4.5;
 
 const DARK_THEME: ITheme = {
@@ -64,12 +88,40 @@ const DARK_THEME: ITheme = {
   brightWhite: "#ffffff",
 };
 
+const ONE_DARK_PRO_THEME: ITheme = {
+  background: "#23272e",
+  foreground: "#d7dae0",
+  cursor: "#61afef",
+  cursorAccent: "#23272e",
+  selectionBackground: "rgba(97, 175, 239, 0.26)",
+  black: "#282c34",
+  red: "#e06c75",
+  green: "#98c379",
+  yellow: "#e5c07b",
+  blue: "#61afef",
+  magenta: "#c678dd",
+  cyan: "#56b6c2",
+  white: "#abb2bf",
+  brightBlack: "#5c6370",
+  brightRed: "#ef7e87",
+  brightGreen: "#b5e096",
+  brightYellow: "#f0d399",
+  brightBlue: "#7ec2fa",
+  brightMagenta: "#d895eb",
+  brightCyan: "#73cfd9",
+  brightWhite: "#ffffff",
+};
+
 function isDark(): boolean {
   return document.documentElement.dataset.theme === "dark";
 }
 
 function currentXtermTheme(): ITheme {
-  return isDark() ? DARK_THEME : LIGHT_THEME;
+  const palette = document.documentElement.dataset.palette;
+  if (isDark()) {
+    return palette === "one-dark-pro" ? ONE_DARK_PRO_THEME : DARK_THEME;
+  }
+  return palette === "pure-white" ? PURE_WHITE_THEME : LIGHT_THEME;
 }
 
 function currentMinContrast(): number {
@@ -120,6 +172,9 @@ interface MountedTerm {
   host: HTMLDivElement;
 }
 
+const TERM_FONT_FAMILY =
+  '"JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font", "JetBrains Mono", "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", ui-monospace, monospace';
+
 const MAX_PENDING_CHUNKS = 512;
 
 export default function TerminalPane({ sessionId, onSendToChat, onError }: TerminalPaneProps) {
@@ -152,7 +207,7 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
       cursorBlink: true,
       fontSize: 13,
       lineHeight: 1.35,
-      fontFamily: '"JetBrains Mono", "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", ui-monospace, monospace',
+      fontFamily: TERM_FONT_FAMILY,
       scrollback: 5000,
       allowProposedApi: false,
       theme: currentXtermTheme(),
@@ -408,6 +463,30 @@ export default function TerminalPane({ sessionId, onSendToChat, onError }: Termi
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-palette"] });
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined" || !("fonts" in document)) return;
+    let alive = true;
+    document.fonts.ready
+      .then(() => {
+        if (!alive || disposedRef.current) return;
+        for (const [id, inst] of mountedRef.current) {
+          inst.term.options.fontFamily = TERM_FONT_FAMILY;
+          if (inst.host.style.display !== "none" && inst.host.clientWidth > 0 && inst.host.clientHeight > 0) {
+            try {
+              inst.fit.fit();
+              api.ptyResize(id, inst.term.cols, inst.term.rows).catch(() => undefined);
+            } catch {
+              // Ignore fit error
+            }
+          }
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const closePty = (id: string) => {
