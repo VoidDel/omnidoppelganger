@@ -491,6 +491,14 @@ impl<L: Llm + 'static> AppCore<L> {
             .collect()
     }
 
+    /// Clone a single currently loaded `Session` handle by id, if present.
+    pub fn loaded_session(&self, id: &str) -> Option<Session<L>> {
+        self.sessions
+            .lock_unpoisoned()
+            .get(id)
+            .and_then(|slot| slot.cell.get().cloned())
+    }
+
     /// Every loaded session by id: those opened here, and the subagents their agents have set off.
     pub fn all_live(&self) -> HashMap<String, Session<L>> {
         let mut live: HashMap<String, Session<L>> = self

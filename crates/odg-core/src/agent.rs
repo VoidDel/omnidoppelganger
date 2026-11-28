@@ -553,6 +553,11 @@ impl<L: Llm> Session<L> {
         self.inner.append(Event::SessionRenamed { title })
     }
 
+    /// Generate and persist a short AI title after the first turn if the session is still unnamed.
+    pub async fn auto_title(&self) -> Result<Option<String>, String> {
+        self.inner.auto_title().await
+    }
+
     /// Switch modes. The next tool call is decided by the new mode, and the
     /// next message records it, which is when the model learns of plan mode.
     pub fn set_mode(&self, mode: Mode) {

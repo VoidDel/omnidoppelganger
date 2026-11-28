@@ -198,7 +198,17 @@ export function reduce(state: State, action: Action): State {
           event.session_id === state.openingId
             ? [...state.buffer, { sessionId: event.session_id, envelope: event.envelope }]
             : state.buffer;
-        const nextState = nextBuffer === state.buffer ? state : { ...state, buffer: nextBuffer };
+        let nextSessions = state.sessions;
+        if (event.envelope.type === "session/renamed" && event.envelope.data.title.trim()) {
+          const nextTitle = event.envelope.data.title;
+          nextSessions = state.sessions.map((session) =>
+            session.id === event.session_id ? { ...session, title: nextTitle } : session,
+          );
+        }
+        const nextState =
+          nextBuffer === state.buffer && nextSessions === state.sessions
+            ? state
+            : { ...state, buffer: nextBuffer, sessions: nextSessions };
         return active ? appendLog(nextState, event.envelope) : nextState;
       }
       const sessions = state.sessions.map((session) =>

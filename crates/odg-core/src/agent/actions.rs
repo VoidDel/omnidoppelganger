@@ -20,6 +20,87 @@ use super::{Inner, Session, Status, Tuning};
 /// How long a stopped turn waits for its subagents to stop too before it ends without them.
 const SUBAGENT_STOP: std::time::Duration = std::time::Duration::from_secs(5);
 
+const AUTO_TITLE_SYSTEM: &str = "\
+You generate concise, descriptive titles for chat sessions.
+Rules:
+- Reply with ONLY the title text — no quotes, no markdown, no prefixes like \"Title:\" or \"标题：\", no trailing punctuation.
+- Use the same language as the user's message.
+- Keep it short: 4 to 14 Chinese characters, or 3 to 7 English words.
+- Capture the user's concrete goal or topic, not generic filler.";
+
+fn clip_chars(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let mut out = String::new();
+    for (idx, ch) in trimmed.chars().enumerate() {
+        if idx >= max_chars {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Normalize raw LLM output into a clean single-line session title.
+pub(crate) fn sanitize_auto_title(raw: &str) -> Option<String> {
+    let first_line = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let mut s = first_line
+        .trim_start_matches(|c: char| matches!(c, '#' | '-' | '*' | '>' | '•' | ' '))
+        .trim();
+    for prefix in [
+        "Title:",
+        "title:",
+        "TITLE:",
+        "Session title:",
+        "标题:",
+        "标题：",
+        "会话标题:",
+        "会话标题：",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.trim();
+            break;
+        }
+    }
+    // Strip trailing punctuation and matching outer quotes/brackets (e.g. `《标题》。` or `"Title!"`).
+    fn trim_trailing_punct(text: &str) -> &str {
+        text.trim_end_matches(|c: char| {
+            matches!(c, '.' | '。' | '!' | '！' | '?' | '？' | ';' | '；' | ':' | '：')
+        })
+        .trim()
+    }
+    s = trim_trailing_punct(s);
+    for _ in 0..2 {
+        let stripped = s
+            .strip_prefix('"')
+            .and_then(|t| t.strip_suffix('"'))
+            .or_else(|| s.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')))
+            .or_else(|| s.strip_prefix('`').and_then(|t| t.strip_suffix('`')))
+            .or_else(|| s.strip_prefix('“').and_then(|t| t.strip_suffix('”')))
+            .or_else(|| s.strip_prefix('「').and_then(|t| t.strip_suffix('」')))
+            .or_else(|| s.strip_prefix('《').and_then(|t| t.strip_suffix('》')));
+        match stripped {
+            Some(inner) => s = trim_trailing_punct(inner.trim()),
+            None => break,
+        }
+    }
+    let s = trim_trailing_punct(s);
+    let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    let truncated: String = collapsed.chars().take(36).collect();
+    let final_title = truncated.trim().to_string();
+    if final_title.is_empty() {
+        None
+    } else {
+        Some(final_title)
+    }
+}
+
 /// Pick the last completed turn to keep verbatim across compaction when there are at least two
 /// completed turns since the previous compaction and that last turn fits comfortably (`<= window / 4`).
 /// Returns `(event_index_of_kept_turn_start, kept_turn_number)`.
@@ -502,6 +583,123 @@ impl<L: Llm> Inner<L> {
         }
     }
 
+    /// Generate a concise title from the first turn's user message and assistant reply when the
+    /// session has not been manually renamed yet. Runs with no tools and low effort, and silently
+    /// skips subagents, side-chats, CLI providers, or already-named sessions.
+    pub(super) async fn auto_title(&self) -> Result<Option<String>, String> {
+        if self.read_only || self.parent.is_some() || self.aside.is_some() {
+            return Ok(None);
+        }
+        let provider = self.provider();
+        if matches!(
+            providers::provider(&provider).map(|known| known.protocol),
+            Some(providers::Protocol::Cli(_))
+        ) {
+            return Ok(None);
+        }
+
+        let (user_text, assistant_text, served_model) = {
+            let log = self.log.lock_unpoisoned();
+            let events = log.events();
+            if events
+                .iter()
+                .any(|env| matches!(env.event, Event::SessionRenamed { .. }))
+            {
+                return Ok(None);
+            }
+            let user = events.iter().find_map(|env| match &env.event {
+                Event::UserMessage { text, .. } if !text.trim().is_empty() => Some(clip_chars(text.trim(), 600)),
+                _ => None,
+            });
+            let Some(user) = user else {
+                return Ok(None);
+            };
+            let mut last_reply = String::new();
+            let mut last_model = String::new();
+            for env in events {
+                if let Event::AssistantMessage { content, model, .. } = &env.event {
+                    if !model.trim().is_empty() {
+                        last_model = model.clone();
+                    }
+                    let joined: String = content
+                        .iter()
+                        .filter(|b| b["type"] == "text")
+                        .filter_map(|b| b["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !joined.trim().is_empty() {
+                        last_reply = clip_chars(joined.trim(), 600);
+                    }
+                }
+            }
+            (user, last_reply, last_model)
+        };
+
+        let model = if !served_model.is_empty() {
+            served_model
+        } else {
+            self.model()
+        };
+        let prompt = if assistant_text.is_empty() {
+            format!("User message:\n{user_text}")
+        } else {
+            format!("User message:\n{user_text}\n\nAssistant reply:\n{assistant_text}")
+        };
+        let request = LlmRequest {
+            provider,
+            session: self.id.clone(),
+            model,
+            system: AUTO_TITLE_SYSTEM.to_string(),
+            messages: vec![json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": prompt }],
+            })],
+            tools: Vec::new(),
+            effort: "low".to_string(),
+        };
+
+        let cancel = CancellationToken::new();
+        let (sender, mut receiver) = unbounded_channel::<StreamDelta>();
+        let discard = async { while receiver.recv().await.is_some() {} };
+        let timed = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            self.llm.stream(request, sender, cancel.clone()),
+        );
+        let (result, ()) = tokio::join!(timed, discard);
+        let turn = match result {
+            Ok(Ok(turn)) => turn,
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(_) => {
+                cancel.cancel();
+                return Ok(None);
+            }
+        };
+        let raw: String = turn
+            .content
+            .iter()
+            .filter(|block| block["type"] == "text")
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let Some(title) = sanitize_auto_title(&raw) else {
+            return Ok(None);
+        };
+
+        // Re-check so a manual rename performed while the request was in flight always wins.
+        {
+            let log = self.log.lock_unpoisoned();
+            if log
+                .events()
+                .iter()
+                .any(|env| matches!(env.event, Event::SessionRenamed { .. }))
+            {
+                return Ok(None);
+            }
+        }
+        self.append(Event::SessionRenamed { title: title.clone() })?;
+        Ok(Some(title))
+    }
+
     /// Ask the guardian whether a command can run without the user. What it is shown: the user's
     /// messages, what the agent said before the call, the command; never a tool's output. Its verdict
     /// is logged. `Ok(false)` leaves the command to the user, as does a guardian that cannot be
@@ -745,5 +943,21 @@ mod tests {
             escape_xml("a & b <tag attr=\"x\" 'y'>"),
             "a &amp; b &lt;tag attr=&quot;x&quot; &apos;y&apos;&gt;"
         );
+    }
+
+    #[test]
+    fn sanitize_auto_title_cleans_formatting_and_caps_length() {
+        assert_eq!(
+            sanitize_auto_title("标题：《拉取三项目代码》。\n附加说明"),
+            Some("拉取三项目代码".into())
+        );
+        assert_eq!(
+            sanitize_auto_title("  # Title: \"Fix terminal theme!\"  "),
+            Some("Fix terminal theme".into())
+        );
+        assert_eq!(sanitize_auto_title("   \n  "), None);
+        assert_eq!(sanitize_auto_title("「」"), None);
+        let long = "a".repeat(50);
+        assert_eq!(sanitize_auto_title(&long).map(|s| s.chars().count()), Some(36));
     }
 }

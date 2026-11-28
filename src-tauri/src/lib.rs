@@ -88,6 +88,21 @@ pub fn run() {
             let (events, receiver) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
             let emit_handle = app.handle().clone();
             tauri::async_runtime::spawn(forward_session_events(receiver, move |event| {
+                if let UiEvent::Log { session_id, envelope } = &event
+                    && let odg_core::events::Event::TurnEnd { turn: 1, reason, .. } = &envelope.event
+                    && reason == "completed"
+                {
+                    let sid = session_id.clone();
+                    let handle = emit_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let Some(app_state) = handle.try_state::<App>() else {
+                            return;
+                        };
+                        if let Some(session) = app_state.0.loaded_session(&sid) {
+                            let _ = session.auto_title().await;
+                        }
+                    });
+                }
                 let _ = emit_handle.emit(SESSION_EVENT, event);
             }));
 

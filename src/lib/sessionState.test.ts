@@ -235,4 +235,37 @@ describe("sessionState reducer (P1-12)", () => {
     expect(state.events.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
     expect(appendLog(state, env(4))).toBe(state);
   });
+
+  it("updates session title in sidebar list when session/renamed log event arrives", () => {
+    let state: State = {
+      ...initial,
+      sessions: [makeItem("A", { title: "第一句话" }), makeItem("B", { title: "另一个会话" })],
+      activeId: "A",
+      events: [env(1)],
+    };
+
+    // Active session auto-title update
+    state = reduce(state, {
+      type: "event",
+      event: {
+        kind: "log",
+        session_id: "A",
+        envelope: env(2, { type: "session/renamed", data: { title: "修复终端配色" } }),
+      },
+    });
+    expect(state.sessions.find((s) => s.id === "A")?.title).toBe("修复终端配色");
+    expect(state.events).toHaveLength(2);
+
+    // Background (non-active) session auto-title update still updates sidebar title
+    state = reduce(state, {
+      type: "event",
+      event: {
+        kind: "log",
+        session_id: "B",
+        envelope: env(5, { type: "session/renamed", data: { title: "拉取三项目代码" } }),
+      },
+    });
+    expect(state.sessions.find((s) => s.id === "B")?.title).toBe("拉取三项目代码");
+    expect(state.events).toHaveLength(2);
+  });
 });
